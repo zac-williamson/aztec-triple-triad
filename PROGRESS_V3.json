@@ -1,6 +1,6 @@
 {
   "current_phase": 2,
-  "current_task": "Phase 5: Fix Backend Hand Exposure",
+  "current_task": "Phase 6: Fix Frontend/Backend Type Mismatches",
   "total_invocations": 2,
   "phases": {
     "1": {
@@ -81,23 +81,23 @@
     },
     "5": {
       "name": "Fix Backend Hand Exposure (S3)",
-      "status": "pending",
+      "status": "completed",
       "milestones": [
         {
           "name": "sanitizeGameStateForPlayer helper added to server",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "name": "All GAME_STATE messages sanitized before sending",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "name": "Server tests verify opponent hand is hidden",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "name": "npm test passes in backend",
-          "status": "pending"
+          "status": "completed"
         }
       ],
       "verify_command": "cd packages/backend && npm test 2>&1 | tail -30"

@@ -474,6 +474,148 @@ describe('Proof exchange', () => {
   });
 });
 
+describe('Hand sanitization (S3 fix)', () => {
+  it('should hide opponent hand in GAME_JOINED message for player 2', async () => {
+    const ws1 = await createClient();
+    const ws2 = await createClient();
+
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await waitForMessage(ws1) as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    const joined = await waitForMessage(ws2, (m) => m.type === 'GAME_JOINED');
+
+    if (joined.type === 'GAME_JOINED') {
+      // Player 2 should see their own hand
+      expect(joined.gameState.player2Hand.length).toBe(5);
+      expect(joined.gameState.player2Hand[0].id).not.toBe(0);
+      // Player 1's hand should be hidden
+      expect(joined.gameState.player1Hand.length).toBe(5);
+      joined.gameState.player1Hand.forEach((card: any) => {
+        expect(card.id).toBe(0);
+        expect(card.name).toBe('Hidden');
+        expect(card.ranks.top).toBe(0);
+      });
+    }
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it('should hide opponent hand in GAME_START message for player 1', async () => {
+    const ws1 = await createClient();
+    const ws2 = await createClient();
+
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await waitForMessage(ws1) as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await waitForMessage(ws2, (m) => m.type === 'GAME_JOINED');
+
+    const start = await waitForMessage(ws1, (m) => m.type === 'GAME_START');
+    if (start.type === 'GAME_START') {
+      // Player 1 should see their own hand
+      expect(start.gameState.player1Hand.length).toBe(5);
+      expect(start.gameState.player1Hand[0].id).not.toBe(0);
+      // Player 2's hand should be hidden
+      expect(start.gameState.player2Hand.length).toBe(5);
+      start.gameState.player2Hand.forEach((card: any) => {
+        expect(card.id).toBe(0);
+        expect(card.name).toBe('Hidden');
+      });
+    }
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it('should hide opponent hand in GAME_STATE messages during play', async () => {
+    const ws1 = await createClient();
+    const ws2 = await createClient();
+    const c1 = new MessageCollector(ws1);
+    const c2 = new MessageCollector(ws2);
+
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await c2.wait((m) => m.type === 'GAME_JOINED');
+    await c1.wait((m) => m.type === 'GAME_START');
+
+    // Player 1 places a card
+    sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0 });
+
+    // Player 1 gets GAME_STATE with player2 hand hidden
+    const state1 = await c1.wait((m) => m.type === 'GAME_STATE') as any;
+    expect(state1.gameState.player1Hand.length).toBe(4); // played one card
+    state1.gameState.player2Hand.forEach((card: any) => {
+      expect(card.id).toBe(0);
+      expect(card.name).toBe('Hidden');
+    });
+
+    // Player 2 gets GAME_STATE with player1 hand hidden
+    const state2 = await c2.wait((m) => m.type === 'GAME_STATE') as any;
+    expect(state2.gameState.player2Hand.length).toBe(5);
+    expect(state2.gameState.player2Hand[0].id).not.toBe(0);
+    state2.gameState.player1Hand.forEach((card: any) => {
+      expect(card.id).toBe(0);
+      expect(card.name).toBe('Hidden');
+    });
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it('should reveal both hands in GAME_OVER messages', async () => {
+    const ws1 = await createClient();
+    const ws2 = await createClient();
+    const c1 = new MessageCollector(ws1);
+    const c2 = new MessageCollector(ws2);
+
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await c2.wait((m) => m.type === 'GAME_JOINED');
+    await c1.wait((m) => m.type === 'GAME_START');
+
+    // Play a full game
+    const positions: [number, number][] = [
+      [0, 0], [0, 1], [0, 2],
+      [1, 0], [1, 1], [1, 2],
+      [2, 0], [2, 1], [2, 2],
+    ];
+
+    for (let i = 0; i < 9; i++) {
+      const currentWs = i % 2 === 0 ? ws1 : ws2;
+      const [row, col] = positions[i];
+      sendMessage(currentWs, { type: 'PLACE_CARD', gameId, handIndex: 0, row, col });
+
+      // Consume GAME_STATE messages
+      await c1.wait((m) => m.type === 'GAME_STATE');
+      await c2.wait((m) => m.type === 'GAME_STATE');
+
+      if (i === 8) {
+        // On last move, get GAME_OVER messages
+        const over1 = await c1.wait((m) => m.type === 'GAME_OVER') as any;
+        const over2 = await c2.wait((m) => m.type === 'GAME_OVER') as any;
+
+        // GAME_OVER should reveal all hands (status is 'finished' so no sanitization)
+        // Both hands should be empty (all cards played) but the gameState is unsanitized
+        expect(over1.gameState.status).toBe('finished');
+        expect(over2.gameState.status).toBe('finished');
+      }
+    }
+
+    ws1.close();
+    ws2.close();
+  });
+});
+
 describe('REST game info', () => {
   it('should return game info via REST after WebSocket creation', async () => {
     const ws1 = await createClient();

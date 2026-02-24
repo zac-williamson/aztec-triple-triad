@@ -3,6 +3,7 @@ import http from 'http';
 import { v4 as uuidv4 } from 'uuid';
 import { GameManager } from './GameManager.js';
 import type { ClientMessage, ServerMessage } from './types.js';
+import type { GameState } from '@aztec-triple-triad/game-logic';
 
 const DEFAULT_PORT = 3001;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -94,6 +95,26 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
     return null;
   }
 
+  function sanitizeGameStateForPlayer(state: GameState, playerId: string, gameId: string): GameState {
+    const room = gameManager.getGame(gameId);
+    if (!room) return state;
+
+    const isPlayer1 = playerId === room.player1Id;
+
+    // During active game, hide opponent's hand card details
+    if (state.status === 'playing') {
+      const sanitized = { ...state };
+      const hiddenCard = { id: 0, name: 'Hidden', ranks: { top: 0, right: 0, bottom: 0, left: 0 } };
+      if (isPlayer1) {
+        sanitized.player2Hand = state.player2Hand.map(() => ({ ...hiddenCard }));
+      } else {
+        sanitized.player1Hand = state.player1Hand.map(() => ({ ...hiddenCard }));
+      }
+      return sanitized;
+    }
+    return state;
+  }
+
   wss.on('connection', (ws: WebSocket) => {
     const playerId = uuidv4();
     clients.set(playerId, ws);
@@ -140,13 +161,13 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
             type: 'GAME_JOINED',
             gameId: room.id,
             playerNumber: 2,
-            gameState: room.state,
+            gameState: sanitizeGameStateForPlayer(room.state, playerId, room.id),
           });
           // Notify player 1 that the game has started
           sendToPlayer(room.player1Id, {
             type: 'GAME_START',
             gameId: room.id,
-            gameState: room.state,
+            gameState: sanitizeGameStateForPlayer(room.state, room.player1Id, room.id),
           });
         } catch (err: any) {
           send(ws, { type: 'ERROR', message: err.message });
@@ -157,20 +178,26 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
       case 'PLACE_CARD': {
         try {
           const result = gameManager.placeCard(msg.gameId, playerId, msg.handIndex, msg.row, msg.col);
-          const room = gameManager.getGame(msg.gameId)!;
 
-          // Send updated state to both players
-          const stateMsg: ServerMessage = {
+          // Send sanitized state to current player
+          send(ws, {
             type: 'GAME_STATE',
             gameId: msg.gameId,
-            gameState: result.newState,
+            gameState: sanitizeGameStateForPlayer(result.newState, playerId, msg.gameId),
             captures: result.captures,
-          };
-          send(ws, stateMsg);
+          });
+          // Send sanitized state to opponent
           const opponentId = getOpponentId(msg.gameId, playerId);
-          if (opponentId) sendToPlayer(opponentId, stateMsg);
+          if (opponentId) {
+            sendToPlayer(opponentId, {
+              type: 'GAME_STATE',
+              gameId: msg.gameId,
+              gameState: sanitizeGameStateForPlayer(result.newState, opponentId, msg.gameId),
+              captures: result.captures,
+            });
+          }
 
-          // Check if game is over
+          // Check if game is over (finished games reveal all hands)
           if (result.newState.status === 'finished') {
             const overMsg: ServerMessage = {
               type: 'GAME_OVER',
@@ -244,24 +271,22 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
         try {
           // First apply the move on the server (same as PLACE_CARD)
           const result = gameManager.placeCard(msg.gameId, playerId, msg.handIndex, msg.row, msg.col);
-          const room = gameManager.getGame(msg.gameId)!;
 
-          // Send state update to the current player
-          const stateMsg: ServerMessage = {
+          // Send sanitized state update to the current player
+          send(ws, {
             type: 'GAME_STATE',
             gameId: msg.gameId,
-            gameState: result.newState,
+            gameState: sanitizeGameStateForPlayer(result.newState, playerId, msg.gameId),
             captures: result.captures,
-          };
-          send(ws, stateMsg);
+          });
 
-          // Send move proof + state to the opponent
+          // Send sanitized move proof + state to the opponent
           const opponentId = getOpponentId(msg.gameId, playerId);
           if (opponentId) {
             sendToPlayer(opponentId, {
               type: 'MOVE_PROVEN',
               gameId: msg.gameId,
-              gameState: result.newState,
+              gameState: sanitizeGameStateForPlayer(result.newState, opponentId, msg.gameId),
               captures: result.captures,
               moveProof: msg.moveProof,
               handIndex: msg.handIndex,
@@ -270,7 +295,7 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
             });
           }
 
-          // Check if game is over
+          // Check if game is over (finished games reveal all hands)
           if (result.newState.status === 'finished') {
             const overMsg: ServerMessage = {
               type: 'GAME_OVER',
