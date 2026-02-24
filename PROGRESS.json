@@ -1,134 +1,165 @@
 {
-  "current_phase": 5,
-  "current_task": "Starting Phase 5",
-  "total_invocations": 4,
+  "current_phase": 2,
+  "current_task": "FIX Phase 2: Contract Fixes (process_game proof verification, proof chaining)",
+  "total_invocations": 1,
   "phases": {
     "1": {
-      "name": "Game Logic (TypeScript)",
+      "name": "Circuit Fixes (FIX-1, FIX-2, FIX-9)",
       "status": "completed",
       "milestones": [
         {
-          "name": "Package scaffolding",
+          "name": "game_move: add private inputs for player hand (player_secret, card_ids, nullifier_secrets)",
           "status": "completed"
         },
         {
-          "name": "Card database defined",
+          "name": "game_move: recompute card_commit and verify placed card_id is in committed hand",
           "status": "completed"
         },
         {
-          "name": "Game state management",
+          "name": "game_move: add capture logic validation (rank comparison for all adjacent cells)",
           "status": "completed"
         },
         {
-          "name": "Capture logic implemented",
+          "name": "game_move: verify non-placed non-captured cells unchanged between board_before/board_after",
           "status": "completed"
         },
         {
-          "name": "Unit tests passing >90% coverage",
+          "name": "prove_hand: expand commitment to include card ranks for each card",
+          "status": "completed"
+        },
+        {
+          "name": "All circuit tests pass including new capture and card_commit tests",
           "status": "completed"
         }
       ],
-      "verify_command": "cd packages/game-logic && npm test 2>&1 | tail -20"
+      "verify_command": "cd circuits && nargo test 2>&1 | tail -30"
     },
     "2": {
-      "name": "Backend Server",
-      "status": "completed",
+      "name": "Contract Fixes (FIX-4, FIX-5)",
+      "status": "pending",
       "milestones": [
         {
-          "name": "WebSocket server scaffolding",
-          "status": "completed"
+          "name": "process_game verifies all 9 move proofs (or aggregated proof) with recursive verification",
+          "status": "pending"
         },
         {
-          "name": "Game lobby and rooms",
-          "status": "completed"
+          "name": "process_game validates proof chaining (proof[i].end_state == proof[i+1].start_state)",
+          "status": "pending"
         },
         {
-          "name": "Move validation via game-logic",
-          "status": "completed"
+          "name": "process_game verifies both prove_hand proofs and matches card_commits to move proofs",
+          "status": "pending"
         },
         {
-          "name": "Disconnection handling",
-          "status": "completed"
-        },
-        {
-          "name": "Integration tests passing",
-          "status": "completed"
+          "name": "Contracts compile with nargo compile",
+          "status": "pending"
         }
       ],
-      "verify_command": "cd packages/backend && npm test 2>&1 | tail -20"
+      "verify_command": "cd packages/contracts && aztec compile 2>&1 | tail -20 && cd ../../circuits && nargo compile 2>&1 | tail -20"
     },
     "3": {
-      "name": "Frontend",
-      "status": "completed",
+      "name": "Card Art Generation (FIX-8)",
+      "status": "pending",
       "milestones": [
         {
-          "name": "React app scaffolding",
-          "status": "completed"
+          "name": "Run generate-card-art.ts script with OpenAI API",
+          "status": "pending"
         },
         {
-          "name": "Game board and card components",
-          "status": "completed"
+          "name": "Card images saved to packages/frontend/public/cards/",
+          "status": "pending"
         },
         {
-          "name": "Multiplayer via WebSocket",
-          "status": "completed"
+          "name": "Frontend updated to load real card images instead of gradient placeholders",
+          "status": "pending"
         },
         {
-          "name": "Card art generation",
-          "status": "completed"
+          "name": "BLOCKERS.md updated if API key issues or generation failures occur",
+          "status": "pending"
+        }
+      ],
+      "verify_command": "ls packages/frontend/public/cards/*.png 2>/dev/null | wc -l | xargs test 10 -le"
+    },
+    "4": {
+      "name": "Frontend Aztec Integration (FIX-6, FIX-7)",
+      "status": "pending",
+      "milestones": [
+        {
+          "name": "Aztec SDK dependencies added to frontend package.json",
+          "status": "pending"
         },
         {
-          "name": "UI polish and animations",
-          "status": "completed"
+          "name": "Bundler configured for Aztec SDK (polyfills, WASM, CORS headers)",
+          "status": "pending"
+        },
+        {
+          "name": "useAztec hook: wallet creation via TestWallet, node connection, localStorage persistence",
+          "status": "pending"
+        },
+        {
+          "name": "useProofGeneration hook: load circuit artifacts, generate prove_hand and game_move proofs",
+          "status": "pending"
+        },
+        {
+          "name": "useGameContract hook: contract interaction, process_game call, NFT queries",
+          "status": "pending"
+        },
+        {
+          "name": "Frontend builds successfully with npm run build",
+          "status": "pending"
         }
       ],
       "verify_command": "cd packages/frontend && npm run build 2>&1 | tail -20"
     },
-    "4": {
-      "name": "Aztec Smart Contracts",
-      "status": "completed",
-      "milestones": [
-        {
-          "name": "NFT contract compiles",
-          "status": "completed"
-        },
-        {
-          "name": "Game contract compiles",
-          "status": "completed"
-        },
-        {
-          "name": "Standalone Noir circuits",
-          "status": "completed"
-        },
-        {
-          "name": "Contract tests passing",
-          "status": "completed"
-        }
-      ],
-      "verify_command": "cd packages/contracts && nargo compile 2>&1 | tail -20"
-    },
     "5": {
-      "name": "Integration",
+      "name": "End-to-End Integration (FIX-6 continued)",
       "status": "pending",
       "milestones": [
         {
-          "name": "Frontend proof generation",
+          "name": "Game flow: prove_hand proof generated on game join, sent via WebSocket",
           "status": "pending"
         },
         {
-          "name": "Proof exchange via WebSocket",
+          "name": "Game flow: game_move proof generated each turn, sent with move via WebSocket",
           "status": "pending"
         },
         {
-          "name": "On-chain game settlement",
+          "name": "Game flow: winner collects all proofs, calls process_game on-chain",
           "status": "pending"
         },
         {
-          "name": "End-to-end flow working",
+          "name": "UI shows proof generation status and transaction progress",
+          "status": "pending"
+        },
+        {
+          "name": "Wallet connection UI with account address and NFT inventory",
           "status": "pending"
         }
       ],
-      "verify_command": "echo 'Manual verification required for integration'"
+      "verify_command": "cd packages/frontend && npm run build 2>&1 | tail -20 && cd ../backend && npm test 2>&1 | tail -20"
+    },
+    "6": {
+      "name": "Polish & Comprehensive Testing (FIX-10, FIX-11)",
+      "status": "pending",
+      "milestones": [
+        {
+          "name": "Circuit tests cover all capture scenarios and edge cases",
+          "status": "pending"
+        },
+        {
+          "name": "Frontend has card flip animations for captures",
+          "status": "pending"
+        },
+        {
+          "name": "Aztec brand aesthetics applied (dark theme, geometric patterns)",
+          "status": "pending"
+        },
+        {
+          "name": "Error handling and fallback to WebSocket-only mode if Aztec unavailable",
+          "status": "pending"
+        }
+      ],
+      "verify_command": "cd circuits && nargo test 2>&1 | tail -20 && cd ../packages/frontend && npm run build 2>&1 | tail -20"
     }
   },
   "stuck_detector": {
@@ -138,38 +169,13 @@
     "escalation_level": 0
   },
   "rate_limit": {
-    "invocations_this_window": 4,
-    "window_start": 1771945363
+    "invocations_this_window": 1,
+    "window_start": 1771954541
   },
   "intervention": {
-    "pending_message": null,
+    "pending_message": "IMPORTANT: Aztec contracts (in packages/contracts/) must be compiled with aztec compile, NOT nargo compile. Only standalone circuits (in circuits/) use nargo compile. The aztec compile command understands Aztec contract macros (#[aztec], storage, etc). Make sure you use the correct compiler for each.",
     "pause_requested": false
   },
-  "session_history": [
-    {
-      "id": "session-1771945383",
-      "phase": 1,
-      "strategy": "[2026-02-24 15:03:03] Fresh session (first or second invocation)\nfresh",
-      "exit_code": 0,
-      "outcome": "success",
-      "timestamp": "2026-02-24T15:07:35+00:00"
-    },
-    {
-      "id": "session-1771945676",
-      "phase": 2,
-      "strategy": "[2026-02-24 15:07:56] Fresh session (first or second invocation)\nfresh",
-      "exit_code": 0,
-      "outcome": "success",
-      "timestamp": "2026-02-24T15:13:23+00:00"
-    },
-    {
-      "id": "session-1771946025",
-      "phase": 3,
-      "strategy": "continue",
-      "exit_code": 0,
-      "outcome": "success",
-      "timestamp": "2026-02-24T16:01:25+00:00"
-    }
-  ],
-  "last_updated": "2026-02-24T16:01:46+00:00"
+  "session_history": [],
+  "last_updated": "2026-02-24T18:00:00+00:00"
 }
