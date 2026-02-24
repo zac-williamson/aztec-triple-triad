@@ -9,7 +9,12 @@ import fs from 'fs';
 import path from 'path';
 import https from 'https';
 
-const API_KEY = fs.readFileSync(path.join(__dirname, '..', 'OPEN_API_KEY.txt'), 'utf-8').trim();
+const API_KEY = fs.readFileSync(
+  fs.existsSync(path.join(__dirname, '..', 'OPEN_API_KEY.txt'))
+    ? path.join(__dirname, '..', 'OPEN_API_KEY.txt')
+    : path.join(process.env.HOME || '~', 'OPEN_API_KEY.txt'),
+  'utf-8',
+).trim();
 const OUTPUT_DIR = path.join(__dirname, '..', 'packages', 'frontend', 'public', 'cards');
 
 interface CardInfo {

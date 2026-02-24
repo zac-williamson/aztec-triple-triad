@@ -11,10 +11,10 @@
   bottom: 0;
   z-index: -1;
   background:
-    radial-gradient(ellipse at 20% 50%, rgba(74, 158, 255, 0.06) 0%, transparent 50%),
-    radial-gradient(ellipse at 80% 20%, rgba(158, 74, 255, 0.04) 0%, transparent 50%),
-    radial-gradient(ellipse at 50% 80%, rgba(74, 255, 158, 0.03) 0%, transparent 50%),
-    linear-gradient(180deg, #0a0a1a, #0d0d24, #0a0a1a);
+    radial-gradient(ellipse at 20% 50%, rgba(123, 198, 126, 0.06) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, rgba(196, 162, 101, 0.04) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 80%, rgba(139, 180, 160, 0.03) 0%, transparent 50%),
+    linear-gradient(to bottom, #1a2e1a, #243524, #1a2e1a);
 }
 
 .app__waiting {
@@ -24,8 +24,8 @@
   justify-content: center;
   min-height: 60vh;
   gap: 20px;
-  font-family: 'Rajdhani', sans-serif;
-  color: rgba(255, 255, 255, 0.6);
+  font-family: 'Nunito', sans-serif;
+  color: rgba(232, 228, 216, 0.6);
 }
 
 .app__waiting p {
@@ -36,8 +36,8 @@
 .app__waiting-spinner {
   width: 40px;
   height: 40px;
-  border: 3px solid rgba(255, 255, 255, 0.1);
-  border-top-color: #4aff9e;
+  border: 3px solid rgba(232, 228, 216, 0.1);
+  border-top-color: #7bc67e;
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
@@ -52,8 +52,8 @@
   align-items: center;
   gap: 8px;
   padding: 16px 24px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(232, 228, 216, 0.03);
+  border: 1px solid rgba(232, 228, 216, 0.08);
   border-radius: 10px;
 }
 
@@ -61,13 +61,13 @@
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 1px;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(232, 228, 216, 0.4);
 }
 
 .app__game-id-display code {
-  font-family: 'Orbitron', monospace;
+  font-family: 'Cinzel', serif;
   font-size: 13px;
-  color: #4a9eff;
+  color: #c4a265;
   word-break: break-all;
   user-select: all;
 }

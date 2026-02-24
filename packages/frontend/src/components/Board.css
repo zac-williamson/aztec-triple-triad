@@ -3,10 +3,10 @@
   flex-direction: column;
   gap: 6px;
   padding: 16px;
-  background: linear-gradient(135deg, rgba(10, 10, 30, 0.8), rgba(20, 20, 50, 0.8));
+  background: linear-gradient(135deg, rgba(26, 46, 26, 0.9), rgba(36, 53, 36, 0.9));
   border-radius: 12px;
-  border: 2px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 0 40px rgba(0, 0, 0, 0.5), inset 0 0 40px rgba(0, 0, 0, 0.3);
+  border: 2px solid rgba(123, 198, 126, 0.2);
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.4), inset 0 0 40px rgba(0, 0, 0, 0.2);
 }
 
 .board__row {
@@ -28,16 +28,16 @@
   width: 130px;
   height: 168px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px dashed rgba(255, 255, 255, 0.1);
+  background: rgba(232, 228, 216, 0.03);
+  border: 1px dashed rgba(232, 228, 216, 0.12);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .board__cell--valid .board__cell-empty {
-  border-color: rgba(74, 255, 158, 0.4);
-  background: rgba(74, 255, 158, 0.05);
+  border-color: rgba(123, 198, 126, 0.4);
+  background: rgba(123, 198, 126, 0.05);
 }
 
 .board__cell--clickable {
@@ -45,16 +45,16 @@
 }
 
 .board__cell--valid:hover .board__cell-empty {
-  border-color: rgba(74, 255, 158, 0.8);
-  background: rgba(74, 255, 158, 0.1);
-  box-shadow: 0 0 20px rgba(74, 255, 158, 0.15);
+  border-color: rgba(123, 198, 126, 0.8);
+  background: rgba(123, 198, 126, 0.1);
+  box-shadow: 0 0 20px rgba(123, 198, 126, 0.15);
 }
 
 .board__cell-indicator {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: rgba(74, 255, 158, 0.3);
+  background: rgba(123, 198, 126, 0.3);
   animation: pulse 1.5s ease-in-out infinite;
 }
 

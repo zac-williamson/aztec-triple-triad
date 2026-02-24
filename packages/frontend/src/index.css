@@ -13,9 +13,9 @@ html {
 }
 
 body {
-  font-family: 'Rajdhani', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: #0a0a1a;
-  color: #e0e0e0;
+  font-family: 'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #1a2e1a;
+  color: #e8e4d8;
   min-height: 100vh;
   overflow-x: hidden;
 }
@@ -26,7 +26,7 @@ body {
 
 /* Buttons */
 .btn {
-  font-family: 'Orbitron', monospace;
+  font-family: 'Cinzel', serif;
   font-size: 13px;
   font-weight: 600;
   padding: 10px 24px;
@@ -46,36 +46,36 @@ body {
 }
 
 .btn--primary {
-  background: linear-gradient(135deg, #4aff9e, #00cc66);
-  color: #0a1a0a;
-  box-shadow: 0 4px 16px rgba(74, 255, 158, 0.2);
+  background: linear-gradient(135deg, #7bc67e, #5aa55d);
+  color: #1a2e1a;
+  box-shadow: 0 4px 16px rgba(123, 198, 126, 0.2);
 }
 
 .btn--primary:hover:not(:disabled) {
-  box-shadow: 0 6px 24px rgba(74, 255, 158, 0.35);
+  box-shadow: 0 6px 24px rgba(123, 198, 126, 0.35);
   transform: translateY(-1px);
 }
 
 .btn--secondary {
-  background: rgba(74, 158, 255, 0.15);
-  color: #4a9eff;
-  border: 1px solid rgba(74, 158, 255, 0.3);
+  background: rgba(196, 162, 101, 0.15);
+  color: #c4a265;
+  border: 1px solid rgba(196, 162, 101, 0.3);
 }
 
 .btn--secondary:hover:not(:disabled) {
-  background: rgba(74, 158, 255, 0.25);
-  border-color: rgba(74, 158, 255, 0.5);
+  background: rgba(196, 162, 101, 0.25);
+  border-color: rgba(196, 162, 101, 0.5);
 }
 
 .btn--ghost {
   background: transparent;
-  color: rgba(255, 255, 255, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(232, 228, 216, 0.5);
+  border: 1px solid rgba(232, 228, 216, 0.1);
 }
 
 .btn--ghost:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.05);
-  color: rgba(255, 255, 255, 0.7);
+  background: rgba(232, 228, 216, 0.05);
+  color: rgba(232, 228, 216, 0.7);
 }
 
 .btn--small {
@@ -85,25 +85,25 @@ body {
 
 /* Inputs */
 .input {
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'Nunito', sans-serif;
   font-size: 15px;
   padding: 10px 16px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(232, 228, 216, 0.05);
+  border: 1px solid rgba(232, 228, 216, 0.12);
   border-radius: 6px;
-  color: #e0e0e0;
+  color: #e8e4d8;
   outline: none;
   transition: border-color 0.2s ease;
   flex: 1;
 }
 
 .input:focus {
-  border-color: rgba(74, 158, 255, 0.5);
-  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(123, 198, 126, 0.5);
+  background: rgba(232, 228, 216, 0.07);
 }
 
 .input::placeholder {
-  color: rgba(255, 255, 255, 0.25);
+  color: rgba(232, 228, 216, 0.25);
 }
 
 /* Scrollbar */
@@ -116,10 +116,10 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(232, 228, 216, 0.15);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.25);
+  background: rgba(232, 228, 216, 0.25);
 }

@@ -4,7 +4,7 @@
   overflow: hidden;
   user-select: none;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
-  font-family: 'Orbitron', monospace;
+  font-family: 'Cinzel', serif;
 }
 
 .card--small {
@@ -35,26 +35,26 @@
 }
 
 .card--blue {
-  background: linear-gradient(135deg, #0a1628, #1a3a6a);
-  border: 2px solid #4a9eff;
-  box-shadow: 0 0 10px rgba(74, 158, 255, 0.3);
+  background: linear-gradient(135deg, #1a2e3a, #2a4a5a);
+  border: 2px solid #6ab0e0;
+  box-shadow: 0 0 10px rgba(106, 176, 224, 0.3);
 }
 
 .card--red {
-  background: linear-gradient(135deg, #280a0a, #6a1a1a);
-  border: 2px solid #ff4a4a;
-  box-shadow: 0 0 10px rgba(255, 74, 74, 0.3);
+  background: linear-gradient(135deg, #3a2a1a, #5a3a2a);
+  border: 2px solid #e8a87c;
+  box-shadow: 0 0 10px rgba(232, 168, 124, 0.3);
 }
 
 .card:not(.card--blue):not(.card--red) {
-  background: linear-gradient(135deg, #1a1a2e, #2d2d44);
-  border: 2px solid #555;
+  background: linear-gradient(135deg, #2d4a2d, #1e3a22);
+  border: 2px solid #5a7a5a;
 }
 
 .card--selected {
   transform: translateY(-8px) scale(1.05);
-  box-shadow: 0 12px 32px rgba(74, 255, 158, 0.4);
-  border-color: #4aff9e !important;
+  box-shadow: 0 12px 32px rgba(123, 198, 126, 0.4);
+  border-color: #7bc67e !important;
 }
 
 .card--captured {
@@ -138,15 +138,15 @@
 }
 
 .card__art-level-1 { background: linear-gradient(135deg, #2a4a2a, #1a3a1a); }
-.card__art-level-2 { background: linear-gradient(135deg, #2a2a4a, #1a1a3a); }
-.card__art-level-3 { background: linear-gradient(135deg, #4a2a4a, #3a1a3a); }
-.card__art-level-4 { background: linear-gradient(135deg, #4a3a1a, #3a2a0a); }
-.card__art-level-5 { background: linear-gradient(135deg, #4a1a1a, #3a0a0a); }
+.card__art-level-2 { background: linear-gradient(135deg, #1a3a3a, #2a4a4a); }
+.card__art-level-3 { background: linear-gradient(135deg, #2a3a2a, #3a4a3a); }
+.card__art-level-4 { background: linear-gradient(135deg, #4a3a1a, #5a4a2a); }
+.card__art-level-5 { background: linear-gradient(135deg, #4a3a1a, #6a4a0a); }
 
 .card__art-power {
   font-size: 1.4em;
   font-weight: 800;
-  color: rgba(255, 255, 255, 0.3);
+  color: rgba(232, 228, 216, 0.3);
 }
 
 .card__name {
@@ -155,9 +155,9 @@
   left: 0;
   right: 0;
   text-align: center;
-  color: rgba(255, 255, 255, 0.8);
+  color: rgba(232, 228, 216, 0.8);
   font-size: 0.55em;
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'Cinzel', serif;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -169,8 +169,8 @@
 
 /* Face-down card back */
 .card--facedown {
-  background: linear-gradient(135deg, #1a1a2e, #16213e);
-  border: 2px solid #444;
+  background: linear-gradient(135deg, #1e3a22, #2d4a2d);
+  border: 2px solid #4a6a4a;
 }
 
 .card__back {
@@ -184,14 +184,14 @@
 .card__back-pattern {
   width: 70%;
   height: 80%;
-  border: 2px solid rgba(255, 255, 255, 0.15);
+  border: 2px solid rgba(196, 162, 101, 0.2);
   border-radius: 4px;
   background: repeating-linear-gradient(
     45deg,
     transparent,
     transparent 5px,
-    rgba(255, 255, 255, 0.03) 5px,
-    rgba(255, 255, 255, 0.03) 10px
+    rgba(123, 198, 126, 0.03) 5px,
+    rgba(123, 198, 126, 0.03) 10px
   );
   position: relative;
 }
@@ -204,6 +204,6 @@
   transform: translate(-50%, -50%);
   width: 24px;
   height: 24px;
-  border: 2px solid rgba(255, 255, 255, 0.2);
+  border: 2px solid rgba(196, 162, 101, 0.25);
   border-radius: 50%;
 }
