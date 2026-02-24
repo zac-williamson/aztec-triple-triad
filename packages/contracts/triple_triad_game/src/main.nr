@@ -136,13 +136,15 @@ pub contract TripleTriadGame {
         let caller = self.msg_sender();
         let caller_field = caller.to_field();
 
-        // winner_id: 1 = player1 wins, 2 = player2 wins, 3 = draw
+        // Verify winner is caller and loser is the actual losing player (S7 fix)
         if winner_id == 1 {
             assert(caller_field == player1_address, "Caller is not the winner");
+            assert(loser.to_field() == player2_address, "Loser must be player 2");
         } else if winner_id == 2 {
             assert(caller_field == player2_address, "Caller is not the winner");
+            assert(loser.to_field() == player1_address, "Loser must be player 1");
         } else {
-            // Draw - either player can settle (no card transfer in draw)
+            // Draw case - no card transfer, loser param irrelevant
             assert(winner_id == 3, "Invalid winner ID");
             assert(
                 (caller_field == player1_address) | (caller_field == player2_address),
