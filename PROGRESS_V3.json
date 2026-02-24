@@ -1,6 +1,6 @@
 {
   "current_phase": 2,
-  "current_task": "Phase 6: Fix Frontend/Backend Type Mismatches",
+  "current_task": "Phase 7: Fix test-wallet Version Mismatch",
   "total_invocations": 2,
   "phases": {
     "1": {
@@ -104,19 +104,19 @@
     },
     "6": {
       "name": "Fix Frontend/Backend Type Mismatches (M1/M4)",
-      "status": "pending",
+      "status": "completed",
       "milestones": [
         {
           "name": "Backend HandProofData has grumpkinPublicKeyX/Y",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "name": "Backend MoveProofData has encryptedCardNullifier",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "name": "TypeScript compiles without errors",
-          "status": "pending"
+          "status": "completed"
         }
       ],
       "verify_command": "cd packages/backend && npx tsc --noEmit 2>&1 | tail -20"
