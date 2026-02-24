@@ -1,7 +1,7 @@
 {
-  "current_phase": 5,
-  "current_task": "Phase 5: End-to-End Integration",
-  "total_invocations": 3,
+  "current_phase": 6,
+  "current_task": "Phase 6: Polish & Comprehensive Testing",
+  "total_invocations": 4,
   "phases": {
     "1": {
       "name": "Circuit Fixes (FIX-1, FIX-2, FIX-9)",
@@ -113,27 +113,27 @@
     },
     "5": {
       "name": "End-to-End Integration (FIX-6 continued)",
-      "status": "pending",
+      "status": "completed",
       "milestones": [
         {
           "name": "Game flow: prove_hand proof generated on game join, sent via WebSocket",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "name": "Game flow: game_move proof generated each turn, sent with move via WebSocket",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "name": "Game flow: winner collects all proofs, calls process_game on-chain",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "name": "UI shows proof generation status and transaction progress",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "name": "Wallet connection UI with account address and NFT inventory",
-          "status": "pending"
+          "status": "completed"
         }
       ],
       "verify_command": "cd packages/frontend && npm run build 2>&1 | tail -20 && cd ../backend && npm test 2>&1 | tail -20"
@@ -169,11 +169,11 @@
     "escalation_level": 0
   },
   "rate_limit": {
-    "invocations_this_window": 3,
+    "invocations_this_window": 4,
     "window_start": 1771954541
   },
   "intervention": {
-    "pending_message": null,
+    "pending_message": "CRITICAL CORRECTION: Grumpkin ECDH IS available in Noir stdlib. Do NOT defer FIX-3. Update BLOCKERS.md to mark it RESOLVED.\n\nHere is exactly how to do Grumpkin ECDH in Noir (from the mpclib reference project):\n\n```noir\nuse std::embedded_curve_ops::{EmbeddedCurvePoint, EmbeddedCurveScalar, multi_scalar_mul};\n\n// Generator point G on the Grumpkin curve\nglobal G: EmbeddedCurvePoint = EmbeddedCurvePoint {\n    x: 0x083e7911d835097629f0067531fc15cafd79a89beecb39903f69572c636f4a5a,\n    y: 0x1a7f5efaad7f315c25a918f30cc8d7333fccab7ad7c90f14de81bcc528f9935d,\n    is_infinite: false,\n};\n\n// Derive public key from private key:\n//   pub_key = private_key * G\nfn derive_public_key(private_key: Field) -> EmbeddedCurvePoint {\n    multi_scalar_mul([G], [EmbeddedCurveScalar::from_field(private_key)])\n}\n\n// ECDH shared secret:\n//   shared_point = my_private_key * opponent_public_key\n//   symmetric_key = shared_point.x  (x-coordinate)\nfn compute_shared_secret(my_private_key: Field, opponent_pubkey: EmbeddedCurvePoint) -> Field {\n    let shared_point = multi_scalar_mul(\n        [opponent_pubkey],\n        [EmbeddedCurveScalar::from_field(my_private_key)]\n    );\n    shared_point.x  // x-coordinate is the symmetric encryption key\n}\n\n// Symmetric encrypt using Poseidon2-based stream cipher:\nfn symmetric_encrypt(plaintext: [Field; N], secret: Field) -> [Field; N] {\n    let mut ciphertext: [Field; N] = [0; N];\n    let secrets: [Field; N] = expand_secret(secret);\n    for i in 0..N {\n        ciphertext[i] = secrets[i] + plaintext[i];\n    }\n    ciphertext\n}\n\nfn expand_secret<let N: u32>(secret: Field) -> [Field; N] {\n    let mut rolling_secret: [Field; 2] = [0, secret];\n    let mut r: [Field; N] = [0; N];\n    for i in 0..N {\n        r[i] = poseidon::poseidon2::Poseidon2::hash(rolling_secret, 2);\n        rolling_secret[1] += 1;\n    }\n    r\n}\n```\n\nImplementation required in prove_hand circuit:\n1. Accept `grumpkin_private_key: Field` as private input\n2. Compute `grumpkin_public_key = multi_scalar_mul([G], [EmbeddedCurveScalar::from_field(grumpkin_private_key)])`\n3. Add `grumpkin_public_key_x: pub Field` and `grumpkin_public_key_y: pub Field` as public outputs\n4. Assert computed public key matches the public outputs\n\nImplementation required in game_move circuit:\n1. Accept opponent's public key (x, y) as private inputs\n2. Compute shared_secret = multi_scalar_mul([opponent_pubkey], [EmbeddedCurveScalar::from_field(player_private_key)])\n3. Use shared_secret.x to encrypt the card nullifier via the symmetric_encrypt pattern above\n\nThese are standard Noir stdlib operations: std::embedded_curve_ops. No external library needed.",
     "pause_requested": false
   },
   "session_history": [
@@ -192,7 +192,15 @@
       "exit_code": 0,
       "outcome": "success",
       "timestamp": "2026-02-24T17:57:40+00:00"
+    },
+    {
+      "id": "session-1771955881",
+      "phase": 3,
+      "strategy": "continue",
+      "exit_code": 0,
+      "outcome": "success",
+      "timestamp": "2026-02-24T18:09:29+00:00"
     }
   ],
-  "last_updated": "2026-02-24T18:15:00+00:00"
+  "last_updated": "2026-02-24T18:20:00+00:00"
 }

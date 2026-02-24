@@ -153,3 +153,153 @@
 .game-screen__board-area {
   flex-shrink: 0;
 }
+
+/* Proof status bar */
+.game-screen__proof-bar {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.game-screen__proof-indicator {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.game-screen__proof-indicator--ready {
+  background: rgba(74, 255, 158, 0.08);
+  border-color: rgba(74, 255, 158, 0.3);
+  color: #4aff9e;
+}
+
+/* Card claim section */
+.game-screen__claim-section {
+  margin: 16px 0;
+}
+
+.game-screen__claim-label {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 8px;
+}
+
+.game-screen__claim-cards {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.game-screen__claim-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.game-screen__claim-card:hover {
+  border-color: rgba(74, 158, 255, 0.4);
+  background: rgba(74, 158, 255, 0.1);
+}
+
+.game-screen__claim-card--selected {
+  border-color: rgba(74, 255, 158, 0.6);
+  background: rgba(74, 255, 158, 0.15);
+  color: #4aff9e;
+}
+
+.game-screen__claim-card-name {
+  font-family: 'Orbitron', monospace;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.game-screen__claim-card-ranks {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/* Settle button */
+.game-screen__settle-btn {
+  margin-top: 12px;
+  margin-bottom: 12px;
+}
+
+.game-screen__settle-info {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.4);
+  margin: 8px 0 16px;
+}
+
+/* Status bar at bottom */
+.game-screen__status-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  z-index: 100;
+}
+
+.game-screen__status-bar--proof {
+  background: rgba(74, 158, 255, 0.15);
+  border-top: 1px solid rgba(74, 158, 255, 0.3);
+  color: #4a9eff;
+}
+
+.game-screen__status-bar--tx {
+  background: rgba(255, 200, 74, 0.15);
+  border-top: 1px solid rgba(255, 200, 74, 0.3);
+  color: #ffc84a;
+}
+
+.game-screen__status-bar--success {
+  background: rgba(74, 255, 158, 0.15);
+  border-top: 1px solid rgba(74, 255, 158, 0.3);
+  color: #4aff9e;
+}
+
+.game-screen__status-bar--error {
+  background: rgba(255, 74, 74, 0.15);
+  border-top: 1px solid rgba(255, 74, 74, 0.3);
+  color: #ff4a4a;
+}
+
+.game-screen__status-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid transparent;
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

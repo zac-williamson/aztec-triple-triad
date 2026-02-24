@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import type { GameState, Player } from '../types';
-import type { ProofStatus } from '../hooks/useProofGeneration';
+import type { GameState, Player, Card } from '../types';
 import type { TxStatus } from '../hooks/useGameContract';
 import { Board } from './Board';
 import { Hand } from './Hand';
@@ -15,8 +14,14 @@ interface GameScreenProps {
   opponentDisconnected: boolean;
   onPlaceCard: (handIndex: number, row: number, col: number) => void;
   onBackToLobby: () => void;
-  proofStatus?: ProofStatus;
+  proofStatus?: string;
+  handProofStatus?: string;
   txStatus?: TxStatus;
+  canSettle?: boolean;
+  onSettleGame?: (cardTokenId: number) => void;
+  collectedProofCount?: number;
+  myHandProofReady?: boolean;
+  opponentHandProofReady?: boolean;
 }
 
 export function GameScreen({
@@ -29,10 +34,17 @@ export function GameScreen({
   onPlaceCard,
   onBackToLobby,
   proofStatus,
+  handProofStatus,
   txStatus,
+  canSettle,
+  onSettleGame,
+  collectedProofCount = 0,
+  myHandProofReady = false,
+  opponentHandProofReady = false,
 }: GameScreenProps) {
   const [selectedCardIndex, setSelectedCardIndex] = useState<number | null>(null);
   const [capturedCells, setCapturedCells] = useState<{ row: number; col: number }[]>([]);
+  const [selectedClaimCard, setSelectedClaimCard] = useState<number | null>(null);
 
   const myPlayer: Player = playerNumber === 1 ? 'player1' : 'player2';
   const isMyTurn = gameState.currentTurn === myPlayer;
@@ -42,6 +54,27 @@ export function GameScreen({
   const opponentHand = playerNumber === 1 ? gameState.player2Hand : gameState.player1Hand;
   const myScore = playerNumber === 1 ? gameState.player1Score : gameState.player2Score;
   const opponentScore = playerNumber === 1 ? gameState.player2Score : gameState.player1Score;
+
+  const isWinner = gameOver?.winner === myPlayer;
+
+  // Get opponent's cards on the board (for winner to pick from)
+  const opponentBoardCards: Card[] = useMemo(() => {
+    if (!isWinner) return [];
+    const cards: Card[] = [];
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 3; c++) {
+        const cell = gameState.board[r][c];
+        if (cell.card && cell.owner !== myPlayer) {
+          cards.push(cell.card);
+        }
+      }
+    }
+    // Also include opponent's remaining hand cards
+    for (const card of opponentHand) {
+      if (card) cards.push(card);
+    }
+    return cards;
+  }, [isWinner, gameState.board, myPlayer, opponentHand]);
 
   // Get valid placements when a card is selected
   const validPlacements = useMemo(() => {
@@ -82,6 +115,11 @@ export function GameScreen({
     setSelectedCardIndex(null);
   };
 
+  const handleSettleClick = () => {
+    if (!canSettle || !onSettleGame || selectedClaimCard === null) return;
+    onSettleGame(selectedClaimCard);
+  };
+
   const getWinnerText = () => {
     if (!gameOver) return '';
     if (gameOver.winner === 'draw') return 'Draw!';
@@ -114,13 +152,70 @@ export function GameScreen({
         <div className="game-screen__alert">Opponent disconnected</div>
       )}
 
+      {/* Proof status bar */}
+      <div className="game-screen__proof-bar">
+        <div className={`game-screen__proof-indicator ${myHandProofReady ? 'game-screen__proof-indicator--ready' : ''}`}>
+          Your proof: {myHandProofReady ? 'Ready' : handProofStatus === 'generating' ? 'Generating...' : 'Pending'}
+        </div>
+        <div className={`game-screen__proof-indicator ${opponentHandProofReady ? 'game-screen__proof-indicator--ready' : ''}`}>
+          Opponent proof: {opponentHandProofReady ? 'Ready' : 'Pending'}
+        </div>
+        <div className="game-screen__proof-indicator">
+          Moves proven: {collectedProofCount}/9
+        </div>
+      </div>
+
       {gameOver && (
         <div className={`game-screen__result ${getWinnerClass()}`}>
           <div className="game-screen__result-text">{getWinnerText()}</div>
           <div className="game-screen__result-score">
             {myScore} - {opponentScore}
           </div>
-          <button className="btn btn--primary" onClick={onBackToLobby}>
+
+          {/* Card claim UI for winner */}
+          {isWinner && opponentBoardCards.length > 0 && (
+            <div className="game-screen__claim-section">
+              <p className="game-screen__claim-label">Select a card to claim:</p>
+              <div className="game-screen__claim-cards">
+                {opponentBoardCards.map((card) => (
+                  <button
+                    key={card.id}
+                    className={`game-screen__claim-card ${selectedClaimCard === card.id ? 'game-screen__claim-card--selected' : ''}`}
+                    onClick={() => setSelectedClaimCard(card.id)}
+                  >
+                    <span className="game-screen__claim-card-name">{card.name}</span>
+                    <span className="game-screen__claim-card-ranks">
+                      {card.ranks.top}/{card.ranks.right}/{card.ranks.bottom}/{card.ranks.left}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Settlement button */}
+          {isWinner && canSettle && (
+            <button
+              className="btn btn--primary game-screen__settle-btn"
+              onClick={handleSettleClick}
+              disabled={selectedClaimCard === null || txStatus === 'proving' || txStatus === 'sending'}
+            >
+              {txStatus === 'proving'
+                ? 'Generating aggregate proof...'
+                : txStatus === 'sending'
+                  ? 'Submitting transaction...'
+                  : 'Settle Game On-Chain'}
+            </button>
+          )}
+
+          {isWinner && !canSettle && (
+            <p className="game-screen__settle-info">
+              Collecting proofs for on-chain settlement...
+              ({collectedProofCount}/9 moves, {myHandProofReady ? 1 : 0}/1 your hand, {opponentHandProofReady ? 1 : 0}/1 opponent hand)
+            </p>
+          )}
+
+          <button className="btn btn--ghost" onClick={onBackToLobby}>
             Back to Lobby
           </button>
         </div>
@@ -175,23 +270,27 @@ export function GameScreen({
 
       {/* Proof generation and transaction status indicators */}
       {proofStatus === 'generating' && (
-        <div className="game-screen__proof-status">
-          <div className="game-screen__proof-spinner" />
-          Generating proof...
+        <div className="game-screen__status-bar game-screen__status-bar--proof">
+          <div className="game-screen__status-spinner" />
+          Generating move proof...
         </div>
       )}
-      {txStatus && txStatus !== 'idle' && txStatus !== 'confirmed' && (
-        <div className="game-screen__tx-status">
-          <div className="game-screen__proof-spinner" />
+      {txStatus && txStatus !== 'idle' && txStatus !== 'confirmed' && txStatus !== 'error' && (
+        <div className="game-screen__status-bar game-screen__status-bar--tx">
+          <div className="game-screen__status-spinner" />
           {txStatus === 'preparing' && 'Preparing transaction...'}
           {txStatus === 'proving' && 'Generating aggregate proof...'}
           {txStatus === 'sending' && 'Sending transaction...'}
-          {txStatus === 'error' && 'Transaction failed'}
         </div>
       )}
       {txStatus === 'confirmed' && (
-        <div className="game-screen__tx-confirmed">
+        <div className="game-screen__status-bar game-screen__status-bar--success">
           Game settled on-chain!
+        </div>
+      )}
+      {txStatus === 'error' && (
+        <div className="game-screen__status-bar game-screen__status-bar--error">
+          Settlement failed. You can try again or return to lobby.
         </div>
       )}
     </div>
