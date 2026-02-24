@@ -1,6 +1,6 @@
 {
   "current_phase": 2,
-  "current_task": "Phase 7: Fix test-wallet Version Mismatch",
+  "current_task": "Phase 8: Circuit Cleanup & Additional Tests",
   "total_invocations": 2,
   "phases": {
     "1": {
@@ -123,11 +123,11 @@
     },
     "7": {
       "name": "Fix test-wallet Version Mismatch",
-      "status": "pending",
+      "status": "completed",
       "milestones": [
         {
           "name": "test-wallet version updated to ^4.0.0-devnet.2-patch.0",
-          "status": "pending"
+          "status": "completed"
         }
       ],
       "verify_command": "cd packages/frontend && grep test-wallet package.json"
