@@ -27,7 +27,7 @@ describe('Card Database', () => {
   it('should find card by ID', () => {
     const card = getCardById(1);
     expect(card).toBeDefined();
-    expect(card!.name).toBe('Geezard');
+    expect(card!.name).toBe('Mudwalker');
   });
 
   it('should return undefined for unknown ID', () => {

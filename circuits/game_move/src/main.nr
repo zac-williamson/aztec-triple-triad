@@ -56,56 +56,61 @@ fn symmetric_encrypt_field(plaintext: Field, secret: Field) -> Field {
 fn get_card_ranks(card_id: u32) -> [Field; 4] {
     assert((card_id >= 1) & (card_id <= 50), "Invalid card ID for rank lookup");
 
-    if card_id == 1 { [1, 4, 1, 5] }         // Geezard
-    else if card_id == 2 { [5, 1, 1, 3] }    // Funguar
-    else if card_id == 3 { [1, 3, 3, 5] }    // Bite Bug
-    else if card_id == 4 { [6, 1, 1, 2] }    // Red Bat
-    else if card_id == 5 { [2, 3, 1, 5] }    // Blobra
-    else if card_id == 6 { [2, 1, 4, 4] }    // Gayla
-    else if card_id == 7 { [1, 5, 4, 1] }    // Gesper
-    else if card_id == 8 { [3, 1, 5, 2] }    // Fastitocalon-F
-    else if card_id == 9 { [2, 1, 6, 1] }    // Blood Soul
-    else if card_id == 10 { [4, 3, 2, 4] }   // Caterchipillar
-    else if card_id == 11 { [2, 6, 1, 6] }   // Cockatrice
-    else if card_id == 12 { [7, 1, 3, 1] }   // Grat
-    else if card_id == 13 { [6, 2, 2, 3] }   // Buel
-    else if card_id == 14 { [5, 3, 3, 4] }   // Mesmerize
-    else if card_id == 15 { [6, 1, 4, 3] }   // Glacial Eye
-    else if card_id == 16 { [3, 4, 5, 3] }   // Belhelmel
-    else if card_id == 17 { [5, 3, 2, 5] }   // Thrustaevis
-    else if card_id == 18 { [5, 1, 3, 5] }   // Anacondaur
-    else if card_id == 19 { [5, 2, 5, 2] }   // Creeps
-    else if card_id == 20 { [4, 2, 4, 5] }   // Grendel
-    else if card_id == 21 { [3, 7, 2, 5] }   // Jelleye
-    else if card_id == 22 { [5, 2, 5, 5] }   // Grand Mantis
-    else if card_id == 23 { [6, 6, 3, 3] }   // Forbidden
-    else if card_id == 24 { [6, 3, 6, 3] }   // Armadodo
-    else if card_id == 25 { [3, 5, 5, 5] }   // Tri-Face
-    else if card_id == 26 { [7, 5, 1, 3] }   // Fastitocalon
-    else if card_id == 27 { [7, 1, 5, 3] }   // Snow Lion
-    else if card_id == 28 { [5, 3, 6, 3] }   // Ochu
-    else if card_id == 29 { [5, 6, 2, 4] }   // SAM08G
-    else if card_id == 30 { [4, 4, 7, 2] }   // Death Claw
-    else if card_id == 31 { [3, 6, 4, 7] }   // Tonberry
-    else if card_id == 32 { [7, 2, 3, 7] }   // Abyss Worm
-    else if card_id == 33 { [2, 3, 7, 7] }   // Turtapod
-    else if card_id == 34 { [6, 5, 5, 5] }   // Vysage
-    else if card_id == 35 { [4, 7, 6, 2] }   // T-Rexaur
-    else if card_id == 36 { [2, 3, 7, 8] }   // Bomb
-    else if card_id == 37 { [1, 7, 6, 4] }   // Blitz
-    else if card_id == 38 { [7, 3, 1, 6] }   // Wendigo
-    else if card_id == 39 { [7, 4, 4, 4] }   // Torama
-    else if card_id == 40 { [3, 7, 3, 6] }   // Imp
-    else if card_id == 41 { [6, 7, 3, 7] }   // Blue Dragon
-    else if card_id == 42 { [6, 5, 8, 4] }   // Abadon
-    else if card_id == 43 { [6, 5, 6, 6] }   // Iron Giant
-    else if card_id == 44 { [3, 6, 7, 8] }   // Behemoth
-    else if card_id == 45 { [7, 6, 5, 6] }   // Chimera
-    else if card_id == 46 { [3, 10, 2, 1] }  // PuPu
-    else if card_id == 47 { [6, 2, 6, 7] }   // Elastoid
-    else if card_id == 48 { [5, 5, 7, 6] }   // GIM47N
-    else if card_id == 49 { [7, 7, 4, 2] }   // Malboro
-    else { [7, 2, 7, 4] }                    // Ruby Dragon (50)
+    // Level 1 - Common (IDs 1-10)
+    if card_id == 1 { [1, 4, 1, 5] }         // Mudwalker
+    else if card_id == 2 { [5, 1, 1, 3] }    // Blushy
+    else if card_id == 3 { [1, 3, 3, 5] }    // Snowdrop
+    else if card_id == 4 { [6, 1, 1, 2] }    // Sunny
+    else if card_id == 5 { [2, 3, 1, 5] }    // Inkwell
+    else if card_id == 6 { [2, 1, 4, 4] }    // Stripes
+    else if card_id == 7 { [1, 5, 4, 1] }    // Barkeeper
+    else if card_id == 8 { [3, 1, 5, 2] }    // Dotty
+    else if card_id == 9 { [2, 1, 6, 1] }    // Penny
+    else if card_id == 10 { [4, 3, 2, 4] }   // Peaches
+    // Level 2 - Uncommon (IDs 11-20)
+    else if card_id == 11 { [2, 6, 1, 6] }   // Freckles
+    else if card_id == 12 { [7, 1, 3, 1] }   // Camo
+    else if card_id == 13 { [6, 2, 2, 3] }   // Neon
+    else if card_id == 14 { [5, 3, 3, 4] }   // Glow Bug
+    else if card_id == 15 { [6, 1, 4, 3] }   // Limelight
+    else if card_id == 16 { [3, 4, 5, 3] }   // Marble
+    else if card_id == 17 { [5, 3, 2, 5] }   // Sapphire
+    else if card_id == 18 { [5, 1, 3, 5] }   // Jefferson
+    else if card_id == 19 { [5, 2, 5, 2] }   // Longfoot
+    else if card_id == 20 { [4, 2, 4, 5] }   // Featherfin
+    // Level 3 - Rare (IDs 21-30)
+    else if card_id == 21 { [3, 7, 2, 5] }   // Lilac
+    else if card_id == 22 { [5, 2, 5, 5] }   // Patches
+    else if card_id == 23 { [6, 6, 3, 3] }   // Faded
+    else if card_id == 24 { [6, 3, 6, 3] }   // Gold Dust
+    else if card_id == 25 { [3, 5, 5, 5] }   // Phantom
+    else if card_id == 26 { [7, 5, 1, 3] }   // Ash
+    else if card_id == 27 { [7, 1, 5, 3] }   // Cocoa
+    else if card_id == 28 { [5, 3, 6, 3] }   // Ringmaster
+    else if card_id == 29 { [5, 6, 2, 4] }   // Goldrush
+    else if card_id == 30 { [4, 4, 7, 2] }   // Swampling
+    // Level 4 - Epic (IDs 31-40)
+    else if card_id == 31 { [3, 6, 4, 7] }   // Glitter
+    else if card_id == 32 { [7, 2, 3, 7] }   // Starfield
+    else if card_id == 33 { [2, 3, 7, 7] }   // Specter
+    else if card_id == 34 { [6, 5, 5, 5] }   // Saffron
+    else if card_id == 35 { [4, 7, 6, 2] }   // Stardust
+    else if card_id == 36 { [2, 3, 7, 8] }   // Achoque
+    else if card_id == 37 { [1, 7, 6, 4] }   // Zacapu
+    else if card_id == 38 { [7, 3, 1, 6] }   // Laguna
+    else if card_id == 39 { [7, 4, 4, 4] }   // Streamwalker
+    else if card_id == 40 { [3, 7, 3, 6] }   // Digger
+    // Level 5 - Legendary (IDs 41-50)
+    else if card_id == 41 { [6, 7, 3, 7] }   // Eclipse
+    else if card_id == 42 { [6, 5, 8, 4] }   // Kaleidoscope
+    else if card_id == 43 { [6, 5, 6, 6] }   // Twinned
+    else if card_id == 44 { [3, 6, 7, 8] }   // Sparkletail
+    else if card_id == 45 { [7, 6, 5, 6] }   // Riddler
+    else if card_id == 46 { [3, 10, 2, 1] }  // Rosita
+    else if card_id == 47 { [6, 2, 6, 7] }   // Brooklet
+    else if card_id == 48 { [5, 5, 7, 6] }   // Whisper
+    else if card_id == 49 { [7, 7, 4, 2] }   // Misty
+    else { [7, 2, 7, 4] }                    // Lerma (50)
 }
 
 // ====================== HASH FUNCTIONS ======================
@@ -461,7 +466,7 @@ fn test_derive_pubkey(private_key: Field) -> EmbeddedCurvePoint {
 }
 
 // Default hand data for Player 1 in tests: cards 1-5
-// Geezard[1,4,1,5], Funguar[5,1,1,3], BiteBug[1,3,3,5], RedBat[6,1,1,2], Blobra[2,3,1,5]
+// Mudwalker[1,4,1,5], Blushy[5,1,1,3], Snowdrop[1,3,3,5], Sunny[6,1,1,2], Inkwell[2,3,1,5]
 global P1_SECRET: Field = 111;
 global P1_ADDRESS: Field = 0xaaa;
 global TEST_GAME_ID: Field = 1;
@@ -474,7 +479,7 @@ fn p1_card_ranks() -> [[Field; 4]; 5] {
 fn p1_nullifier_secrets() -> [Field; 5] { [100, 200, 300, 400, 500] }
 
 // Default hand data for Player 2 in tests: cards 10-14
-// Caterchipillar[4,3,2,4], Cockatrice[2,6,1,6], Grat[7,1,3,1], Buel[6,2,2,3], Mesmerize[5,3,3,4]
+// Peaches[4,3,2,4], Freckles[2,6,1,6], Camo[7,1,3,1], Neon[6,2,2,3], Glow Bug[5,3,3,4]
 global P2_SECRET: Field = 222;
 global P2_ADDRESS: Field = 0xbbb;
 global P2_GRUMPKIN_KEY: Field = 77;
@@ -515,7 +520,7 @@ fn p2_encrypt_nullifier(nullifier_secret: Field) -> Field {
 
 #[test]
 fn test_first_move_no_capture() {
-    // Player 1 places card 1 (Geezard) at (0,0) on empty board - no captures possible
+    // Player 1 places card 1 (Mudwalker) at (0,0) on empty board - no captures possible
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
     let p2_pubkey = get_p2_pubkey();
@@ -526,13 +531,13 @@ fn test_first_move_no_capture() {
     let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
 
     let mut board_after: [Field; 18] = [0; 18];
-    board_after[0] = 1; // card_id = 1 (Geezard)
+    board_after[0] = 1; // card_id = 1 (Mudwalker)
     board_after[1] = 1; // owner = player1
     let scores_after: [Field; 2] = [5, 5]; // 1 on board + 4 in hand = 5
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 1 (Geezard) has nullifier_secret = 100
+    // Card 1 (Mudwalker) has nullifier_secret = 100
     let enc_null = p1_encrypt_nullifier(100);
 
     main(
@@ -541,7 +546,7 @@ fn test_first_move_no_capture() {
         0, 0,       // game not ended
         enc_null,
         1,          // current_player
-        1,          // card_id (Geezard)
+        1,          // card_id (Mudwalker)
         0, 0,       // row, col
         board_before, board_after,
         scores_before, scores_after,
@@ -556,7 +561,7 @@ fn test_first_move_no_capture() {
 
 #[test]
 fn test_second_move_no_capture() {
-    // Player 2 places card 10 (Caterchipillar) at (1,1)
+    // Player 2 places card 10 (Peaches) at (1,1)
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
     let p1_pubkey = get_p1_pubkey();
@@ -577,7 +582,7 @@ fn test_second_move_no_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    // Card 10 (Caterchipillar) has nullifier_secret = 600
+    // Card 10 (Peaches) has nullifier_secret = 600
     let enc_null = p2_encrypt_nullifier(600);
 
     main(
@@ -586,7 +591,7 @@ fn test_second_move_no_capture() {
         0, 0,
         enc_null,
         2,          // current_player = player2
-        10,         // card_id = Caterchipillar
+        10,         // card_id = Peaches
         1, 1,       // row=1, col=1
         board_before, board_after,
         scores_before, scores_after,
@@ -601,10 +606,10 @@ fn test_second_move_no_capture() {
 
 #[test]
 fn test_capture_one_card() {
-    // Player 1 has card 1 (Geezard [1,4,1,5]) at (0,0)
-    // Player 2 has card 10 (Caterchipillar [4,3,2,4]) at (0,1)
-    // Player 1 places card 4 (Red Bat [6,1,1,2]) at (1,1)
-    // (1,1) is adjacent to (0,1) - placed card's top=6 vs Caterchipillar's bottom=2 -> 6>2 CAPTURE!
+    // Player 1 has card 1 (Mudwalker [1,4,1,5]) at (0,0)
+    // Player 2 has card 10 (Peaches [4,3,2,4]) at (0,1)
+    // Player 1 places card 4 (Sunny [6,1,1,2]) at (1,1)
+    // (1,1) is adjacent to (0,1) - placed card's top=6 vs Peaches's bottom=2 -> 6>2 CAPTURE!
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
     let p2_pubkey = get_p2_pubkey();
@@ -624,7 +629,7 @@ fn test_capture_one_card() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 4 (Red Bat) has nullifier_secret = 400
+    // Card 4 (Sunny) has nullifier_secret = 400
     let enc_null = p1_encrypt_nullifier(400);
 
     main(
@@ -633,7 +638,7 @@ fn test_capture_one_card() {
         0, 0,
         enc_null,
         1,          // current_player
-        4,          // card_id = Red Bat
+        4,          // card_id = Sunny
         1, 1,       // row=1, col=1
         board_before, board_after,
         scores_before, scores_after,
@@ -646,20 +651,20 @@ fn test_capture_one_card() {
 
 #[test]
 fn test_capture_multiple_cards() {
-    // P1 places card 1 Geezard [1,4,1,5] at (1,1):
-    // Right (1,2): Card 12 Grat left=1 vs placed right=4 -> 4>1 CAPTURE!
-    // Left (1,0): Card 10 Caterchipillar right=3 vs placed left=5 -> 5>3 CAPTURE!
-    // Top (0,1): Card 11 Cockatrice bottom=1 vs placed top=1 -> NO (equal)
-    // Bottom (2,1): Card 13 Buel top=6 vs placed bottom=1 -> NO
+    // P1 places card 1 Mudwalker [1,4,1,5] at (1,1):
+    // Right (1,2): Card 12 Camo left=1 vs placed right=4 -> 4>1 CAPTURE!
+    // Left (1,0): Card 10 Peaches right=3 vs placed left=5 -> 5>3 CAPTURE!
+    // Top (0,1): Card 11 Freckles bottom=1 vs placed top=1 -> NO (equal)
+    // Bottom (2,1): Card 13 Neon top=6 vs placed bottom=1 -> NO
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
     let p2_pubkey = get_p2_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
-    board_before[2] = 11; board_before[3] = 2;   // (0,1) Cockatrice
-    board_before[6] = 10; board_before[7] = 2;   // (1,0) Caterchipillar
-    board_before[10] = 12; board_before[11] = 2; // (1,2) Grat
-    board_before[14] = 13; board_before[15] = 2; // (2,1) Buel
+    board_before[2] = 11; board_before[3] = 2;   // (0,1) Freckles
+    board_before[6] = 10; board_before[7] = 2;   // (1,0) Peaches
+    board_before[10] = 12; board_before[11] = 2; // (1,2) Camo
+    board_before[14] = 13; board_before[15] = 2; // (2,1) Neon
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
     let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
@@ -676,7 +681,7 @@ fn test_capture_multiple_cards() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 1 (Geezard) has nullifier_secret = 100
+    // Card 1 (Mudwalker) has nullifier_secret = 100
     let enc_null = p1_encrypt_nullifier(100);
 
     main(
@@ -685,7 +690,7 @@ fn test_capture_multiple_cards() {
         0, 0,
         enc_null,
         1,
-        1,          // card_id = Geezard
+        1,          // card_id = Mudwalker
         1, 1,
         board_before, board_after,
         scores_before, scores_after,
@@ -698,7 +703,7 @@ fn test_capture_multiple_cards() {
 
 #[test]
 fn test_no_capture_higher_adjacent() {
-    // P1 card 3 Bite Bug [1,3,3,5] at (0,0). (0,1) has P2 card 14 Mesmerize [5,3,3,4].
+    // P1 card 3 Snowdrop [1,3,3,5] at (0,0). (0,1) has P2 card 14 Glow Bug [5,3,3,4].
     // Placed right=3 vs adj left=4. 3<4 -> NO capture.
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
@@ -717,7 +722,7 @@ fn test_no_capture_higher_adjacent() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 3 (Bite Bug) has nullifier_secret = 300
+    // Card 3 (Snowdrop) has nullifier_secret = 300
     let enc_null = p1_encrypt_nullifier(300);
 
     main(
@@ -763,14 +768,14 @@ fn test_final_move_game_ends_p1_wins() {
     }
     board_after[16] = 5;
     board_after[17] = 1;
-    // (2,1) card 13 Buel: placed left=5 vs adj right=2 -> 5>2 CAPTURE!
+    // (2,1) card 13 Neon: placed left=5 vs adj right=2 -> 5>2 CAPTURE!
     board_after[15] = 1;
 
     let scores_after: [Field; 2] = [7, 3];
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 5 (Blobra) has nullifier_secret = 500
+    // Card 5 (Inkwell) has nullifier_secret = 500
     let enc_null = p1_encrypt_nullifier(500);
 
     main(
@@ -805,7 +810,7 @@ fn test_game_ends_draw() {
     board_before2[8] = 3; board_before2[9] = 1;
     board_before2[10] = 12; board_before2[11] = 2;
     board_before2[12] = 4; board_before2[13] = 1;
-    board_before2[14] = 11; board_before2[15] = 2; // Cockatrice [2,6,1,6]
+    board_before2[14] = 11; board_before2[15] = 2; // Freckles [2,6,1,6]
     let scores_before2: [Field; 2] = [5, 5];
     let current_turn_before2: Field = 1;
     let start_hash2 = hash_board_state(board_before2, scores_before2, current_turn_before2);
@@ -814,14 +819,14 @@ fn test_game_ends_draw() {
     for i in 0..16 {
         board_after2[i] = board_before2[i];
     }
-    board_after2[16] = 5;  // Blobra at (2,2)
+    board_after2[16] = 5;  // Inkwell at (2,2)
     board_after2[17] = 1;
-    // (1,2) card 12 Grat: placed top=2 vs adj bottom=3 -> NO
-    // (2,1) card 11 Cockatrice: placed left=5 vs adj right=6 -> NO
+    // (1,2) card 12 Camo: placed top=2 vs adj bottom=3 -> NO
+    // (2,1) card 11 Freckles: placed left=5 vs adj right=6 -> NO
     let scores_after2: [Field; 2] = [5, 5];
     let end_hash2 = hash_board_state(board_after2, scores_after2, 2);
 
-    // Card 5 (Blobra) has nullifier_secret = 500
+    // Card 5 (Inkwell) has nullifier_secret = 500
     let enc_null = p1_encrypt_nullifier(500);
 
     main(
@@ -844,8 +849,8 @@ fn test_game_ends_draw() {
 #[test]
 fn test_final_move_game_ends_p2_wins() {
     // P2 places the 9th card and wins with a higher score
-    // Board has 8 cards, it's P2's turn. P2 places card 14 (Mesmerize [5,3,3,4]) at (2,2)
-    // capturing (2,1) which has P1's card 5 (Blobra [2,3,1,5]) - placed bottom=3 vs adj top=1 -> NO
+    // Board has 8 cards, it's P2's turn. P2 places card 14 (Glow Bug [5,3,3,4]) at (2,2)
+    // capturing (2,1) which has P1's card 5 (Inkwell [2,3,1,5]) - placed bottom=3 vs adj top=1 -> NO
     // but (1,2) has P1's card 3 (BiteBug [1,3,3,5]) - placed left=4 vs adj right=3 -> 4>3 CAPTURE!
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
@@ -853,16 +858,16 @@ fn test_final_move_game_ends_p2_wins() {
 
     let mut board_before: [Field; 18] = [0; 18];
     // Row 0: P1 card 1, P2 card 10, P1 card 2
-    board_before[0] = 1; board_before[1] = 1;    // (0,0) Geezard P1
-    board_before[2] = 10; board_before[3] = 2;   // (0,1) Caterchipillar P2
-    board_before[4] = 2; board_before[5] = 1;    // (0,2) Funguar P1
+    board_before[0] = 1; board_before[1] = 1;    // (0,0) Mudwalker P1
+    board_before[2] = 10; board_before[3] = 2;   // (0,1) Peaches P2
+    board_before[4] = 2; board_before[5] = 1;    // (0,2) Blushy P1
     // Row 1: P2 card 11, P2 card 12, P1 card 3
-    board_before[6] = 11; board_before[7] = 2;   // (1,0) Cockatrice P2
-    board_before[8] = 12; board_before[9] = 2;   // (1,1) Grat P2
+    board_before[6] = 11; board_before[7] = 2;   // (1,0) Freckles P2
+    board_before[8] = 12; board_before[9] = 2;   // (1,1) Camo P2
     board_before[10] = 3; board_before[11] = 1;  // (1,2) BiteBug P1
     // Row 2: P2 card 13, P1 card 5, empty (2,2)
-    board_before[12] = 13; board_before[13] = 2; // (2,0) Buel P2
-    board_before[14] = 5; board_before[15] = 1;  // (2,1) Blobra P1
+    board_before[12] = 13; board_before[13] = 2; // (2,0) Neon P2
+    board_before[14] = 5; board_before[15] = 1;  // (2,1) Inkwell P1
 
     // Scores: P1 has 4 on board + 1 in hand = 5, P2 has 4 on board + 1 in hand = 5
     let scores_before: [Field; 2] = [5, 5];
@@ -873,14 +878,14 @@ fn test_final_move_game_ends_p2_wins() {
     for i in 0..16 {
         board_after[i] = board_before[i];
     }
-    // P2 places card 14 (Mesmerize [5,3,3,4]) at (2,2)
+    // P2 places card 14 (Glow Bug [5,3,3,4]) at (2,2)
     board_after[16] = 14; board_after[17] = 2;
 
     // Check captures:
     // (1,2) BiteBug P1 [1,3,3,5]: placed top=5 vs adj bottom=3 -> 5>3 CAPTURE!
     board_after[11] = 2; // BiteBug captured by P2
-    // (2,1) Blobra P1 [2,3,1,5]: placed left=4 vs adj right=3 -> 4>3 CAPTURE!
-    board_after[15] = 2; // Blobra captured by P2
+    // (2,1) Inkwell P1 [2,3,1,5]: placed left=4 vs adj right=3 -> 4>3 CAPTURE!
+    board_after[15] = 2; // Inkwell captured by P2
 
     // filled=9, p1_board=2, p2_board=7, p1_played=5, p2_played=4
     // p1_score = 2 + (5-5) = 2, p2_score = 7 + (5-4) = 8
@@ -888,7 +893,7 @@ fn test_final_move_game_ends_p2_wins() {
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    // Card 14 (Mesmerize) has nullifier_secret = 1000
+    // Card 14 (Glow Bug) has nullifier_secret = 1000
     let enc_null = p2_encrypt_nullifier(1000);
 
     main(
@@ -897,7 +902,7 @@ fn test_final_move_game_ends_p2_wins() {
         1, 2,       // game ended, player 2 wins
         enc_null,
         2,          // current_player = P2
-        14,         // card_id = Mesmerize
+        14,         // card_id = Glow Bug
         2, 2,       // row=2, col=2
         board_before, board_after,
         scores_before, scores_after,
@@ -1195,8 +1200,8 @@ fn test_fail_card_id_changed() {
 
 #[test]
 fn test_player2_move_with_capture() {
-    // P2 places card 12 (Grat [7,1,3,1]) at (1,0)
-    // (0,0) has P1 card 1 (Geezard [1,4,1,5]).
+    // P2 places card 12 (Camo [7,1,3,1]) at (1,0)
+    // (0,0) has P1 card 1 (Mudwalker [1,4,1,5]).
     // Placed top=7 vs adj bottom=1 -> 7>1 CAPTURE!
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
@@ -1215,7 +1220,7 @@ fn test_player2_move_with_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    // Card 12 (Grat) has nullifier_secret = 800
+    // Card 12 (Camo) has nullifier_secret = 800
     let enc_null = p2_encrypt_nullifier(800);
 
     main(
@@ -1237,7 +1242,7 @@ fn test_player2_move_with_capture() {
 
 #[test]
 fn test_equal_ranks_no_capture() {
-    // P1 card 1 Geezard right=4 at (0,0), (0,1) has P2 card 10 Caterchipillar left=4.
+    // P1 card 1 Mudwalker right=4 at (0,0), (0,1) has P2 card 10 Peaches left=4.
     // 4 == 4 -> NO capture.
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
@@ -1256,7 +1261,7 @@ fn test_equal_ranks_no_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 1 (Geezard) has nullifier_secret = 100
+    // Card 1 (Mudwalker) has nullifier_secret = 100
     let enc_null = p1_encrypt_nullifier(100);
 
     main(
@@ -1377,9 +1382,9 @@ fn test_score_fabrication_rejected() {
 
 #[test]
 fn test_exact_scores_after_capture() {
-    // P2 places card 13 (Buel [6,2,2,3]) at (0,1).
-    // (0,0) has P1 card 5 (Blobra [2,3,1,5]). Placed left=3 vs adj right=3 -> NO (equal)
-    // (1,1) has P1 card 1 (Geezard [1,4,1,5]). Placed bottom=2 vs adj top=1 -> 2>1 CAPTURE!
+    // P2 places card 13 (Neon [6,2,2,3]) at (0,1).
+    // (0,0) has P1 card 5 (Inkwell [2,3,1,5]). Placed left=3 vs adj right=3 -> NO (equal)
+    // (1,1) has P1 card 1 (Mudwalker [1,4,1,5]). Placed bottom=2 vs adj top=1 -> 2>1 CAPTURE!
     // After: filled=4, p1_board=1, p2_board=3(card 10 + card 13 + captured card 1)
     // p1_played=(4+1)/2=2, p2_played=4/2=2
     // p1_score=1+(5-2)=4, p2_score=3+(5-2)=6
@@ -1388,24 +1393,24 @@ fn test_exact_scores_after_capture() {
     let p1_pubkey = get_p1_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
-    board_before[0] = 5; board_before[1] = 1;    // (0,0) Blobra P1
-    board_before[4] = 10; board_before[5] = 2;   // (0,2) Caterchipillar P2
-    board_before[8] = 1; board_before[9] = 1;    // (1,1) Geezard P1
+    board_before[0] = 5; board_before[1] = 1;    // (0,0) Inkwell P1
+    board_before[4] = 10; board_before[5] = 2;   // (0,2) Peaches P2
+    board_before[8] = 1; board_before[9] = 1;    // (1,1) Mudwalker P1
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 2;
     let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
 
     let mut board_after: [Field; 18] = [0; 18];
-    board_after[0] = 5; board_after[1] = 1;      // (0,0) Blobra P1 - unchanged
-    board_after[2] = 13; board_after[3] = 2;     // (0,1) Buel P2 - placed
-    board_after[4] = 10; board_after[5] = 2;     // (0,2) Caterchipillar P2 - unchanged
-    board_after[8] = 1; board_after[9] = 2;      // (1,1) Geezard CAPTURED by P2
+    board_after[0] = 5; board_after[1] = 1;      // (0,0) Inkwell P1 - unchanged
+    board_after[2] = 13; board_after[3] = 2;     // (0,1) Neon P2 - placed
+    board_after[4] = 10; board_after[5] = 2;     // (0,2) Peaches P2 - unchanged
+    board_after[8] = 1; board_after[9] = 2;      // (1,1) Mudwalker CAPTURED by P2
     // Exact scores: p1_board=1, p2_board=3, p1_hand=3, p2_hand=3
     let scores_after: [Field; 2] = [4, 6];
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    // Card 13 (Buel) has nullifier_secret = 900
+    // Card 13 (Neon) has nullifier_secret = 900
     let enc_null = p2_encrypt_nullifier(900);
 
     main(
@@ -1429,7 +1434,7 @@ fn test_exact_scores_after_capture() {
 
 #[test(should_fail_with = "Card already placed on board")]
 fn test_card_replay_rejected() {
-    // P1 already has card 1 (Geezard) on board at (0,0).
+    // P1 already has card 1 (Mudwalker) on board at (0,0).
     // P1 tries to place card 1 AGAIN at (1,1). Should be rejected.
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
@@ -1483,14 +1488,14 @@ fn test_different_card_after_same_id_on_board() {
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1; board_after[1] = 1;
-    board_after[2] = 10; board_after[3] = 1;   // (0,1) CAPTURED: Funguar top=5 > Caterchipillar bottom=2
+    board_after[2] = 10; board_after[3] = 1;   // (0,1) CAPTURED: Blushy top=5 > Peaches bottom=2
     board_after[8] = 2; board_after[9] = 1;    // (1,1) card 2, different card
     // filled=3, p1_board=3, p2_board=0, p1_played=2, p2_played=1
     // p1_score=3+3=6, p2_score=0+4=4
     let scores_after: [Field; 2] = [6, 4];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 2 (Funguar) has nullifier_secret = 200
+    // Card 2 (Blushy) has nullifier_secret = 200
     let enc_null = p1_encrypt_nullifier(200);
 
     main(

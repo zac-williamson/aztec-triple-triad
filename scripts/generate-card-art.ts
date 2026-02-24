@@ -20,80 +20,80 @@ interface CardInfo {
 }
 
 const CARDS: CardInfo[] = [
-  // Level 1 - Common creatures
-  { id: 1, name: 'Geezard', level: 1, description: 'a small scaly lizard creature with sharp claws' },
-  { id: 2, name: 'Funguar', level: 1, description: 'a walking mushroom monster with glowing spores' },
-  { id: 3, name: 'Bite Bug', level: 1, description: 'a large insect with oversized mandibles and translucent wings' },
-  { id: 4, name: 'Red Bat', level: 1, description: 'a crimson bat with glowing red eyes and razor-sharp fangs' },
-  { id: 5, name: 'Blobra', level: 1, description: 'an amorphous blob creature with a single eye' },
-  { id: 6, name: 'Gayla', level: 1, description: 'a floating manta ray creature with ethereal wings' },
-  { id: 7, name: 'Gesper', level: 1, description: 'a mysterious floating mask spirit with arcane runes' },
-  { id: 8, name: 'Fastitocalon-F', level: 1, description: 'a small fish-like creature with armored scales' },
-  { id: 9, name: 'Blood Soul', level: 1, description: 'a ghostly apparition dripping with dark energy' },
-  { id: 10, name: 'Caterchipillar', level: 1, description: 'a giant caterpillar with segments of different colors' },
+  // Level 1 — Common
+  { id: 1, name: 'Mudwalker', level: 1, description: 'a wild-type axolotl, mottled brown-green with gold speckles, dark eyes with gold ring' },
+  { id: 2, name: 'Blushy', level: 1, description: 'a leucistic axolotl, pale pink-white body, bright red feathery gills, black eyes' },
+  { id: 3, name: 'Snowdrop', level: 1, description: 'a white albino axolotl, pure white translucent body, pinkish-red eyes, pale pink gills' },
+  { id: 4, name: 'Sunny', level: 1, description: 'a golden albino axolotl, warm golden-yellow body with shimmering iridescent speckles, pink eyes' },
+  { id: 5, name: 'Inkwell', level: 1, description: 'a melanoid axolotl, uniform jet-black body, completely matte dark, no iridescence' },
+  { id: 6, name: 'Stripes', level: 1, description: 'a tiger salamander, brown-black body with bold irregular olive-yellow blotches and bars' },
+  { id: 7, name: 'Barkeeper', level: 1, description: 'a barred tiger salamander, dark body with large yellowish bars and defined blotches' },
+  { id: 8, name: 'Dotty', level: 1, description: 'a spotted salamander, jet-black body with two rows of bright yellow round spots' },
+  { id: 9, name: 'Penny', level: 1, description: 'a copper axolotl, warm tannish-copper body with reddish-brown freckles, dark eyes' },
+  { id: 10, name: 'Peaches', level: 1, description: 'a light copper axolotl, pale pinkish-tan body with faint copper freckling' },
 
-  // Level 2 - Uncommon creatures
-  { id: 11, name: 'Cockatrice', level: 2, description: 'a rooster-dragon hybrid with stone-turning gaze and scaled wings' },
-  { id: 12, name: 'Grat', level: 2, description: 'a carnivorous plant monster with thrashing vine tentacles' },
-  { id: 13, name: 'Buel', level: 2, description: 'a winged demon head with bat-like wings and horns' },
-  { id: 14, name: 'Mesmerize', level: 2, description: 'an elegant deer-like creature with a spiraling crystal horn' },
-  { id: 15, name: 'Glacial Eye', level: 2, description: 'a floating eye encased in a sphere of ice crystals' },
-  { id: 16, name: 'Belhelmel', level: 2, description: 'a bell-shaped monster with multiple swinging tentacles' },
-  { id: 17, name: 'Thrustaevis', level: 2, description: 'a swift predatory bird with metallic feathers and blade-like wings' },
-  { id: 18, name: 'Anacondaur', level: 2, description: 'a massive serpent with dinosaur-like features and armored scales' },
-  { id: 19, name: 'Creeps', level: 2, description: 'a dark crawling shadow creature with multiple glowing eyes' },
-  { id: 20, name: 'Grendel', level: 2, description: 'a powerful dragon-like beast with thick green scales' },
+  // Level 2 — Uncommon
+  { id: 11, name: 'Freckles', level: 2, description: 'a dirty leucistic axolotl, white-pink base with scattered dark brown speckles on head' },
+  { id: 12, name: 'Camo', level: 2, description: 'a heavily marked melanoid axolotl, dark base with light green-yellow splotches, camouflage pattern' },
+  { id: 13, name: 'Neon', level: 2, description: 'a GFP wild-type axolotl, brown-green under daylight, glows vivid green under UV' },
+  { id: 14, name: 'Glow Bug', level: 2, description: 'a GFP leucistic axolotl, pink-white body that fluoresces brilliant green under UV' },
+  { id: 15, name: 'Limelight', level: 2, description: 'a GFP golden albino axolotl, golden-yellow body that glows intense green under blacklight' },
+  { id: 16, name: 'Marble', level: 2, description: 'a marbled salamander, black body with bold silvery-white crossbands, painted look' },
+  { id: 17, name: 'Sapphire', level: 2, description: 'a blue-spotted salamander, dark black-blue body with bright blue-white flecks' },
+  { id: 18, name: 'Jefferson', level: 2, description: 'a Jefferson salamander, long slender dark brown body with scattered pale blue flecks' },
+  { id: 19, name: 'Longfoot', level: 2, description: 'a long-toed salamander, dark black body with bold yellowish-green dorsal stripe' },
+  { id: 20, name: 'Featherfin', level: 2, description: 'a ridiculously long-gilled axolotl, dramatically elongated flowing gill filaments' },
 
-  // Level 3 - Rare creatures
-  { id: 21, name: 'Jelleye', level: 3, description: 'a giant jellyfish with a central glowing eye and electric tentacles' },
-  { id: 22, name: 'Grand Mantis', level: 3, description: 'an enormous praying mantis with crystalline blade arms' },
-  { id: 23, name: 'Forbidden', level: 3, description: 'a forbidden ancient book that floats surrounded by dark magic runes' },
-  { id: 24, name: 'Armadodo', level: 3, description: 'a heavily armored quadruped with stone plates and earth magic' },
-  { id: 25, name: 'Tri-Face', level: 3, description: 'a three-headed beast each face showing different emotions' },
-  { id: 26, name: 'Fastitocalon', level: 3, description: 'a massive whale-fish creature with ancient runes on its body' },
-  { id: 27, name: 'Snow Lion', level: 3, description: 'a majestic lion made of living snow and ice crystals' },
-  { id: 28, name: 'Ochu', level: 3, description: 'a towering plant monster with massive thorned vines and a gaping maw' },
-  { id: 29, name: 'SAM08G', level: 3, description: 'a military robot with spinning saw blades and red targeting lasers' },
-  { id: 30, name: 'Death Claw', level: 3, description: 'a menacing beast with massive razor claws dripping with venom' },
+  // Level 3 — Rare
+  { id: 21, name: 'Lilac', level: 3, description: 'a lavender silver dalmatian axolotl, soft silvery-purple body with dark spots' },
+  { id: 22, name: 'Patches', level: 3, description: 'a piebald axolotl, white base with bold irregular dark green-black patches, red gills' },
+  { id: 23, name: 'Faded', level: 3, description: 'a hypomelanistic axolotl, washed-out pale grayish-beige, ghostly and subtle' },
+  { id: 24, name: 'Gold Dust', level: 3, description: 'a hypomelanistic copper axolotl, golden albino look but with dark eyes, shimmery golden body' },
+  { id: 25, name: 'Phantom', level: 3, description: 'a hypomelanistic melanoid axolotl, pale gray with beige undertone, darker gills, muted' },
+  { id: 26, name: 'Ash', level: 3, description: 'an axanthic axolotl, cool-toned gray-blue-black body, no warm coloring, silvery steel' },
+  { id: 27, name: 'Cocoa', level: 3, description: 'a melanoid copper axolotl, dark chocolate-brown, warm reddish-brown tones throughout' },
+  { id: 28, name: 'Ringmaster', level: 3, description: 'a ringed salamander, dark brown-black body with narrow pale yellow rings at intervals' },
+  { id: 29, name: 'Goldrush', level: 3, description: 'a California tiger salamander, black body with creamy-white spots and bars' },
+  { id: 30, name: 'Swampling', level: 3, description: 'a flatwoods salamander, slender dark gray-black with fine silver reticulated pattern' },
 
-  // Level 4 - Epic creatures
-  { id: 31, name: 'Tonberry', level: 4, description: 'a small robed green creature holding a lantern and a chefs knife' },
-  { id: 32, name: 'Abyss Worm', level: 4, description: 'a colossal sandworm emerging from dark depths with rings of teeth' },
-  { id: 33, name: 'Turtapod', level: 4, description: 'a mechanical turtle fortress with cannon turrets on its shell' },
-  { id: 34, name: 'Vysage', level: 4, description: 'a floating demonic mask trinity of connected faces' },
-  { id: 35, name: 'T-Rexaur', level: 4, description: 'a fearsome tyrannosaurus with electric blue markings' },
-  { id: 36, name: 'Bomb', level: 4, description: 'a flaming sphere creature about to explode with fire energy' },
-  { id: 37, name: 'Blitz', level: 4, description: 'a lightning elemental beast crackling with raw electrical energy' },
-  { id: 38, name: 'Wendigo', level: 4, description: 'a massive frost ape with icy fur and frozen breath' },
-  { id: 39, name: 'Torama', level: 4, description: 'a sleek panther-like creature with whip-like tentacles' },
-  { id: 40, name: 'Imp', level: 4, description: 'a mischievous winged imp with a trident and magical aura' },
+  // Level 4 — Epic
+  { id: 31, name: 'Glitter', level: 4, description: 'a high-iridophore golden albino axolotl, entire body densely covered in shimmering reflective speckles' },
+  { id: 32, name: 'Starfield', level: 4, description: 'a high-iridophore wild type axolotl, dark olive body spangled with golden-white sparkles' },
+  { id: 33, name: 'Specter', level: 4, description: 'a GFP dirty lucy axolotl, white body with dark freckles that glows green under UV' },
+  { id: 34, name: 'Saffron', level: 4, description: 'a non-albino golden axolotl, vibrant golden-yellow body with dark eyes, rich saturated gold' },
+  { id: 35, name: 'Stardust', level: 4, description: 'a piebald GFP axolotl, white body with dark patches, white areas fluoresce green, cosmic pattern' },
+  { id: 36, name: 'Achoque', level: 4, description: 'a Lake Patzcuaro salamander (A. dumerilii), dark olive-brown, large bushy red gills' },
+  { id: 37, name: 'Zacapu', level: 4, description: 'an Anderson salamander (A. andersoni), red-brown with black blotches, bright red gills' },
+  { id: 38, name: 'Laguna', level: 4, description: 'a Taylor salamander (A. taylori), pale grayish body, adapted to alkaline water' },
+  { id: 39, name: 'Streamwalker', level: 4, description: 'a Michoacan stream siredon, slender dark brown with lighter mottling' },
+  { id: 40, name: 'Digger', level: 4, description: 'a mole salamander, stocky with oversized head, dark brown-gray, chunky burrower' },
 
-  // Level 5 - Legendary creatures
-  { id: 41, name: 'Blue Dragon', level: 5, description: 'a magnificent azure dragon with crystalline scales and lightning breath' },
-  { id: 42, name: 'Abadon', level: 5, description: 'a demonic worm-dragon of the abyss wreathed in dark flames' },
-  { id: 43, name: 'Iron Giant', level: 5, description: 'a towering ancient iron colossus wielding a massive sword' },
-  { id: 44, name: 'Behemoth', level: 5, description: 'a gargantuan purple beast with enormous horns and cosmic power' },
-  { id: 45, name: 'Chimera', level: 5, description: 'a three-headed mythical beast combining lion eagle and serpent' },
-  { id: 46, name: 'PuPu', level: 5, description: 'a cute small blue alien creature with large innocent eyes' },
-  { id: 47, name: 'Elastoid', level: 5, description: 'a futuristic mechanical spider drone with energy weapons' },
-  { id: 48, name: 'GIM47N', level: 5, description: 'a heavy combat mech with arm cannons and armored plating' },
-  { id: 49, name: 'Malboro', level: 5, description: 'a horrific tentacle plant with an enormous mouth full of fangs' },
-  { id: 50, name: 'Ruby Dragon', level: 5, description: 'a crimson dragon wreathed in flames with ruby-encrusted scales' },
+  // Level 5 — Legendary
+  { id: 41, name: 'Eclipse', level: 5, description: 'a MAC (melanoid axanthic copper) axolotl, triple recessive, velvety dark purplish-brown' },
+  { id: 42, name: 'Kaleidoscope', level: 5, description: 'a mosaic axolotl, random patchwork of black, white, and golden flecks, every one unique' },
+  { id: 43, name: 'Twinned', level: 5, description: 'a chimera axolotl, body split down the middle: one half dark, other half light' },
+  { id: 44, name: 'Sparkletail', level: 5, description: 'a firefly axolotl, dark body with leucistic GFP tail that glows green under blacklight' },
+  { id: 45, name: 'Riddler', level: 5, description: 'an enigma axolotl, born black then develops patches of gray, white, and iridescent gold' },
+  { id: 46, name: 'Rosita', level: 5, description: 'a Tarahumara salamander (A. rosaceum), pinkish-brown rosy-tan body with dark reticulations' },
+  { id: 47, name: 'Brooklet', level: 5, description: 'a streamside salamander, small dark brown body with gray lichen-like mottling' },
+  { id: 48, name: 'Whisper', level: 5, description: 'a small-mouthed salamander, dark brown-black with fine silver lichen-like markings' },
+  { id: 49, name: 'Misty', level: 5, description: 'a Mabee salamander, brown body with scattered light gray flecking, slender build' },
+  { id: 50, name: 'Lerma', level: 5, description: 'a Lake Lerma salamander (A. lermaense), dark brown-black, robust build, critically endangered' },
 ];
 
 function getStyleForLevel(level: number): string {
   switch (level) {
-    case 1: return 'muted earthy tones, simple composition';
-    case 2: return 'cool blue and teal tones, moderate detail';
-    case 3: return 'vivid purple and gold tones, intricate detail';
-    case 4: return 'fiery orange and deep crimson tones, dramatic lighting';
-    case 5: return 'brilliant gold and cosmic purple tones, epic composition with particle effects';
+    case 1: return 'simple clean composition, soft pastel background';
+    case 2: return 'slightly more detailed, subtle background pattern';
+    case 3: return 'detailed with subtle sparkle effects, gentle glow';
+    case 4: return 'highly detailed with golden shimmer effects, rich colors';
+    case 5: return 'maximum detail with ethereal glow, prismatic light effects, legendary aura';
     default: return '';
   }
 }
 
 function buildPrompt(card: CardInfo): string {
-  return `Fantasy trading card art of ${card.description}. Dark mystical background with Aztec-inspired geometric border patterns. ${getStyleForLevel(card.level)}. Digital painting style, highly detailed, centered composition on solid dark background. Square format.`;
+  return `Cute illustration of ${card.description}. Hand-drawn style with thick black outlines, moderate contrast, slight pop-art aesthetic. The creature is centered, facing the viewer, with an endearing expression. Clean white background. ${getStyleForLevel(card.level)}. The style should feel like a collectible sticker or trading card character. Square format, no text, no borders.`;
 }
 
 async function generateImage(card: CardInfo): Promise<Buffer> {

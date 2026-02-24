@@ -7,14 +7,14 @@ import type { Card as CardType } from '../types';
 // Let's use basic rendering approach if not available
 const testCard: CardType = {
   id: 1,
-  name: 'Geezard',
+  name: 'Mudwalker',
   ranks: { top: 1, right: 4, bottom: 1, left: 5 },
 };
 
 describe('Card component', () => {
   it('should render card name', () => {
     const { container } = render(<Card card={testCard} owner="player1" />);
-    expect(container.querySelector('.card__name')?.textContent).toBe('Geezard');
+    expect(container.querySelector('.card__name')?.textContent).toBe('Mudwalker');
   });
 
   it('should render rank values', () => {
@@ -58,7 +58,7 @@ describe('Card component', () => {
 
   it('should format rank 10 as A', () => {
     const aceCard: CardType = {
-      id: 46, name: 'PuPu', ranks: { top: 3, right: 10, bottom: 2, left: 1 },
+      id: 46, name: 'Rosita', ranks: { top: 3, right: 10, bottom: 2, left: 1 },
     };
     const { container } = render(<Card card={aceCard} owner="player1" />);
     expect(container.querySelector('.card__rank--right')?.textContent).toBe('A');

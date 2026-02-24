@@ -38,7 +38,7 @@ export function Lobby({ connected, gameList, error, onCreateGame, onJoinGame, on
   return (
     <div className="lobby" data-testid="lobby">
       <div className="lobby__header">
-        <h1 className="lobby__title">Triple Triad</h1>
+        <h1 className="lobby__title">Axolotl Arena</h1>
         <p className="lobby__subtitle">Powered by Aztec Network</p>
         <div className={`lobby__status ${connected ? 'lobby__status--connected' : ''}`}>
           {connected ? 'Connected' : 'Connecting...'}

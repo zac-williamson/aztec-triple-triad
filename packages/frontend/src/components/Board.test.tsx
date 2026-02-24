@@ -10,7 +10,7 @@ function createEmptyBoard(): BoardType {
 }
 
 const testCard: CardType = {
-  id: 1, name: 'Geezard', ranks: { top: 1, right: 4, bottom: 1, left: 5 },
+  id: 1, name: 'Mudwalker', ranks: { top: 1, right: 4, bottom: 1, left: 5 },
 };
 
 describe('Board component', () => {

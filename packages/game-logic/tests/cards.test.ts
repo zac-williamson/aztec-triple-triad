@@ -29,7 +29,7 @@ describe('Card Database', () => {
   it('getCardById should return the correct card', () => {
     const card = getCardById(1);
     expect(card).toBeDefined();
-    expect(card!.name).toBe('Geezard');
+    expect(card!.name).toBe('Mudwalker');
   });
 
   it('getCardById should return undefined for invalid id', () => {
@@ -48,6 +48,6 @@ describe('Card Database', () => {
   it('getCardsByIds should return copies, not references', () => {
     const cards = getCardsByIds([1]);
     cards[0].name = 'Modified';
-    expect(getCardById(1)!.name).toBe('Geezard');
+    expect(getCardById(1)!.name).toBe('Mudwalker');
   });
 });

@@ -41,7 +41,7 @@ export interface UseGameContractReturn {
 }
 
 /**
- * Hook for interacting with Triple Triad smart contracts on Aztec.
+ * Hook for interacting with Axolotl Arena smart contracts on Aztec.
  *
  * Provides functions to:
  * - Settle completed games on-chain (process_game with aggregate proof)
