@@ -2,18 +2,22 @@
 /// Verifies all 11 proofs (2 hand proofs + 9 move proofs) for a complete Triple Triad game.
 /// Validates proof chaining, card_commit consistency, and game completion.
 ///
-/// Public outputs:
-///   card_commit_1 - player 1's card commitment
-///   card_commit_2 - player 2's card commitment
-///   player1_address - player 1's address
-///   player2_address - player 2's address
-///   game_id - unique game identifier
-///   initial_state_hash - hash of the initial (empty) board state
-///   final_state_hash - hash of the final board state
-///   game_ended - must be 1
-///   winner_id - 1 (player1 wins), 2 (player2 wins), or 3 (draw)
-///   hand_vk_hash - verification key hash for hand proofs
-///   move_vk_hash - verification key hash for move proofs
+/// Public outputs (15 fields):
+///   [0]  card_commit_1 - player 1's card commitment
+///   [1]  card_commit_2 - player 2's card commitment
+///   [2]  player1_address - player 1's address
+///   [3]  player2_address - player 2's address
+///   [4]  game_id - unique game identifier
+///   [5]  initial_state_hash - hash of the initial (empty) board state
+///   [6]  final_state_hash - hash of the final board state
+///   [7]  game_ended - must be 1
+///   [8]  winner_id - 1 (player1 wins), 2 (player2 wins), or 3 (draw)
+///   [9]  hand_vk_hash - verification key hash for hand proofs
+///   [10] move_vk_hash - verification key hash for move proofs
+///   [11] player1_grumpkin_pubkey_x - player 1's Grumpkin public key X
+///   [12] player1_grumpkin_pubkey_y - player 1's Grumpkin public key Y
+///   [13] player2_grumpkin_pubkey_x - player 2's Grumpkin public key X
+///   [14] player2_grumpkin_pubkey_y - player 2's Grumpkin public key Y
 
 use bb_proof_verification::{UltraHonkVerificationKey, UltraHonkZKProof, verify_honk_proof};
 
@@ -30,56 +34,66 @@ fn main(
     winner_id: pub Field,
     hand_vk_hash: pub Field,
     move_vk_hash: pub Field,
+    // NEW public outputs: Grumpkin public keys from hand proofs (BUG-1 fix)
+    player1_grumpkin_pubkey_x: pub Field,
+    player1_grumpkin_pubkey_y: pub Field,
+    player2_grumpkin_pubkey_x: pub Field,
+    player2_grumpkin_pubkey_y: pub Field,
 
     // === Private inputs: Hand proofs ===
     hand_vk: UltraHonkVerificationKey,
     hand_proof_1: UltraHonkZKProof,
-    hand_proof_1_inputs: [Field; 3],  // [card_commit, player_address, game_id]
+    hand_proof_1_inputs: [Field; 5],  // [card_commit, player_address, game_id, grumpkin_x, grumpkin_y]
     hand_proof_2: UltraHonkZKProof,
-    hand_proof_2_inputs: [Field; 3],
+    hand_proof_2_inputs: [Field; 5],
 
     // === Private inputs: Move proofs (9 moves) ===
     move_vk: UltraHonkVerificationKey,
     // Move 1
     move_proof_1: UltraHonkZKProof,
-    move_inputs_1: [Field; 6],  // [card_commit_1, card_commit_2, start_state, end_state, game_ended, winner_id]
+    move_inputs_1: [Field; 7],  // [card_commit_1, card_commit_2, start_state, end_state, game_ended, winner_id, encrypted_card_nullifier]
     // Move 2
     move_proof_2: UltraHonkZKProof,
-    move_inputs_2: [Field; 6],
+    move_inputs_2: [Field; 7],
     // Move 3
     move_proof_3: UltraHonkZKProof,
-    move_inputs_3: [Field; 6],
+    move_inputs_3: [Field; 7],
     // Move 4
     move_proof_4: UltraHonkZKProof,
-    move_inputs_4: [Field; 6],
+    move_inputs_4: [Field; 7],
     // Move 5
     move_proof_5: UltraHonkZKProof,
-    move_inputs_5: [Field; 6],
+    move_inputs_5: [Field; 7],
     // Move 6
     move_proof_6: UltraHonkZKProof,
-    move_inputs_6: [Field; 6],
+    move_inputs_6: [Field; 7],
     // Move 7
     move_proof_7: UltraHonkZKProof,
-    move_inputs_7: [Field; 6],
+    move_inputs_7: [Field; 7],
     // Move 8
     move_proof_8: UltraHonkZKProof,
-    move_inputs_8: [Field; 6],
+    move_inputs_8: [Field; 7],
     // Move 9
     move_proof_9: UltraHonkZKProof,
-    move_inputs_9: [Field; 6],
+    move_inputs_9: [Field; 7],
 ) {
     // ===== 1. Verify hand proofs =====
     verify_honk_proof(hand_vk, hand_proof_1, hand_proof_1_inputs, hand_vk_hash);
     verify_honk_proof(hand_vk, hand_proof_2, hand_proof_2_inputs, hand_vk_hash);
 
     // ===== 2. Extract and validate hand proof data =====
+    // hand_proof_inputs layout: [card_commit, player_address, game_id, grumpkin_x, grumpkin_y]
     let hp1_card_commit = hand_proof_1_inputs[0];
     let hp1_player_addr = hand_proof_1_inputs[1];
     let hp1_game_id = hand_proof_1_inputs[2];
+    let hp1_grumpkin_x = hand_proof_1_inputs[3];
+    let hp1_grumpkin_y = hand_proof_1_inputs[4];
 
     let hp2_card_commit = hand_proof_2_inputs[0];
     let hp2_player_addr = hand_proof_2_inputs[1];
     let hp2_game_id = hand_proof_2_inputs[2];
+    let hp2_grumpkin_x = hand_proof_2_inputs[3];
+    let hp2_grumpkin_y = hand_proof_2_inputs[4];
 
     // Card commits from hand proofs must match public outputs
     assert(hp1_card_commit == card_commit_1, "Hand proof 1 card_commit mismatch");
@@ -93,8 +107,16 @@ fn main(
     assert(hp1_game_id == game_id, "Hand proof 1 game_id mismatch");
     assert(hp2_game_id == game_id, "Hand proof 2 game_id mismatch");
 
+    // Grumpkin public keys from hand proofs must match public outputs (BUG-1 fix)
+    assert(hp1_grumpkin_x == player1_grumpkin_pubkey_x, "P1 Grumpkin X mismatch");
+    assert(hp1_grumpkin_y == player1_grumpkin_pubkey_y, "P1 Grumpkin Y mismatch");
+    assert(hp2_grumpkin_x == player2_grumpkin_pubkey_x, "P2 Grumpkin X mismatch");
+    assert(hp2_grumpkin_y == player2_grumpkin_pubkey_y, "P2 Grumpkin Y mismatch");
+
     // ===== 3. Collect move inputs into arrays for easier processing =====
-    let move_inputs: [[Field; 6]; 9] = [
+    // move_inputs layout: [cc1, cc2, start_state, end_state, game_ended, winner_id, encrypted_card_nullifier]
+    //                      [0]  [1]  [2]          [3]        [4]         [5]        [6]
+    let move_inputs: [[Field; 7]; 9] = [
         move_inputs_1, move_inputs_2, move_inputs_3,
         move_inputs_4, move_inputs_5, move_inputs_6,
         move_inputs_7, move_inputs_8, move_inputs_9,
@@ -125,8 +147,6 @@ fn main(
 
     // ===== 6. Validate proof chaining =====
     // proof[i].end_state_hash == proof[i+1].start_state_hash
-    // move_inputs layout: [cc1, cc2, start_state, end_state, game_ended, winner_id]
-    //                      [0]  [1]  [2]          [3]        [4]         [5]
     for i in 0..8 {
         assert(
             move_inputs[i][3] == move_inputs[i + 1][2],

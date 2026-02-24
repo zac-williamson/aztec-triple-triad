@@ -65,22 +65,26 @@ pub contract TripleTriadGame {
     /// validates proof chaining, card_commit consistency, and game completion.
     ///
     /// The contract verifies the single aggregate proof and checks its public outputs:
-    ///   [0] card_commit_1
-    ///   [1] card_commit_2
-    ///   [2] player1_address
-    ///   [3] player2_address
-    ///   [4] game_id
-    ///   [5] initial_state_hash
-    ///   [6] final_state_hash
-    ///   [7] game_ended (must be 1)
-    ///   [8] winner_id (1, 2, or 3)
-    ///   [9] hand_vk_hash
+    ///   [0]  card_commit_1
+    ///   [1]  card_commit_2
+    ///   [2]  player1_address
+    ///   [3]  player2_address
+    ///   [4]  game_id
+    ///   [5]  initial_state_hash
+    ///   [6]  final_state_hash
+    ///   [7]  game_ended (must be 1)
+    ///   [8]  winner_id (1, 2, or 3)
+    ///   [9]  hand_vk_hash
     ///   [10] move_vk_hash
+    ///   [11] player1_grumpkin_pubkey_x
+    ///   [12] player1_grumpkin_pubkey_y
+    ///   [13] player2_grumpkin_pubkey_x
+    ///   [14] player2_grumpkin_pubkey_y
     #[external("private")]
     fn process_game(
         aggregate_vk: UltraHonkVerificationKey,
         aggregate_proof: UltraHonkZKProof,
-        aggregate_inputs: [Field; 11],
+        aggregate_inputs: [Field; 15],
         loser: AztecAddress,
         card_to_transfer: Field,
     ) {
@@ -98,8 +102,8 @@ pub contract TripleTriadGame {
         );
 
         // 2. Extract public outputs from aggregate proof
-        let card_commit_1 = aggregate_inputs[0];
-        let card_commit_2 = aggregate_inputs[1];
+        let _card_commit_1 = aggregate_inputs[0];
+        let _card_commit_2 = aggregate_inputs[1];
         let player1_address = aggregate_inputs[2];
         let player2_address = aggregate_inputs[3];
         let game_id = aggregate_inputs[4];
@@ -109,6 +113,10 @@ pub contract TripleTriadGame {
         let winner_id = aggregate_inputs[8];
         let proof_hand_vk_hash = aggregate_inputs[9];
         let proof_move_vk_hash = aggregate_inputs[10];
+        let _p1_grumpkin_x = aggregate_inputs[11];
+        let _p1_grumpkin_y = aggregate_inputs[12];
+        let _p2_grumpkin_x = aggregate_inputs[13];
+        let _p2_grumpkin_y = aggregate_inputs[14];
 
         // 3. Validate VK hashes match stored values
         // This ensures the aggregate proof used the correct verification keys
@@ -121,14 +129,10 @@ pub contract TripleTriadGame {
             "Move VK hash mismatch with stored value",
         );
 
-        // 4. Suppress unused variable warnings
-        let _cc1 = card_commit_1;
-        let _cc2 = card_commit_2;
-
-        // 5. Verify game ended
+        // 4. Verify game ended
         assert(game_ended == 1, "Game not ended");
 
-        // 6. Verify caller is the winner
+        // 5. Verify caller is the winner
         let caller = self.msg_sender();
         let caller_field = caller.to_field();
 
@@ -146,7 +150,7 @@ pub contract TripleTriadGame {
             );
         }
 
-        // 7. Settle: transfer card from loser to winner via NFT contract
+        // 6. Settle: transfer card from loser to winner via NFT contract
         // In case of draw, no card transfer (card_to_transfer should be 0)
         if winner_id != 3 {
             self.enqueue_self.settle_game(game_id, caller, loser, card_to_transfer);
