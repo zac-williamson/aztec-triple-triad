@@ -392,26 +392,26 @@ fn main(
         assert(winner_id == 0, "No winner yet");
     }
 
-    // ===== 12. Verify scores are consistent (BUG-4 fix) =====
-    // Total score must always be 10 (5 cards per player, captures transfer ownership)
-    let p1_score = scores_after[0] as u32;
-    let p2_score = scores_after[1] as u32;
-    assert(p1_score + p2_score == 10, "Total score must be 10");
-
-    // Count board ownership to verify scores are plausible
+    // ===== 12. Verify scores are exactly correct (C1 fix) =====
     let mut p1_board: u32 = 0;
     let mut p2_board: u32 = 0;
     for i in 0..9 {
-        if board_after[i * 2 + 1] == 1 {
+        let owner = board_after[i * 2 + 1];
+        if owner == 1 {
             p1_board += 1;
-        } else if board_after[i * 2 + 1] == 2 {
+        } else if owner == 2 {
             p2_board += 1;
         }
     }
-
-    // Each player's score must be >= their board count (can't have negative hand count)
-    assert(p1_score >= p1_board, "P1 score less than board count");
-    assert(p2_score >= p2_board, "P2 score less than board count");
+    // Player 1 goes first, so P1 has placed ceil(filled/2) cards, P2 has placed floor(filled/2)
+    let p1_played = (filled + 1) / 2;
+    let p2_played = filled / 2;
+    let p1_hand = 5 - p1_played;
+    let p2_hand = 5 - p2_played;
+    let expected_p1_score = p1_board + p1_hand;
+    let expected_p2_score = p2_board + p2_hand;
+    assert(scores_after[0] == expected_p1_score as Field, "P1 score mismatch");
+    assert(scores_after[1] == expected_p2_score as Field, "P2 score mismatch");
 
     // ===== 13. ECDH encryption of card nullifier (FIX-3) =====
     let opponent_pubkey = EmbeddedCurvePoint {
@@ -662,7 +662,9 @@ fn test_capture_multiple_cards() {
     board_after[8] = 1; board_after[9] = 1;      // (1,1) placed
     board_after[10] = 12; board_after[11] = 1;   // (1,2) CAPTURED
     board_after[14] = 13; board_after[15] = 2;   // (2,1) unchanged
-    let scores_after: [Field; 2] = [7, 3];
+    // filled=5, p1_board=3, p2_board=2, p1_played=3, p2_played=2
+    // p1_score = 3 + (5-3) = 5, p2_score = 2 + (5-2) = 5
+    let scores_after: [Field; 2] = [5, 5];
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
@@ -872,8 +874,9 @@ fn test_final_move_game_ends_p2_wins() {
     // (2,1) Blobra P1 [2,3,1,5]: placed left=4 vs adj right=3 -> 4>3 CAPTURE!
     board_after[15] = 2; // Blobra captured by P2
 
-    // P2 score: 4 original + 1 placed + 2 captured = 7. P1 score: 5 - 2 captured = 3
-    let scores_after: [Field; 2] = [3, 7];
+    // filled=9, p1_board=2, p2_board=7, p1_played=5, p2_played=4
+    // p1_score = 2 + (5-5) = 2, p2_score = 7 + (5-4) = 8
+    let scores_after: [Field; 2] = [2, 8];
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
@@ -1321,4 +1324,95 @@ fn test_ecdh_symmetric_encryption() {
     let key = expand_secret_1(shared_2);
     let decrypted = ciphertext - key;
     assert(decrypted == plaintext, "Decrypted value should match plaintext");
+}
+
+// ====================== C1 FIX TESTS: Exact Score Verification ======================
+
+#[test(should_fail_with = "P1 score mismatch")]
+fn test_score_fabrication_rejected() {
+    // Valid first move (P1 places card 1 at (0,0) on empty board) but with fabricated scores.
+    // Correct scores: p1=5, p2=5 (1 on board + 4 in hand, 0 on board + 5 in hand)
+    // Fabricated: p1=8, p2=2 (would pass the old weak check since 8+2=10, 8>=1, 2>=0)
+    let cc1 = get_p1_commit();
+    let cc2 = get_p2_commit();
+    let p2_pubkey = get_p2_pubkey();
+
+    let board_before: [Field; 18] = [0; 18];
+    let scores_before: [Field; 2] = [5, 5];
+    let current_turn_before: Field = 1;
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1;
+    board_after[1] = 1;
+    // Fabricated scores: should be [5, 5] but attacker claims [8, 2]
+    let scores_after: [Field; 2] = [8, 2];
+    let end_hash = hash_board_state(board_after, scores_after, 2);
+
+    let enc_null = p1_encrypt_nullifier(100);
+
+    main(
+        cc1, cc2,
+        start_hash, end_hash,
+        0, 0,
+        enc_null,
+        1, 1,
+        0, 0,
+        board_before, board_after,
+        scores_before, scores_after,
+        current_turn_before,
+        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
+        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
+        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+    );
+}
+
+#[test]
+fn test_exact_scores_after_capture() {
+    // P2 places card 13 (Buel [6,2,2,3]) at (0,1).
+    // (0,0) has P1 card 5 (Blobra [2,3,1,5]). Placed left=3 vs adj right=3 -> NO (equal)
+    // (1,1) has P1 card 1 (Geezard [1,4,1,5]). Placed bottom=2 vs adj top=1 -> 2>1 CAPTURE!
+    // After: filled=4, p1_board=1, p2_board=3(card 10 + card 13 + captured card 1)
+    // p1_played=(4+1)/2=2, p2_played=4/2=2
+    // p1_score=1+(5-2)=4, p2_score=3+(5-2)=6
+    let cc1 = get_p1_commit();
+    let cc2 = get_p2_commit();
+    let p1_pubkey = get_p1_pubkey();
+
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[0] = 5; board_before[1] = 1;    // (0,0) Blobra P1
+    board_before[4] = 10; board_before[5] = 2;   // (0,2) Caterchipillar P2
+    board_before[8] = 1; board_before[9] = 1;    // (1,1) Geezard P1
+    let scores_before: [Field; 2] = [5, 5];
+    let current_turn_before: Field = 2;
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 5; board_after[1] = 1;      // (0,0) Blobra P1 - unchanged
+    board_after[2] = 13; board_after[3] = 2;     // (0,1) Buel P2 - placed
+    board_after[4] = 10; board_after[5] = 2;     // (0,2) Caterchipillar P2 - unchanged
+    board_after[8] = 1; board_after[9] = 2;      // (1,1) Geezard CAPTURED by P2
+    // Exact scores: p1_board=1, p2_board=3, p1_hand=3, p2_hand=3
+    let scores_after: [Field; 2] = [4, 6];
+
+    let end_hash = hash_board_state(board_after, scores_after, 1);
+
+    // Card 13 (Buel) has nullifier_secret = 900
+    let enc_null = p2_encrypt_nullifier(900);
+
+    main(
+        cc1, cc2,
+        start_hash, end_hash,
+        0, 0,
+        enc_null,
+        2,
+        13,
+        0, 1,
+        board_before, board_after,
+        scores_before, scores_after,
+        current_turn_before,
+        P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
+        p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
+        P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
+    );
 }
