@@ -106,7 +106,7 @@ pub contract TripleTriadNFT {
         name: PublicImmutable<FieldCompressedString, Context>,
         symbol: PublicImmutable<FieldCompressedString, Context>,
         minter: PublicImmutable<AztecAddress, Context>,
-        game_contract: PublicMutable<AztecAddress, Context>,
+        game_contract: PublicImmutable<AztecAddress, Context>,
         private_nfts: Owned<PrivateSet<CardNote, Context>, Context>,
         nft_exists: Map<Field, PublicMutable<bool, Context>, Context>,
         public_owners: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
@@ -125,7 +125,6 @@ pub contract TripleTriadNFT {
         self.storage.name.initialize(name);
         self.storage.symbol.initialize(symbol);
         self.storage.minter.initialize(minter);
-        self.storage.game_contract.write(AztecAddress::zero());
     }
 
     // --- Admin ---
@@ -134,7 +133,7 @@ pub contract TripleTriadNFT {
     fn set_game_contract(game_address: AztecAddress) {
         let minter = self.storage.minter.read();
         assert(self.msg_sender() == minter, "Only minter can set game contract");
-        self.storage.game_contract.write(game_address);
+        self.storage.game_contract.initialize(game_address);
     }
 
     // --- Minting ---
