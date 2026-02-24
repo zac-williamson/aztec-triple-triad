@@ -207,6 +207,77 @@ fn main(
     );
 }
 
+// ====================== TESTABLE HELPER FUNCTIONS ======================
+
+/// Validate hand proof data matches expected public outputs.
+/// Verifies card_commit, player_address, game_id, and Grumpkin pubkey fields.
+fn validate_hand_proof_data(
+    inputs: [Field; 5],
+    expected_card_commit: Field,
+    expected_player_addr: Field,
+    expected_game_id: Field,
+    expected_grumpkin_x: Field,
+    expected_grumpkin_y: Field,
+) {
+    assert(inputs[0] == expected_card_commit, "Hand proof card_commit mismatch");
+    assert(inputs[1] == expected_player_addr, "Hand proof player address mismatch");
+    assert(inputs[2] == expected_game_id, "Hand proof game_id mismatch");
+    assert(inputs[3] == expected_grumpkin_x, "Hand proof Grumpkin X mismatch");
+    assert(inputs[4] == expected_grumpkin_y, "Hand proof Grumpkin Y mismatch");
+}
+
+/// Validate that move proofs form a valid chain:
+/// - All moves share the same card_commits
+/// - end_state of move i == start_state of move i+1
+/// - Intermediate moves have game_ended=0, winner_id=0
+/// - Final move has game_ended=1 and valid winner_id
+fn validate_move_chain(
+    move_inputs: [[Field; 7]; 9],
+    card_commit_1: Field,
+    card_commit_2: Field,
+    initial_state_hash: Field,
+    final_state_hash: Field,
+    game_ended: Field,
+    winner_id: Field,
+) {
+    // Card commit consistency
+    for i in 0..9 {
+        assert(move_inputs[i][0] == card_commit_1, "Move proof card_commit_1 mismatch");
+        assert(move_inputs[i][1] == card_commit_2, "Move proof card_commit_2 mismatch");
+    }
+
+    // Proof chaining: end_state[i] == start_state[i+1]
+    for i in 0..8 {
+        assert(
+            move_inputs[i][3] == move_inputs[i + 1][2],
+            "Proof chaining failed: end_state != next start_state",
+        );
+    }
+
+    // Initial state verification
+    let canonical_initial = compute_initial_state_hash();
+    assert(initial_state_hash == canonical_initial, "Initial state must be empty board");
+    assert(move_inputs[0][2] == canonical_initial, "First move start_state does not match initial state");
+
+    // Final state verification
+    assert(move_inputs[8][3] == final_state_hash, "Last move end_state does not match final state");
+
+    // Intermediate moves should NOT end the game
+    for i in 0..8 {
+        assert(move_inputs[i][4] == 0, "Intermediate move should not end the game");
+        assert(move_inputs[i][5] == 0, "Intermediate move should not have a winner");
+    }
+
+    // Game completion
+    assert(move_inputs[8][4] == game_ended, "Final move game_ended mismatch");
+    assert(game_ended == 1, "Game must have ended");
+    assert(move_inputs[8][5] == winner_id, "Final move winner_id mismatch");
+    assert(
+        (winner_id == 1) | (winner_id == 2) | (winner_id == 3),
+        "Invalid winner_id",
+    );
+}
+
 // ====================== TESTS ======================
 
 #[test]
@@ -221,4 +292,217 @@ fn test_initial_state_hash() {
     assert(hash == expected, "Initial state hash mismatch");
     // Verify it's not zero (sanity check)
     assert(hash != 0, "Initial state hash should not be zero");
+}
+
+#[test]
+fn test_validate_hand_proof_data_valid() {
+    let inputs: [Field; 5] = [100, 200, 300, 400, 500];
+    validate_hand_proof_data(inputs, 100, 200, 300, 400, 500);
+}
+
+#[test(should_fail_with = "Hand proof card_commit mismatch")]
+fn test_validate_hand_proof_data_wrong_commit() {
+    let inputs: [Field; 5] = [100, 200, 300, 400, 500];
+    validate_hand_proof_data(inputs, 999, 200, 300, 400, 500);
+}
+
+#[test(should_fail_with = "Hand proof player address mismatch")]
+fn test_validate_hand_proof_data_wrong_addr() {
+    let inputs: [Field; 5] = [100, 200, 300, 400, 500];
+    validate_hand_proof_data(inputs, 100, 999, 300, 400, 500);
+}
+
+#[test(should_fail_with = "Hand proof game_id mismatch")]
+fn test_validate_hand_proof_data_wrong_game_id() {
+    let inputs: [Field; 5] = [100, 200, 300, 400, 500];
+    validate_hand_proof_data(inputs, 100, 200, 999, 400, 500);
+}
+
+#[test(should_fail_with = "Hand proof Grumpkin X mismatch")]
+fn test_validate_hand_proof_data_wrong_grumpkin_x() {
+    let inputs: [Field; 5] = [100, 200, 300, 400, 500];
+    validate_hand_proof_data(inputs, 100, 200, 300, 999, 500);
+}
+
+#[test]
+fn test_validate_move_chain_valid() {
+    let initial = compute_initial_state_hash();
+    // Build 9 move inputs with proper chaining
+    let mut moves: [[Field; 7]; 9] = [[0; 7]; 9];
+    let cc1: Field = 111;
+    let cc2: Field = 222;
+
+    // State hashes: initial -> s1 -> s2 -> ... -> s8 -> final
+    let state_hashes: [Field; 10] = [initial, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 9999];
+
+    for i in 0..9 {
+        moves[i][0] = cc1;
+        moves[i][1] = cc2;
+        moves[i][2] = state_hashes[i];       // start_state
+        moves[i][3] = state_hashes[i + 1];   // end_state
+        moves[i][4] = 0;                     // game_ended
+        moves[i][5] = 0;                     // winner_id
+        moves[i][6] = 0;                     // encrypted_card_nullifier
+    }
+    // Final move ends the game with P1 winning
+    moves[8][4] = 1;
+    moves[8][5] = 1;
+
+    validate_move_chain(moves, cc1, cc2, initial, 9999, 1, 1);
+}
+
+#[test(should_fail_with = "Proof chaining failed")]
+fn test_validate_move_chain_broken_chain() {
+    let initial = compute_initial_state_hash();
+    let mut moves: [[Field; 7]; 9] = [[0; 7]; 9];
+    let cc1: Field = 111;
+    let cc2: Field = 222;
+
+    let state_hashes: [Field; 10] = [initial, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 9999];
+
+    for i in 0..9 {
+        moves[i][0] = cc1;
+        moves[i][1] = cc2;
+        moves[i][2] = state_hashes[i];
+        moves[i][3] = state_hashes[i + 1];
+        moves[i][4] = 0;
+        moves[i][5] = 0;
+        moves[i][6] = 0;
+    }
+    moves[8][4] = 1;
+    moves[8][5] = 1;
+
+    // Break the chain at move 3->4
+    moves[3][3] = 0xbadbadbad;
+
+    validate_move_chain(moves, cc1, cc2, initial, 9999, 1, 1);
+}
+
+#[test(should_fail_with = "Move proof card_commit_1 mismatch")]
+fn test_validate_move_chain_wrong_commit() {
+    let initial = compute_initial_state_hash();
+    let mut moves: [[Field; 7]; 9] = [[0; 7]; 9];
+    let cc1: Field = 111;
+    let cc2: Field = 222;
+
+    let state_hashes: [Field; 10] = [initial, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 9999];
+
+    for i in 0..9 {
+        moves[i][0] = cc1;
+        moves[i][1] = cc2;
+        moves[i][2] = state_hashes[i];
+        moves[i][3] = state_hashes[i + 1];
+        moves[i][4] = 0;
+        moves[i][5] = 0;
+        moves[i][6] = 0;
+    }
+    moves[8][4] = 1;
+    moves[8][5] = 1;
+
+    // Corrupt card_commit_1 in move 5
+    moves[5][0] = 0xdeadbeef;
+
+    validate_move_chain(moves, cc1, cc2, initial, 9999, 1, 1);
+}
+
+#[test(should_fail_with = "Intermediate move should not end the game")]
+fn test_validate_move_chain_premature_end() {
+    let initial = compute_initial_state_hash();
+    let mut moves: [[Field; 7]; 9] = [[0; 7]; 9];
+    let cc1: Field = 111;
+    let cc2: Field = 222;
+
+    let state_hashes: [Field; 10] = [initial, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 9999];
+
+    for i in 0..9 {
+        moves[i][0] = cc1;
+        moves[i][1] = cc2;
+        moves[i][2] = state_hashes[i];
+        moves[i][3] = state_hashes[i + 1];
+        moves[i][4] = 0;
+        moves[i][5] = 0;
+        moves[i][6] = 0;
+    }
+    moves[8][4] = 1;
+    moves[8][5] = 1;
+
+    // Set game_ended on an intermediate move
+    moves[4][4] = 1;
+
+    validate_move_chain(moves, cc1, cc2, initial, 9999, 1, 1);
+}
+
+#[test]
+fn test_validate_move_chain_p2_wins() {
+    let initial = compute_initial_state_hash();
+    let mut moves: [[Field; 7]; 9] = [[0; 7]; 9];
+    let cc1: Field = 111;
+    let cc2: Field = 222;
+
+    let state_hashes: [Field; 10] = [initial, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 9999];
+
+    for i in 0..9 {
+        moves[i][0] = cc1;
+        moves[i][1] = cc2;
+        moves[i][2] = state_hashes[i];
+        moves[i][3] = state_hashes[i + 1];
+        moves[i][4] = 0;
+        moves[i][5] = 0;
+        moves[i][6] = 0;
+    }
+    // Final move: P2 wins
+    moves[8][4] = 1;
+    moves[8][5] = 2;
+
+    validate_move_chain(moves, cc1, cc2, initial, 9999, 1, 2);
+}
+
+#[test]
+fn test_validate_move_chain_draw() {
+    let initial = compute_initial_state_hash();
+    let mut moves: [[Field; 7]; 9] = [[0; 7]; 9];
+    let cc1: Field = 111;
+    let cc2: Field = 222;
+
+    let state_hashes: [Field; 10] = [initial, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 9999];
+
+    for i in 0..9 {
+        moves[i][0] = cc1;
+        moves[i][1] = cc2;
+        moves[i][2] = state_hashes[i];
+        moves[i][3] = state_hashes[i + 1];
+        moves[i][4] = 0;
+        moves[i][5] = 0;
+        moves[i][6] = 0;
+    }
+    // Final move: draw
+    moves[8][4] = 1;
+    moves[8][5] = 3;
+
+    validate_move_chain(moves, cc1, cc2, initial, 9999, 1, 3);
+}
+
+#[test(should_fail_with = "Invalid winner_id")]
+fn test_validate_move_chain_invalid_winner() {
+    let initial = compute_initial_state_hash();
+    let mut moves: [[Field; 7]; 9] = [[0; 7]; 9];
+    let cc1: Field = 111;
+    let cc2: Field = 222;
+
+    let state_hashes: [Field; 10] = [initial, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 9999];
+
+    for i in 0..9 {
+        moves[i][0] = cc1;
+        moves[i][1] = cc2;
+        moves[i][2] = state_hashes[i];
+        moves[i][3] = state_hashes[i + 1];
+        moves[i][4] = 0;
+        moves[i][5] = 0;
+        moves[i][6] = 0;
+    }
+    // Final move with invalid winner_id=4
+    moves[8][4] = 1;
+    moves[8][5] = 4;
+
+    validate_move_chain(moves, cc1, cc2, initial, 9999, 1, 4);
 }

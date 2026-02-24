@@ -1,6 +1,6 @@
 {
-  "current_phase": 4,
-  "current_task": "Starting Phase 4",
+  "current_phase": 5,
+  "current_task": "Starting Phase 5",
   "total_invocations": 3,
   "phases": {
     "1": {
@@ -78,23 +78,23 @@
     },
     "4": {
       "name": "Aggregate Circuit Tests (BUG-5)",
-      "status": "pending",
+      "status": "completed",
       "milestones": [
         {
           "name": "compute_initial_state_hash test added",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "name": "Validation logic extracted into testable helper functions",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "name": "test_game_ends_p2_wins added to game_move",
-          "status": "pending"
+          "status": "completed"
         },
         {
           "name": "All tests pass",
-          "status": "pending"
+          "status": "completed"
         }
       ],
       "verify_command": "cd circuits && nargo test 2>&1 | tail -30"

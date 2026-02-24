@@ -831,6 +831,72 @@ fn test_game_ends_draw() {
     );
 }
 
+#[test]
+fn test_final_move_game_ends_p2_wins() {
+    // P2 places the 9th card and wins with a higher score
+    // Board has 8 cards, it's P2's turn. P2 places card 14 (Mesmerize [5,3,3,4]) at (2,2)
+    // capturing (2,1) which has P1's card 5 (Blobra [2,3,1,5]) - placed bottom=3 vs adj top=1 -> NO
+    // but (1,2) has P1's card 3 (BiteBug [1,3,3,5]) - placed left=4 vs adj right=3 -> 4>3 CAPTURE!
+    let cc1 = get_p1_commit();
+    let cc2 = get_p2_commit();
+    let p1_pubkey = get_p1_pubkey();
+
+    let mut board_before: [Field; 18] = [0; 18];
+    // Row 0: P1 card 1, P2 card 10, P1 card 2
+    board_before[0] = 1; board_before[1] = 1;    // (0,0) Geezard P1
+    board_before[2] = 10; board_before[3] = 2;   // (0,1) Caterchipillar P2
+    board_before[4] = 2; board_before[5] = 1;    // (0,2) Funguar P1
+    // Row 1: P2 card 11, P2 card 12, P1 card 3
+    board_before[6] = 11; board_before[7] = 2;   // (1,0) Cockatrice P2
+    board_before[8] = 12; board_before[9] = 2;   // (1,1) Grat P2
+    board_before[10] = 3; board_before[11] = 1;  // (1,2) BiteBug P1
+    // Row 2: P2 card 13, P1 card 5, empty (2,2)
+    board_before[12] = 13; board_before[13] = 2; // (2,0) Buel P2
+    board_before[14] = 5; board_before[15] = 1;  // (2,1) Blobra P1
+
+    // Scores: P1 has 4 on board + 1 in hand = 5, P2 has 4 on board + 1 in hand = 5
+    let scores_before: [Field; 2] = [5, 5];
+    let current_turn_before: Field = 2; // P2's turn
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    for i in 0..16 {
+        board_after[i] = board_before[i];
+    }
+    // P2 places card 14 (Mesmerize [5,3,3,4]) at (2,2)
+    board_after[16] = 14; board_after[17] = 2;
+
+    // Check captures:
+    // (1,2) BiteBug P1 [1,3,3,5]: placed top=5 vs adj bottom=3 -> 5>3 CAPTURE!
+    board_after[11] = 2; // BiteBug captured by P2
+    // (2,1) Blobra P1 [2,3,1,5]: placed left=4 vs adj right=3 -> 4>3 CAPTURE!
+    board_after[15] = 2; // Blobra captured by P2
+
+    // P2 score: 4 original + 1 placed + 2 captured = 7. P1 score: 5 - 2 captured = 3
+    let scores_after: [Field; 2] = [3, 7];
+
+    let end_hash = hash_board_state(board_after, scores_after, 1);
+
+    // Card 14 (Mesmerize) has nullifier_secret = 1000
+    let enc_null = p2_encrypt_nullifier(1000);
+
+    main(
+        cc1, cc2,
+        start_hash, end_hash,
+        1, 2,       // game ended, player 2 wins
+        enc_null,
+        2,          // current_player = P2
+        14,         // card_id = Mesmerize
+        2, 2,       // row=2, col=2
+        board_before, board_after,
+        scores_before, scores_after,
+        current_turn_before,
+        P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
+        p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
+        P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
+    );
+}
+
 // ====================== FAILURE TESTS ======================
 
 #[test(should_fail_with = "Cell not empty")]
