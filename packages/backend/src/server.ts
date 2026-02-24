@@ -211,6 +211,81 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
         }
         break;
       }
+
+      case 'SUBMIT_HAND_PROOF': {
+        try {
+          const room = gameManager.getGame(msg.gameId);
+          if (!room) {
+            send(ws, { type: 'ERROR', message: 'Game not found' });
+            break;
+          }
+          const playerRole = gameManager.getPlayerRole(msg.gameId, playerId);
+          if (!playerRole) {
+            send(ws, { type: 'ERROR', message: 'Not in this game' });
+            break;
+          }
+          const fromPlayer = playerRole === 'player1' ? 1 : 2;
+          const opponentId = getOpponentId(msg.gameId, playerId);
+          if (opponentId) {
+            sendToPlayer(opponentId, {
+              type: 'HAND_PROOF',
+              gameId: msg.gameId,
+              handProof: msg.handProof,
+              fromPlayer: fromPlayer as 1 | 2,
+            });
+          }
+        } catch (err: any) {
+          send(ws, { type: 'ERROR', message: err.message });
+        }
+        break;
+      }
+
+      case 'SUBMIT_MOVE_PROOF': {
+        try {
+          // First apply the move on the server (same as PLACE_CARD)
+          const result = gameManager.placeCard(msg.gameId, playerId, msg.handIndex, msg.row, msg.col);
+          const room = gameManager.getGame(msg.gameId)!;
+
+          // Send state update to the current player
+          const stateMsg: ServerMessage = {
+            type: 'GAME_STATE',
+            gameId: msg.gameId,
+            gameState: result.newState,
+            captures: result.captures,
+          };
+          send(ws, stateMsg);
+
+          // Send move proof + state to the opponent
+          const opponentId = getOpponentId(msg.gameId, playerId);
+          if (opponentId) {
+            sendToPlayer(opponentId, {
+              type: 'MOVE_PROVEN',
+              gameId: msg.gameId,
+              gameState: result.newState,
+              captures: result.captures,
+              moveProof: msg.moveProof,
+              handIndex: msg.handIndex,
+              row: msg.row,
+              col: msg.col,
+            });
+          }
+
+          // Check if game is over
+          if (result.newState.status === 'finished') {
+            const overMsg: ServerMessage = {
+              type: 'GAME_OVER',
+              gameId: msg.gameId,
+              gameState: result.newState,
+              winner: result.newState.winner!,
+            };
+            send(ws, overMsg);
+            if (opponentId) sendToPlayer(opponentId, overMsg);
+          }
+        } catch (err: any) {
+          send(ws, { type: 'ERROR', message: err.message });
+        }
+        break;
+      }
     }
   }
 

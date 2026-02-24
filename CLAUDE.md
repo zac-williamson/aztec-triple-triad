@@ -4,12 +4,16 @@
 
 You are managed by an orchestration loop (`orchestrate.sh`) that invokes you in bounded increments.
 
+**YOU ARE IN FIX MODE.** The initial implementation had critical security and completeness gaps. Read `FIX_SPEC.md` for the full specification of what must be fixed. No shortcuts. No stubs. Every fix must be real, tested, working code.
+
 **Every session, you MUST:**
 1. Read `PROGRESS.json` to understand your current phase, task, and milestone status
-2. Work on the current phase's incomplete milestones
-3. Update `PROGRESS.json` milestone statuses as you complete them (set `"status": "completed"`)
-4. Commit and push after completing milestones
-5. Follow TDD: write tests first, confirm they fail, implement, confirm they pass
+2. Read `FIX_SPEC.md` to understand what needs to be fixed for the current phase
+3. Work on the current phase's incomplete milestones
+4. Update `PROGRESS.json` milestone statuses as you complete them (set `"status": "completed"`)
+5. Commit and push after completing milestones
+6. Follow TDD: write tests first, confirm they fail, implement, confirm they pass
+7. **Maintain `BLOCKERS.md`**: Log every issue you encounter that you cannot resolve
 
 **PROGRESS.json updates** — Use this pattern to mark milestones done:
 ```bash
@@ -17,11 +21,30 @@ You are managed by an orchestration loop (`orchestrate.sh`) that invokes you in 
 jq '.phases["1"].milestones[0].status = "completed"' PROGRESS.json > tmp.json && mv tmp.json PROGRESS.json
 ```
 
+**BLOCKERS.md** — Create/update this file whenever you encounter:
+- SDK version incompatibilities
+- Noir compilation errors that require API changes
+- API key issues (e.g., card art generation)
+- Grumpkin curve operations not available in Noir stdlib
+- Circuit constraint count limits
+- Any other issue preventing a fix from being completed to spec
+
+Format:
+```markdown
+## [Date] - [Issue Title]
+**Status:** OPEN | RESOLVED | WORKAROUND
+**Severity:** CRITICAL | HIGH | MEDIUM
+**Description:** What happened
+**Attempted solutions:** What was tried
+**Resolution/Workaround:** How it was resolved
+```
+
 **If you are stuck**, read `.claude/rules/stuck-recovery.md` for recovery strategies.
 
-**Context preservation** — When context is compacted, these survive via CLAUDE.md and PROGRESS.json:
+**Context preservation** — When context is compacted, these survive via CLAUDE.md, FIX_SPEC.md, and PROGRESS.json:
 - Current phase and task
 - Milestone completion status
+- Fix specification (what needs to be done)
 - Project structure and conventions
 - Aztec version: v4.0.0-devnet.2-patch.0
 
@@ -30,6 +53,7 @@ jq '.phases["1"].milestones[0].status = "completed"' PROGRESS.json > tmp.json &&
 - **TDD cycle**: Test first → run (confirm fail) → implement → run (confirm pass) → commit
 - **Commit after milestones**: Each milestone = commit + push
 - **Update PROGRESS.json**: Mark milestones as you go so the orchestrator tracks your progress
+- **Update BLOCKERS.md**: Log any blockers as you encounter them
 - **If blocked**: Write analysis to STUCK_ANALYSIS.md, try a different approach, don't loop on the same error
 
 ---

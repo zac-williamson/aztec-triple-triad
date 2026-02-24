@@ -35,13 +35,36 @@ export interface GameState {
   winner: Player | 'draw' | null;
 }
 
+// Serialized proof types for transport
+export interface SerializedProof {
+  proof: string;
+  publicInputs: string[];
+}
+
+export interface HandProofData extends SerializedProof {
+  cardCommit: string;
+  playerAddress: string;
+  gameId: string;
+}
+
+export interface MoveProofData extends SerializedProof {
+  cardCommit1: string;
+  cardCommit2: string;
+  startStateHash: string;
+  endStateHash: string;
+  gameEnded: boolean;
+  winnerId: number;
+}
+
 // Client -> Server messages
 export type ClientMessage =
   | { type: 'CREATE_GAME'; cardIds: number[] }
   | { type: 'JOIN_GAME'; gameId: string; cardIds: number[] }
   | { type: 'PLACE_CARD'; gameId: string; handIndex: number; row: number; col: number }
   | { type: 'LIST_GAMES' }
-  | { type: 'GET_GAME'; gameId: string };
+  | { type: 'GET_GAME'; gameId: string }
+  | { type: 'SUBMIT_HAND_PROOF'; gameId: string; handProof: HandProofData }
+  | { type: 'SUBMIT_MOVE_PROOF'; gameId: string; handIndex: number; row: number; col: number; moveProof: MoveProofData };
 
 // Server -> Client messages
 export type ServerMessage =
@@ -53,7 +76,9 @@ export type ServerMessage =
   | { type: 'GAME_LIST'; games: GameListEntry[] }
   | { type: 'GAME_INFO'; game: GameListEntry | null }
   | { type: 'OPPONENT_DISCONNECTED'; gameId: string }
-  | { type: 'ERROR'; message: string };
+  | { type: 'ERROR'; message: string }
+  | { type: 'HAND_PROOF'; gameId: string; handProof: HandProofData; fromPlayer: 1 | 2 }
+  | { type: 'MOVE_PROVEN'; gameId: string; gameState: GameState; captures: { row: number; col: number }[]; moveProof: MoveProofData; handIndex: number; row: number; col: number };
 
 export interface GameListEntry {
   id: string;

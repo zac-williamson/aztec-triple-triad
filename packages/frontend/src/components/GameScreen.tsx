@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import type { GameState, Player } from '../types';
+import type { ProofStatus } from '../hooks/useProofGeneration';
+import type { TxStatus } from '../hooks/useGameContract';
 import { Board } from './Board';
 import { Hand } from './Hand';
 import './GameScreen.css';
@@ -13,6 +15,8 @@ interface GameScreenProps {
   opponentDisconnected: boolean;
   onPlaceCard: (handIndex: number, row: number, col: number) => void;
   onBackToLobby: () => void;
+  proofStatus?: ProofStatus;
+  txStatus?: TxStatus;
 }
 
 export function GameScreen({
@@ -24,6 +28,8 @@ export function GameScreen({
   opponentDisconnected,
   onPlaceCard,
   onBackToLobby,
+  proofStatus,
+  txStatus,
 }: GameScreenProps) {
   const [selectedCardIndex, setSelectedCardIndex] = useState<number | null>(null);
   const [capturedCells, setCapturedCells] = useState<{ row: number; col: number }[]>([]);
@@ -165,6 +171,28 @@ export function GameScreen({
       )}
       {!isFinished && !isMyTurn && (
         <div className="game-screen__hint">Waiting for opponent...</div>
+      )}
+
+      {/* Proof generation and transaction status indicators */}
+      {proofStatus === 'generating' && (
+        <div className="game-screen__proof-status">
+          <div className="game-screen__proof-spinner" />
+          Generating proof...
+        </div>
+      )}
+      {txStatus && txStatus !== 'idle' && txStatus !== 'confirmed' && (
+        <div className="game-screen__tx-status">
+          <div className="game-screen__proof-spinner" />
+          {txStatus === 'preparing' && 'Preparing transaction...'}
+          {txStatus === 'proving' && 'Generating aggregate proof...'}
+          {txStatus === 'sending' && 'Sending transaction...'}
+          {txStatus === 'error' && 'Transaction failed'}
+        </div>
+      )}
+      {txStatus === 'confirmed' && (
+        <div className="game-screen__tx-confirmed">
+          Game settled on-chain!
+        </div>
       )}
     </div>
   );

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { ClientMessage, ServerMessage, GameState, Player, GameListEntry } from '../types';
+import type { ClientMessage, ServerMessage, GameState, Player, GameListEntry, HandProofData, MoveProofData } from '../types';
 
 const DEFAULT_WS_URL = 'ws://localhost:3001';
 
@@ -13,9 +13,13 @@ export interface UseWebSocketReturn {
   error: string | null;
   gameOver: { winner: Player | 'draw' } | null;
   opponentDisconnected: boolean;
+  opponentHandProof: HandProofData | null;
+  lastMoveProof: { moveProof: MoveProofData; handIndex: number; row: number; col: number } | null;
   createGame: (cardIds: number[]) => void;
   joinGame: (gameId: string, cardIds: number[]) => void;
   placeCard: (handIndex: number, row: number, col: number) => void;
+  submitHandProof: (gameId: string, handProof: HandProofData) => void;
+  submitMoveProof: (gameId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData) => void;
   refreshGameList: () => void;
   disconnect: () => void;
 }
@@ -32,6 +36,8 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const [error, setError] = useState<string | null>(null);
   const [gameOver, setGameOver] = useState<{ winner: Player | 'draw' } | null>(null);
   const [opponentDisconnected, setOpponentDisconnected] = useState(false);
+  const [opponentHandProof, setOpponentHandProof] = useState<HandProofData | null>(null);
+  const [lastMoveProof, setLastMoveProof] = useState<{ moveProof: MoveProofData; handIndex: number; row: number; col: number } | null>(null);
 
   const send = useCallback((msg: ClientMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -88,6 +94,19 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
         case 'OPPONENT_DISCONNECTED':
           setOpponentDisconnected(true);
           break;
+        case 'HAND_PROOF':
+          setOpponentHandProof(msg.handProof);
+          break;
+        case 'MOVE_PROVEN':
+          setGameState(msg.gameState);
+          setLastCaptures(msg.captures);
+          setLastMoveProof({
+            moveProof: msg.moveProof,
+            handIndex: msg.handIndex,
+            row: msg.row,
+            col: msg.col,
+          });
+          break;
         case 'ERROR':
           setError(msg.message);
           break;
@@ -123,6 +142,17 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     send({ type: 'LIST_GAMES' });
   }, [send]);
 
+  const submitHandProof = useCallback((gId: string, handProof: HandProofData) => {
+    setError(null);
+    send({ type: 'SUBMIT_HAND_PROOF', gameId: gId, handProof });
+  }, [send]);
+
+  const submitMoveProof = useCallback((gId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData) => {
+    if (!gId) return;
+    setError(null);
+    send({ type: 'SUBMIT_MOVE_PROOF', gameId: gId, handIndex, row, col, moveProof });
+  }, [send]);
+
   const disconnect = useCallback(() => {
     wsRef.current?.close();
     setGameId(null);
@@ -130,6 +160,8 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     setGameState(null);
     setGameOver(null);
     setOpponentDisconnected(false);
+    setOpponentHandProof(null);
+    setLastMoveProof(null);
   }, []);
 
   return {
@@ -142,9 +174,13 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     error,
     gameOver,
     opponentDisconnected,
+    opponentHandProof,
+    lastMoveProof,
     createGame,
     joinGame,
     placeCard,
+    submitHandProof,
+    submitMoveProof,
     refreshGameList,
     disconnect,
   };

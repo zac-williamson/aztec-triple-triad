@@ -379,6 +379,101 @@ describe('Disconnection handling', () => {
   });
 });
 
+describe('Proof exchange', () => {
+  it('should relay hand proofs between players', async () => {
+    const ws1 = await createClient();
+    const ws2 = await createClient();
+    const c1 = new MessageCollector(ws1);
+    const c2 = new MessageCollector(ws2);
+
+    // Setup game
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await c2.wait((m) => m.type === 'GAME_JOINED');
+    await c1.wait((m) => m.type === 'GAME_START');
+
+    // Player 1 submits hand proof
+    sendMessage(ws1, {
+      type: 'SUBMIT_HAND_PROOF',
+      gameId,
+      handProof: {
+        proof: 'base64proofdata1',
+        publicInputs: ['0xcommit1', '0xaddr1', gameId],
+        cardCommit: '0xcommit1',
+        playerAddress: '0xaddr1',
+        gameId,
+      },
+    });
+
+    // Player 2 receives hand proof
+    const handProofMsg = await c2.wait((m) => m.type === 'HAND_PROOF');
+    expect(handProofMsg.type).toBe('HAND_PROOF');
+    if (handProofMsg.type === 'HAND_PROOF') {
+      expect(handProofMsg.handProof.cardCommit).toBe('0xcommit1');
+      expect(handProofMsg.fromPlayer).toBe(1);
+    }
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it('should handle move with proof', async () => {
+    const ws1 = await createClient();
+    const ws2 = await createClient();
+    const c1 = new MessageCollector(ws1);
+    const c2 = new MessageCollector(ws2);
+
+    // Setup game
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await c2.wait((m) => m.type === 'GAME_JOINED');
+    await c1.wait((m) => m.type === 'GAME_START');
+
+    // Player 1 submits move with proof
+    sendMessage(ws1, {
+      type: 'SUBMIT_MOVE_PROOF',
+      gameId,
+      handIndex: 0,
+      row: 0,
+      col: 0,
+      moveProof: {
+        proof: 'base64moveproof',
+        publicInputs: ['0xcc1', '0xcc2', '0xstart', '0xend', '0', '0'],
+        cardCommit1: '0xcc1',
+        cardCommit2: '0xcc2',
+        startStateHash: '0xstart',
+        endStateHash: '0xend',
+        gameEnded: false,
+        winnerId: 0,
+      },
+    });
+
+    // Player 1 gets GAME_STATE (standard update)
+    const stateMsg = await c1.wait((m) => m.type === 'GAME_STATE');
+    expect(stateMsg.type).toBe('GAME_STATE');
+
+    // Player 2 gets MOVE_PROVEN (with proof attached)
+    const moveProvenMsg = await c2.wait((m) => m.type === 'MOVE_PROVEN');
+    expect(moveProvenMsg.type).toBe('MOVE_PROVEN');
+    if (moveProvenMsg.type === 'MOVE_PROVEN') {
+      expect(moveProvenMsg.moveProof.cardCommit1).toBe('0xcc1');
+      expect(moveProvenMsg.handIndex).toBe(0);
+      expect(moveProvenMsg.row).toBe(0);
+      expect(moveProvenMsg.col).toBe(0);
+      expect(moveProvenMsg.gameState.board[0][0].card).not.toBeNull();
+    }
+
+    ws1.close();
+    ws2.close();
+  });
+});
+
 describe('REST game info', () => {
   it('should return game info via REST after WebSocket creation', async () => {
     const ws1 = await createClient();
