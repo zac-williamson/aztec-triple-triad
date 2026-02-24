@@ -172,8 +172,6 @@ fn main(
     scores_before: [Field; 2],
     scores_after: [Field; 2],
     current_turn_before: Field,
-    player1_hand_count_after: Field,
-    player2_hand_count_after: Field,
     // Private inputs - current player's hand commitment data
     player_secret: Field,
     player_address: Field,
@@ -394,7 +392,13 @@ fn main(
         assert(winner_id == 0, "No winner yet");
     }
 
-    // ===== 12. Verify scores are consistent =====
+    // ===== 12. Verify scores are consistent (BUG-4 fix) =====
+    // Total score must always be 10 (5 cards per player, captures transfer ownership)
+    let p1_score = scores_after[0] as u32;
+    let p2_score = scores_after[1] as u32;
+    assert(p1_score + p2_score == 10, "Total score must be 10");
+
+    // Count board ownership to verify scores are plausible
     let mut p1_board: u32 = 0;
     let mut p2_board: u32 = 0;
     for i in 0..9 {
@@ -404,10 +408,10 @@ fn main(
             p2_board += 1;
         }
     }
-    let expected_p1 = p1_board + player1_hand_count_after as u32;
-    let expected_p2 = p2_board + player2_hand_count_after as u32;
-    assert(scores_after[0] as u32 == expected_p1, "P1 score mismatch");
-    assert(scores_after[1] as u32 == expected_p2, "P2 score mismatch");
+
+    // Each player's score must be >= their board count (can't have negative hand count)
+    assert(p1_score >= p1_board, "P1 score less than board count");
+    assert(p2_score >= p2_board, "P2 score less than board count");
 
     // ===== 13. ECDH encryption of card nullifier (FIX-3) =====
     let opponent_pubkey = EmbeddedCurvePoint {
@@ -534,7 +538,6 @@ fn test_first_move_no_capture() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        4, 5,       // hand counts after
         // Player 1 hand data
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
@@ -580,7 +583,6 @@ fn test_second_move_no_capture() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        4, 4,       // hand counts after
         // Player 2 hand data
         P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
         p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
@@ -628,7 +630,6 @@ fn test_capture_one_card() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        3, 4,       // p1 hand: 3, p2 hand: 4
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
@@ -679,7 +680,6 @@ fn test_capture_multiple_cards() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        4, 1,
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
@@ -721,7 +721,6 @@ fn test_no_capture_higher_adjacent() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        4, 4,
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
@@ -775,7 +774,6 @@ fn test_final_move_game_ends_p1_wins() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 1,
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
@@ -827,7 +825,6 @@ fn test_game_ends_draw() {
         board_before2, board_after2,
         scores_before2, scores_after2,
         current_turn_before2,
-        0, 1,
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
@@ -867,7 +864,6 @@ fn test_fail_place_on_occupied_cell() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        4, 5,
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
@@ -905,7 +901,6 @@ fn test_fail_wrong_player_turn() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        5, 4,
         P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
         p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
         P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
@@ -936,7 +931,6 @@ fn test_fail_row_out_of_bounds() {
         board_before, board_before,
         scores_before, scores_before,
         current_turn_before,
-        4, 5,
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
@@ -972,7 +966,6 @@ fn test_fail_card_not_in_hand() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        4, 5,
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
@@ -1008,7 +1001,6 @@ fn test_fail_wrong_player_secret() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        4, 5,
         999,        // WRONG player secret
         P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
@@ -1046,7 +1038,6 @@ fn test_fail_false_capture() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        4, 4,
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
@@ -1083,7 +1074,6 @@ fn test_fail_missing_capture() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        4, 4,
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
@@ -1120,7 +1110,6 @@ fn test_fail_card_id_changed() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        4, 4,
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
@@ -1163,7 +1152,6 @@ fn test_player2_move_with_capture() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        4, 4,
         P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
         p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
         P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
@@ -1204,7 +1192,6 @@ fn test_equal_ranks_no_capture() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        4, 4,
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
@@ -1242,7 +1229,6 @@ fn test_fail_wrong_encrypted_nullifier() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        4, 5,
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
