@@ -188,7 +188,10 @@ fn main(
     );
     assert(computed_commit == card_commit, "Card commitment mismatch");
 
-    // 5. Derive Grumpkin public key and verify it matches public inputs (FIX-3)
+    // 5. Reject zero private key (degenerate point at infinity)
+    assert(grumpkin_private_key != 0, "Grumpkin private key must not be zero");
+
+    // 6. Derive Grumpkin public key and verify it matches public inputs (FIX-3)
     let computed_pubkey = derive_public_key(grumpkin_private_key);
     assert(computed_pubkey.x == grumpkin_public_key_x, "Grumpkin public key X mismatch");
     assert(computed_pubkey.y == grumpkin_public_key_y, "Grumpkin public key Y mismatch");
@@ -490,5 +493,34 @@ fn test_fail_wrong_grumpkin_pubkey() {
         wrong_pubkey.x, wrong_pubkey.y,
         player_secret, card_ids, card_ranks, nullifier_secrets,
         grumpkin_private_key,
+    );
+}
+
+#[test(should_fail_with = "Grumpkin private key must not be zero")]
+fn test_fail_zero_grumpkin_private_key() {
+    let player_secret: Field = 12345;
+    let player_address: Field = 0xabcdef;
+    let game_id: Field = 1;
+    let card_ids: [Field; 5] = [1, 2, 3, 4, 5];
+    let card_ranks: [[Field; 4]; 5] = [
+        [1, 4, 1, 5],
+        [5, 1, 1, 3],
+        [1, 3, 3, 5],
+        [6, 1, 1, 2],
+        [2, 3, 1, 5],
+    ];
+    let nullifier_secrets: [Field; 5] = [100, 200, 300, 400, 500];
+
+    let commit = test_compute_commit(
+        player_secret, player_address, game_id,
+        card_ids, card_ranks, nullifier_secrets,
+    );
+
+    // Zero private key should be rejected
+    main(
+        commit, player_address, game_id,
+        0, 0,
+        player_secret, card_ids, card_ranks, nullifier_secrets,
+        0,
     );
 }

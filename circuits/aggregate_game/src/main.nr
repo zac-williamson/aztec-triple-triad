@@ -120,6 +120,9 @@ fn main(
     assert(hp1_game_id == game_id, "Hand proof 1 game_id mismatch");
     assert(hp2_game_id == game_id, "Hand proof 2 game_id mismatch");
 
+    // Prevent self-play: players must be different addresses
+    assert(player1_address != player2_address, "Players must have different addresses");
+
     // Grumpkin public keys from hand proofs must match public outputs (BUG-1 fix)
     assert(hp1_grumpkin_x == player1_grumpkin_pubkey_x, "P1 Grumpkin X mismatch");
     assert(hp1_grumpkin_y == player1_grumpkin_pubkey_y, "P1 Grumpkin Y mismatch");
@@ -505,4 +508,19 @@ fn test_validate_move_chain_invalid_winner() {
     moves[8][5] = 4;
 
     validate_move_chain(moves, cc1, cc2, initial, 9999, 1, 4);
+}
+
+/// Helper to validate self-play prevention
+fn validate_no_self_play(player1_address: Field, player2_address: Field) {
+    assert(player1_address != player2_address, "Players must have different addresses");
+}
+
+#[test]
+fn test_no_self_play_different_addresses() {
+    validate_no_self_play(0x1234, 0x5678);
+}
+
+#[test(should_fail_with = "Players must have different addresses")]
+fn test_no_self_play_same_address_rejected() {
+    validate_no_self_play(0x1234, 0x1234);
 }

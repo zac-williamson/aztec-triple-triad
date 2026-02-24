@@ -148,7 +148,7 @@ pub contract TripleTriadNFT {
         let note = CardNote { token_id };
         self.storage.private_nfts.at(to).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
 
-        self.enqueue_self.finalize_mint(token_id, packed_ranks);
+        self.enqueue_self.finalize_mint(to, token_id, packed_ranks);
     }
 
     /// Mint a card to public ownership.
@@ -228,11 +228,12 @@ pub contract TripleTriadNFT {
 
     #[external("public")]
     #[only_self]
-    fn finalize_mint(token_id: Field, packed_ranks: Field) {
+    fn finalize_mint(to: AztecAddress, token_id: Field, packed_ranks: Field) {
         let exists = self.storage.nft_exists.at(token_id).read();
         assert(!exists, "Token already exists");
         self.storage.nft_exists.at(token_id).write(true);
         self.storage.card_ranks.at(token_id).initialize(packed_ranks);
+        self.emit(CardMinted { token_id, to });
     }
 
     #[external("public")]

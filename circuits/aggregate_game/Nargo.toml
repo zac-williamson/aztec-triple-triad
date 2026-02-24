@@ -2,7 +2,7 @@
 name = "aggregate_game"
 type = "bin"
 authors = [""]
-compiler_version = ">=0.18.0"
+compiler_version = ">=0.36.0"
 
 [dependencies]
 bb_proof_verification = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v4.0.0-devnet.2-patch.0", directory = "barretenberg/noir/bb_proof_verification" }

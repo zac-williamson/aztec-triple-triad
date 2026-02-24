@@ -22,7 +22,7 @@
 /// Board cell: each cell is (card_id, owner) where owner 0=empty, 1=player1, 2=player2
 
 use std::embedded_curve_ops::{EmbeddedCurvePoint, EmbeddedCurveScalar, multi_scalar_mul};
-use poseidon::poseidon2::Poseidon2;
+// External poseidon dep removed; using stdlib pedersen_hash instead
 
 /// Grumpkin generator point G
 global G: EmbeddedCurvePoint = EmbeddedCurvePoint {
@@ -40,9 +40,9 @@ fn compute_shared_secret(my_private_key: Field, opponent_pubkey: EmbeddedCurvePo
     shared_point.x
 }
 
-/// Key expansion for symmetric encryption using Poseidon2 hash
+/// Key expansion for symmetric encryption using pedersen hash
 fn expand_secret_1(secret: Field) -> Field {
-    Poseidon2::hash([secret, 0], 2)
+    std::hash::pedersen_hash([secret, 0])
 }
 
 /// Symmetric encrypt a single field element using ECDH shared secret
