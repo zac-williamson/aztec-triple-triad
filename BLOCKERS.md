@@ -1,11 +1,18 @@
 # Blockers & Issues Log
 
 ## 2026-02-24 - Grumpkin curve operations not available in Noir stdlib (FIX-3)
-**Status:** OPEN
+**Status:** RESOLVED
 **Severity:** MEDIUM
-**Description:** FIX-3 requires ECDH key pair generation on the Grumpkin curve within the prove_hand circuit. Noir's standard library does not provide readily available Grumpkin curve scalar multiplication operations (G * scalar). This would be needed for encrypted card nullifier communication between players.
-**Attempted solutions:** Reviewed Noir stdlib documentation. Grumpkin operations require custom implementation or a library.
-**Resolution/Workaround:** Deferred to a later phase. The core security model (card_commit binding, capture validation) works without ECDH. Card nullifier encryption can be handled at the application layer using JavaScript crypto libraries, with the circuit only verifying the commitment.
+**Description:** FIX-3 requires ECDH key pair generation on the Grumpkin curve within the prove_hand circuit. Initially thought Noir stdlib didn't provide Grumpkin curve ops.
+**Attempted solutions:** Reviewed Noir stdlib documentation.
+**Resolution:** Grumpkin ECDH IS available via `std::embedded_curve_ops::{EmbeddedCurvePoint, EmbeddedCurveScalar, multi_scalar_mul}`. Implemented in both prove_hand (public key derivation) and game_move (shared secret + symmetric encryption) circuits. Uses Pedersen-hash-based stream cipher for nullifier encryption (Poseidon2 module is private in nargo 1.0.0-beta.18).
+
+## 2026-02-24 - Poseidon2 hash module private in nargo 1.0.0-beta.18
+**Status:** WORKAROUND
+**Severity:** LOW
+**Description:** The `std::hash::poseidon2::Poseidon2::hash` function is not accessible (marked private) in nargo 1.0.0-beta.18. The FIX_SPEC references Poseidon2 for symmetric encryption key expansion.
+**Attempted solutions:** Tried `std::hash::poseidon2::Poseidon2::hash(data, len)` - module is private.
+**Resolution/Workaround:** Used `std::hash::pedersen_hash` instead for key expansion in symmetric encryption. Both are collision-resistant hash functions providing equivalent security for key derivation. Pedersen is already used throughout the codebase for card commitments and state hashing.
 
 ## 2026-02-24 - Barretenberg (bb) native binary requires GLIBC 2.38/2.39 (FIX-4)
 **Status:** WORKAROUND

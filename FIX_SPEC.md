@@ -75,23 +75,68 @@ Then verify:
 - Test that claiming a false capture fails (should_fail)
 - Test that failing to capture when ranks require it fails (should_fail)
 
-### FIX-3: prove_hand circuit should include ECDH public key
+### FIX-3: prove_hand circuit must include ECDH public key (Grumpkin curve)
 
 **Severity:** HIGH — needed for encrypted card communication per spec
-**File:** `circuits/prove_hand/src/main.nr`
+**Files:** `circuits/prove_hand/src/main.nr`, `circuits/game_move/src/main.nr`
 
-**Current state:** The circuit commits to card IDs and nullifier secrets, but does not establish a Grumpkin ECDH key pair for encrypted communication.
+**Current state:** The circuit commits to card IDs and nullifier secrets, but does not establish a Grumpkin ECDH key pair for encrypted communication. A previous BLOCKERS.md entry incorrectly claimed Grumpkin ops aren't available — they ARE available in `std::embedded_curve_ops`.
 
-**Required fix per spec:**
-Each player generates a temporary Grumpkin key pair for the game session. The prove_hand circuit should:
-1. Accept a `grumpkin_private_key: Field` as private input
-2. Compute the corresponding public key: `grumpkin_public_key = grumpkin_private_key * G` (Grumpkin generator)
-3. Include `grumpkin_public_key` as a public output (or part of the commitment)
+**Noir API for Grumpkin ECDH** (from mpclib reference):
+```noir
+use std::embedded_curve_ops::{EmbeddedCurvePoint, EmbeddedCurveScalar, multi_scalar_mul};
 
-This allows the opponent to compute a shared secret for encrypting card nullifiers:
-`shared_secret = x_coordinate(my_private_key * opponent_public_key)`
+// Grumpkin generator point G
+global G: EmbeddedCurvePoint = EmbeddedCurvePoint {
+    x: 0x083e7911d835097629f0067531fc15cafd79a89beecb39903f69572c636f4a5a,
+    y: 0x1a7f5efaad7f315c25a918f30cc8d7333fccab7ad7c90f14de81bcc528f9935d,
+    is_infinite: false,
+};
 
-**Note:** If Noir's standard library does not have Grumpkin curve operations readily available, document this in BLOCKERS.md and implement a simplified version or use a different approach for card encryption.
+// Public key derivation: pub_key = private_key * G
+fn derive_public_key(private_key: Field) -> EmbeddedCurvePoint {
+    multi_scalar_mul([G], [EmbeddedCurveScalar::from_field(private_key)])
+}
+
+// ECDH shared secret: shared_point = my_private_key * opponent_public_key
+fn compute_shared_secret(my_private_key: Field, opponent_pubkey: EmbeddedCurvePoint) -> Field {
+    let shared_point = multi_scalar_mul(
+        [opponent_pubkey],
+        [EmbeddedCurveScalar::from_field(my_private_key)]
+    );
+    shared_point.x  // x-coordinate is the symmetric key
+}
+
+// Poseidon2-based symmetric encryption
+fn expand_secret<let N: u32>(secret: Field) -> [Field; N] {
+    let mut rolling_secret: [Field; 2] = [0, secret];
+    let mut r: [Field; N] = [0; N];
+    for i in 0..N {
+        r[i] = poseidon::poseidon2::Poseidon2::hash(rolling_secret, 2);
+        rolling_secret[1] += 1;
+    }
+    r
+}
+
+fn symmetric_encrypt<let N: u32>(plaintext: [Field; N], secret: Field) -> [Field; N] {
+    let mut ciphertext: [Field; N] = [0; N];
+    let secrets: [Field; N] = expand_secret(secret);
+    for i in 0..N { ciphertext[i] = secrets[i] + plaintext[i]; }
+    ciphertext
+}
+```
+
+**Required fix in prove_hand:**
+1. Accept `grumpkin_private_key: Field` as private input
+2. Compute public key: `multi_scalar_mul([G], [EmbeddedCurveScalar::from_field(grumpkin_private_key)])`
+3. Add `grumpkin_public_key_x: pub Field` and `grumpkin_public_key_y: pub Field` as public outputs
+4. Assert computed public key matches the public outputs
+
+**Required fix in game_move:**
+1. Accept opponent's public key (x, y) as private inputs
+2. Compute `shared_secret = multi_scalar_mul([opponent_pubkey], [EmbeddedCurveScalar::from_field(player_private_key)])`
+3. Use `shared_secret.x` with `symmetric_encrypt` to encrypt the card nullifier
+4. Include the encrypted nullifier as a public output (opponent can decrypt it)
 
 ---
 

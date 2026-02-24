@@ -140,10 +140,12 @@ export function useProofGeneration(): UseProofGenerationReturn {
 
           proofData = {
             proof: 'placeholder_hand_proof',
-            publicInputs: [cardCommit, playerAddress, gameId],
+            publicInputs: [cardCommit, playerAddress, gameId, '0', '0'],
             cardCommit,
             playerAddress,
             gameId,
+            grumpkinPublicKeyX: '0',
+            grumpkinPublicKeyY: '0',
           };
         }
 
@@ -220,6 +222,7 @@ export function useProofGeneration(): UseProofGenerationReturn {
                   endStateHash,
                   gameEnded ? '1' : '0',
                   String(winnerId),
+                  '0', // encrypted_card_nullifier placeholder
                 ],
                 cardCommit1,
                 cardCommit2,
@@ -227,6 +230,7 @@ export function useProofGeneration(): UseProofGenerationReturn {
                 endStateHash,
                 gameEnded,
                 winnerId,
+                encryptedCardNullifier: '0',
               };
             }
 
