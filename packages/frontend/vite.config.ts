@@ -44,7 +44,7 @@ export default defineConfig({
     esbuildOptions: {
       target: 'esnext',
     },
-    exclude: ['@aztec/bb.js', '@aztec/noir-noir_js'],
+    exclude: ['@aztec/bb.js', '@noir-lang/noir_js'],
   },
   worker: {
     format: 'es',

@@ -13,13 +13,13 @@
   "dependencies": {
     "@aztec/accounts": "^4.0.0-devnet.2-patch.0",
     "@aztec/aztec.js": "^4.0.0-devnet.2-patch.0",
+    "@aztec/bb.js": "4.0.0-devnet.2-patch.0",
     "@aztec/constants": "^4.0.0-devnet.2-patch.0",
     "@aztec/noir-contracts.js": "^4.0.0-devnet.2-patch.0",
     "@aztec/stdlib": "^4.0.0-devnet.2-patch.0",
     "@aztec/test-wallet": "^4.0.0-devnet.2-patch.0",
     "@aztec/wallet-sdk": "^4.0.0-devnet.2-patch.0",
-    "@aztec/bb.js": "4.0.0-devnet.2-patch.0",
-    "@aztec/noir-noir_js": "4.0.0-devnet.2-patch.0",
+    "@noir-lang/noir_js": "^1.0.0-beta.18-2db78f8.nightly",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

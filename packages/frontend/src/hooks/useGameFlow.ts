@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useProofGeneration } from './useProofGeneration';
+import type { PlayerHandData } from './useProofGeneration';
 import { getCardById } from '../cards';
 import type { GameState, Player, HandProofData, MoveProofData } from '../types';
 
@@ -73,6 +74,23 @@ function getOrCreatePlayerSecret(gameId: string, playerNumber: number): string {
 }
 
 /**
+ * Generate or retrieve a Grumpkin private key for ECDH.
+ */
+function getOrCreateGrumpkinKey(gameId: string, playerNumber: number): string {
+  const key = `tt_grumpkin_${gameId}_${playerNumber}`;
+  let stored = localStorage.getItem(key);
+  if (!stored) {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    // Ensure non-zero (Grumpkin private key must not be zero)
+    bytes[31] = bytes[31] || 1;
+    stored = '0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem(key, stored);
+  }
+  return stored;
+}
+
+/**
  * Generate nullifier secrets for each card.
  */
 function getOrCreateNullifierSecrets(gameId: string, playerNumber: number, count: number): string[] {
@@ -123,6 +141,11 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
     return getOrCreateNullifierSecrets(gameId, playerNumber, cardIds.length);
   }, [gameId, playerNumber, cardIds.length]);
 
+  const grumpkinPrivateKey = useMemo(() => {
+    if (!gameId || !playerNumber) return '';
+    return getOrCreateGrumpkinKey(gameId, playerNumber);
+  }, [gameId, playerNumber]);
+
   // Get card ranks from the database
   const cardRanks = useMemo(() => {
     return cardIds.map(id => {
@@ -151,12 +174,13 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
       gameId,
       playerSecret,
       nullifierSecrets,
+      grumpkinPrivateKey || undefined,
     ).then(proof => {
       if (proof) {
         setMyHandProof(proof);
       }
     });
-  }, [gameId, playerNumber, gameState, cardIds, cardRanks, accountAddress, playerSecret, nullifierSecrets, proofs]);
+  }, [gameId, playerNumber, gameState, cardIds, cardRanks, accountAddress, playerSecret, nullifierSecrets, grumpkinPrivateKey, proofs]);
 
   // Determine if the winner can settle
   const myPlayer: Player = playerNumber === 1 ? 'player1' : 'player2';
@@ -170,6 +194,24 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
     setCollectedMoveProofs(prev => [...prev, proof]);
   }, []);
 
+  // Build PlayerHandData for passing to move proof generation
+  const playerHandData: PlayerHandData | null = useMemo(() => {
+    if (!gameId || !playerNumber || cardIds.length !== 5) return null;
+    const address = accountAddress || `player_${playerNumber}_address`;
+    return {
+      playerSecret,
+      playerAddress: address,
+      gameId,
+      cardIds,
+      cardRanks,
+      nullifierSecrets,
+    };
+  }, [gameId, playerNumber, cardIds, cardRanks, accountAddress, playerSecret, nullifierSecrets]);
+
+  // Extract opponent's Grumpkin public keys from their hand proof
+  const opponentPubkeyX = opponentHandProof?.grumpkinPublicKeyX || '0';
+  const opponentPubkeyY = opponentHandProof?.grumpkinPublicKeyY || '0';
+
   const generateMoveProofForPlacement = useCallback(
     async (
       cardId: number,
@@ -182,24 +224,22 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
       gameEnded: boolean,
       winnerId: number,
     ): Promise<MoveProofData | null> => {
-      if (!playerNumber) return null;
+      if (!playerNumber || !playerHandData || !grumpkinPrivateKey) return null;
 
+      // card_commit_1 is always player 1's commit, card_commit_2 is player 2's
       const commit1 = playerNumber === 1 ? (myCardCommit || 'unknown') : (opponentCardCommit || 'unknown');
       const commit2 = playerNumber === 2 ? (myCardCommit || 'unknown') : (opponentCardCommit || 'unknown');
 
       const proof = await proofs.generateMoveProof(
-        cardId,
-        row,
-        col,
-        playerNumber,
-        boardBefore,
-        boardAfter,
-        scoresBefore,
-        scoresAfter,
-        commit1,
-        commit2,
-        gameEnded,
-        winnerId,
+        cardId, row, col, playerNumber,
+        boardBefore, boardAfter,
+        scoresBefore, scoresAfter,
+        commit1, commit2,
+        gameEnded, winnerId,
+        playerHandData,
+        grumpkinPrivateKey,
+        opponentPubkeyX,
+        opponentPubkeyY,
       );
 
       if (proof) {
@@ -207,7 +247,7 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
       }
       return proof;
     },
-    [playerNumber, myCardCommit, opponentCardCommit, proofs, addMoveProof],
+    [playerNumber, myCardCommit, opponentCardCommit, playerHandData, grumpkinPrivateKey, opponentPubkeyX, opponentPubkeyY, proofs, addMoveProof],
   );
 
   const reset = useCallback(() => {
