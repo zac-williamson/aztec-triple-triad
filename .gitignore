@@ -10,7 +10,8 @@ Github_PAT.txt
 .DS_Store
 *.log
 slack-webhook.txt
-packages/frontend/public/cards/*.png
+# Card art is now committed (AI-generated axolotl art)
+# packages/frontend/public/cards/*.png
 
 # Deploy keys
 aztec-triple-triad-deploy-key
