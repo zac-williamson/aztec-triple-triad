@@ -1,8 +1,9 @@
 use aztec::macros::aztec;
 
 /// Triple Triad Game contract.
-/// Manages on-chain game settlement by verifying recursive proofs of the full game transcript.
-/// The winner calls processGame with all move proofs to settle the game and transfer a card.
+/// Manages on-chain game settlement by verifying a recursively aggregated proof
+/// of the full game transcript (2 hand proofs + 9 move proofs).
+/// The winner calls processGame with the aggregate proof to settle and transfer a card.
 #[aztec]
 pub contract TripleTriadGame {
     use aztec::{
@@ -37,6 +38,7 @@ pub contract TripleTriadGame {
         nft_contract: PublicImmutable<AztecAddress, Context>,
         hand_vk_hash: PublicImmutable<Field, Context>,
         move_vk_hash: PublicImmutable<Field, Context>,
+        aggregate_vk_hash: PublicImmutable<Field, Context>,
         game_settled: Map<Field, PublicMutable<bool, Context>, Context>,
     }
 
@@ -48,80 +50,110 @@ pub contract TripleTriadGame {
         nft_address: AztecAddress,
         hand_vk_hash: Field,
         move_vk_hash: Field,
+        aggregate_vk_hash: Field,
     ) {
         self.storage.nft_contract.initialize(nft_address);
         self.storage.hand_vk_hash.initialize(hand_vk_hash);
         self.storage.move_vk_hash.initialize(move_vk_hash);
+        self.storage.aggregate_vk_hash.initialize(aggregate_vk_hash);
     }
 
     // --- Process Game (Private) ---
 
-    /// Process a completed game. The winner submits:
-    /// - hand proofs: proofs that each player owns 5 cards
-    /// - final move proof: proof of the last game move (board state at end)
-    /// - card_to_transfer: the card ID the winner wants to take
+    /// Process a completed game using an aggregated proof.
+    /// The aggregate_game circuit verifies all 11 proofs (2 hand + 9 move),
+    /// validates proof chaining, card_commit consistency, and game completion.
     ///
-    /// Verification:
-    /// 1. Verify hand proofs share same card_commit values as move proof
-    /// 2. Verify all proofs are valid
-    /// 3. Verify final state declares the caller as winner
-    /// 4. Transfer the selected card via NFT contract
+    /// The contract verifies the single aggregate proof and checks its public outputs:
+    ///   [0] card_commit_1
+    ///   [1] card_commit_2
+    ///   [2] player1_address
+    ///   [3] player2_address
+    ///   [4] game_id
+    ///   [5] initial_state_hash
+    ///   [6] final_state_hash
+    ///   [7] game_ended (must be 1)
+    ///   [8] winner_id (1, 2, or 3)
+    ///   [9] hand_vk_hash
+    ///   [10] move_vk_hash
     #[external("private")]
     fn process_game(
-        // Hand proofs
-        hand_vk: UltraHonkVerificationKey,
-        hand_proof_1: UltraHonkZKProof,
-        hand_proof_1_inputs: [Field; 3],  // [card_commit, player_address, game_id]
-        hand_proof_2: UltraHonkZKProof,
-        hand_proof_2_inputs: [Field; 3],
-        // Move proof (final state proof)
-        move_vk: UltraHonkVerificationKey,
-        final_move_proof: UltraHonkZKProof,
-        final_move_inputs: [Field; 6],  // [card_commit_1, card_commit_2, start_state, end_state, game_ended, winner_id]
-        // Game result
+        aggregate_vk: UltraHonkVerificationKey,
+        aggregate_proof: UltraHonkZKProof,
+        aggregate_inputs: [Field; 11],
         loser: AztecAddress,
         card_to_transfer: Field,
     ) {
         // Read stored VK hashes (PublicImmutable is readable from private)
-        let hand_vk_hash = self.storage.hand_vk_hash.read();
-        let move_vk_hash = self.storage.move_vk_hash.read();
+        let stored_aggregate_vk_hash = self.storage.aggregate_vk_hash.read();
+        let stored_hand_vk_hash = self.storage.hand_vk_hash.read();
+        let stored_move_vk_hash = self.storage.move_vk_hash.read();
 
-        // 1. Verify hand ownership proofs
-        verify_honk_proof(hand_vk, hand_proof_1, hand_proof_1_inputs, hand_vk_hash);
-        verify_honk_proof(hand_vk, hand_proof_2, hand_proof_2_inputs, hand_vk_hash);
+        // 1. Verify the aggregate proof
+        verify_honk_proof(
+            aggregate_vk,
+            aggregate_proof,
+            aggregate_inputs,
+            stored_aggregate_vk_hash,
+        );
 
-        // 2. Card commits must match between hand proofs and move proofs
-        let card_commit_1 = hand_proof_1_inputs[0];
-        let card_commit_2 = hand_proof_2_inputs[0];
-        assert(card_commit_1 == final_move_inputs[0], "Card commit 1 mismatch");
-        assert(card_commit_2 == final_move_inputs[1], "Card commit 2 mismatch");
+        // 2. Extract public outputs from aggregate proof
+        let card_commit_1 = aggregate_inputs[0];
+        let card_commit_2 = aggregate_inputs[1];
+        let player1_address = aggregate_inputs[2];
+        let player2_address = aggregate_inputs[3];
+        let game_id = aggregate_inputs[4];
+        let _initial_state_hash = aggregate_inputs[5];
+        let _final_state_hash = aggregate_inputs[6];
+        let game_ended = aggregate_inputs[7];
+        let winner_id = aggregate_inputs[8];
+        let proof_hand_vk_hash = aggregate_inputs[9];
+        let proof_move_vk_hash = aggregate_inputs[10];
 
-        // 3. Game IDs must match between hand proofs
-        let game_id = hand_proof_1_inputs[2];
-        assert(game_id == hand_proof_2_inputs[2], "Game ID mismatch");
+        // 3. Validate VK hashes match stored values
+        // This ensures the aggregate proof used the correct verification keys
+        assert(
+            proof_hand_vk_hash == stored_hand_vk_hash,
+            "Hand VK hash mismatch with stored value",
+        );
+        assert(
+            proof_move_vk_hash == stored_move_vk_hash,
+            "Move VK hash mismatch with stored value",
+        );
 
-        // 4. Verify the final move proof
-        verify_honk_proof(move_vk, final_move_proof, final_move_inputs, move_vk_hash);
+        // 4. Suppress unused variable warnings
+        let _cc1 = card_commit_1;
+        let _cc2 = card_commit_2;
 
-        // 5. Verify game ended and caller is winner
-        assert(final_move_inputs[4] == 1, "Game not ended");
-        let winner_id = final_move_inputs[5];
+        // 5. Verify game ended
+        assert(game_ended == 1, "Game not ended");
+
+        // 6. Verify caller is the winner
         let caller = self.msg_sender();
-
-        let player1_addr = hand_proof_1_inputs[1];
-        let player2_addr = hand_proof_2_inputs[1];
         let caller_field = caller.to_field();
 
-        // Winner_id 1 = player1 wins, 2 = player2 wins
+        // winner_id: 1 = player1 wins, 2 = player2 wins, 3 = draw
         if winner_id == 1 {
-            assert(caller_field == player1_addr, "Caller is not the winner");
+            assert(caller_field == player1_address, "Caller is not the winner");
+        } else if winner_id == 2 {
+            assert(caller_field == player2_address, "Caller is not the winner");
         } else {
-            assert(winner_id == 2, "Invalid winner ID");
-            assert(caller_field == player2_addr, "Caller is not the winner");
+            // Draw - either player can settle (no card transfer in draw)
+            assert(winner_id == 3, "Invalid winner ID");
+            assert(
+                (caller_field == player1_address) | (caller_field == player2_address),
+                "Caller is not a game participant",
+            );
         }
 
-        // 6. Settle: transfer card from loser to winner via NFT contract
-        self.enqueue_self.settle_game(game_id, caller, loser, card_to_transfer);
+        // 7. Settle: transfer card from loser to winner via NFT contract
+        // In case of draw, no card transfer (card_to_transfer should be 0)
+        if winner_id != 3 {
+            self.enqueue_self.settle_game(game_id, caller, loser, card_to_transfer);
+        } else {
+            // Still mark game as settled even for draws
+            self.enqueue_self.settle_game_draw(game_id);
+        }
     }
 
     // --- Public settlement ---
@@ -150,6 +182,21 @@ pub contract TripleTriadGame {
             winner,
             loser,
             transferred_card_id: card_id,
+        });
+    }
+
+    #[external("public")]
+    #[only_self]
+    fn settle_game_draw(game_id: Field) {
+        let settled = self.storage.game_settled.at(game_id).read();
+        assert(!settled, "Game already settled");
+        self.storage.game_settled.at(game_id).write(true);
+
+        self.emit(GameSettled {
+            game_id,
+            winner: AztecAddress::zero(),
+            loser: AztecAddress::zero(),
+            transferred_card_id: 0,
         });
     }
 
