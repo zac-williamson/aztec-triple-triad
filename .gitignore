@@ -11,3 +11,8 @@ Github_PAT.txt
 *.log
 slack-webhook.txt
 packages/frontend/public/cards/*.png
+
+# GLIBC compatibility shim for bb binary (Amazon Linux 2023)
+bb_patched
+glibc_shim.so
+bb_wrapper.sh

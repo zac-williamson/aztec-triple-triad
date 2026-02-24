@@ -1,0 +1,9 @@
+GLIBC_2.35 {
+    global:
+        __isoc23_strtol;
+        __isoc23_strtoul;
+        __isoc23_strtoll;
+        __isoc23_strtoull;
+        pidfd_spawnp;
+        pidfd_getpid;
+};
