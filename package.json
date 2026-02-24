@@ -7,6 +7,7 @@
   ],
   "scripts": {
     "test": "npm test --workspaces",
-    "build": "npm run build --workspaces"
+    "copy-circuits": "mkdir -p packages/frontend/public/circuits && cp circuits/target/prove_hand.json circuits/target/game_move.json circuits/target/aggregate_game.json packages/frontend/public/circuits/",
+    "build": "npm run copy-circuits && npm run build --workspaces"
   }
 }
