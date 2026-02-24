@@ -21,6 +21,19 @@
 
 use bb_proof_verification::{UltraHonkVerificationKey, UltraHonkZKProof, verify_honk_proof};
 
+/// Compute the canonical hash of an empty board.
+/// Must match game_move's hash_board_state format:
+///   pedersen_hash([board[18], scores[2], current_turn])
+/// Empty board: all zeros, scores = [5, 5], current_turn = 1 (player1 goes first)
+fn compute_initial_state_hash() -> Field {
+    let mut inputs: [Field; 21] = [0; 21];
+    // board[0..18] = all zeros (empty board)
+    inputs[18] = 5;  // player1_score = 5 (5 cards in hand)
+    inputs[19] = 5;  // player2_score = 5 (5 cards in hand)
+    inputs[20] = 1;  // player1 goes first
+    std::hash::pedersen_hash(inputs)
+}
+
 fn main(
     // === Public outputs (verified by the contract) ===
     card_commit_1: pub Field,
@@ -155,9 +168,13 @@ fn main(
     }
 
     // ===== 7. Validate initial and final states =====
-    // First move's start_state must match the public initial_state_hash
+    // Verify initial_state_hash is the canonical empty board hash (BUG-3 fix)
+    let canonical_initial = compute_initial_state_hash();
+    assert(initial_state_hash == canonical_initial, "Initial state must be empty board");
+
+    // First move's start_state must match the canonical initial_state_hash
     assert(
-        move_inputs[0][2] == initial_state_hash,
+        move_inputs[0][2] == canonical_initial,
         "First move start_state does not match initial state",
     );
 
@@ -188,4 +205,20 @@ fn main(
         (winner_id == 1) | (winner_id == 2) | (winner_id == 3),
         "Invalid winner_id",
     );
+}
+
+// ====================== TESTS ======================
+
+#[test]
+fn test_initial_state_hash() {
+    let hash = compute_initial_state_hash();
+    // Independently compute using the same pedersen_hash with the same layout
+    let mut inputs: [Field; 21] = [0; 21];
+    inputs[18] = 5;
+    inputs[19] = 5;
+    inputs[20] = 1;
+    let expected = std::hash::pedersen_hash(inputs);
+    assert(hash == expected, "Initial state hash mismatch");
+    // Verify it's not zero (sanity check)
+    assert(hash != 0, "Initial state hash should not be zero");
 }
