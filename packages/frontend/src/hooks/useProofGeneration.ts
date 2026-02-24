@@ -66,10 +66,9 @@ export interface UseProofGenerationReturn {
 /**
  * Hook for generating ZK proofs for game moves and hand ownership.
  *
- * Uses compiled Noir circuit artifacts to generate proofs client-side.
- * Proofs are queued and generated asynchronously to avoid blocking the UI.
- *
- * Falls back gracefully if proof generation infrastructure is unavailable.
+ * Uses compiled Noir circuit artifacts to generate real ZK proofs client-side
+ * via bb.js (Barretenberg WASM). Proofs are queued and generated asynchronously
+ * to avoid blocking the UI.
  */
 export function useProofGeneration(): UseProofGenerationReturn {
   const [handProofStatus, setHandProofStatus] = useState<ProofStatus>('idle');
@@ -93,31 +92,11 @@ export function useProofGeneration(): UseProofGenerationReturn {
       setError(null);
 
       try {
-        let proofData: HandProofData;
-
-        try {
-          const { generateProveHandProof } = await import('../aztec/proofWorker');
-          proofData = await generateProveHandProof(
-            cardIds, cardRanks, playerAddress, gameId,
-            playerSecret, nullifierSecrets, grumpkinPrivateKey,
-          );
-        } catch {
-          // Fallback: create a placeholder proof for WebSocket-only mode
-          console.warn('[useProofGeneration] Proof generation unavailable, using placeholder');
-          const cardCommit = computeCardCommitPlaceholder(
-            playerSecret, playerAddress, gameId, cardIds, cardRanks, nullifierSecrets,
-          );
-
-          proofData = {
-            proof: 'placeholder_hand_proof',
-            publicInputs: [cardCommit, playerAddress, gameId, '0', '0'],
-            cardCommit,
-            playerAddress,
-            gameId,
-            grumpkinPublicKeyX: '0',
-            grumpkinPublicKeyY: '0',
-          };
-        }
+        const { generateProveHandProof } = await import('../aztec/proofWorker');
+        const proofData = await generateProveHandProof(
+          cardIds, cardRanks, playerAddress, gameId,
+          playerSecret, nullifierSecrets, grumpkinPrivateKey,
+        );
 
         setHandProof(proofData);
         setHandProofStatus('ready');
@@ -162,41 +141,17 @@ export function useProofGeneration(): UseProofGenerationReturn {
             const boardBeforeEncoded = encodeBoardState(boardBefore);
             const boardAfterEncoded = encodeBoardState(boardAfter);
 
-            let proofData: MoveProofData;
-
-            try {
-              const { generateGameMoveProof } = await import('../aztec/proofWorker');
-              proofData = await generateGameMoveProof(
-                cardId, row, col, currentPlayer,
-                boardBeforeEncoded, boardAfterEncoded,
-                scoresBefore, scoresAfter,
-                cardCommit1, cardCommit2,
-                gameEnded, winnerId,
-                playerHandData,
-                grumpkinPrivateKey,
-                opponentPubkeyX, opponentPubkeyY,
-              );
-            } catch {
-              // Fallback: placeholder proof
-              console.warn('[useProofGeneration] Move proof generation unavailable, using placeholder');
-              const startStateHash = boardBeforeEncoded.join(',');
-              const endStateHash = boardAfterEncoded.join(',');
-              proofData = {
-                proof: 'placeholder_move_proof',
-                publicInputs: [
-                  cardCommit1, cardCommit2,
-                  startStateHash, endStateHash,
-                  gameEnded ? '1' : '0', String(winnerId), '0',
-                ],
-                cardCommit1,
-                cardCommit2,
-                startStateHash,
-                endStateHash,
-                gameEnded,
-                winnerId,
-                encryptedCardNullifier: '0',
-              };
-            }
+            const { generateGameMoveProof } = await import('../aztec/proofWorker');
+            const proofData = await generateGameMoveProof(
+              cardId, row, col, currentPlayer,
+              boardBeforeEncoded, boardAfterEncoded,
+              scoresBefore, scoresAfter,
+              cardCommit1, cardCommit2,
+              gameEnded, winnerId,
+              playerHandData,
+              grumpkinPrivateKey,
+              opponentPubkeyX, opponentPubkeyY,
+            );
 
             setMoveProofs((prev) => [...prev, proofData]);
             setMoveProofStatus('ready');
@@ -234,31 +189,4 @@ export function useProofGeneration(): UseProofGenerationReturn {
     generateMoveProof,
     reset,
   };
-}
-
-/**
- * Compute a placeholder card commitment (simple hash).
- * Used as fallback when proof generation infrastructure is unavailable.
- */
-function computeCardCommitPlaceholder(
-  playerSecret: string,
-  playerAddress: string,
-  gameId: string,
-  cardIds: number[],
-  cardRanks: Array<{ top: number; right: number; bottom: number; left: number }>,
-  nullifierSecrets: string[],
-): string {
-  const data = [
-    playerSecret, playerAddress, gameId,
-    ...cardIds.map(String),
-    ...cardRanks.flatMap((r) => [String(r.top), String(r.right), String(r.bottom), String(r.left)]),
-    ...nullifierSecrets,
-  ];
-  let hash = 0;
-  const str = data.join(':');
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash + char) | 0;
-  }
-  return '0x' + Math.abs(hash).toString(16).padStart(8, '0');
 }

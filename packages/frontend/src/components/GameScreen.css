@@ -181,6 +181,24 @@
   color: #7bc67e;
 }
 
+.game-screen__proof-indicator--generating {
+  background: rgba(106, 176, 224, 0.08);
+  border-color: rgba(106, 176, 224, 0.3);
+  color: #6ab0e0;
+}
+
+.game-screen__proof-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid transparent;
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
 /* Card claim section */
 .game-screen__claim-section {
   margin: 16px 0;

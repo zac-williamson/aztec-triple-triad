@@ -154,14 +154,19 @@ export function GameScreen({
 
       {/* Proof status bar */}
       <div className="game-screen__proof-bar">
-        <div className={`game-screen__proof-indicator ${myHandProofReady ? 'game-screen__proof-indicator--ready' : ''}`}>
+        <div className={`game-screen__proof-indicator ${myHandProofReady ? 'game-screen__proof-indicator--ready' : handProofStatus === 'generating' ? 'game-screen__proof-indicator--generating' : ''}`}>
+          {handProofStatus === 'generating' && <span className="game-screen__proof-spinner" />}
           Your proof: {myHandProofReady ? 'Ready' : handProofStatus === 'generating' ? 'Generating...' : 'Pending'}
         </div>
         <div className={`game-screen__proof-indicator ${opponentHandProofReady ? 'game-screen__proof-indicator--ready' : ''}`}>
           Opponent proof: {opponentHandProofReady ? 'Ready' : 'Pending'}
         </div>
-        <div className="game-screen__proof-indicator">
+        <div className={`game-screen__proof-indicator ${collectedProofCount >= 9 ? 'game-screen__proof-indicator--ready' : proofStatus === 'generating' ? 'game-screen__proof-indicator--generating' : ''}`}>
+          {proofStatus === 'generating' && <span className="game-screen__proof-spinner" />}
           Moves proven: {collectedProofCount}/9
+        </div>
+        <div className={`game-screen__proof-indicator ${(collectedProofCount + (myHandProofReady ? 1 : 0) + (opponentHandProofReady ? 1 : 0)) >= 11 ? 'game-screen__proof-indicator--ready' : ''}`}>
+          Total: {collectedProofCount + (myHandProofReady ? 1 : 0) + (opponentHandProofReady ? 1 : 0)}/11
         </div>
       </div>
 
@@ -269,10 +274,16 @@ export function GameScreen({
       )}
 
       {/* Proof generation and transaction status indicators */}
+      {handProofStatus === 'generating' && (
+        <div className="game-screen__status-bar game-screen__status-bar--proof">
+          <div className="game-screen__status-spinner" />
+          Generating hand proof (proving card ownership)...
+        </div>
+      )}
       {proofStatus === 'generating' && (
         <div className="game-screen__status-bar game-screen__status-bar--proof">
           <div className="game-screen__status-spinner" />
-          Generating move proof...
+          Generating move proof ({collectedProofCount + 1}/9)...
         </div>
       )}
       {txStatus && txStatus !== 'idle' && txStatus !== 'confirmed' && txStatus !== 'error' && (
