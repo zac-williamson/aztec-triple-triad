@@ -101,24 +101,26 @@ export function useGameContract(
 
         setTxStatus('proving');
 
-        // In production:
-        // 1. Generate the aggregate proof from all hand + move proofs
-        //    using the aggregate_game circuit
-        // const aggregateProof = await generateAggregateProof(handProof1, handProof2, moveProofs);
+        // Generate the aggregate proof from all hand + move proofs
+        const { generateAggregateProof } = await import('../aztec/aggregateProof');
+        const aggregateProof = await generateAggregateProof(
+          handProof1, handProof2, moveProofs,
+        );
+
+        console.log('[useGameContract] Aggregate proof generated, publicInputs:', aggregateProof.publicInputs.length);
 
         setTxStatus('sending');
 
-        // In production:
+        // On-chain submission requires deployed contracts
+        // When contract is deployed:
         // const contract = await Contract.at(gameContractAddress, GameContractArtifact, wallet);
         // const tx = contract.methods.process_game(
-        //   aggregateVk,
-        //   aggregateProof,
-        //   aggregateInputs,
+        //   aggregateProof.vkAsFields,
+        //   aggregateProof.proof,
+        //   aggregateProof.publicInputs,
         //   loserAddress,
         //   cardToTransfer,
         // );
-        //
-        // Use sponsored fee payment so players don't need gas tokens
         // const feeMethod = new aztecFee.SponsoredFeePaymentMethod(sponsoredFpcAddress);
         // const sentTx = await tx.send({ fee: { paymentMethod: feeMethod } });
         // const receipt = await sentTx.wait();
@@ -129,7 +131,7 @@ export function useGameContract(
         void gameContractAddress;
 
         throw new Error(
-          'On-chain settlement not yet available - contract deployment required',
+          'Aggregate proof generated successfully but on-chain settlement requires contract deployment',
         );
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Transaction failed';
