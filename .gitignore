@@ -12,6 +12,10 @@ Github_PAT.txt
 slack-webhook.txt
 packages/frontend/public/cards/*.png
 
+# Deploy keys
+aztec-triple-triad-deploy-key
+aztec-triple-triad-deploy-key.pub
+
 # GLIBC compatibility shim for bb binary (Amazon Linux 2023)
 bb_patched
 glibc_shim.so

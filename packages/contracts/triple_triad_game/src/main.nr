@@ -152,7 +152,12 @@ pub contract TripleTriadGame {
 
         // 6. Settle: transfer card from loser to winner via NFT contract
         // In case of draw, no card transfer (card_to_transfer should be 0)
+        // TODO: V2 - verify card_to_transfer was actually in the game by adding
+        // encrypted_card_id outputs to game_move, collecting them in aggregate,
+        // and having winner prove which cards the loser played. Currently the
+        // winner can specify any card the loser owns, not just game cards.
         if winner_id != 3 {
+            assert(card_to_transfer != 0, "card_to_transfer must be nonzero for non-draw");
             self.enqueue_self.settle_game(game_id, caller, loser, card_to_transfer);
         } else {
             // Still mark game as settled even for draws
