@@ -1,0 +1,7 @@
+[package]
+name = "prove_hand"
+type = "bin"
+authors = [""]
+compiler_version = ">=0.18.0"
+
+[dependencies]

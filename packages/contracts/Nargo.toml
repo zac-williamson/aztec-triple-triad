@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "triple_triad_nft",
+    "triple_triad_game",
+]
