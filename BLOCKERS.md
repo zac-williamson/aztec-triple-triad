@@ -8,11 +8,11 @@
 **Resolution:** Grumpkin ECDH IS available via `std::embedded_curve_ops::{EmbeddedCurvePoint, EmbeddedCurveScalar, multi_scalar_mul}`. Implemented in both prove_hand (public key derivation) and game_move (shared secret + symmetric encryption) circuits. Uses Pedersen-hash-based stream cipher for nullifier encryption (Poseidon2 module is private in nargo 1.0.0-beta.18).
 
 ## 2026-02-24 - Poseidon2 hash module private in nargo 1.0.0-beta.18
-**Status:** WORKAROUND
+**Status:** RESOLVED
 **Severity:** LOW
-**Description:** The `std::hash::poseidon2::Poseidon2::hash` function is not accessible (marked private) in nargo 1.0.0-beta.18. The FIX_SPEC references Poseidon2 for symmetric encryption key expansion.
-**Attempted solutions:** Tried `std::hash::poseidon2::Poseidon2::hash(data, len)` - module is private.
-**Resolution/Workaround:** Used `std::hash::pedersen_hash` instead for key expansion in symmetric encryption. Both are collision-resistant hash functions providing equivalent security for key derivation. Pedersen is already used throughout the codebase for card commitments and state hashing.
+**Description:** The `std::hash::poseidon2::Poseidon2::hash` function is not accessible (marked private) in nargo 1.0.0-beta.18.
+**Attempted solutions:** Tried `std::hash::poseidon2::Poseidon2::hash(data, len)` - module is private in stdlib.
+**Resolution:** Added the external poseidon library: `poseidon = { tag = "v0.1.1", git = "https://github.com/noir-lang/poseidon" }`. Symmetric encryption key expansion now uses `poseidon::poseidon2::Poseidon2::hash([secret, 0], 2)` instead of pedersen_hash.
 
 ## 2026-02-24 - Barretenberg (bb) native binary requires GLIBC 2.38/2.39 (FIX-4)
 **Status:** RESOLVED
