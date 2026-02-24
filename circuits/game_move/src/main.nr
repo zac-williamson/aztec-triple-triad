@@ -228,6 +228,14 @@ fn main(
     }
     assert(card_found, "Placed card not in committed hand");
 
+    // ===== NEW: Verify card has not already been placed (C2 fix) =====
+    for i in 0..9 {
+        if board_before[i * 2 + 1] != 0 {
+            // Cell is occupied -- verify it's not the same card
+            assert(board_before[i * 2] != card_id, "Card already placed on board");
+        }
+    }
+
     // Verify the committed ranks match the hardcoded card database
     let db_ranks = get_card_ranks(card_id as u32);
     for i in 0..4 {
@@ -1414,5 +1422,89 @@ fn test_exact_scores_after_capture() {
         P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
         p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
         P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
+    );
+}
+
+// ====================== C2 FIX TESTS: Card Replay Prevention ======================
+
+#[test(should_fail_with = "Card already placed on board")]
+fn test_card_replay_rejected() {
+    // P1 already has card 1 (Geezard) on board at (0,0).
+    // P1 tries to place card 1 AGAIN at (1,1). Should be rejected.
+    let cc1 = get_p1_commit();
+    let cc2 = get_p2_commit();
+    let p2_pubkey = get_p2_pubkey();
+
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[0] = 1; board_before[1] = 1;   // (0,0) card 1, P1
+    board_before[2] = 10; board_before[3] = 2;  // (0,1) card 10, P2
+    let scores_before: [Field; 2] = [5, 5];
+    let current_turn_before: Field = 1;
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1; board_after[1] = 1;
+    board_after[2] = 10; board_after[3] = 2;
+    board_after[8] = 1; board_after[9] = 1;    // (1,1) card 1 REPLAYED
+    let scores_after: [Field; 2] = [5, 5];
+    let end_hash = hash_board_state(board_after, scores_after, 2);
+
+    let enc_null = p1_encrypt_nullifier(100);
+
+    main(
+        cc1, cc2,
+        start_hash, end_hash,
+        0, 0,
+        enc_null,
+        1, 1,          // card_id = 1 (already on board!)
+        1, 1,
+        board_before, board_after,
+        scores_before, scores_after,
+        current_turn_before,
+        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
+        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
+        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+    );
+}
+
+#[test]
+fn test_different_card_after_same_id_on_board() {
+    // P1 has card 1 on board. P1 places card 2 (different card). Should succeed.
+    let cc1 = get_p1_commit();
+    let cc2 = get_p2_commit();
+    let p2_pubkey = get_p2_pubkey();
+
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[0] = 1; board_before[1] = 1;   // (0,0) card 1, P1
+    board_before[2] = 10; board_before[3] = 2;  // (0,1) card 10, P2
+    let scores_before: [Field; 2] = [5, 5];
+    let current_turn_before: Field = 1;
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1; board_after[1] = 1;
+    board_after[2] = 10; board_after[3] = 1;   // (0,1) CAPTURED: Funguar top=5 > Caterchipillar bottom=2
+    board_after[8] = 2; board_after[9] = 1;    // (1,1) card 2, different card
+    // filled=3, p1_board=3, p2_board=0, p1_played=2, p2_played=1
+    // p1_score=3+3=6, p2_score=0+4=4
+    let scores_after: [Field; 2] = [6, 4];
+    let end_hash = hash_board_state(board_after, scores_after, 2);
+
+    // Card 2 (Funguar) has nullifier_secret = 200
+    let enc_null = p1_encrypt_nullifier(200);
+
+    main(
+        cc1, cc2,
+        start_hash, end_hash,
+        0, 0,
+        enc_null,
+        1, 2,          // card_id = 2 (different, valid)
+        1, 1,
+        board_before, board_after,
+        scores_before, scores_after,
+        current_turn_before,
+        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
+        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
+        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
     );
 }
