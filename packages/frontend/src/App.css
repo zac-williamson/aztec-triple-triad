@@ -1,0 +1,73 @@
+.app {
+  position: relative;
+  min-height: 100vh;
+}
+
+.app__bg {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse at 20% 50%, rgba(74, 158, 255, 0.06) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 20%, rgba(158, 74, 255, 0.04) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 80%, rgba(74, 255, 158, 0.03) 0%, transparent 50%),
+    linear-gradient(180deg, #0a0a1a, #0d0d24, #0a0a1a);
+}
+
+.app__waiting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  gap: 20px;
+  font-family: 'Rajdhani', sans-serif;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.app__waiting p {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.app__waiting-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(255, 255, 255, 0.1);
+  border-top-color: #4aff9e;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.app__game-id-display {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 24px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+
+.app__game-id-display span {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.app__game-id-display code {
+  font-family: 'Orbitron', monospace;
+  font-size: 13px;
+  color: #4a9eff;
+  word-break: break-all;
+  user-select: all;
+}

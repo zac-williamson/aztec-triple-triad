@@ -1,0 +1,209 @@
+.card {
+  position: relative;
+  border-radius: 6px;
+  overflow: hidden;
+  user-select: none;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  font-family: 'Orbitron', monospace;
+}
+
+.card--small {
+  width: 70px;
+  height: 90px;
+  font-size: 10px;
+}
+
+.card--medium {
+  width: 100px;
+  height: 130px;
+  font-size: 13px;
+}
+
+.card--large {
+  width: 130px;
+  height: 168px;
+  font-size: 16px;
+}
+
+.card--clickable {
+  cursor: pointer;
+}
+
+.card--clickable:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.card--blue {
+  background: linear-gradient(135deg, #0a1628, #1a3a6a);
+  border: 2px solid #4a9eff;
+  box-shadow: 0 0 10px rgba(74, 158, 255, 0.3);
+}
+
+.card--red {
+  background: linear-gradient(135deg, #280a0a, #6a1a1a);
+  border: 2px solid #ff4a4a;
+  box-shadow: 0 0 10px rgba(255, 74, 74, 0.3);
+}
+
+.card:not(.card--blue):not(.card--red) {
+  background: linear-gradient(135deg, #1a1a2e, #2d2d44);
+  border: 2px solid #555;
+}
+
+.card--selected {
+  transform: translateY(-8px) scale(1.05);
+  box-shadow: 0 12px 32px rgba(74, 255, 158, 0.4);
+  border-color: #4aff9e !important;
+}
+
+.card--captured {
+  animation: cardFlip 0.6s ease-in-out;
+}
+
+@keyframes cardFlip {
+  0% { transform: rotateY(0deg); }
+  50% { transform: rotateY(90deg); }
+  100% { transform: rotateY(0deg); }
+}
+
+.card__inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.card__rank {
+  position: absolute;
+  color: #fff;
+  font-weight: 700;
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.8), 0 1px 2px rgba(0, 0, 0, 0.6);
+  z-index: 2;
+  line-height: 1;
+}
+
+.card__rank--top {
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.card__rank--right {
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.card__rank--bottom {
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.card__rank--left {
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.card__art {
+  width: 60%;
+  height: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.card__art-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.card__art-placeholder {
+  width: 100%;
+  height: 100%;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.6;
+}
+
+.card__art-level-1 { background: linear-gradient(135deg, #2a4a2a, #1a3a1a); }
+.card__art-level-2 { background: linear-gradient(135deg, #2a2a4a, #1a1a3a); }
+.card__art-level-3 { background: linear-gradient(135deg, #4a2a4a, #3a1a3a); }
+.card__art-level-4 { background: linear-gradient(135deg, #4a3a1a, #3a2a0a); }
+.card__art-level-5 { background: linear-gradient(135deg, #4a1a1a, #3a0a0a); }
+
+.card__art-power {
+  font-size: 1.4em;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.card__name {
+  position: absolute;
+  bottom: 2px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 0.55em;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 4px;
+}
+
+/* Face-down card back */
+.card--facedown {
+  background: linear-gradient(135deg, #1a1a2e, #16213e);
+  border: 2px solid #444;
+}
+
+.card__back {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.card__back-pattern {
+  width: 70%;
+  height: 80%;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 5px,
+    rgba(255, 255, 255, 0.03) 5px,
+    rgba(255, 255, 255, 0.03) 10px
+  );
+  position: relative;
+}
+
+.card__back-pattern::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+}

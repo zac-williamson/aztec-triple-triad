@@ -10,3 +10,4 @@ Github_PAT.txt
 .DS_Store
 *.log
 slack-webhook.txt
+packages/frontend/public/cards/*.png
