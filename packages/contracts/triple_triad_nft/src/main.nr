@@ -224,6 +224,45 @@ pub contract TripleTriadNFT {
         self.enqueue_self.set_public_owner(from, token_id);
     }
 
+    // --- Public Escrow (Game Preparation) ---
+
+    /// Prepare 5 cards for a game by moving them from private to public ownership.
+    /// Must be called by the card owner before the game starts.
+    /// This enables the game contract to transfer cards via public state after settlement.
+    #[external("private")]
+    fn prepare_for_game(card_ids: [Field; 5]) {
+        let owner = self.msg_sender();
+
+        // Pop each card from the player's private set
+        for i in 0..5 {
+            let options = NoteGetterOptions::new()
+                .select(CardNote::properties().token_id, Comparator.EQ, card_ids[i])
+                .set_limit(1);
+            let notes = self.storage.private_nfts.at(owner).pop_notes(options);
+            assert(notes.len() == 1, "Card not found in private set");
+        }
+
+        // Enqueue public state updates for all 5 cards
+        for i in 0..5 {
+            self.enqueue_self.set_public_owner(owner, card_ids[i]);
+        }
+    }
+
+    /// Reclaim a card from public back to private after a game.
+    /// Step 1 (private): Creates the private note and enqueues public ownership clear.
+    /// Only the public owner can reclaim.
+    #[external("private")]
+    fn reclaim_card(token_id: Field) {
+        let owner = self.msg_sender();
+
+        // Create new private note for the owner
+        let note = CardNote { token_id };
+        self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+
+        // Enqueue clearing of public ownership (verifies caller is public owner)
+        self.enqueue_self.finalize_reclaim(owner, token_id);
+    }
+
     // --- Public functions called via enqueue_self ---
 
     #[external("public")]
@@ -240,6 +279,16 @@ pub contract TripleTriadNFT {
     #[only_self]
     fn set_public_owner(owner: AztecAddress, token_id: Field) {
         self.storage.public_owners.at(token_id).write(owner);
+    }
+
+    /// Step 2 (public, enqueued): Verify ownership and clear public state.
+    /// Called by reclaim_card via enqueue_self after private note is created.
+    #[external("public")]
+    #[only_self]
+    fn finalize_reclaim(owner: AztecAddress, token_id: Field) {
+        let current_owner = self.storage.public_owners.at(token_id).read();
+        assert(current_owner == owner, "Not the public owner");
+        self.storage.public_owners.at(token_id).write(AztecAddress::zero());
     }
 
     // --- View Functions ---

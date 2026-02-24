@@ -4,6 +4,19 @@ use aztec::macros::aztec;
 /// Manages on-chain game settlement by verifying a recursively aggregated proof
 /// of the full game transcript (2 hand proofs + 9 move proofs).
 /// The winner calls processGame with the aggregate proof to settle and transfer a card.
+///
+/// Game Settlement Flow (v1 - Public Escrow):
+/// 1. Both players call NFT.prepare_for_game([5 card IDs]) before playing
+///    - This moves their cards from private notes to the public_owners map
+/// 2. Game plays out off-chain with ZK proofs exchanged via WebSocket
+/// 3. Winner calls processGame with aggregate proof
+///    - settle_game calls game_transfer (public to public transfer works
+///      because cards are already in public_owners)
+/// 4. Both players call NFT.reclaim_card(token_id) for each remaining card
+///    - This moves cards back from public_owners to private notes
+///
+/// Note: prepare_for_game and reclaim_card are on the NFT contract, not here.
+/// This contract only handles proof verification and the settlement transfer.
 #[aztec]
 pub contract TripleTriadGame {
     use aztec::{
