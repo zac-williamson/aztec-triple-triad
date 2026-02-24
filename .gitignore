@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+OPEN_API_KEY.txt
+Github_PAT.txt
+*.pem
+.claude/
+.DS_Store
+*.log
+slack-webhook.txt
