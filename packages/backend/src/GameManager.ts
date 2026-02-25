@@ -16,13 +16,25 @@ export class GameManager {
   private games = new Map<string, GameRoom>();
   private playerToGame = new Map<string, string>();
 
-  createGame(playerId: string, cardIds: number[]): GameRoom {
+  private validateCardIds(cardIds: number[]): void {
     if (cardIds.length !== 5) {
       throw new Error('Must provide exactly 5 card IDs');
     }
+    const uniqueIds = new Set(cardIds);
+    if (uniqueIds.size !== cardIds.length) {
+      throw new Error('Duplicate card IDs not allowed');
+    }
+    // Validate card IDs exist in database
+    getCardsByIds(cardIds);
+  }
 
-    // Validate card IDs exist
-    const cards = getCardsByIds(cardIds);
+  createGame(playerId: string, cardIds: number[]): GameRoom {
+    this.validateCardIds(cardIds);
+
+    // Fix 4.2: Prevent game overwrite - reject if player already in active game
+    if (this.playerToGame.has(playerId)) {
+      throw new Error('You are already in an active game. Leave it first.');
+    }
 
     const gameId = uuidv4();
     const room: GameRoom = {
@@ -52,12 +64,13 @@ export class GameManager {
     if (room.player1Id === playerId) {
       throw new Error('Cannot join your own game');
     }
-    if (cardIds.length !== 5) {
-      throw new Error('Must provide exactly 5 card IDs');
+
+    // Fix 4.2: Prevent game overwrite - reject if player already in active game
+    if (this.playerToGame.has(playerId)) {
+      throw new Error('You are already in an active game. Leave it first.');
     }
 
-    // Validate card IDs exist
-    getCardsByIds(cardIds);
+    this.validateCardIds(cardIds);
 
     room.player2Id = playerId;
     room.player2CardIds = cardIds;

@@ -257,6 +257,47 @@ describe('GameManager', () => {
     });
   });
 
+  describe('duplicate card ID validation (Fix 4.1)', () => {
+    it('should reject duplicate card IDs in createGame', () => {
+      expect(() => manager.createGame('p1', [1, 1, 3, 4, 5])).toThrow('Duplicate card IDs not allowed');
+    });
+
+    it('should reject all-same card IDs in createGame', () => {
+      expect(() => manager.createGame('p1', [1, 1, 1, 1, 1])).toThrow('Duplicate card IDs not allowed');
+    });
+
+    it('should reject duplicate card IDs in joinGame', () => {
+      const room = manager.createGame('player-1', PLAYER1_CARDS);
+      expect(() => manager.joinGame(room.id, 'player-2', [6, 6, 8, 9, 10])).toThrow('Duplicate card IDs not allowed');
+    });
+
+    it('should accept valid unique card IDs', () => {
+      const room = manager.createGame('player-1', PLAYER1_CARDS);
+      expect(room.player1CardIds).toEqual(PLAYER1_CARDS);
+    });
+  });
+
+  describe('game overwrite prevention (Fix 4.2)', () => {
+    it('should reject creating a new game while in an active game', () => {
+      manager.createGame('player-1', PLAYER1_CARDS);
+      expect(() => manager.createGame('player-1', PLAYER2_CARDS)).toThrow('already in an active game');
+    });
+
+    it('should allow creating a game after previous game is removed', () => {
+      manager.createGame('player-1', PLAYER1_CARDS);
+      manager.removePlayer('player-1');
+      const room = manager.createGame('player-1', PLAYER1_CARDS);
+      expect(room.player1Id).toBe('player-1');
+    });
+
+    it('should reject joining a game while in an active game', () => {
+      const room1 = manager.createGame('player-1', PLAYER1_CARDS);
+      manager.joinGame(room1.id, 'player-2', PLAYER2_CARDS);
+      const room2 = manager.createGame('player-3', [11, 12, 13, 14, 15]);
+      expect(() => manager.joinGame(room2.id, 'player-2', PLAYER2_CARDS)).toThrow('already in an active game');
+    });
+  });
+
   describe('cleanupStaleGames', () => {
     it('should remove games past timeout', () => {
       const room = manager.createGame('player-1', PLAYER1_CARDS);

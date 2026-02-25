@@ -616,6 +616,179 @@ describe('Hand sanitization (S3 fix)', () => {
   });
 });
 
+describe('Duplicate card ID validation via WebSocket (Fix 4.1)', () => {
+  it('should reject duplicate card IDs on CREATE_GAME', async () => {
+    const ws = await createClient();
+    sendMessage(ws, { type: 'CREATE_GAME', cardIds: [1, 1, 3, 4, 5] });
+    const error = await waitForMessage(ws, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toContain('Duplicate card IDs');
+    }
+    ws.close();
+  });
+
+  it('should reject duplicate card IDs on JOIN_GAME', async () => {
+    const ws1 = await createClient();
+    const ws2 = await createClient();
+
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await waitForMessage(ws1) as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: [6, 6, 8, 9, 10] });
+    const error = await waitForMessage(ws2, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toContain('Duplicate card IDs');
+    }
+
+    ws1.close();
+    ws2.close();
+  });
+});
+
+describe('Game overwrite prevention (Fix 4.2)', () => {
+  it('should reject creating a second game while in active game', async () => {
+    const ws = await createClient();
+
+    sendMessage(ws, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    await waitForMessage(ws, (m) => m.type === 'GAME_CREATED');
+
+    sendMessage(ws, { type: 'CREATE_GAME', cardIds: PLAYER2_CARDS });
+    const error = await waitForMessage(ws, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toContain('already in an active game');
+    }
+
+    ws.close();
+  });
+});
+
+describe('Input validation (Fix 4.4)', () => {
+  it('should reject messages without a type field', async () => {
+    const ws = await createClient();
+    ws.send(JSON.stringify({ foo: 'bar' }));
+    const error = await waitForMessage(ws, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toContain('Unknown or missing message type');
+    }
+    ws.close();
+  });
+
+  it('should reject unknown message types', async () => {
+    const ws = await createClient();
+    ws.send(JSON.stringify({ type: 'UNKNOWN_TYPE' }));
+    const error = await waitForMessage(ws, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toContain('Unknown or missing message type');
+    }
+    ws.close();
+  });
+
+  it('should reject CREATE_GAME without cardIds', async () => {
+    const ws = await createClient();
+    ws.send(JSON.stringify({ type: 'CREATE_GAME' }));
+    const error = await waitForMessage(ws, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toMatch(/cardIds|card IDs/i);
+    }
+    ws.close();
+  });
+
+  it('should reject CREATE_GAME with non-array cardIds', async () => {
+    const ws = await createClient();
+    ws.send(JSON.stringify({ type: 'CREATE_GAME', cardIds: 'not-array' }));
+    const error = await waitForMessage(ws, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toMatch(/cardIds|card IDs/i);
+    }
+    ws.close();
+  });
+
+  it('should reject PLACE_CARD with out-of-range row/col', async () => {
+    const ws1 = await createClient();
+    const ws2 = await createClient();
+
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await waitForMessage(ws1) as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await waitForMessage(ws2, (m) => m.type === 'GAME_JOINED');
+    await waitForMessage(ws1, (m) => m.type === 'GAME_START');
+
+    sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 5, col: 0 } as any);
+    const error = await waitForMessage(ws1, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toMatch(/row|out of range|invalid|position/i);
+    }
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it('should reject oversized messages (>1MB)', async () => {
+    const ws = await createClient();
+    const bigPayload = JSON.stringify({ type: 'CREATE_GAME', cardIds: [1, 2, 3, 4, 5], padding: 'x'.repeat(1024 * 1024 + 1) });
+    ws.send(bigPayload);
+    const error = await waitForMessage(ws, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toContain('too large');
+    }
+    ws.close();
+  });
+
+  it('should reject PLACE_CARD with non-numeric handIndex', async () => {
+    const ws1 = await createClient();
+    const ws2 = await createClient();
+
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await waitForMessage(ws1) as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await waitForMessage(ws2, (m) => m.type === 'GAME_JOINED');
+    await waitForMessage(ws1, (m) => m.type === 'GAME_START');
+
+    ws1.send(JSON.stringify({ type: 'PLACE_CARD', gameId, handIndex: 'abc', row: 0, col: 0 }));
+    const error = await waitForMessage(ws1, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toMatch(/handIndex|must be.*number/i);
+    }
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it('should reject JOIN_GAME without gameId', async () => {
+    const ws = await createClient();
+    ws.send(JSON.stringify({ type: 'JOIN_GAME', cardIds: [6, 7, 8, 9, 10] }));
+    const error = await waitForMessage(ws, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toMatch(/gameId|game.*required/i);
+    }
+    ws.close();
+  });
+
+  it('should reject cardIds with out-of-range values', async () => {
+    const ws = await createClient();
+    sendMessage(ws, { type: 'CREATE_GAME', cardIds: [0, 2, 3, 4, 5] });
+    const error = await waitForMessage(ws, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    ws.close();
+  });
+});
+
 describe('REST game info', () => {
   it('should return game info via REST after WebSocket creation', async () => {
     const ws1 = await createClient();

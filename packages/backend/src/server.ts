@@ -7,6 +7,14 @@ import type { GameState } from '@aztec-triple-triad/game-logic';
 
 const DEFAULT_PORT = 3001;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
+const DISCONNECT_TIMEOUT_MS = 60 * 1000; // 60 seconds reconnection window
+
+// Known client message types
+const VALID_MESSAGE_TYPES = new Set([
+  'CREATE_GAME', 'JOIN_GAME', 'PLACE_CARD', 'LIST_GAMES', 'GET_GAME',
+  'SUBMIT_HAND_PROOF', 'SUBMIT_MOVE_PROOF',
+]);
 
 export interface ServerOptions {
   port?: number;
@@ -115,20 +123,87 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
     return state;
   }
 
+  // Fix 4.4: Validate incoming message structure before processing
+  function validateMessage(msg: any): string | null {
+    if (!msg || typeof msg !== 'object' || !msg.type || !VALID_MESSAGE_TYPES.has(msg.type)) {
+      return 'Unknown or missing message type';
+    }
+
+    switch (msg.type) {
+      case 'CREATE_GAME':
+        if (!Array.isArray(msg.cardIds)) return 'cardIds must be an array of numbers';
+        if (!msg.cardIds.every((id: any) => typeof id === 'number' && Number.isInteger(id) && id >= 1 && id <= 50)) {
+          return 'cardIds must contain integers between 1 and 50';
+        }
+        break;
+      case 'JOIN_GAME':
+        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required and must be a string';
+        if (!Array.isArray(msg.cardIds)) return 'cardIds must be an array of numbers';
+        if (!msg.cardIds.every((id: any) => typeof id === 'number' && Number.isInteger(id) && id >= 1 && id <= 50)) {
+          return 'cardIds must contain integers between 1 and 50';
+        }
+        break;
+      case 'PLACE_CARD':
+        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
+        if (typeof msg.handIndex !== 'number' || !Number.isInteger(msg.handIndex) || msg.handIndex < 0 || msg.handIndex > 4) {
+          return 'handIndex must be an integer between 0 and 4';
+        }
+        if (typeof msg.row !== 'number' || !Number.isInteger(msg.row) || msg.row < 0 || msg.row > 2) {
+          return 'row must be an integer between 0 and 2';
+        }
+        if (typeof msg.col !== 'number' || !Number.isInteger(msg.col) || msg.col < 0 || msg.col > 2) {
+          return 'col must be an integer between 0 and 2';
+        }
+        break;
+      case 'GET_GAME':
+        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
+        break;
+      case 'SUBMIT_HAND_PROOF':
+        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
+        if (!msg.handProof || typeof msg.handProof !== 'object') return 'handProof is required';
+        break;
+      case 'SUBMIT_MOVE_PROOF':
+        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
+        if (typeof msg.handIndex !== 'number') return 'handIndex must be a number';
+        if (typeof msg.row !== 'number' || msg.row < 0 || msg.row > 2) return 'row must be 0-2';
+        if (typeof msg.col !== 'number' || msg.col < 0 || msg.col > 2) return 'col must be 0-2';
+        if (!msg.moveProof || typeof msg.moveProof !== 'object') return 'moveProof is required';
+        break;
+    }
+    return null; // Valid
+  }
+
+  // Fix 4.3: Track disconnect timeouts for reconnection window
+  const disconnectTimeouts = new Map<string, NodeJS.Timeout>();
+
   wss.on('connection', (ws: WebSocket) => {
     const playerId = uuidv4();
     clients.set(playerId, ws);
 
     ws.on('message', (data: Buffer | string) => {
-      let msg: ClientMessage;
+      // Fix 4.4: Reject oversized messages
+      const rawData = data.toString();
+      if (rawData.length > MAX_MESSAGE_SIZE) {
+        send(ws, { type: 'ERROR', message: 'Message too large (max 1MB)' });
+        return;
+      }
+
+      let msg: any;
       try {
-        msg = JSON.parse(data.toString()) as ClientMessage;
+        msg = JSON.parse(rawData);
       } catch {
         send(ws, { type: 'ERROR', message: 'Invalid message format' });
         return;
       }
 
-      handleMessage(playerId, ws, msg);
+      // Fix 4.4: Validate message structure
+      const validationError = validateMessage(msg);
+      if (validationError) {
+        send(ws, { type: 'ERROR', message: validationError });
+        return;
+      }
+
+      handleMessage(playerId, ws, msg as ClientMessage);
     });
 
     ws.on('close', () => {
@@ -315,14 +390,28 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
   }
 
   function handleDisconnect(playerId: string): void {
-    const result = gameManager.removePlayer(playerId);
-    if (result) {
-      const { gameId, room } = result;
-      const opponentId = room.player1Id === playerId ? room.player2Id : room.player1Id;
-      if (opponentId) {
-        sendToPlayer(opponentId, { type: 'OPPONENT_DISCONNECTED', gameId });
+    // Fix 4.3: Check if player is in a game and handle cleanup with timeout
+    const gameId = gameManager.getPlayerGame(playerId);
+    if (gameId) {
+      const room = gameManager.getGame(gameId);
+      if (room && room.player2Id !== null) {
+        // Active game: notify opponent and set cleanup timeout
+        const opponentId = room.player1Id === playerId ? room.player2Id : room.player1Id;
+        if (opponentId) {
+          sendToPlayer(opponentId, { type: 'OPPONENT_DISCONNECTED', gameId });
+        }
+
+        // Set a timeout for reconnection; if no reconnection, clean up game
+        const timeout = setTimeout(() => {
+          disconnectTimeouts.delete(gameId);
+          gameManager.removeGame(gameId);
+        }, DISCONNECT_TIMEOUT_MS);
+        disconnectTimeouts.set(gameId, timeout);
       }
     }
+
+    // Always remove the player (this handles waiting-game cleanup too)
+    gameManager.removePlayer(playerId);
   }
 
   // Periodic cleanup of stale games
@@ -333,6 +422,11 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
   function close(): Promise<void> {
     return new Promise((resolve, reject) => {
       clearInterval(cleanupInterval);
+      // Clear disconnect timeouts
+      for (const timeout of disconnectTimeouts.values()) {
+        clearTimeout(timeout);
+      }
+      disconnectTimeouts.clear();
       // Close all WebSocket connections
       for (const ws of clients.values()) {
         ws.close();
