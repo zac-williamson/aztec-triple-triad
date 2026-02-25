@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
 import {
   createGame,
   placeCard,
@@ -9,6 +9,15 @@ import {
   type Player,
 } from '@aztec-triple-triad/game-logic';
 import type { GameRoom, GameListEntry } from './types.js';
+
+/**
+ * Generate a game ID that is a valid BN254 field element.
+ * Uses 31 random bytes (248 bits of entropy) which is always < BN254 modulus (~254 bits).
+ * Returns a 0x-prefixed hex string.
+ */
+export function generateGameId(): string {
+  return '0x' + crypto.randomBytes(31).toString('hex');
+}
 
 const GAME_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -36,7 +45,7 @@ export class GameManager {
       throw new Error('You are already in an active game. Leave it first.');
     }
 
-    const gameId = uuidv4();
+    const gameId = generateGameId();
     const room: GameRoom = {
       id: gameId,
       state: null as unknown as GameState, // Will be initialized when player 2 joins

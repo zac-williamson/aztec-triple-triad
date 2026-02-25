@@ -255,6 +255,199 @@ describe('useGameFlow', () => {
     expect(result.current.canSettle).toBe(false);
   });
 
+  it('should NOT generate move proof when hand proofs are missing', async () => {
+    // Set up a game with hand proof generated but NO opponent hand proof
+    const { result } = renderHook(() => useGameFlow({
+      gameId: '0x1234',
+      playerNumber: 1,
+      cardIds: [1, 2, 3, 4, 5],
+      gameState: makeGameState(),
+    }));
+
+    await act(async () => {
+      await new Promise(r => setTimeout(r, 50));
+    });
+
+    // My hand proof is generated but opponent's is null
+    expect(result.current.myHandProof).not.toBeNull();
+    expect(result.current.opponentHandProof).toBeNull();
+
+    // Try to generate a move proof — should return null (guarded)
+    let moveResult: any;
+    await act(async () => {
+      moveResult = await result.current.generateMoveProofForPlacement(
+        1, 0, 0,
+        makeBoard(),
+        makeBoard(),
+        [5, 5],
+        [5, 5],
+        false,
+        0,
+      );
+    });
+
+    expect(moveResult).toBeNull();
+    // The mock should NOT have been called for move proof generation
+    expect(mockGenerateMoveProof).not.toHaveBeenCalled();
+  });
+
+  it('should generate move proof only after both hand proofs exist', async () => {
+    const { result } = renderHook(() => useGameFlow({
+      gameId: '0x1234',
+      playerNumber: 1,
+      cardIds: [1, 2, 3, 4, 5],
+      gameState: makeGameState(),
+    }));
+
+    await act(async () => {
+      await new Promise(r => setTimeout(r, 50));
+    });
+
+    // Provide opponent hand proof with valid Grumpkin keys
+    const oppProof: HandProofData = {
+      proof: 'opp',
+      publicInputs: ['0xabc', '0xdef', '0x123'],
+      cardCommit: '0xabc',
+      playerAddress: '0xdef',
+      gameId: '0x123',
+      grumpkinPublicKeyX: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+      grumpkinPublicKeyY: '0xfedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321',
+    };
+
+    act(() => {
+      result.current.setOpponentHandProof(oppProof);
+    });
+
+    // Now both proofs exist — move proof generation should proceed
+    expect(result.current.myHandProof).not.toBeNull();
+    expect(result.current.opponentHandProof).not.toBeNull();
+    expect(result.current.myCardCommit).not.toBeNull();
+    expect(result.current.opponentCardCommit).not.toBeNull();
+  });
+
+  it('should deduplicate move proofs with same state hashes', () => {
+    const { result } = renderHook(() => useGameFlow({
+      gameId: '0x1234',
+      playerNumber: 1,
+      cardIds: [1, 2, 3, 4, 5],
+      gameState: makeGameState(),
+    }));
+
+    const moveProof: MoveProofData = {
+      proof: 'move1',
+      publicInputs: [],
+      cardCommit1: 'c1',
+      cardCommit2: 'c2',
+      startStateHash: 'same_start',
+      endStateHash: 'same_end',
+      gameEnded: false,
+      winnerId: 0,
+      encryptedCardNullifier: '0x123',
+    };
+
+    act(() => {
+      result.current.addMoveProof(moveProof);
+      // Add the same proof again (simulating double-add from local + WebSocket)
+      result.current.addMoveProof({ ...moveProof });
+    });
+
+    // Should only have 1 proof due to deduplication
+    expect(result.current.collectedMoveProofs).toHaveLength(1);
+  });
+
+  it('should accumulate exactly 9 proofs for a full game', () => {
+    const { result } = renderHook(() => useGameFlow({
+      gameId: '0x1234',
+      playerNumber: 1,
+      cardIds: [1, 2, 3, 4, 5],
+      gameState: makeGameState(),
+    }));
+
+    act(() => {
+      for (let i = 0; i < 9; i++) {
+        result.current.addMoveProof({
+          proof: `move_${i}`,
+          publicInputs: [],
+          cardCommit1: 'c1',
+          cardCommit2: 'c2',
+          startStateHash: `start_${i}`,
+          endStateHash: `end_${i}`,
+          gameEnded: i === 8,
+          winnerId: i === 8 ? 1 : 0,
+        });
+      }
+    });
+
+    expect(result.current.collectedMoveProofs).toHaveLength(9);
+  });
+
+  it('should add proofs with different state hashes (no false dedup)', () => {
+    const { result } = renderHook(() => useGameFlow({
+      gameId: '0x1234',
+      playerNumber: 1,
+      cardIds: [1, 2, 3, 4, 5],
+      gameState: makeGameState(),
+    }));
+
+    act(() => {
+      result.current.addMoveProof({
+        proof: 'move_a', publicInputs: [], cardCommit1: 'c1', cardCommit2: 'c2',
+        startStateHash: 'start_a', endStateHash: 'end_a', gameEnded: false, winnerId: 0,
+      });
+      result.current.addMoveProof({
+        proof: 'move_b', publicInputs: [], cardCommit1: 'c1', cardCommit2: 'c2',
+        startStateHash: 'start_b', endStateHash: 'end_b', gameEnded: false, winnerId: 0,
+      });
+    });
+
+    // Both should be added since they have different state hashes
+    expect(result.current.collectedMoveProofs).toHaveLength(2);
+  });
+
+  it('should NOT allow settle on a draw (no winner)', async () => {
+    const playingState = makeGameState({ status: 'playing' });
+
+    const { result, rerender } = renderHook(
+      (props: { gameState: GameState }) => useGameFlow({
+        gameId: 'game_1',
+        playerNumber: 1,
+        cardIds: [1, 2, 3, 4, 5],
+        gameState: props.gameState,
+      }),
+      { initialProps: { gameState: playingState } },
+    );
+
+    await act(async () => {
+      await new Promise(r => setTimeout(r, 50));
+    });
+
+    // Transition to finished with draw
+    const drawState = makeGameState({
+      status: 'finished',
+      winner: 'draw',
+      player1Score: 5,
+      player2Score: 5,
+    });
+    rerender({ gameState: drawState });
+
+    const oppHandProof: HandProofData = {
+      proof: 'opp', publicInputs: [], cardCommit: 'c', playerAddress: 'a', gameId: 'g'
+    };
+
+    act(() => {
+      result.current.setOpponentHandProof(oppHandProof);
+      for (let i = 0; i < 9; i++) {
+        result.current.addMoveProof({
+          proof: `move_${i}`, publicInputs: [], cardCommit1: 'c1', cardCommit2: 'c2',
+          startStateHash: `s${i}`, endStateHash: `e${i}`, gameEnded: i === 8, winnerId: i === 8 ? 3 : 0,
+        });
+      }
+    });
+
+    // Draw means no winner can settle — canSettle should be false
+    expect(result.current.canSettle).toBe(false);
+  });
+
   it('should reset state cleanly', async () => {
     const { result } = renderHook(() => useGameFlow({
       gameId: 'game_1',

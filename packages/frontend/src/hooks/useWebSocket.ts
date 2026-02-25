@@ -64,7 +64,13 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     };
 
     ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data) as ServerMessage;
+      let msg: ServerMessage;
+      try {
+        msg = JSON.parse(event.data) as ServerMessage;
+      } catch {
+        console.warn('[useWebSocket] Received malformed JSON, ignoring:', event.data);
+        return;
+      }
       switch (msg.type) {
         case 'GAME_CREATED':
           setGameId(msg.gameId);

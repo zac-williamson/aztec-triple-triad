@@ -11,6 +11,20 @@ import './App.css';
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
 
+/**
+ * Map game winner to circuit winner_id:
+ *   0 = not ended, 1 = player1 wins, 2 = player2 wins, 3 = draw
+ * Must match circuits/game_move/src/main.nr winner_id semantics.
+ */
+export function mapWinnerId(winner: GameState['winner']): number {
+  switch (winner) {
+    case 'player1': return 1;
+    case 'player2': return 2;
+    case 'draw': return 3;
+    default: return 0;
+  }
+}
+
 export function App() {
   const [screen, setScreen] = useState<Screen>('lobby');
   const [selectedCardIds, setSelectedCardIds] = useState<number[]>([]);
@@ -33,6 +47,22 @@ export function App() {
   // Track opponent's original card IDs from game start (needed for settlement)
   const opponentCardIdsRef = useRef<number[]>([]);
 
+  // Stable refs for callbacks used in effects (avoids stale closure bugs)
+  const setOpponentHandProofRef = useRef(gameFlow.setOpponentHandProof);
+  setOpponentHandProofRef.current = gameFlow.setOpponentHandProof;
+
+  const submitHandProofRef = useRef(ws.submitHandProof);
+  submitHandProofRef.current = ws.submitHandProof;
+
+  const addMoveProofRef = useRef(gameFlow.addMoveProof);
+  addMoveProofRef.current = gameFlow.addMoveProof;
+
+  const generateMoveProofRef = useRef(gameFlow.generateMoveProofForPlacement);
+  generateMoveProofRef.current = gameFlow.generateMoveProofForPlacement;
+
+  const submitMoveProofRef = useRef(ws.submitMoveProof);
+  submitMoveProofRef.current = ws.submitMoveProof;
+
   // Capture opponent's initial card IDs when the game starts
   useEffect(() => {
     if (ws.gameState && ws.playerNumber && opponentCardIdsRef.current.length === 0) {
@@ -48,23 +78,23 @@ export function App() {
   // When opponent sends hand proof via WebSocket, store it in gameFlow
   useEffect(() => {
     if (ws.opponentHandProof) {
-      gameFlow.setOpponentHandProof(ws.opponentHandProof);
+      setOpponentHandProofRef.current(ws.opponentHandProof);
     }
-  }, [ws.opponentHandProof]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ws.opponentHandProof]);
 
   // When our hand proof is ready, send it to opponent via WebSocket
   useEffect(() => {
     if (gameFlow.myHandProof && ws.gameId) {
-      ws.submitHandProof(ws.gameId, gameFlow.myHandProof);
+      submitHandProofRef.current(ws.gameId, gameFlow.myHandProof);
     }
-  }, [gameFlow.myHandProof, ws.gameId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [gameFlow.myHandProof, ws.gameId]);
 
   // When opponent sends a move proof, collect it
   useEffect(() => {
     if (ws.lastMoveProof) {
-      gameFlow.addMoveProof(ws.lastMoveProof.moveProof);
+      addMoveProofRef.current(ws.lastMoveProof.moveProof);
     }
-  }, [ws.lastMoveProof]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ws.lastMoveProof]);
 
   // Deep copy a board to prevent reference mutation issues
   const deepCopyBoard = useCallback((board: GameState['board']): GameState['board'] => {
@@ -164,13 +194,10 @@ export function App() {
     // Only generate proof for OUR moves
     if (justPlayed === ws.playerNumber) {
       const gameEnded = ws.gameState.status === 'finished';
-      // winner_id: 0=not ended, 1=player1 wins, 2=player2 wins, 3=draw
-      const winnerId = ws.gameState.winner === 'player1' ? 1
-        : ws.gameState.winner === 'player2' ? 2
-        : ws.gameState.winner === 'draw' ? 3
-        : 0;
+      const winnerId = mapWinnerId(ws.gameState.winner);
 
-      gameFlow.generateMoveProofForPlacement(
+      const currentGameId = ws.gameId;
+      generateMoveProofRef.current(
         placedCardId,
         placedRow,
         placedCol,
@@ -182,8 +209,8 @@ export function App() {
         winnerId,
       ).then(proof => {
         // After proof is generated, also send it to opponent via WebSocket
-        if (proof && ws.gameId) {
-          ws.submitMoveProof(ws.gameId, -1, placedRow, placedCol, proof);
+        if (proof && currentGameId) {
+          submitMoveProofRef.current(currentGameId, -1, placedRow, placedCol, proof);
         }
       });
     }
@@ -191,7 +218,7 @@ export function App() {
     // Update prev state for next move
     prevBoardRef.current = boardAfter;
     prevScoresRef.current = scoresAfter;
-  }, [ws.gameState]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ws.gameState, ws.playerNumber, ws.gameId, deepCopyBoard]);
 
   const handleSettleGame = useCallback(async (selectedCardTokenId: number) => {
     if (!gameFlow.canSettle || !gameFlow.myHandProof || !gameFlow.opponentHandProof || !ws.playerNumber) return;

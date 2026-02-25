@@ -45,12 +45,18 @@ export function destroyBackendCache(): void {
 
 /**
  * Convert a number or hex string to a 0x-prefixed hex field string.
+ * Throws on non-numeric strings (e.g., UUIDs, 'unknown', empty strings).
  */
-function toFieldHex(value: number | string | bigint): string {
+export function toFieldHex(value: number | string | bigint): string {
   if (typeof value === 'string') {
+    if (value === '') {
+      throw new Error('toFieldHex: empty string is not a valid field value');
+    }
     if (value.startsWith('0x') || value.startsWith('0X')) {
       return value;
     }
+    // BigInt() can convert numeric strings but throws on non-numeric ones.
+    // This catches UUIDs, 'unknown', etc.
     return '0x' + BigInt(value).toString(16);
   }
   if (typeof value === 'bigint') {
@@ -62,14 +68,14 @@ function toFieldHex(value: number | string | bigint): string {
 /**
  * Convert a Uint8Array (32 bytes big-endian) to a 0x-prefixed hex string.
  */
-function bufToHex(buf: Uint8Array): string {
+export function bufToHex(buf: Uint8Array): string {
   return '0x' + Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**
  * Convert a number to a 32-byte big-endian Uint8Array field element.
  */
-function numToField(n: number | bigint): Uint8Array {
+export function numToField(n: number | bigint): Uint8Array {
   const buf = new Uint8Array(32);
   let val = BigInt(n);
   for (let i = 31; i >= 0; i--) {
@@ -82,7 +88,7 @@ function numToField(n: number | bigint): Uint8Array {
 /**
  * Convert a hex string to a 32-byte big-endian Uint8Array.
  */
-function hexToField(hex: string): Uint8Array {
+export function hexToField(hex: string): Uint8Array {
   const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
   const padded = clean.padStart(64, '0');
   const buf = new Uint8Array(32);
@@ -288,6 +294,11 @@ export async function generateProveHandProof(
 
   // Public inputs: [0] card_commit, [1] player_address, [2] game_id,
   // [3] grumpkin_public_key_x, [4] grumpkin_public_key_y
+  if (proofData.publicInputs.length < 5) {
+    throw new Error(
+      `prove_hand: expected at least 5 public inputs, got ${proofData.publicInputs.length}`
+    );
+  }
   return {
     proof: proofToBase64(proofData.proof),
     publicInputs: proofData.publicInputs,
@@ -434,6 +445,11 @@ export async function generateGameMoveProof(
   // Public inputs: [0] card_commit_1, [1] card_commit_2,
   // [2] start_state_hash, [3] end_state_hash,
   // [4] game_ended, [5] winner_id, [6] encrypted_card_nullifier
+  if (proofData.publicInputs.length < 7) {
+    throw new Error(
+      `game_move: expected at least 7 public inputs, got ${proofData.publicInputs.length}`
+    );
+  }
   const ZERO_FIELD = '0x0000000000000000000000000000000000000000000000000000000000000000';
   return {
     proof: proofToBase64(proofData.proof),
