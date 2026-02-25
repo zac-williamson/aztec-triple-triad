@@ -63,14 +63,32 @@ export function App() {
   const submitMoveProofRef = useRef(ws.submitMoveProof);
   submitMoveProofRef.current = ws.submitMoveProof;
 
-  // Capture opponent's initial card IDs when the game starts
+  // Fix 4.5: Capture opponent's card IDs from board at game end (not from sanitized hand)
+  // During play, opponent hand is sanitized to id:0. Real IDs are only visible on the board
+  // and in the GAME_OVER state where hands are revealed.
   useEffect(() => {
-    if (ws.gameState && ws.playerNumber && opponentCardIdsRef.current.length === 0) {
+    if (ws.gameState && ws.playerNumber && ws.gameState.status === 'finished' && opponentCardIdsRef.current.length === 0) {
+      const opponentRole = ws.playerNumber === 1 ? 'player2' : 'player1';
+      const cardIds: number[] = [];
+      // Collect opponent card IDs from the board
+      for (const row of ws.gameState.board) {
+        for (const cell of row) {
+          if (cell.card && cell.owner === opponentRole) {
+            cardIds.push(cell.card.id);
+          }
+        }
+      }
+      // Also collect from revealed hand (GAME_OVER reveals all hands)
       const opponentHand = ws.playerNumber === 1
         ? ws.gameState.player2Hand
         : ws.gameState.player1Hand;
-      if (opponentHand.length === 5) {
-        opponentCardIdsRef.current = opponentHand.map(c => c.id);
+      for (const card of opponentHand) {
+        if (card.id !== 0) {
+          cardIds.push(card.id);
+        }
+      }
+      if (cardIds.length > 0) {
+        opponentCardIdsRef.current = cardIds;
       }
     }
   }, [ws.gameState, ws.playerNumber]);

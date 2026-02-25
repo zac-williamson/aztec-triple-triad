@@ -202,7 +202,7 @@ describe('WebSocket game flow', () => {
     await waitForMessage(ws1, (m) => m.type === 'GAME_START');
 
     // Player 1 places card
-    sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0 });
+    sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0, moveNumber: 0 });
 
     // Both players get state update
     const state1 = await waitForMessage(ws1, (m) => m.type === 'GAME_STATE');
@@ -233,7 +233,7 @@ describe('WebSocket game flow', () => {
     await waitForMessage(ws1, (m) => m.type === 'GAME_START');
 
     // Player 2 tries to move out of turn
-    sendMessage(ws2, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0 });
+    sendMessage(ws2, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0, moveNumber: 0 });
     const error = await waitForMessage(ws2, (m) => m.type === 'ERROR');
     expect(error.type).toBe('ERROR');
     if (error.type === 'ERROR') {
@@ -272,7 +272,7 @@ describe('WebSocket game flow', () => {
       const currentWs = i % 2 === 0 ? ws1 : ws2;
       const [row, col] = positions[i];
 
-      sendMessage(currentWs, { type: 'PLACE_CARD', gameId, handIndex: 0, row, col });
+      sendMessage(currentWs, { type: 'PLACE_CARD', gameId, handIndex: 0, row, col, moveNumber: i });
 
       // Both get GAME_STATE
       await currentCollector.wait((m) => m.type === 'GAME_STATE');
@@ -442,6 +442,7 @@ describe('Proof exchange', () => {
       handIndex: 0,
       row: 0,
       col: 0,
+      moveNumber: 0,
       moveProof: {
         proof: 'base64moveproof',
         publicInputs: ['0xcc1', '0xcc2', '0xstart', '0xend', '0', '0'],
@@ -546,7 +547,7 @@ describe('Hand sanitization (S3 fix)', () => {
     await c1.wait((m) => m.type === 'GAME_START');
 
     // Player 1 places a card
-    sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0 });
+    sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0, moveNumber: 0 });
 
     // Player 1 gets GAME_STATE with player2 hand hidden
     const state1 = await c1.wait((m) => m.type === 'GAME_STATE') as any;
@@ -593,7 +594,7 @@ describe('Hand sanitization (S3 fix)', () => {
     for (let i = 0; i < 9; i++) {
       const currentWs = i % 2 === 0 ? ws1 : ws2;
       const [row, col] = positions[i];
-      sendMessage(currentWs, { type: 'PLACE_CARD', gameId, handIndex: 0, row, col });
+      sendMessage(currentWs, { type: 'PLACE_CARD', gameId, handIndex: 0, row, col, moveNumber: i });
 
       // Consume GAME_STATE messages
       await c1.wait((m) => m.type === 'GAME_STATE');
@@ -723,7 +724,7 @@ describe('Input validation (Fix 4.4)', () => {
     await waitForMessage(ws2, (m) => m.type === 'GAME_JOINED');
     await waitForMessage(ws1, (m) => m.type === 'GAME_START');
 
-    sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 5, col: 0 } as any);
+    sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 5, col: 0, moveNumber: 0 } as any);
     const error = await waitForMessage(ws1, (m) => m.type === 'ERROR');
     expect(error.type).toBe('ERROR');
     if (error.type === 'ERROR') {
@@ -816,5 +817,228 @@ describe('REST game info', () => {
     expect(body).toHaveLength(1);
 
     ws1.close();
+  });
+});
+
+describe('Move nonce validation via WebSocket (V7 Fix 4.1)', () => {
+  it('should reject PLACE_CARD with wrong move number', async () => {
+    const ws1 = await createClient();
+    const ws2 = await createClient();
+    const c1 = new MessageCollector(ws1);
+    const c2 = new MessageCollector(ws2);
+
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await c2.wait((m) => m.type === 'GAME_JOINED');
+    await c1.wait((m) => m.type === 'GAME_START');
+
+    // Send move with wrong move number (1 instead of 0)
+    sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0, moveNumber: 1 });
+    const error = await c1.wait((m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toContain('Invalid move number');
+    }
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it('should reject replayed move number', async () => {
+    const ws1 = await createClient();
+    const ws2 = await createClient();
+    const c1 = new MessageCollector(ws1);
+    const c2 = new MessageCollector(ws2);
+
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await c2.wait((m) => m.type === 'GAME_JOINED');
+    await c1.wait((m) => m.type === 'GAME_START');
+
+    // First move succeeds
+    sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0, moveNumber: 0 });
+    await c1.wait((m) => m.type === 'GAME_STATE');
+    await c2.wait((m) => m.type === 'GAME_STATE');
+
+    // Try to replay move 0
+    sendMessage(ws2, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 1, moveNumber: 0 });
+    const error = await c2.wait((m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toContain('Invalid move number');
+    }
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it('should accept sequential move numbers through full game', async () => {
+    const ws1 = await createClient();
+    const ws2 = await createClient();
+    const c1 = new MessageCollector(ws1);
+    const c2 = new MessageCollector(ws2);
+
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await c2.wait((m) => m.type === 'GAME_JOINED');
+    await c1.wait((m) => m.type === 'GAME_START');
+
+    const positions: [number, number][] = [
+      [0, 0], [0, 1], [0, 2],
+      [1, 0], [1, 1], [1, 2],
+      [2, 0], [2, 1], [2, 2],
+    ];
+
+    for (let i = 0; i < 9; i++) {
+      const [currentCollector, otherCollector] = i % 2 === 0 ? [c1, c2] : [c2, c1];
+      const currentWs = i % 2 === 0 ? ws1 : ws2;
+      const [row, col] = positions[i];
+
+      sendMessage(currentWs, { type: 'PLACE_CARD', gameId, handIndex: 0, row, col, moveNumber: i });
+      await currentCollector.wait((m) => m.type === 'GAME_STATE');
+      await otherCollector.wait((m) => m.type === 'GAME_STATE');
+
+      if (i === 8) {
+        await currentCollector.wait((m) => m.type === 'GAME_OVER');
+        await otherCollector.wait((m) => m.type === 'GAME_OVER');
+      }
+    }
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it('should reject PLACE_CARD without moveNumber field', async () => {
+    const ws = await createClient();
+    ws.send(JSON.stringify({ type: 'PLACE_CARD', gameId: 'test', handIndex: 0, row: 0, col: 0 }));
+    const error = await waitForMessage(ws, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toContain('moveNumber');
+    }
+    ws.close();
+  });
+});
+
+describe('CORS restriction (V7 Fix 4.4)', () => {
+  it('should set CORS header for allowed origin localhost:5173', async () => {
+    const result = await new Promise<{ headers: http.IncomingHttpHeaders }>((resolve, reject) => {
+      const req = http.request(`${getHttpUrl()}/health`, {
+        headers: { 'Origin': 'http://localhost:5173' },
+      }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => resolve({ headers: res.headers }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    expect(result.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+  });
+
+  it('should set CORS header for allowed origin localhost:3000', async () => {
+    const result = await new Promise<{ headers: http.IncomingHttpHeaders }>((resolve, reject) => {
+      const req = http.request(`${getHttpUrl()}/health`, {
+        headers: { 'Origin': 'http://localhost:3000' },
+      }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => resolve({ headers: res.headers }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    expect(result.headers['access-control-allow-origin']).toBe('http://localhost:3000');
+  });
+
+  it('should not set CORS header for disallowed origin', async () => {
+    const result = await new Promise<{ headers: http.IncomingHttpHeaders }>((resolve, reject) => {
+      const req = http.request(`${getHttpUrl()}/health`, {
+        headers: { 'Origin': 'http://evil.com' },
+      }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => resolve({ headers: res.headers }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    expect(result.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('should not set CORS header when no origin is provided', async () => {
+    const { status } = await httpGet('/health');
+    // httpGet doesn't set Origin header, so no CORS should be set
+    // But we need to check the response headers directly
+    const result = await new Promise<{ headers: http.IncomingHttpHeaders }>((resolve, reject) => {
+      http.get(`${getHttpUrl()}/health`, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => resolve({ headers: res.headers }));
+      }).on('error', reject);
+    });
+    expect(result.headers['access-control-allow-origin']).toBeUndefined();
+  });
+});
+
+describe('moveNumber validation in messages (V7 Fix 4.3)', () => {
+  it('should reject SUBMIT_MOVE_PROOF without moveNumber', async () => {
+    const ws = await createClient();
+    ws.send(JSON.stringify({
+      type: 'SUBMIT_MOVE_PROOF',
+      gameId: 'test',
+      handIndex: 0,
+      row: 0,
+      col: 0,
+      moveProof: { proof: 'x', publicInputs: [] },
+    }));
+    const error = await waitForMessage(ws, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toContain('moveNumber');
+    }
+    ws.close();
+  });
+
+  it('should reject PLACE_CARD with negative moveNumber', async () => {
+    const ws = await createClient();
+    ws.send(JSON.stringify({ type: 'PLACE_CARD', gameId: 'test', handIndex: 0, row: 0, col: 0, moveNumber: -1 }));
+    const error = await waitForMessage(ws, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toContain('moveNumber');
+    }
+    ws.close();
+  });
+
+  it('should reject PLACE_CARD with moveNumber > 8', async () => {
+    const ws = await createClient();
+    ws.send(JSON.stringify({ type: 'PLACE_CARD', gameId: 'test', handIndex: 0, row: 0, col: 0, moveNumber: 9 }));
+    const error = await waitForMessage(ws, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toContain('moveNumber');
+    }
+    ws.close();
+  });
+
+  it('should reject PLACE_CARD with non-integer moveNumber', async () => {
+    const ws = await createClient();
+    ws.send(JSON.stringify({ type: 'PLACE_CARD', gameId: 'test', handIndex: 0, row: 0, col: 0, moveNumber: 1.5 }));
+    const error = await waitForMessage(ws, (m) => m.type === 'ERROR');
+    expect(error.type).toBe('ERROR');
+    if (error.type === 'ERROR') {
+      expect(error.message).toContain('moveNumber');
+    }
+    ws.close();
   });
 });

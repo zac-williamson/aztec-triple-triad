@@ -30,8 +30,8 @@ import { getContractInstanceFromInstantiationParams } from '@aztec/stdlib/contra
 // bb.js for VK hash computation
 import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
 
-// Import canonical card data from game-logic package
-import { CARD_DATABASE } from '../packages/game-logic/src/cards.js';
+// Import canonical card data and verification from game-logic package
+import { CARD_DATABASE, verifyCardRankConsistency } from '../packages/game-logic/src/cards.js';
 
 const PXE_URL = process.env.AZTEC_PXE_URL || 'http://localhost:8080';
 const ROOT_DIR = resolve(import.meta.dirname || __dirname, '..');
@@ -83,44 +83,18 @@ async function computeVkHash(
   }
 
   // Compute VK hash using Poseidon2, matching bb_proof_verification's internal computation.
-  // The Barretenberg API may expose poseidon2Hash; fall back to pedersenHash if unavailable.
-  // Note: verify_honk_proof in bb_proof_verification uses poseidon2 for the VK hash.
-  try {
-    // Try poseidon2Hash first (correct for bb_proof_verification)
-    if (typeof (api as any).poseidon2Hash === 'function') {
-      const fieldBigInts = vkFields.map(f => BigInt(f));
-      const result = await (api as any).poseidon2Hash(fieldBigInts);
-      return '0x' + result.toString(16).padStart(64, '0');
-    }
-  } catch {
-    // Fall through to alternative method
+  // Fix 5.3: Do NOT fall back to Pedersen — abort with clear error if Poseidon2 unavailable.
+  if (typeof (api as any).poseidon2Hash !== 'function') {
+    throw new Error(
+      'FATAL: Barretenberg API does not expose poseidon2Hash. ' +
+      'The bb_proof_verification module requires Poseidon2 for VK hash computation. ' +
+      'Update @aztec/bb.js to a version that supports poseidon2Hash, or compute the VK hash manually.'
+    );
   }
 
-  // Alternative: use pedersenHash with properly parsed field elements
-  // This may not match verify_honk_proof exactly, but is the best we can do
-  // without poseidon2. The deploy script operator should verify the hash matches
-  // by testing proof verification after deployment.
-  const fieldBuffers = vkFields.map(f => {
-    const bn = BigInt(f);
-    const buf = new Uint8Array(32);
-    for (let i = 31; i >= 0; i--) {
-      buf[i] = Number(bn & 0xffn);
-      // Note: we can't reassign bn, so compute shift inline
-    }
-    // Re-encode properly
-    const hex = f.slice(2).padStart(64, '0');
-    const result = new Uint8Array(32);
-    for (let j = 0; j < 32; j++) {
-      result[j] = parseInt(hex.slice(j * 2, j * 2 + 2), 16);
-    }
-    return result;
-  });
-
-  const result = await api.pedersenHash({
-    inputs: fieldBuffers,
-    hashIndex: 0,
-  });
-  return '0x' + Array.from(result.hash).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+  const fieldBigInts = vkFields.map(f => BigInt(f));
+  const result = await (api as any).poseidon2Hash(fieldBigInts);
+  return '0x' + result.toString(16).padStart(64, '0');
 }
 
 // ====================== Main Deployment ======================
@@ -128,6 +102,19 @@ async function computeVkHash(
 async function main() {
   console.log('=== Triple Triad Contract Deployment ===');
   console.log(`Connecting to Aztec node at ${PXE_URL}...`);
+
+  // 0. Verify card rank consistency (Fix 5.2)
+  console.log('Verifying card rank consistency...');
+  const rankErrors = verifyCardRankConsistency();
+  if (rankErrors.length > 0) {
+    console.error('FATAL: Card rank consistency check failed:');
+    for (const err of rankErrors) {
+      console.error(`  - ${err}`);
+    }
+    console.error('Fix the card data before deploying. Ranks must match between game-logic and circuits.');
+    process.exit(1);
+  }
+  console.log(`  All ${CARD_DATABASE.length} cards have valid, consistent ranks.`);
 
   // 1. Connect to the Aztec node
   const node = createAztecNodeClient(PXE_URL);

@@ -190,6 +190,8 @@ fn main(
     grumpkin_private_key: Field,
     opponent_pubkey_x: Field,
     opponent_pubkey_y: Field,
+    // Private input - move index for unique encryption nonce (V7 Fix 3.1)
+    move_index: Field,
 ) {
     // ===== 1. Validate current player =====
     assert(
@@ -203,6 +205,18 @@ fn main(
     let c = col as u32;
     assert(r < 3, "Row out of bounds");
     assert(c < 3, "Col out of bounds");
+
+    // ===== 2b. Validate move_index (V7 Fix 3.1) =====
+    let mi = move_index as u32;
+    assert(mi < 9, "move_index must be 0-8");
+    // Verify move_index matches number of filled cells in board_before
+    let mut filled_before: u32 = 0;
+    for i in 0..9 {
+        if board_before[i * 2] != 0 {
+            filled_before += 1;
+        }
+    }
+    assert(move_index == filled_before as Field, "move_index does not match board state");
 
     // ===== 3. Verify card_commit binding (FIX-1) =====
     // Recompute the current player's card_commit from their hand data
@@ -431,7 +445,9 @@ fn main(
     // ===== 13. Validate Grumpkin private key is non-zero (V6 Fix 3.1) =====
     assert(grumpkin_private_key != 0, "grumpkin_private_key must be non-zero");
 
-    // ===== 14. Validate opponent public key is on Grumpkin curve (V6 Fix 3.3) =====
+    // ===== 14. Validate opponent public key (V7 Fix 3.2 + V6 Fix 3.3) =====
+    // Check point-at-infinity (V7 Fix 3.2)
+    assert((opponent_pubkey_x != 0) | (opponent_pubkey_y != 0), "Opponent pubkey is point at infinity");
     // Grumpkin curve equation: y^2 = x^3 - 17 (a=0, b=-17)
     let x3 = opponent_pubkey_x * opponent_pubkey_x * opponent_pubkey_x;
     let y2 = opponent_pubkey_y * opponent_pubkey_y;
@@ -444,8 +460,8 @@ fn main(
         is_infinite: false,
     };
     let shared_secret = compute_shared_secret(grumpkin_private_key, opponent_pubkey);
-    // Use current_turn_before as nonce for per-move unique key (V6 Fix 3.2)
-    let computed_encrypted = symmetric_encrypt_field(placed_card_nullifier_secret, shared_secret, current_turn_before);
+    // Use move_index as nonce for per-move unique key (V7 Fix 3.1, replaces V6 current_turn_before)
+    let computed_encrypted = symmetric_encrypt_field(placed_card_nullifier_secret, shared_secret, move_index);
     assert(
         computed_encrypted == encrypted_card_nullifier,
         "Encrypted nullifier mismatch",
@@ -466,10 +482,10 @@ fn test_card_commit(
     compute_card_commit(player_secret, player_address, game_id, card_ids, card_ranks, nullifier_secrets)
 }
 
-/// Helper: compute encrypted nullifier for tests (with move nonce)
-fn test_encrypt_nullifier(nullifier_secret: Field, player_grumpkin_key: Field, opponent_pubkey: EmbeddedCurvePoint, nonce: Field) -> Field {
+/// Helper: compute encrypted nullifier for tests (with move_index nonce)
+fn test_encrypt_nullifier(nullifier_secret: Field, player_grumpkin_key: Field, opponent_pubkey: EmbeddedCurvePoint, move_index: Field) -> Field {
     let shared_secret = compute_shared_secret(player_grumpkin_key, opponent_pubkey);
-    symmetric_encrypt_field(nullifier_secret, shared_secret, nonce)
+    symmetric_encrypt_field(nullifier_secret, shared_secret, move_index)
 }
 
 /// Helper: derive Grumpkin public key
@@ -549,8 +565,8 @@ fn test_first_move_no_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 1 (Mudwalker) has nullifier_secret = 100, nonce = current_turn_before = 1
-    let enc_null = p1_encrypt_nullifier(100, 1);
+    // Card 1 (Mudwalker) has nullifier_secret = 100, move_index = 0 (empty board)
+    let enc_null = p1_encrypt_nullifier(100, 0);
 
     main(
         cc1, cc2,
@@ -568,6 +584,7 @@ fn test_first_move_no_capture() {
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         // ECDH data
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        0,          // move_index = 0 (empty board)
     );
 }
 
@@ -594,8 +611,8 @@ fn test_second_move_no_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    // Card 10 (Peaches) has nullifier_secret = 600, nonce = current_turn_before = 2
-    let enc_null = p2_encrypt_nullifier(600, 2);
+    // Card 10 (Peaches) has nullifier_secret = 600, move_index = 1 (1 card on board)
+    let enc_null = p2_encrypt_nullifier(600, 1);
 
     main(
         cc1, cc2,
@@ -613,6 +630,7 @@ fn test_second_move_no_capture() {
         p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
         // ECDH data
         P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
+        1,          // move_index = 1 (1 card on board)
     );
 }
 
@@ -641,8 +659,8 @@ fn test_capture_one_card() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 4 (Sunny) has nullifier_secret = 400, nonce = current_turn_before = 1
-    let enc_null = p1_encrypt_nullifier(400, 1);
+    // Card 4 (Sunny) has nullifier_secret = 400, move_index = 2 (2 cards on board)
+    let enc_null = p1_encrypt_nullifier(400, 2);
 
     main(
         cc1, cc2,
@@ -658,6 +676,7 @@ fn test_capture_one_card() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        2,          // move_index = 2 (2 cards on board)
     );
 }
 
@@ -693,8 +712,8 @@ fn test_capture_multiple_cards() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 1 (Mudwalker) has nullifier_secret = 100, nonce = current_turn_before = 1
-    let enc_null = p1_encrypt_nullifier(100, 1);
+    // Card 1 (Mudwalker) has nullifier_secret = 100, move_index = 4 (4 cards on board)
+    let enc_null = p1_encrypt_nullifier(100, 4);
 
     main(
         cc1, cc2,
@@ -710,6 +729,7 @@ fn test_capture_multiple_cards() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        4,          // move_index = 4 (4 cards on board)
     );
 }
 
@@ -734,7 +754,7 @@ fn test_no_capture_higher_adjacent() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 3 (Snowdrop) has nullifier_secret = 300, nonce = current_turn_before = 1
+    // Card 3 (Snowdrop) has nullifier_secret = 300, move_index = 1 (1 card on board)
     let enc_null = p1_encrypt_nullifier(300, 1);
 
     main(
@@ -751,6 +771,7 @@ fn test_no_capture_higher_adjacent() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        1,          // move_index = 1 (1 card on board)
     );
 }
 
@@ -787,8 +808,8 @@ fn test_final_move_game_ends_p1_wins() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 5 (Inkwell) has nullifier_secret = 500, nonce = current_turn_before = 1
-    let enc_null = p1_encrypt_nullifier(500, 1);
+    // Card 5 (Inkwell) has nullifier_secret = 500, move_index = 8 (8 cards on board)
+    let enc_null = p1_encrypt_nullifier(500, 8);
 
     main(
         cc1, cc2,
@@ -804,6 +825,7 @@ fn test_final_move_game_ends_p1_wins() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        8,          // move_index = 8 (8 cards on board)
     );
 }
 
@@ -838,8 +860,8 @@ fn test_game_ends_draw() {
     let scores_after2: [Field; 2] = [5, 5];
     let end_hash2 = hash_board_state(board_after2, scores_after2, 2);
 
-    // Card 5 (Inkwell) has nullifier_secret = 500, nonce = current_turn_before2 = 1
-    let enc_null = p1_encrypt_nullifier(500, 1);
+    // Card 5 (Inkwell) has nullifier_secret = 500, move_index = 8 (8 cards on board)
+    let enc_null = p1_encrypt_nullifier(500, 8);
 
     main(
         cc1, cc2,
@@ -855,6 +877,7 @@ fn test_game_ends_draw() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        8,          // move_index = 8 (8 cards on board)
     );
 }
 
@@ -905,8 +928,8 @@ fn test_final_move_game_ends_p2_wins() {
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    // Card 14 (Glow Bug) has nullifier_secret = 1000, nonce = current_turn_before = 2
-    let enc_null = p2_encrypt_nullifier(1000, 2);
+    // Card 14 (Glow Bug) has nullifier_secret = 1000, move_index = 8 (8 cards on board)
+    let enc_null = p2_encrypt_nullifier(1000, 8);
 
     main(
         cc1, cc2,
@@ -922,6 +945,7 @@ fn test_final_move_game_ends_p2_wins() {
         P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
         p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
         P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
+        8,          // move_index = 8 (8 cards on board)
     );
 }
 
@@ -961,6 +985,7 @@ fn test_fail_place_on_occupied_cell() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        1,          // move_index = 1
     );
 }
 
@@ -982,7 +1007,7 @@ fn test_fail_wrong_player_turn() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    let enc_null = p2_encrypt_nullifier(600, 1);
+    let enc_null = p2_encrypt_nullifier(600, 0);
 
     main(
         cc1, cc2,
@@ -998,6 +1023,7 @@ fn test_fail_wrong_player_turn() {
         P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
         p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
         P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
+        0,          // move_index = 0
     );
 }
 
@@ -1013,7 +1039,7 @@ fn test_fail_row_out_of_bounds() {
     let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
     let end_hash = start_hash;
 
-    let enc_null = p1_encrypt_nullifier(100, 1);
+    let enc_null = p1_encrypt_nullifier(100, 0);
 
     main(
         cc1, cc2,
@@ -1028,6 +1054,7 @@ fn test_fail_row_out_of_bounds() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        0,          // move_index = 0
     );
 }
 
@@ -1048,7 +1075,7 @@ fn test_fail_card_not_in_hand() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100, 1);
+    let enc_null = p1_encrypt_nullifier(100, 0);
 
     main(
         cc1, cc2,
@@ -1063,6 +1090,7 @@ fn test_fail_card_not_in_hand() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        0,          // move_index = 0
     );
 }
 
@@ -1083,7 +1111,7 @@ fn test_fail_wrong_player_secret() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100, 1);
+    let enc_null = p1_encrypt_nullifier(100, 0);
 
     main(
         cc1, cc2,
@@ -1099,6 +1127,7 @@ fn test_fail_wrong_player_secret() {
         P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        0,          // move_index = 0
     );
 }
 
@@ -1135,6 +1164,7 @@ fn test_fail_false_capture() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        1,          // move_index = 1
     );
 }
 
@@ -1171,6 +1201,7 @@ fn test_fail_missing_capture() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        1,          // move_index = 1
     );
 }
 
@@ -1207,6 +1238,7 @@ fn test_fail_card_id_changed() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        1,          // move_index = 1
     );
 }
 
@@ -1232,8 +1264,8 @@ fn test_player2_move_with_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    // Card 12 (Camo) has nullifier_secret = 800
-    let enc_null = p2_encrypt_nullifier(800, 2);
+    // Card 12 (Camo) has nullifier_secret = 800, move_index = 1 (1 card on board)
+    let enc_null = p2_encrypt_nullifier(800, 1);
 
     main(
         cc1, cc2,
@@ -1249,6 +1281,7 @@ fn test_player2_move_with_capture() {
         P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
         p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
         P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
+        1,          // move_index = 1 (1 card on board)
     );
 }
 
@@ -1273,7 +1306,7 @@ fn test_equal_ranks_no_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 1 (Mudwalker) has nullifier_secret = 100
+    // Card 1 (Mudwalker) has nullifier_secret = 100, move_index = 1 (1 card on board)
     let enc_null = p1_encrypt_nullifier(100, 1);
 
     main(
@@ -1289,6 +1322,7 @@ fn test_equal_ranks_no_capture() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        1,          // move_index = 1 (1 card on board)
     );
 }
 
@@ -1326,6 +1360,7 @@ fn test_fail_wrong_encrypted_nullifier() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        0,          // move_index = 0
     );
 }
 
@@ -1375,7 +1410,7 @@ fn test_score_fabrication_rejected() {
     let scores_after: [Field; 2] = [8, 2];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100, 1);
+    let enc_null = p1_encrypt_nullifier(100, 0);
 
     main(
         cc1, cc2,
@@ -1390,6 +1425,7 @@ fn test_score_fabrication_rejected() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        0,          // move_index = 0
     );
 }
 
@@ -1423,8 +1459,8 @@ fn test_exact_scores_after_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    // Card 13 (Neon) has nullifier_secret = 900
-    let enc_null = p2_encrypt_nullifier(900, 2);
+    // Card 13 (Neon) has nullifier_secret = 900, move_index = 3 (3 cards on board)
+    let enc_null = p2_encrypt_nullifier(900, 3);
 
     main(
         cc1, cc2,
@@ -1440,6 +1476,7 @@ fn test_exact_scores_after_capture() {
         P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
         p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
         P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
+        3,          // move_index = 3 (3 cards on board)
     );
 }
 
@@ -1467,7 +1504,7 @@ fn test_card_replay_rejected() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100, 1);
+    let enc_null = p1_encrypt_nullifier(100, 2);
 
     main(
         cc1, cc2,
@@ -1482,6 +1519,7 @@ fn test_card_replay_rejected() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        2,          // move_index = 2 (2 cards on board)
     );
 }
 
@@ -1508,8 +1546,8 @@ fn test_different_card_after_same_id_on_board() {
     let scores_after: [Field; 2] = [6, 4];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 2 (Blushy) has nullifier_secret = 200
-    let enc_null = p1_encrypt_nullifier(200, 1);
+    // Card 2 (Blushy) has nullifier_secret = 200, move_index = 2 (2 cards on board)
+    let enc_null = p1_encrypt_nullifier(200, 2);
 
     main(
         cc1, cc2,
@@ -1524,5 +1562,136 @@ fn test_different_card_after_same_id_on_board() {
         P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
         p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
         P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        2,          // move_index = 2 (2 cards on board)
     );
+}
+
+// ====================== V7 FIX TESTS: move_index nonce + point-at-infinity ======================
+
+#[test(should_fail_with = "move_index must be 0-8")]
+fn test_fail_move_index_out_of_range() {
+    let cc1 = get_p1_commit();
+    let cc2 = get_p2_commit();
+    let p2_pubkey = get_p2_pubkey();
+
+    let board_before: [Field; 18] = [0; 18];
+    let scores_before: [Field; 2] = [5, 5];
+    let current_turn_before: Field = 1;
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1;
+    board_after[1] = 1;
+    let scores_after: [Field; 2] = [5, 5];
+    let end_hash = hash_board_state(board_after, scores_after, 2);
+
+    let enc_null = p1_encrypt_nullifier(100, 9);
+
+    main(
+        cc1, cc2,
+        start_hash, end_hash,
+        0, 0,
+        enc_null,
+        1, 1,
+        0, 0,
+        board_before, board_after,
+        scores_before, scores_after,
+        current_turn_before,
+        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
+        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
+        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        9,          // move_index = 9 (out of range!)
+    );
+}
+
+#[test(should_fail_with = "move_index does not match board state")]
+fn test_fail_move_index_mismatch() {
+    // Empty board but claim move_index = 3 -> should fail
+    let cc1 = get_p1_commit();
+    let cc2 = get_p2_commit();
+    let p2_pubkey = get_p2_pubkey();
+
+    let board_before: [Field; 18] = [0; 18];
+    let scores_before: [Field; 2] = [5, 5];
+    let current_turn_before: Field = 1;
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1;
+    board_after[1] = 1;
+    let scores_after: [Field; 2] = [5, 5];
+    let end_hash = hash_board_state(board_after, scores_after, 2);
+
+    // Encrypt with mismatched nonce
+    let enc_null = p1_encrypt_nullifier(100, 3);
+
+    main(
+        cc1, cc2,
+        start_hash, end_hash,
+        0, 0,
+        enc_null,
+        1, 1,
+        0, 0,
+        board_before, board_after,
+        scores_before, scores_after,
+        current_turn_before,
+        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
+        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
+        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
+        3,          // move_index = 3 but board is empty (should be 0)
+    );
+}
+
+#[test(should_fail_with = "grumpkin_private_key must be non-zero")]
+fn test_fail_zero_grumpkin_key_game_move() {
+    let cc1 = get_p1_commit();
+    let cc2 = get_p2_commit();
+    let p2_pubkey = get_p2_pubkey();
+
+    let board_before: [Field; 18] = [0; 18];
+    let scores_before: [Field; 2] = [5, 5];
+    let current_turn_before: Field = 1;
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1;
+    board_after[1] = 1;
+    let scores_after: [Field; 2] = [5, 5];
+    let end_hash = hash_board_state(board_after, scores_after, 2);
+
+    let enc_null = p1_encrypt_nullifier(100, 0);
+
+    main(
+        cc1, cc2,
+        start_hash, end_hash,
+        0, 0,
+        enc_null,
+        1, 1,
+        0, 0,
+        board_before, board_after,
+        scores_before, scores_after,
+        current_turn_before,
+        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
+        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
+        0,          // ZERO grumpkin key - should fail
+        p2_pubkey.x, p2_pubkey.y,
+        0,
+    );
+}
+
+#[test]
+fn test_unique_encryption_per_move_index() {
+    // Verify that different move_index values produce different encrypted values
+    let p2_pub = get_p2_pubkey();
+    let shared = compute_shared_secret(P1_GRUMPKIN_KEY, p2_pub);
+    let plaintext: Field = 12345;
+
+    let enc0 = symmetric_encrypt_field(plaintext, shared, 0);
+    let enc1 = symmetric_encrypt_field(plaintext, shared, 1);
+    let enc2 = symmetric_encrypt_field(plaintext, shared, 2);
+
+    // All should be different (unique nonce -> unique key -> unique ciphertext)
+    assert(enc0 != enc1, "move_index 0 and 1 should produce different ciphertexts");
+    assert(enc1 != enc2, "move_index 1 and 2 should produce different ciphertexts");
+    assert(enc0 != enc2, "move_index 0 and 2 should produce different ciphertexts");
 }

@@ -67,6 +67,51 @@ export const CARD_DATABASE: Card[] = [
   { id: 50, name: 'Lerma', ranks: { top: 7, right: 2, bottom: 7, left: 4 } },
 ];
 
+/**
+ * Pack card ranks into a single number matching the on-chain format.
+ * Format: top + right*16 + bottom*256 + left*4096
+ */
+export function packRanks(top: number, right: number, bottom: number, left: number): number {
+  return top + right * 16 + bottom * 256 + left * 4096;
+}
+
+/**
+ * Unpack a packed ranks number into individual ranks.
+ */
+export function unpackRanks(packed: number): { top: number; right: number; bottom: number; left: number } {
+  return {
+    top: packed & 0xf,
+    right: (packed >> 4) & 0xf,
+    bottom: (packed >> 8) & 0xf,
+    left: (packed >> 12) & 0xf,
+  };
+}
+
+/**
+ * Verify that all cards in CARD_DATABASE have consistent ranks.
+ * Returns an array of error messages (empty if all consistent).
+ * This is used by the deploy script to verify rank data before deployment.
+ */
+export function verifyCardRankConsistency(): string[] {
+  const errors: string[] = [];
+  for (const card of CARD_DATABASE) {
+    const { top, right, bottom, left } = card.ranks;
+    // Verify ranks are in valid range 1-10
+    for (const [name, val] of [['top', top], ['right', right], ['bottom', bottom], ['left', left]] as const) {
+      if (val < 1 || val > 10) {
+        errors.push(`Card ${card.id} (${card.name}): ${name} rank ${val} out of range 1-10`);
+      }
+    }
+    // Verify pack/unpack round-trip
+    const packed = packRanks(top, right, bottom, left);
+    const unpacked = unpackRanks(packed);
+    if (unpacked.top !== top || unpacked.right !== right || unpacked.bottom !== bottom || unpacked.left !== left) {
+      errors.push(`Card ${card.id} (${card.name}): rank pack/unpack mismatch`);
+    }
+  }
+  return errors;
+}
+
 export function getCardById(id: number): Card | undefined {
   return CARD_DATABASE.find((c) => c.id === id);
 }

@@ -298,6 +298,98 @@ describe('GameManager', () => {
     });
   });
 
+  describe('move nonce validation (V7 Fix 4.1)', () => {
+    let gameId: string;
+
+    beforeEach(() => {
+      const room = manager.createGame('player-1', PLAYER1_CARDS);
+      gameId = room.id;
+      manager.joinGame(gameId, 'player-2', PLAYER2_CARDS);
+    });
+
+    it('should accept moves with correct move number', () => {
+      const result = manager.placeCard(gameId, 'player-1', 0, 0, 0, 0);
+      expect(result.newState).toBeDefined();
+      expect(result.newState.board[0][0].card).not.toBeNull();
+    });
+
+    it('should reject moves with wrong move number', () => {
+      expect(() => manager.placeCard(gameId, 'player-1', 0, 0, 0, 1)).toThrow('Invalid move number: expected 0, got 1');
+    });
+
+    it('should increment expected move number after each move', () => {
+      manager.placeCard(gameId, 'player-1', 0, 0, 0, 0);
+      manager.placeCard(gameId, 'player-2', 0, 0, 1, 1);
+      manager.placeCard(gameId, 'player-1', 0, 0, 2, 2);
+      // Move 3 should be expected now
+      expect(() => manager.placeCard(gameId, 'player-2', 0, 1, 0, 2)).toThrow('Invalid move number: expected 3, got 2');
+      // Correct move number works
+      const result = manager.placeCard(gameId, 'player-2', 0, 1, 0, 3);
+      expect(result.newState).toBeDefined();
+    });
+
+    it('should prevent replay of previous move number', () => {
+      manager.placeCard(gameId, 'player-1', 0, 0, 0, 0);
+      // Replaying move 0 should fail
+      expect(() => manager.placeCard(gameId, 'player-2', 0, 0, 1, 0)).toThrow('Invalid move number: expected 1, got 0');
+    });
+
+    it('should allow moves without moveNumber for backward compatibility', () => {
+      const result = manager.placeCard(gameId, 'player-1', 0, 0, 0);
+      expect(result.newState).toBeDefined();
+    });
+
+    it('should track move numbers through a full game', () => {
+      const positions: [number, number][] = [
+        [0, 0], [0, 1], [0, 2],
+        [1, 0], [1, 1], [1, 2],
+        [2, 0], [2, 1], [2, 2],
+      ];
+      for (let i = 0; i < 9; i++) {
+        const player = i % 2 === 0 ? 'player-1' : 'player-2';
+        const [row, col] = positions[i];
+        const result = manager.placeCard(gameId, player, 0, row, col, i);
+        if (i === 8) {
+          expect(result.newState.status).toBe('finished');
+        }
+      }
+    });
+  });
+
+  describe('atomic turn checking (V7 Fix 4.2)', () => {
+    let gameId: string;
+
+    beforeEach(() => {
+      const room = manager.createGame('player-1', PLAYER1_CARDS);
+      gameId = room.id;
+      manager.joinGame(gameId, 'player-2', PLAYER2_CARDS);
+    });
+
+    it('should set processing flag to false initially', () => {
+      const room = manager.getGame(gameId)!;
+      expect(room.processing).toBe(false);
+    });
+
+    it('should have processing flag false after successful move', () => {
+      manager.placeCard(gameId, 'player-1', 0, 0, 0);
+      const room = manager.getGame(gameId)!;
+      expect(room.processing).toBe(false);
+    });
+
+    it('should have processing flag false even after failed move', () => {
+      try {
+        manager.placeCard(gameId, 'player-2', 0, 0, 0); // wrong turn
+      } catch { /* expected */ }
+      const room = manager.getGame(gameId)!;
+      expect(room.processing).toBe(false);
+    });
+
+    it('should initialize expectedMoveNumber to 0', () => {
+      const room = manager.getGame(gameId)!;
+      expect(room.expectedMoveNumber).toBe(0);
+    });
+  });
+
   describe('cleanupStaleGames', () => {
     it('should remove games past timeout', () => {
       const room = manager.createGame('player-1', PLAYER1_CARDS);

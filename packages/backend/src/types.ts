@@ -30,12 +30,12 @@ export interface MoveProofData extends SerializedProof {
 export type ClientMessage =
   | { type: 'CREATE_GAME'; cardIds: number[] }
   | { type: 'JOIN_GAME'; gameId: string; cardIds: number[] }
-  | { type: 'PLACE_CARD'; gameId: string; handIndex: number; row: number; col: number }
+  | { type: 'PLACE_CARD'; gameId: string; handIndex: number; row: number; col: number; moveNumber: number }
   | { type: 'LIST_GAMES' }
   | { type: 'GET_GAME'; gameId: string }
   // Proof-based messages
   | { type: 'SUBMIT_HAND_PROOF'; gameId: string; handProof: HandProofData }
-  | { type: 'SUBMIT_MOVE_PROOF'; gameId: string; handIndex: number; row: number; col: number; moveProof: MoveProofData };
+  | { type: 'SUBMIT_MOVE_PROOF'; gameId: string; handIndex: number; row: number; col: number; moveNumber: number; moveProof: MoveProofData };
 
 // Server -> Client messages
 export type ServerMessage =
@@ -70,4 +70,6 @@ export interface GameRoom {
   player2CardIds: number[];
   createdAt: number;
   lastActivity: number;
+  expectedMoveNumber: number;
+  processing: boolean;
 }

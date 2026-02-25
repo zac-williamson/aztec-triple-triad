@@ -138,10 +138,14 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     send({ type: 'JOIN_GAME', gameId: id, cardIds });
   }, [send]);
 
+  const moveNumberRef = useRef(0);
+
   const placeCard = useCallback((handIndex: number, row: number, col: number) => {
     if (!gameId) return;
     setError(null);
-    send({ type: 'PLACE_CARD', gameId, handIndex, row, col });
+    const moveNumber = moveNumberRef.current;
+    send({ type: 'PLACE_CARD', gameId, handIndex, row, col, moveNumber });
+    moveNumberRef.current++;
   }, [send, gameId]);
 
   const refreshGameList = useCallback(() => {
@@ -156,7 +160,9 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const submitMoveProof = useCallback((gId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData) => {
     if (!gId) return;
     setError(null);
-    send({ type: 'SUBMIT_MOVE_PROOF', gameId: gId, handIndex, row, col, moveProof });
+    const moveNumber = moveNumberRef.current;
+    send({ type: 'SUBMIT_MOVE_PROOF', gameId: gId, handIndex, row, col, moveNumber, moveProof });
+    moveNumberRef.current++;
   }, [send]);
 
   const disconnect = useCallback(() => {
@@ -167,6 +173,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     setGameOver(null);
     setOpponentDisconnected(false);
     setOpponentHandProof(null);
+    moveNumberRef.current = 0;
     setLastMoveProof(null);
   }, []);
 

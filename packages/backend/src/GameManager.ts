@@ -55,6 +55,8 @@ export class GameManager {
       player2CardIds: [],
       createdAt: Date.now(),
       lastActivity: Date.now(),
+      expectedMoveNumber: 0,
+      processing: false,
     };
 
     this.games.set(gameId, room);
@@ -100,6 +102,7 @@ export class GameManager {
     handIndex: number,
     row: number,
     col: number,
+    moveNumber?: number,
   ): PlaceCardResult {
     const room = this.games.get(gameId);
     if (!room) {
@@ -107,6 +110,11 @@ export class GameManager {
     }
     if (!room.state) {
       throw new Error('Game has not started');
+    }
+
+    // Fix 4.2: Atomic turn checking - reject concurrent processing
+    if (room.processing) {
+      throw new Error('Game is currently processing another move');
     }
 
     const player = this.getPlayerRole(gameId, playerId);
@@ -117,10 +125,23 @@ export class GameManager {
       throw new Error('Not your turn');
     }
 
-    const result = placeCard(room.state, player, handIndex, row, col);
-    room.state = result.newState;
-    room.lastActivity = Date.now();
-    return result;
+    // Fix 4.1: Move nonce validation for replay prevention
+    if (moveNumber !== undefined) {
+      if (moveNumber !== room.expectedMoveNumber) {
+        throw new Error(`Invalid move number: expected ${room.expectedMoveNumber}, got ${moveNumber}`);
+      }
+    }
+
+    room.processing = true;
+    try {
+      const result = placeCard(room.state, player, handIndex, row, col);
+      room.state = result.newState;
+      room.lastActivity = Date.now();
+      room.expectedMoveNumber++;
+      return result;
+    } finally {
+      room.processing = false;
+    }
   }
 
   getGame(gameId: string): GameRoom | undefined {

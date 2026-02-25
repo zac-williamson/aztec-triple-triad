@@ -34,9 +34,18 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
   const gameManager = new GameManager();
   const clients = new Map<string, WebSocket>();
 
+  // Fix 4.4: Restrict CORS to allowed origins
+  const allowedOrigins = new Set([
+    'http://localhost:3000',
+    'http://localhost:5173',
+  ]);
+
   const httpServer = http.createServer((req, res) => {
-    // CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // CORS headers - restrict to allowed origins
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.has(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
@@ -154,6 +163,9 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
         if (typeof msg.col !== 'number' || !Number.isInteger(msg.col) || msg.col < 0 || msg.col > 2) {
           return 'col must be an integer between 0 and 2';
         }
+        if (typeof msg.moveNumber !== 'number' || !Number.isInteger(msg.moveNumber) || msg.moveNumber < 0 || msg.moveNumber > 8) {
+          return 'moveNumber must be an integer between 0 and 8';
+        }
         break;
       case 'GET_GAME':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
@@ -167,6 +179,9 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
         if (typeof msg.handIndex !== 'number') return 'handIndex must be a number';
         if (typeof msg.row !== 'number' || msg.row < 0 || msg.row > 2) return 'row must be 0-2';
         if (typeof msg.col !== 'number' || msg.col < 0 || msg.col > 2) return 'col must be 0-2';
+        if (typeof msg.moveNumber !== 'number' || !Number.isInteger(msg.moveNumber) || msg.moveNumber < 0 || msg.moveNumber > 8) {
+          return 'moveNumber must be an integer between 0 and 8';
+        }
         if (!msg.moveProof || typeof msg.moveProof !== 'object') return 'moveProof is required';
         break;
     }
@@ -252,7 +267,7 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
 
       case 'PLACE_CARD': {
         try {
-          const result = gameManager.placeCard(msg.gameId, playerId, msg.handIndex, msg.row, msg.col);
+          const result = gameManager.placeCard(msg.gameId, playerId, msg.handIndex, msg.row, msg.col, msg.moveNumber);
 
           // Send sanitized state to current player
           send(ws, {
@@ -345,7 +360,7 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
       case 'SUBMIT_MOVE_PROOF': {
         try {
           // First apply the move on the server (same as PLACE_CARD)
-          const result = gameManager.placeCard(msg.gameId, playerId, msg.handIndex, msg.row, msg.col);
+          const result = gameManager.placeCard(msg.gameId, playerId, msg.handIndex, msg.row, msg.col, msg.moveNumber);
 
           // Send sanitized state update to the current player
           send(ws, {
