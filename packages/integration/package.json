@@ -1,0 +1,26 @@
+{
+  "name": "@aztec-triple-triad/integration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@aztec-triple-triad/game-logic": "*",
+    "@aztec-triple-triad/backend": "*",
+    "@noir-lang/noir_js": "1.0.0-beta.18-2db78f8.nightly",
+    "@noir-lang/types": "1.0.0-beta.18-2db78f8.nightly",
+    "@aztec/bb.js": "4.0.0-nightly.20260212",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.5.0",
+    "vitest": "^1.6.0"
+  }
+}

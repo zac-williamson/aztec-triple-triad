@@ -14,6 +14,7 @@ const DISCONNECT_TIMEOUT_MS = 60 * 1000; // 60 seconds reconnection window
 const VALID_MESSAGE_TYPES = new Set([
   'CREATE_GAME', 'JOIN_GAME', 'PLACE_CARD', 'LIST_GAMES', 'GET_GAME',
   'SUBMIT_HAND_PROOF', 'SUBMIT_MOVE_PROOF',
+  'TX_CONFIRMED', 'TX_FAILED', 'CANCEL_GAME',
 ]);
 
 export interface ServerOptions {
@@ -183,6 +184,19 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
           return 'moveNumber must be an integer between 0 and 8';
         }
         if (!msg.moveProof || typeof msg.moveProof !== 'object') return 'moveProof is required';
+        break;
+      case 'TX_CONFIRMED':
+        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
+        if (msg.txType !== 'create_game' && msg.txType !== 'join_game') return 'txType must be create_game or join_game';
+        if (!msg.txHash || typeof msg.txHash !== 'string') return 'txHash is required';
+        break;
+      case 'TX_FAILED':
+        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
+        if (msg.txType !== 'create_game' && msg.txType !== 'join_game') return 'txType must be create_game or join_game';
+        if (!msg.error || typeof msg.error !== 'string') return 'error is required';
+        break;
+      case 'CANCEL_GAME':
+        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
         break;
     }
     return null; // Valid
@@ -396,6 +410,47 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
             send(ws, overMsg);
             if (opponentId) sendToPlayer(opponentId, overMsg);
           }
+        } catch (err: any) {
+          send(ws, { type: 'ERROR', message: err.message });
+        }
+        break;
+      }
+
+      case 'TX_CONFIRMED': {
+        const status = gameManager.updateTxStatus(msg.gameId, playerId, 'confirmed');
+        if (status) {
+          // Broadcast updated on-chain status to both players
+          const room = gameManager.getGame(msg.gameId);
+          if (room) {
+            const statusMsg: ServerMessage = { type: 'ON_CHAIN_STATUS', gameId: msg.gameId, status };
+            sendToPlayer(room.player1Id, statusMsg);
+            if (room.player2Id) sendToPlayer(room.player2Id, statusMsg);
+          }
+        } else {
+          send(ws, { type: 'ERROR', message: 'Game not found or player not in game' });
+        }
+        break;
+      }
+
+      case 'TX_FAILED': {
+        const status = gameManager.updateTxStatus(msg.gameId, playerId, 'failed');
+        if (status) {
+          const room = gameManager.getGame(msg.gameId);
+          if (room) {
+            const statusMsg: ServerMessage = { type: 'ON_CHAIN_STATUS', gameId: msg.gameId, status };
+            sendToPlayer(room.player1Id, statusMsg);
+            if (room.player2Id) sendToPlayer(room.player2Id, statusMsg);
+          }
+        } else {
+          send(ws, { type: 'ERROR', message: 'Game not found or player not in game' });
+        }
+        break;
+      }
+
+      case 'CANCEL_GAME': {
+        try {
+          gameManager.cancelGame(msg.gameId, playerId);
+          send(ws, { type: 'GAME_CANCELLED', gameId: msg.gameId, reason: 'Cancelled by creator' });
         } catch (err: any) {
           send(ws, { type: 'ERROR', message: err.message });
         }

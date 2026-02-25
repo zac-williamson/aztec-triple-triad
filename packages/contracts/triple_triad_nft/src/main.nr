@@ -1,5 +1,69 @@
 use aztec::macros::aztec;
 
+/// Card pool sizes per rarity: [common, rare, epic, legendary]
+/// Must match the TypeScript CARDS_PER_POOL in axolotlCards.ts
+global CARDS_PER_POOL: [u32; 4] = [180, 50, 20, 8];
+
+/// Separator for cooldown hash
+global COOLDOWN_SEPARATOR: u32 = 0xCA4D0002;
+
+/// Compute a card_id from a seed and counter.
+/// card_seed = poseidon2([seed, counter]) truncated to u32
+/// rarity = (card_seed >> 16) % 100 -> 0-69 common, 70-89 rare, 90-97 epic, 98-99 legendary
+/// card_index = (card_seed & 0xFFFF) % CARDS_PER_POOL[rarity]
+/// global_card_id = pool_offset + card_index + 1
+///
+/// Returns (rarity_index, global_card_id)
+pub fn generate_card(seed: Field, counter: Field) -> (u8, u32) {
+    // Use pedersen_hash for card seed generation (poseidon2 not accessible outside contract scope)
+    let hash = std::hash::pedersen_hash([seed, counter]);
+    let card_seed = hash as u32;
+
+    // Determine rarity
+    let rarity_roll = (card_seed >> 16) % 100;
+    let rarity: u8 = if rarity_roll < 70 {
+        0
+    } else if rarity_roll < 90 {
+        1
+    } else if rarity_roll < 98 {
+        2
+    } else {
+        3
+    };
+
+    // Determine card within pool
+    let pool_size = CARDS_PER_POOL[rarity as u32];
+    let card_index = (card_seed & 0xFFFF) % pool_size;
+
+    // Compute pool offset (sum of all previous pool sizes)
+    let mut offset: u32 = 0;
+    for i in 0..4 {
+        if (i as u8) < rarity {
+            offset += CARDS_PER_POOL[i];
+        }
+    }
+
+    let global_card_id = offset + card_index + 1;
+    (rarity, global_card_id)
+}
+
+/// Fixed starter set card IDs (common cards)
+global STARTER_CARD_IDS: [Field; 5] = [1, 2, 3, 4, 5];
+
+/// Location IDs for admin lock mechanism
+global LOCATION_RIVER: Field = 1;
+global LOCATION_FOREST: Field = 2;
+global LOCATION_BEACH: Field = 3;
+global LOCATION_CITY: Field = 4;
+global LOCATION_DOCKYARD: Field = 5;
+
+/// Cooldowns in seconds
+global COOLDOWN_RIVER: u64 = 14400;    // 4 hours
+global COOLDOWN_FOREST: u64 = 28800;   // 8 hours
+global COOLDOWN_BEACH: u64 = 43200;    // 12 hours
+global COOLDOWN_CITY: u64 = 57600;     // 16 hours
+global COOLDOWN_DOCKYARD: u64 = 72000; // 20 hours
+
 /// Triple Triad NFT contract.
 /// Each card is an NFT with a unique token_id corresponding to the card's ID.
 /// Supports private ownership for hidden hand information and public ownership for trading.
@@ -30,6 +94,12 @@ pub contract TripleTriadNFT {
         utils::comparison::Comparator,
     };
     use compressed_string::FieldCompressedString;
+    use super::{
+        generate_card,
+        STARTER_CARD_IDS, COOLDOWN_SEPARATOR,
+        LOCATION_RIVER, LOCATION_FOREST, LOCATION_BEACH, LOCATION_CITY, LOCATION_DOCKYARD,
+        COOLDOWN_RIVER, COOLDOWN_FOREST, COOLDOWN_BEACH, COOLDOWN_CITY, COOLDOWN_DOCKYARD,
+    };
 
     // --- Note ---
 
@@ -99,6 +169,11 @@ pub contract TripleTriadNFT {
         to: AztecAddress,
     }
 
+    #[event]
+    struct LocationUnlocked {
+        location_id: Field,
+    }
+
     // --- Storage ---
 
     #[storage]
@@ -111,12 +186,12 @@ pub contract TripleTriadNFT {
         nft_exists: Map<Field, PublicMutable<bool, Context>, Context>,
         public_owners: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
         card_ranks: Map<Field, PublicImmutable<Field, Context>, Context>,
-        /// Tracks which game each escrowed card is locked for.
-        /// Key: token_id, Value: game_id (0 = not locked)
-        /// When a card is prepared for a game, it is locked to that game_id.
-        /// reclaim_card only works if the card is not locked (game_id == 0).
-        /// The game contract clears the lock after settlement via unlock_card.
         card_game_lock: Map<Field, PublicMutable<Field, Context>, Context>,
+        // Card generation tracking (public state)
+        starter_claimed: Map<Field, PublicMutable<bool, Context>, Context>,
+        player_counter: Map<Field, PublicMutable<Field, Context>, Context>,
+        player_cooldown: Map<Field, PublicMutable<u64, Context>, Context>,
+        location_unlocked: Map<Field, PublicMutable<bool, Context>, Context>,
     }
 
     // --- Constructor ---
@@ -131,6 +206,8 @@ pub contract TripleTriadNFT {
         self.storage.name.initialize(name);
         self.storage.symbol.initialize(symbol);
         self.storage.minter.initialize(minter);
+        // River is always unlocked
+        self.storage.location_unlocked.at(LOCATION_RIVER).write(true);
     }
 
     // --- Admin ---
@@ -142,10 +219,135 @@ pub contract TripleTriadNFT {
         self.storage.game_contract.initialize(game_address);
     }
 
+    /// Admin unlocks a card generation location.
+    #[external("public")]
+    fn unlock_location(location_id: Field) {
+        let minter = self.storage.minter.read();
+        assert(self.msg_sender() == minter, "Only admin can unlock locations");
+        assert(
+            (location_id == LOCATION_FOREST)
+                | (location_id == LOCATION_BEACH)
+                | (location_id == LOCATION_CITY)
+                | (location_id == LOCATION_DOCKYARD),
+            "Invalid location ID",
+        );
+        self.storage.location_unlocked.at(location_id).write(true);
+        self.emit(LocationUnlocked { location_id });
+    }
+
+    // --- Card Generation ---
+
+    /// Give a new player their starter set of 5 common cards.
+    /// Can only be called once per player.
+    #[external("private")]
+    fn get_cards_for_new_player() {
+        let owner = self.msg_sender();
+
+        for i in 0..5 {
+            let note = CardNote { token_id: STARTER_CARD_IDS[i] };
+            self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        }
+
+        self.enqueue_self.finalize_starter_set(owner);
+    }
+
+    /// Generate 10 cards from the River (4-hour cooldown, always available).
+    #[external("private")]
+    fn get_cards_from_river(counter: Field) {
+        let owner = self.msg_sender();
+        let owner_npk_m = get_public_keys(owner).npk_m;
+        let owner_npk_m_hash = owner_npk_m.hash();
+        let seed = self.context.request_nhk_app(owner_npk_m_hash);
+
+        for i in 0..10 {
+            let (_, card_id) = generate_card(seed, counter + i as Field);
+            let note = CardNote { token_id: card_id as Field };
+            self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        }
+
+        self.enqueue_self.finalize_card_generation(
+            owner, counter, 10, LOCATION_RIVER, COOLDOWN_RIVER,
+        );
+    }
+
+    /// Generate 10 cards from the Forest (8-hour cooldown, admin lock).
+    #[external("private")]
+    fn get_cards_from_forest(counter: Field) {
+        let owner = self.msg_sender();
+        let owner_npk_m = get_public_keys(owner).npk_m;
+        let owner_npk_m_hash = owner_npk_m.hash();
+        let seed = self.context.request_nhk_app(owner_npk_m_hash);
+
+        for i in 0..10 {
+            let (_, card_id) = generate_card(seed, counter + i as Field);
+            let note = CardNote { token_id: card_id as Field };
+            self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        }
+
+        self.enqueue_self.finalize_card_generation(
+            owner, counter, 10, LOCATION_FOREST, COOLDOWN_FOREST,
+        );
+    }
+
+    /// Generate 10 cards from the Beach (12-hour cooldown, admin lock).
+    #[external("private")]
+    fn get_cards_from_beach(counter: Field) {
+        let owner = self.msg_sender();
+        let owner_npk_m = get_public_keys(owner).npk_m;
+        let owner_npk_m_hash = owner_npk_m.hash();
+        let seed = self.context.request_nhk_app(owner_npk_m_hash);
+
+        for i in 0..10 {
+            let (_, card_id) = generate_card(seed, counter + i as Field);
+            let note = CardNote { token_id: card_id as Field };
+            self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        }
+
+        self.enqueue_self.finalize_card_generation(
+            owner, counter, 10, LOCATION_BEACH, COOLDOWN_BEACH,
+        );
+    }
+
+    /// Generate 10 cards from the City (16-hour cooldown, admin lock).
+    #[external("private")]
+    fn get_cards_from_city(counter: Field) {
+        let owner = self.msg_sender();
+        let owner_npk_m = get_public_keys(owner).npk_m;
+        let owner_npk_m_hash = owner_npk_m.hash();
+        let seed = self.context.request_nhk_app(owner_npk_m_hash);
+
+        for i in 0..10 {
+            let (_, card_id) = generate_card(seed, counter + i as Field);
+            let note = CardNote { token_id: card_id as Field };
+            self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        }
+
+        self.enqueue_self.finalize_card_generation(
+            owner, counter, 10, LOCATION_CITY, COOLDOWN_CITY,
+        );
+    }
+
+    /// Generate 10 cards from the Dockyard (20-hour cooldown, admin lock).
+    #[external("private")]
+    fn get_cards_from_dockyard(counter: Field) {
+        let owner = self.msg_sender();
+        let owner_npk_m = get_public_keys(owner).npk_m;
+        let owner_npk_m_hash = owner_npk_m.hash();
+        let seed = self.context.request_nhk_app(owner_npk_m_hash);
+
+        for i in 0..10 {
+            let (_, card_id) = generate_card(seed, counter + i as Field);
+            let note = CardNote { token_id: card_id as Field };
+            self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        }
+
+        self.enqueue_self.finalize_card_generation(
+            owner, counter, 10, LOCATION_DOCKYARD, COOLDOWN_DOCKYARD,
+        );
+    }
+
     // --- Minting ---
 
-    /// Mint a card to a player's private set.
-    /// packed_ranks encodes [top, right, bottom, left] as: top + right*16 + bottom*256 + left*4096
     #[external("private")]
     fn mint_to_private(to: AztecAddress, token_id: Field, packed_ranks: Field) {
         let minter = self.storage.minter.read();
@@ -157,7 +359,6 @@ pub contract TripleTriadNFT {
         self.enqueue_self.finalize_mint(to, token_id, packed_ranks);
     }
 
-    /// Mint a card to public ownership.
     #[external("public")]
     fn mint_to_public(to: AztecAddress, token_id: Field, packed_ranks: Field) {
         let minter = self.storage.minter.read();
@@ -175,7 +376,6 @@ pub contract TripleTriadNFT {
 
     // --- Transfers ---
 
-    /// Transfer a card from one private owner to another.
     #[external("private")]
     fn transfer_private(from: AztecAddress, to: AztecAddress, token_id: Field) {
         assert(self.msg_sender() == from, "Sender must be owner");
@@ -190,7 +390,6 @@ pub contract TripleTriadNFT {
         self.storage.private_nfts.at(to).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
     }
 
-    /// Transfer public ownership of a card.
     #[external("public")]
     fn transfer_public(from: AztecAddress, to: AztecAddress, token_id: Field) {
         let owner = self.storage.public_owners.at(token_id).read();
@@ -201,8 +400,6 @@ pub contract TripleTriadNFT {
         self.emit(CardTransferred { token_id, from, to });
     }
 
-    /// Game contract can transfer a card after game ends (winner takes loser's card).
-    /// Also clears the game lock on the transferred card.
     #[external("public")]
     fn game_transfer(from: AztecAddress, to: AztecAddress, token_id: Field) {
         let game = self.storage.game_contract.read();
@@ -212,13 +409,10 @@ pub contract TripleTriadNFT {
         assert(owner == from, "Not the owner");
 
         self.storage.public_owners.at(token_id).write(to);
-        // Clear the game lock since the card has been transferred
         self.storage.card_game_lock.at(token_id).write(0);
         self.emit(CardTransferred { token_id, from, to });
     }
 
-    /// Game contract can unlock cards after settlement (for non-transferred cards).
-    /// Called for each player's remaining cards after game settlement.
     #[external("public")]
     fn unlock_cards(token_ids: [Field; 5], game_id: Field) {
         let game = self.storage.game_contract.read();
@@ -227,7 +421,6 @@ pub contract TripleTriadNFT {
         for i in 0..5 {
             if token_ids[i] != 0 {
                 let lock = self.storage.card_game_lock.at(token_ids[i]).read();
-                // Only unlock if locked to this specific game
                 if lock == game_id {
                     self.storage.card_game_lock.at(token_ids[i]).write(0);
                 }
@@ -237,7 +430,6 @@ pub contract TripleTriadNFT {
 
     // --- Private to Public ---
 
-    /// Reveal a card from private to public ownership.
     #[external("private")]
     fn transfer_private_to_public(from: AztecAddress, token_id: Field) {
         assert(self.msg_sender() == from, "Sender must be owner");
@@ -251,18 +443,13 @@ pub contract TripleTriadNFT {
         self.enqueue_self.set_public_owner(from, token_id);
     }
 
-    // --- Public Escrow (Game Preparation) ---
+    // --- Public Escrow ---
 
-    /// Prepare 5 cards for a game by moving them from private to public ownership.
-    /// Must be called by the card owner before the game starts.
-    /// This enables the game contract to transfer cards via public state after settlement.
-    /// The game_id parameter locks the cards so they cannot be reclaimed mid-game.
     #[external("private")]
     fn prepare_for_game(card_ids: [Field; 5], game_id: Field) {
         let owner = self.msg_sender();
         assert(game_id != 0, "game_id must be nonzero");
 
-        // Pop each card from the player's private set
         for i in 0..5 {
             let options = NoteGetterOptions::new()
                 .select(CardNote::properties().token_id, Comparator.EQ, card_ids[i])
@@ -271,24 +458,18 @@ pub contract TripleTriadNFT {
             assert(notes.len() == 1, "Card not found in private set");
         }
 
-        // Enqueue public state updates for all 5 cards (set owner + lock to game)
         for i in 0..5 {
             self.enqueue_self.set_public_owner_and_lock(owner, card_ids[i], game_id);
         }
     }
 
-    /// Reclaim a card from public back to private after a game.
-    /// Step 1 (private): Creates the private note and enqueues public ownership clear.
-    /// Only the public owner can reclaim, and the card must not be locked to a game.
     #[external("private")]
     fn reclaim_card(token_id: Field) {
         let owner = self.msg_sender();
 
-        // Create new private note for the owner
         let note = CardNote { token_id };
         self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
 
-        // Enqueue clearing of public ownership (verifies caller is public owner and card is unlocked)
         self.enqueue_self.finalize_reclaim(owner, token_id);
     }
 
@@ -310,8 +491,6 @@ pub contract TripleTriadNFT {
         self.storage.public_owners.at(token_id).write(owner);
     }
 
-    /// Set public owner AND lock the card to a specific game.
-    /// Called by prepare_for_game via enqueue_self.
     #[external("public")]
     #[only_self]
     fn set_public_owner_and_lock(owner: AztecAddress, token_id: Field, game_id: Field) {
@@ -319,20 +498,72 @@ pub contract TripleTriadNFT {
         self.storage.card_game_lock.at(token_id).write(game_id);
     }
 
-    /// Step 2 (public, enqueued): Verify ownership and clear public state.
-    /// Called by reclaim_card via enqueue_self after private note is created.
-    /// Asserts the card is not locked to an active game.
     #[external("public")]
     #[only_self]
     fn finalize_reclaim(owner: AztecAddress, token_id: Field) {
         let current_owner = self.storage.public_owners.at(token_id).read();
         assert(current_owner == owner, "Not the public owner");
 
-        // Check that the card is not locked to a game
         let game_lock = self.storage.card_game_lock.at(token_id).read();
         assert(game_lock == 0, "Card is locked to an active game");
 
         self.storage.public_owners.at(token_id).write(AztecAddress::zero());
+    }
+
+    /// Finalize starter set: verify not already claimed, register cards.
+    #[external("public")]
+    #[only_self]
+    fn finalize_starter_set(owner: AztecAddress) {
+        let owner_key = owner.to_field();
+        let claimed = self.storage.starter_claimed.at(owner_key).read();
+        assert(!claimed, "Starter set already claimed");
+        self.storage.starter_claimed.at(owner_key).write(true);
+
+        // Register starter cards as existing
+        for i in 0..5 {
+            let exists = self.storage.nft_exists.at(STARTER_CARD_IDS[i]).read();
+            if !exists {
+                self.storage.nft_exists.at(STARTER_CARD_IDS[i]).write(true);
+            }
+        }
+
+        self.emit(CardMinted { token_id: STARTER_CARD_IDS[0], to: owner });
+    }
+
+    /// Finalize card generation from a location.
+    /// Checks: location unlocked, cooldown elapsed, counter matches.
+    #[external("public")]
+    #[only_self]
+    fn finalize_card_generation(
+        owner: AztecAddress,
+        expected_counter: Field,
+        num_cards: Field,
+        location_id: Field,
+        cooldown_seconds: u64,
+    ) {
+        let unlocked = self.storage.location_unlocked.at(location_id).read();
+        assert(unlocked, "Location is locked");
+
+        let owner_field = owner.to_field();
+
+        let current_counter = self.storage.player_counter.at(owner_field).read();
+        assert(current_counter == expected_counter, "Counter mismatch");
+        self.storage.player_counter.at(owner_field).write(current_counter + num_cards);
+
+        let cooldown_key = poseidon2_hash_with_separator(
+            [owner_field, location_id],
+            COOLDOWN_SEPARATOR,
+        );
+        let last_call = self.storage.player_cooldown.at(cooldown_key).read();
+        let current_time = self.context.timestamp() as u64;
+
+        if last_call != 0 {
+            assert(
+                current_time >= last_call + cooldown_seconds,
+                "Cooldown has not elapsed",
+            );
+        }
+        self.storage.player_cooldown.at(cooldown_key).write(current_time);
     }
 
     // --- View Functions ---
@@ -359,6 +590,24 @@ pub contract TripleTriadNFT {
     #[view]
     fn get_card_ranks(token_id: Field) -> Field {
         self.storage.card_ranks.at(token_id).read()
+    }
+
+    #[external("public")]
+    #[view]
+    fn is_location_unlocked(location_id: Field) -> bool {
+        self.storage.location_unlocked.at(location_id).read()
+    }
+
+    #[external("public")]
+    #[view]
+    fn get_player_counter(owner: AztecAddress) -> Field {
+        self.storage.player_counter.at(owner.to_field()).read()
+    }
+
+    #[external("public")]
+    #[view]
+    fn has_claimed_starter(owner: AztecAddress) -> bool {
+        self.storage.starter_claimed.at(owner.to_field()).read()
     }
 
     // --- Utility Functions ---

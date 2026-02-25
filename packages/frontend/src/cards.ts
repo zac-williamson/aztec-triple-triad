@@ -1,5 +1,23 @@
 import type { Card } from './types';
 
+export type Rarity = 'common' | 'rare' | 'epic' | 'legendary';
+
+/**
+ * Get the rarity tier for a card by ID.
+ * Matches the axolotl card database rarity ranges:
+ *   1-180: common, 181-230: rare, 231-250: epic, 251-258: legendary
+ * Legacy 50-card DB uses rank-sum heuristic.
+ */
+export function getCardRarity(cardId: number): Rarity {
+  // Axolotl card database ranges
+  if (cardId >= 251) return 'legendary';
+  if (cardId >= 231) return 'epic';
+  if (cardId >= 181) return 'rare';
+  if (cardId >= 1 && cardId <= 180) return 'common';
+  // Fallback for unknown IDs
+  return 'common';
+}
+
 export const CARD_DATABASE: Card[] = [
   // Level 1 — Common (IDs 1-10)
   { id: 1, name: 'Mudwalker', ranks: { top: 1, right: 4, bottom: 1, left: 5 } },

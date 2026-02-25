@@ -66,14 +66,15 @@ export function useAztec(): UseAztecReturn {
 
     try {
       // Dynamically import Aztec SDK subpath modules
-      // @aztec/aztec.js only has subpath exports (e.g. /node, /fee, /addresses)
-      const [nodeModule, testWallet, stdlibKeys] = await Promise.all([
+      const [nodeModule, testWallet, stdlibKeys, fieldsModule] = await Promise.all([
         import('@aztec/aztec.js/node'),
         import('@aztec/test-wallet/client/lazy'),
         import('@aztec/stdlib/keys'),
+        import('@aztec/aztec.js/fields'),
       ]);
 
       const { createAztecNodeClient } = nodeModule;
+      const { Fr } = fieldsModule;
 
       // Connect to the Aztec node
       const node = createAztecNodeClient(AZTEC_CONFIG.pxeUrl);
@@ -82,25 +83,38 @@ export function useAztec(): UseAztecReturn {
       // Check if we have a saved secret, or generate a new one
       let secret = localStorage.getItem(AZTEC_CONFIG.storageKeys.accountSecret);
       if (!secret) {
-        // Generate a random secret for this browser session
         const randomBytes = new Uint8Array(32);
         crypto.getRandomValues(randomBytes);
         secret = Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('');
         localStorage.setItem(AZTEC_CONFIG.storageKeys.accountSecret, secret);
       }
 
-      // Create embedded PXE wallet
-      // TestWallet runs a full PXE in the browser tab - no external wallet needed
+      // Load or generate a salt for deterministic account recreation
+      let salt = localStorage.getItem(AZTEC_CONFIG.storageKeys.accountSalt);
+      if (!salt) {
+        const randomBytes = new Uint8Array(32);
+        crypto.getRandomValues(randomBytes);
+        salt = Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        localStorage.setItem(AZTEC_CONFIG.storageKeys.accountSalt, salt);
+      }
+
+      // Create embedded PXE wallet — runs a full PXE in the browser tab
       const wallet = await testWallet.TestWallet.create(node);
+
+      // Create a Schnorr account within the wallet using persisted secret + salt
+      const signingKey = stdlibKeys.deriveSigningKey(secret);
+      const accountManager = await wallet.createSchnorrAccount(
+        Fr.fromHexString('0x' + secret),
+        Fr.fromHexString('0x' + salt),
+        signingKey,
+      );
+
       walletRef.current = wallet;
 
-      // Get account address
-      const address = wallet.getAddress().toString();
+      // Get account address from the AccountManager
+      const address = accountManager.address.toString();
       setAccountAddress(address);
       localStorage.setItem(AZTEC_CONFIG.storageKeys.accountAddress, address);
-
-      // Derive signing key for later use
-      const _signingKey = stdlibKeys.deriveSigningKey(secret);
 
       setStatus('connected');
     } catch (err) {

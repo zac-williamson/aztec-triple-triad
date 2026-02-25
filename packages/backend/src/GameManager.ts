@@ -8,7 +8,7 @@ import {
   type PlaceCardResult,
   type Player,
 } from '@aztec-triple-triad/game-logic';
-import type { GameRoom, GameListEntry } from './types.js';
+import type { GameRoom, GameListEntry, OnChainGameStatus, TxStatus } from './types.js';
 
 /**
  * Generate a game ID that is a valid BN254 field element.
@@ -57,6 +57,7 @@ export class GameManager {
       lastActivity: Date.now(),
       expectedMoveNumber: 0,
       processing: false,
+      onChainStatus: { player1Tx: 'pending', player2Tx: 'pending', canSettle: false },
     };
 
     this.games.set(gameId, room);
@@ -217,6 +218,55 @@ export class GameManager {
       }
     }
     return cleaned;
+  }
+
+  /**
+   * Update the on-chain transaction status for a player in a game.
+   * Returns the updated OnChainGameStatus, or null if the game is not found.
+   */
+  updateTxStatus(
+    gameId: string,
+    playerId: string,
+    txStatus: TxStatus,
+  ): OnChainGameStatus | null {
+    const room = this.games.get(gameId);
+    if (!room) return null;
+
+    if (room.player1Id === playerId) {
+      room.onChainStatus.player1Tx = txStatus;
+    } else if (room.player2Id === playerId) {
+      room.onChainStatus.player2Tx = txStatus;
+    } else {
+      return null; // Player not in this game
+    }
+
+    room.onChainStatus.canSettle =
+      room.onChainStatus.player1Tx === 'confirmed' &&
+      room.onChainStatus.player2Tx === 'confirmed';
+
+    room.lastActivity = Date.now();
+    return room.onChainStatus;
+  }
+
+  /**
+   * Cancel a game that hasn't started yet. Only the creator can cancel.
+   * Returns true if cancelled, throws if invalid.
+   */
+  cancelGame(gameId: string, playerId: string): void {
+    const room = this.games.get(gameId);
+    if (!room) throw new Error('Game not found');
+    if (room.player1Id !== playerId) throw new Error('Only the game creator can cancel');
+    if (room.player2Id !== null) throw new Error('Cannot cancel a game that has started');
+
+    this.removeGame(gameId);
+  }
+
+  /**
+   * Get the on-chain status for a game.
+   */
+  getOnChainStatus(gameId: string): OnChainGameStatus | null {
+    const room = this.games.get(gameId);
+    return room?.onChainStatus ?? null;
   }
 
   get gameCount(): number {

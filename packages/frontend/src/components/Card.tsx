@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { type Card as CardType, type Player } from '../types';
-import { formatRank } from '../cards';
+import { formatRank, getCardRarity } from '../cards';
 import './Card.css';
 
 interface CardProps {
@@ -15,10 +15,13 @@ interface CardProps {
 
 export function Card({ card, owner, selected, faceDown, captured, onClick, size = 'medium' }: CardProps) {
   const [imgError, setImgError] = useState(false);
+  const [showTooltip, setShowTooltip] = useState(false);
+  const rarity = getCardRarity(card.id);
   const ownerClass = owner === 'player1' ? 'card--blue' : owner === 'player2' ? 'card--red' : '';
   const classes = [
     'card',
     `card--${size}`,
+    `card--rarity-${rarity}`,
     ownerClass,
     selected ? 'card--selected' : '',
     faceDown ? 'card--facedown' : '',
@@ -41,7 +44,13 @@ export function Card({ card, owner, selected, faceDown, captured, onClick, size 
   const imgSrc = `/cards/card-${card.id}.png`;
 
   return (
-    <div className={classes} onClick={onClick} data-testid={`card-${card.id}`}>
+    <div
+      className={classes}
+      onClick={onClick}
+      data-testid={`card-${card.id}`}
+      onMouseEnter={() => setShowTooltip(true)}
+      onMouseLeave={() => setShowTooltip(false)}
+    >
       <div className="card__inner">
         <div className="card__rank card__rank--top">{formatRank(card.ranks.top)}</div>
         <div className="card__rank card__rank--right">{formatRank(card.ranks.right)}</div>
@@ -63,6 +72,11 @@ export function Card({ card, owner, selected, faceDown, captured, onClick, size 
           )}
         </div>
         <div className="card__name">{card.name}</div>
+        {showTooltip && (
+          <div className={`card__rarity-label card__rarity-label--${rarity}`}>
+            {rarity.charAt(0).toUpperCase() + rarity.slice(1)}
+          </div>
+        )}
       </div>
     </div>
   );

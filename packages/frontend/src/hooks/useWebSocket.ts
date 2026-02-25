@@ -46,81 +46,102 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   }, []);
 
   useEffect(() => {
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
+    let cancelled = false;
+    let ws: WebSocket | null = null;
 
-    ws.onopen = () => {
-      setConnected(true);
-      setError(null);
-    };
+    // Delay connection slightly to survive React StrictMode's
+    // mount → unmount → remount cycle without wasting a connection.
+    const timer = setTimeout(() => {
+      if (cancelled) return;
 
-    ws.onclose = () => {
-      setConnected(false);
-    };
+      ws = new WebSocket(url);
+      wsRef.current = ws;
 
-    ws.onerror = () => {
-      setError('Connection failed');
-      setConnected(false);
-    };
+      ws.onopen = () => {
+        if (cancelled) { ws?.close(); return; }
+        setConnected(true);
+        setError(null);
+      };
 
-    ws.onmessage = (event) => {
-      let msg: ServerMessage;
-      try {
-        msg = JSON.parse(event.data) as ServerMessage;
-      } catch {
-        console.warn('[useWebSocket] Received malformed JSON, ignoring:', event.data);
-        return;
-      }
-      switch (msg.type) {
-        case 'GAME_CREATED':
-          setGameId(msg.gameId);
-          setPlayerNumber(msg.playerNumber);
-          setError(null);
-          break;
-        case 'GAME_JOINED':
-          setGameId(msg.gameId);
-          setPlayerNumber(msg.playerNumber);
-          setGameState(msg.gameState);
-          setError(null);
-          break;
-        case 'GAME_START':
-          setGameState(msg.gameState);
-          break;
-        case 'GAME_STATE':
-          setGameState(msg.gameState);
-          setLastCaptures(msg.captures);
-          break;
-        case 'GAME_OVER':
-          setGameState(msg.gameState);
-          setGameOver({ winner: msg.winner });
-          break;
-        case 'GAME_LIST':
-          setGameList(msg.games);
-          break;
-        case 'OPPONENT_DISCONNECTED':
-          setOpponentDisconnected(true);
-          break;
-        case 'HAND_PROOF':
-          setOpponentHandProof(msg.handProof);
-          break;
-        case 'MOVE_PROVEN':
-          setGameState(msg.gameState);
-          setLastCaptures(msg.captures);
-          setLastMoveProof({
-            moveProof: msg.moveProof,
-            handIndex: msg.handIndex,
-            row: msg.row,
-            col: msg.col,
-          });
-          break;
-        case 'ERROR':
-          setError(msg.message);
-          break;
-      }
-    };
+      ws.onclose = () => {
+        if (!cancelled) setConnected(false);
+      };
+
+      ws.onerror = () => {
+        if (cancelled) return;
+        setError('Connection failed');
+        setConnected(false);
+      };
+
+      ws.onmessage = (event) => {
+        if (cancelled) return;
+        let msg: ServerMessage;
+        try {
+          msg = JSON.parse(event.data) as ServerMessage;
+        } catch {
+          console.warn('[useWebSocket] Received malformed JSON, ignoring:', event.data);
+          return;
+        }
+        switch (msg.type) {
+          case 'GAME_CREATED':
+            setGameId(msg.gameId);
+            setPlayerNumber(msg.playerNumber);
+            setError(null);
+            break;
+          case 'GAME_JOINED':
+            setGameId(msg.gameId);
+            setPlayerNumber(msg.playerNumber);
+            setGameState(msg.gameState);
+            setError(null);
+            break;
+          case 'GAME_START':
+            setGameState(msg.gameState);
+            break;
+          case 'GAME_STATE':
+            setGameState(msg.gameState);
+            setLastCaptures(msg.captures);
+            break;
+          case 'GAME_OVER':
+            setGameState(msg.gameState);
+            setGameOver({ winner: msg.winner });
+            break;
+          case 'GAME_LIST':
+            setGameList(msg.games);
+            break;
+          case 'OPPONENT_DISCONNECTED':
+            setOpponentDisconnected(true);
+            break;
+          case 'HAND_PROOF':
+            setOpponentHandProof(msg.handProof);
+            break;
+          case 'MOVE_PROVEN':
+            setGameState(msg.gameState);
+            setLastCaptures(msg.captures);
+            setLastMoveProof({
+              moveProof: msg.moveProof,
+              handIndex: msg.handIndex,
+              row: msg.row,
+              col: msg.col,
+            });
+            break;
+          case 'ERROR':
+            setError(msg.message);
+            break;
+        }
+      };
+    }, 50);
 
     return () => {
-      ws.close();
+      cancelled = true;
+      clearTimeout(timer);
+      if (ws) {
+        ws.onopen = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.onmessage = null;
+        ws.close();
+      }
+      wsRef.current = null;
     };
   }, [url]);
 

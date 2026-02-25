@@ -62,7 +62,7 @@ describe('useWebSocket', () => {
 
     // Wait for connection
     await act(async () => {
-      await new Promise(r => setTimeout(r, 10));
+      await new Promise(r => setTimeout(r, 100));
     });
 
     const ws = MockWebSocket.instances[0];
@@ -89,7 +89,7 @@ describe('useWebSocket', () => {
     const { result } = renderHook(() => useWebSocket('ws://localhost:3001'));
 
     await act(async () => {
-      await new Promise(r => setTimeout(r, 10));
+      await new Promise(r => setTimeout(r, 100));
     });
 
     const ws = MockWebSocket.instances[0];
@@ -106,7 +106,7 @@ describe('useWebSocket', () => {
     const { result } = renderHook(() => useWebSocket('ws://localhost:3001'));
 
     await act(async () => {
-      await new Promise(r => setTimeout(r, 10));
+      await new Promise(r => setTimeout(r, 100));
     });
 
     const ws = MockWebSocket.instances[0];
@@ -127,7 +127,7 @@ describe('useWebSocket', () => {
     const { result } = renderHook(() => useWebSocket('ws://localhost:3001'));
 
     await act(async () => {
-      await new Promise(r => setTimeout(r, 10));
+      await new Promise(r => setTimeout(r, 100));
     });
 
     const ws = MockWebSocket.instances[0];
@@ -146,7 +146,7 @@ describe('useWebSocket', () => {
     const { result } = renderHook(() => useWebSocket('ws://localhost:3001'));
 
     await act(async () => {
-      await new Promise(r => setTimeout(r, 10));
+      await new Promise(r => setTimeout(r, 100));
     });
 
     const ws = MockWebSocket.instances[0];
@@ -165,7 +165,7 @@ describe('useWebSocket', () => {
     const { result } = renderHook(() => useWebSocket('ws://localhost:3001'));
 
     await act(async () => {
-      await new Promise(r => setTimeout(r, 10));
+      await new Promise(r => setTimeout(r, 100));
     });
 
     const ws = MockWebSocket.instances[0];

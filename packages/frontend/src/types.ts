@@ -59,6 +59,15 @@ export interface MoveProofData extends SerializedProof {
   encryptedCardNullifier: string;
 }
 
+// On-chain transaction status tracking
+export type TxStatus = 'idle' | 'sending' | 'mining' | 'confirmed' | 'failed';
+
+export interface OnChainGameStatus {
+  player1Tx: TxStatus;
+  player2Tx: TxStatus;
+  canSettle: boolean;
+}
+
 // Client -> Server messages
 export type ClientMessage =
   | { type: 'CREATE_GAME'; cardIds: number[] }
@@ -67,7 +76,11 @@ export type ClientMessage =
   | { type: 'LIST_GAMES' }
   | { type: 'GET_GAME'; gameId: string }
   | { type: 'SUBMIT_HAND_PROOF'; gameId: string; handProof: HandProofData }
-  | { type: 'SUBMIT_MOVE_PROOF'; gameId: string; handIndex: number; row: number; col: number; moveNumber: number; moveProof: MoveProofData };
+  | { type: 'SUBMIT_MOVE_PROOF'; gameId: string; handIndex: number; row: number; col: number; moveNumber: number; moveProof: MoveProofData }
+  // On-chain lifecycle messages
+  | { type: 'TX_CONFIRMED'; gameId: string; txType: 'create_game' | 'join_game'; txHash: string }
+  | { type: 'TX_FAILED'; gameId: string; txType: 'create_game' | 'join_game'; error: string }
+  | { type: 'CANCEL_GAME'; gameId: string };
 
 // Server -> Client messages
 export type ServerMessage =
@@ -81,7 +94,10 @@ export type ServerMessage =
   | { type: 'OPPONENT_DISCONNECTED'; gameId: string }
   | { type: 'ERROR'; message: string }
   | { type: 'HAND_PROOF'; gameId: string; handProof: HandProofData; fromPlayer: 1 | 2 }
-  | { type: 'MOVE_PROVEN'; gameId: string; gameState: GameState; captures: { row: number; col: number }[]; moveProof: MoveProofData; handIndex: number; row: number; col: number };
+  | { type: 'MOVE_PROVEN'; gameId: string; gameState: GameState; captures: { row: number; col: number }[]; moveProof: MoveProofData; handIndex: number; row: number; col: number }
+  // On-chain lifecycle messages
+  | { type: 'ON_CHAIN_STATUS'; gameId: string; status: OnChainGameStatus }
+  | { type: 'GAME_CANCELLED'; gameId: string; reason: string };
 
 export interface GameListEntry {
   id: string;

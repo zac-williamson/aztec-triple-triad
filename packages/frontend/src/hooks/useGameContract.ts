@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { AZTEC_CONFIG } from '../aztec/config';
-import type { MoveProofData, HandProofData } from '../types';
+import type { MoveProofData, HandProofData, OnChainGameStatus } from '../types';
+import type { TxStatus as LifecycleTxStatus } from '../types';
 
 /**
  * Transaction status for on-chain operations
@@ -16,7 +17,7 @@ export interface OwnedCard {
 }
 
 export interface UseGameContractReturn {
-  /** Current transaction status */
+  /** Current transaction status (for settlement) */
   txStatus: TxStatus;
   /** Transaction hash if submitted */
   txHash: string | null;
@@ -39,6 +40,20 @@ export interface UseGameContractReturn {
   queryOwnedCards: (accountAddress: string) => Promise<OwnedCard[]>;
   /** Reset transaction state */
   resetTx: () => void;
+  /** Lifecycle tx status (create_game/join_game) */
+  lifecycleTxStatus: LifecycleTxStatus;
+  /** On-chain game status from backend */
+  onChainStatus: OnChainGameStatus | null;
+  /** Whether both txs are confirmed (on-chain settlement possible) */
+  canSettleOnChain: boolean;
+  /** Send create_game tx (simulated until Aztec sandbox available) */
+  createGameOnChain: (gameId: string) => void;
+  /** Send join_game tx (simulated until Aztec sandbox available) */
+  joinGameOnChain: (gameId: string) => void;
+  /** Handle ON_CHAIN_STATUS message from backend */
+  handleOnChainStatus: (status: OnChainGameStatus) => void;
+  /** Reset lifecycle state */
+  resetLifecycle: () => void;
 }
 
 /**
@@ -49,13 +64,21 @@ export interface UseGameContractReturn {
  * - Query NFT card ownership
  * - Handle sponsored fee payment
  */
+export interface LifecycleCallbacks {
+  onTxConfirmed?: (gameId: string, txType: 'create_game' | 'join_game', txHash: string) => void;
+  onTxFailed?: (gameId: string, txType: 'create_game' | 'join_game', error: string) => void;
+}
+
 export function useGameContract(
   wallet: unknown | null,
+  lifecycleCallbacks?: LifecycleCallbacks,
 ): UseGameContractReturn {
   const [txStatus, setTxStatus] = useState<TxStatus>('idle');
   const [txHash, setTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ownedCards, setOwnedCards] = useState<OwnedCard[]>([]);
+  const [lifecycleTxStatus, setLifecycleTxStatus] = useState<LifecycleTxStatus>('idle');
+  const [onChainStatus, setOnChainStatus] = useState<OnChainGameStatus | null>(null);
 
   const isAvailable = wallet !== null && AZTEC_CONFIG.enabled && !!AZTEC_CONFIG.gameContractAddress;
 
@@ -235,6 +258,43 @@ export function useGameContract(
     setError(null);
   }, []);
 
+  const canSettleOnChain = onChainStatus?.canSettle ?? false;
+
+  const createGameOnChain = useCallback((gameId: string) => {
+    setLifecycleTxStatus('sending');
+    // Simulate tx lifecycle: sending -> mining -> confirmed
+    // In production, call Game.create_game on Aztec
+    setTimeout(() => {
+      setLifecycleTxStatus('mining');
+      setTimeout(() => {
+        setLifecycleTxStatus('confirmed');
+        const hash = '0x' + gameId.slice(2, 10) + 'create';
+        lifecycleCallbacks?.onTxConfirmed?.(gameId, 'create_game', hash);
+      }, 500);
+    }, 200);
+  }, [lifecycleCallbacks]);
+
+  const joinGameOnChain = useCallback((gameId: string) => {
+    setLifecycleTxStatus('sending');
+    setTimeout(() => {
+      setLifecycleTxStatus('mining');
+      setTimeout(() => {
+        setLifecycleTxStatus('confirmed');
+        const hash = '0x' + gameId.slice(2, 10) + 'join';
+        lifecycleCallbacks?.onTxConfirmed?.(gameId, 'join_game', hash);
+      }, 500);
+    }, 200);
+  }, [lifecycleCallbacks]);
+
+  const handleOnChainStatus = useCallback((status: OnChainGameStatus) => {
+    setOnChainStatus(status);
+  }, []);
+
+  const resetLifecycle = useCallback(() => {
+    setLifecycleTxStatus('idle');
+    setOnChainStatus(null);
+  }, []);
+
   return {
     txStatus,
     txHash,
@@ -244,5 +304,12 @@ export function useGameContract(
     settleGame,
     queryOwnedCards,
     resetTx,
+    lifecycleTxStatus,
+    onChainStatus,
+    canSettleOnChain,
+    createGameOnChain,
+    joinGameOnChain,
+    handleOnChainStatus,
+    resetLifecycle,
   };
 }
