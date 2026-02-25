@@ -93,6 +93,10 @@ pub contract TripleTriadGame {
     ///   [12] player1_grumpkin_pubkey_y
     ///   [13] player2_grumpkin_pubkey_x
     ///   [14] player2_grumpkin_pubkey_y
+    ///
+    /// loser_card_ids: the 5 card IDs that the loser escrowed for this game.
+    /// The contract verifies card_to_transfer is one of these and that they are
+    /// locked to this game, preventing the winner from stealing arbitrary cards.
     #[external("private")]
     fn process_game(
         aggregate_vk: UltraHonkVerificationKey,
@@ -100,6 +104,7 @@ pub contract TripleTriadGame {
         aggregate_inputs: [Field; 15],
         loser: AztecAddress,
         card_to_transfer: Field,
+        loser_card_ids: [Field; 5],
     ) {
         // Read stored VK hashes (PublicImmutable is readable from private)
         let stored_aggregate_vk_hash = self.storage.aggregate_vk_hash.read();
@@ -132,7 +137,6 @@ pub contract TripleTriadGame {
         let _p2_grumpkin_y = aggregate_inputs[14];
 
         // 3. Validate VK hashes match stored values
-        // This ensures the aggregate proof used the correct verification keys
         assert(
             proof_hand_vk_hash == stored_hand_vk_hash,
             "Hand VK hash mismatch with stored value",
@@ -149,7 +153,6 @@ pub contract TripleTriadGame {
         let caller = self.msg_sender();
         let caller_field = caller.to_field();
 
-        // Verify winner is caller and loser is the actual losing player (S7 fix)
         if winner_id == 1 {
             assert(caller_field == player1_address, "Caller is not the winner");
             assert(loser.to_field() == player2_address, "Loser must be player 2");
@@ -157,7 +160,6 @@ pub contract TripleTriadGame {
             assert(caller_field == player2_address, "Caller is not the winner");
             assert(loser.to_field() == player1_address, "Loser must be player 1");
         } else {
-            // Draw case - no card transfer, loser param irrelevant
             assert(winner_id == 3, "Invalid winner ID");
             assert(
                 (caller_field == player1_address) | (caller_field == player2_address),
@@ -165,18 +167,24 @@ pub contract TripleTriadGame {
             );
         }
 
-        // 6. Settle: transfer card from loser to winner via NFT contract
-        // In case of draw, no card transfer (card_to_transfer should be 0)
-        // TODO: V2 - verify card_to_transfer was actually in the game by adding
-        // encrypted_card_id outputs to game_move, collecting them in aggregate,
-        // and having winner prove which cards the loser played. Currently the
-        // winner can specify any card the loser owns, not just game cards.
+        // 6. Verify card_to_transfer is in the loser's escrowed card set
         if winner_id != 3 {
             assert(card_to_transfer != 0, "card_to_transfer must be nonzero for non-draw");
-            self.enqueue_self.settle_game(game_id, caller, loser, card_to_transfer);
+
+            // The card must be one of the loser's 5 escrowed cards
+            let mut card_found = false;
+            for i in 0..5 {
+                if loser_card_ids[i] == card_to_transfer {
+                    card_found = true;
+                }
+            }
+            assert(card_found, "card_to_transfer not in loser's escrowed cards");
+
+            // Settle: transfer card and unlock remaining cards
+            self.enqueue_self.settle_game(game_id, caller, loser, card_to_transfer, loser_card_ids);
         } else {
-            // Still mark game as settled even for draws
-            self.enqueue_self.settle_game_draw(game_id);
+            // Draw: no card transfer, just mark game as settled and unlock cards
+            self.enqueue_self.settle_game_draw(game_id, loser_card_ids);
         }
     }
 
@@ -189,16 +197,23 @@ pub contract TripleTriadGame {
         winner: AztecAddress,
         loser: AztecAddress,
         card_id: Field,
+        loser_card_ids: [Field; 5],
     ) {
         // Check game not already settled
         let settled = self.storage.game_settled.at(game_id).read();
         assert(!settled, "Game already settled");
         self.storage.game_settled.at(game_id).write(true);
 
-        // Transfer card from loser to winner via NFT contract
         let nft_address = self.storage.nft_contract.read();
+
+        // Transfer the won card from loser to winner
         TripleTriadNFT::at(nft_address)
             .game_transfer(loser, winner, card_id)
+            .call(self.context);
+
+        // Unlock the loser's remaining escrowed cards (excluding the transferred one)
+        TripleTriadNFT::at(nft_address)
+            .unlock_cards(loser_card_ids, game_id)
             .call(self.context);
 
         self.emit(GameSettled {
@@ -211,10 +226,16 @@ pub contract TripleTriadGame {
 
     #[external("public")]
     #[only_self]
-    fn settle_game_draw(game_id: Field) {
+    fn settle_game_draw(game_id: Field, card_ids: [Field; 5]) {
         let settled = self.storage.game_settled.at(game_id).read();
         assert(!settled, "Game already settled");
         self.storage.game_settled.at(game_id).write(true);
+
+        // Unlock all escrowed cards since no transfer occurs in a draw
+        let nft_address = self.storage.nft_contract.read();
+        TripleTriadNFT::at(nft_address)
+            .unlock_cards(card_ids, game_id)
+            .call(self.context);
 
         self.emit(GameSettled {
             game_id,

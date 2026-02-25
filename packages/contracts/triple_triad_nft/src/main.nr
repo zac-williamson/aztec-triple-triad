@@ -111,6 +111,12 @@ pub contract TripleTriadNFT {
         nft_exists: Map<Field, PublicMutable<bool, Context>, Context>,
         public_owners: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
         card_ranks: Map<Field, PublicImmutable<Field, Context>, Context>,
+        /// Tracks which game each escrowed card is locked for.
+        /// Key: token_id, Value: game_id (0 = not locked)
+        /// When a card is prepared for a game, it is locked to that game_id.
+        /// reclaim_card only works if the card is not locked (game_id == 0).
+        /// The game contract clears the lock after settlement via unlock_card.
+        card_game_lock: Map<Field, PublicMutable<Field, Context>, Context>,
     }
 
     // --- Constructor ---
@@ -196,6 +202,7 @@ pub contract TripleTriadNFT {
     }
 
     /// Game contract can transfer a card after game ends (winner takes loser's card).
+    /// Also clears the game lock on the transferred card.
     #[external("public")]
     fn game_transfer(from: AztecAddress, to: AztecAddress, token_id: Field) {
         let game = self.storage.game_contract.read();
@@ -205,7 +212,27 @@ pub contract TripleTriadNFT {
         assert(owner == from, "Not the owner");
 
         self.storage.public_owners.at(token_id).write(to);
+        // Clear the game lock since the card has been transferred
+        self.storage.card_game_lock.at(token_id).write(0);
         self.emit(CardTransferred { token_id, from, to });
+    }
+
+    /// Game contract can unlock cards after settlement (for non-transferred cards).
+    /// Called for each player's remaining cards after game settlement.
+    #[external("public")]
+    fn unlock_cards(token_ids: [Field; 5], game_id: Field) {
+        let game = self.storage.game_contract.read();
+        assert(self.msg_sender() == game, "Only game contract can call");
+
+        for i in 0..5 {
+            if token_ids[i] != 0 {
+                let lock = self.storage.card_game_lock.at(token_ids[i]).read();
+                // Only unlock if locked to this specific game
+                if lock == game_id {
+                    self.storage.card_game_lock.at(token_ids[i]).write(0);
+                }
+            }
+        }
     }
 
     // --- Private to Public ---
@@ -229,9 +256,11 @@ pub contract TripleTriadNFT {
     /// Prepare 5 cards for a game by moving them from private to public ownership.
     /// Must be called by the card owner before the game starts.
     /// This enables the game contract to transfer cards via public state after settlement.
+    /// The game_id parameter locks the cards so they cannot be reclaimed mid-game.
     #[external("private")]
-    fn prepare_for_game(card_ids: [Field; 5]) {
+    fn prepare_for_game(card_ids: [Field; 5], game_id: Field) {
         let owner = self.msg_sender();
+        assert(game_id != 0, "game_id must be nonzero");
 
         // Pop each card from the player's private set
         for i in 0..5 {
@@ -242,15 +271,15 @@ pub contract TripleTriadNFT {
             assert(notes.len() == 1, "Card not found in private set");
         }
 
-        // Enqueue public state updates for all 5 cards
+        // Enqueue public state updates for all 5 cards (set owner + lock to game)
         for i in 0..5 {
-            self.enqueue_self.set_public_owner(owner, card_ids[i]);
+            self.enqueue_self.set_public_owner_and_lock(owner, card_ids[i], game_id);
         }
     }
 
     /// Reclaim a card from public back to private after a game.
     /// Step 1 (private): Creates the private note and enqueues public ownership clear.
-    /// Only the public owner can reclaim.
+    /// Only the public owner can reclaim, and the card must not be locked to a game.
     #[external("private")]
     fn reclaim_card(token_id: Field) {
         let owner = self.msg_sender();
@@ -259,7 +288,7 @@ pub contract TripleTriadNFT {
         let note = CardNote { token_id };
         self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
 
-        // Enqueue clearing of public ownership (verifies caller is public owner)
+        // Enqueue clearing of public ownership (verifies caller is public owner and card is unlocked)
         self.enqueue_self.finalize_reclaim(owner, token_id);
     }
 
@@ -281,13 +310,28 @@ pub contract TripleTriadNFT {
         self.storage.public_owners.at(token_id).write(owner);
     }
 
+    /// Set public owner AND lock the card to a specific game.
+    /// Called by prepare_for_game via enqueue_self.
+    #[external("public")]
+    #[only_self]
+    fn set_public_owner_and_lock(owner: AztecAddress, token_id: Field, game_id: Field) {
+        self.storage.public_owners.at(token_id).write(owner);
+        self.storage.card_game_lock.at(token_id).write(game_id);
+    }
+
     /// Step 2 (public, enqueued): Verify ownership and clear public state.
     /// Called by reclaim_card via enqueue_self after private note is created.
+    /// Asserts the card is not locked to an active game.
     #[external("public")]
     #[only_self]
     fn finalize_reclaim(owner: AztecAddress, token_id: Field) {
         let current_owner = self.storage.public_owners.at(token_id).read();
         assert(current_owner == owner, "Not the public owner");
+
+        // Check that the card is not locked to a game
+        let game_lock = self.storage.card_game_lock.at(token_id).read();
+        assert(game_lock == 0, "Card is locked to an active game");
+
         self.storage.public_owners.at(token_id).write(AztecAddress::zero());
     }
 

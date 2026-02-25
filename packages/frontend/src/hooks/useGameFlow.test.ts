@@ -110,6 +110,7 @@ describe('useGameFlow', () => {
       'game_1',
       expect.any(String), // player secret
       expect.any(Array), // nullifier secrets
+      expect.any(String), // grumpkin private key
     );
   });
 
@@ -195,15 +196,15 @@ describe('useGameFlow', () => {
     const oppHandProof: HandProofData = {
       proof: 'opp', publicInputs: [], cardCommit: 'c', playerAddress: 'a', gameId: 'g'
     };
-    const moveProof: MoveProofData = {
-      proof: 'move', publicInputs: [], cardCommit1: 'c1', cardCommit2: 'c2',
-      startStateHash: 's', endStateHash: 'e', gameEnded: true, winnerId: 1,
-    };
 
     act(() => {
       result.current.setOpponentHandProof(oppHandProof);
+      // Each move proof needs unique state hashes (deduplication checks these)
       for (let i = 0; i < 9; i++) {
-        result.current.addMoveProof(moveProof);
+        result.current.addMoveProof({
+          proof: `move_${i}`, publicInputs: [], cardCommit1: 'c1', cardCommit2: 'c2',
+          startStateHash: `s${i}`, endStateHash: `e${i}`, gameEnded: i === 8, winnerId: i === 8 ? 1 : 0,
+        });
       }
     });
 
@@ -238,15 +239,15 @@ describe('useGameFlow', () => {
     const oppHandProof: HandProofData = {
       proof: 'opp', publicInputs: [], cardCommit: 'c', playerAddress: 'a', gameId: 'g'
     };
-    const moveProof: MoveProofData = {
-      proof: 'move', publicInputs: [], cardCommit1: 'c1', cardCommit2: 'c2',
-      startStateHash: 's', endStateHash: 'e', gameEnded: true, winnerId: 2,
-    };
 
     act(() => {
       result.current.setOpponentHandProof(oppHandProof);
+      // Each move proof needs unique state hashes (deduplication checks these)
       for (let i = 0; i < 9; i++) {
-        result.current.addMoveProof(moveProof);
+        result.current.addMoveProof({
+          proof: `move_${i}`, publicInputs: [], cardCommit1: 'c1', cardCommit2: 'c2',
+          startStateHash: `s${i}`, endStateHash: `e${i}`, gameEnded: i === 8, winnerId: i === 8 ? 2 : 0,
+        });
       }
     });
 

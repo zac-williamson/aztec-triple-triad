@@ -67,31 +67,57 @@ function getOrCreatePlayerSecret(gameId: string, playerNumber: number): string {
   if (!secret) {
     const bytes = new Uint8Array(32);
     crypto.getRandomValues(bytes);
-    secret = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    secret = '0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem(key, secret);
+  }
+  // Ensure 0x prefix for stored values from older sessions
+  if (!secret.startsWith('0x')) {
+    secret = '0x' + secret;
     localStorage.setItem(key, secret);
   }
   return secret;
 }
 
+// Grumpkin scalar field order
+const GRUMPKIN_ORDER = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
+
 /**
  * Generate or retrieve a Grumpkin private key for ECDH.
+ * Validates the key is within [1, GRUMPKIN_ORDER).
  */
 function getOrCreateGrumpkinKey(gameId: string, playerNumber: number): string {
   const key = `tt_grumpkin_${gameId}_${playerNumber}`;
   let stored = localStorage.getItem(key);
   if (!stored) {
-    const bytes = new Uint8Array(32);
-    crypto.getRandomValues(bytes);
-    // Ensure non-zero (Grumpkin private key must not be zero)
-    bytes[31] = bytes[31] || 1;
-    stored = '0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    stored = generateValidGrumpkinKey();
+    localStorage.setItem(key, stored);
+  }
+  // Validate existing key is within scalar field range
+  const keyBigInt = BigInt(stored);
+  if (keyBigInt === 0n || keyBigInt >= GRUMPKIN_ORDER) {
+    stored = generateValidGrumpkinKey();
     localStorage.setItem(key, stored);
   }
   return stored;
 }
 
+function generateValidGrumpkinKey(): string {
+  let keyBigInt = 0n;
+  // Generate until we get a valid key (almost always first try)
+  while (keyBigInt === 0n || keyBigInt >= GRUMPKIN_ORDER) {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    keyBigInt = BigInt('0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(''));
+    if (keyBigInt >= GRUMPKIN_ORDER) {
+      keyBigInt = keyBigInt % GRUMPKIN_ORDER;
+    }
+  }
+  return '0x' + keyBigInt.toString(16).padStart(64, '0');
+}
+
 /**
  * Generate nullifier secrets for each card.
+ * All secrets are 0x-prefixed hex strings.
  */
 function getOrCreateNullifierSecrets(gameId: string, playerNumber: number, count: number): string[] {
   const key = `tt_nullifiers_${gameId}_${playerNumber}`;
@@ -99,14 +125,21 @@ function getOrCreateNullifierSecrets(gameId: string, playerNumber: number, count
   if (stored) {
     try {
       const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed) && parsed.length === count) return parsed;
+      if (Array.isArray(parsed) && parsed.length === count) {
+        // Ensure all have 0x prefix (fix for older sessions)
+        const fixed = parsed.map((s: string) => s.startsWith('0x') ? s : '0x' + s);
+        if (fixed.some((s: string, i: number) => s !== parsed[i])) {
+          localStorage.setItem(key, JSON.stringify(fixed));
+        }
+        return fixed;
+      }
     } catch { /* regenerate */ }
   }
   const secrets: string[] = [];
   for (let i = 0; i < count; i++) {
     const bytes = new Uint8Array(32);
     crypto.getRandomValues(bytes);
-    secrets.push(Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(''));
+    secrets.push('0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(''));
   }
   localStorage.setItem(key, JSON.stringify(secrets));
   return secrets;
@@ -166,7 +199,8 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
 
     handProofGenerated.current = true;
 
-    const address = accountAddress || `player_${playerNumber}_address`;
+    // Derive a deterministic placeholder address from player secret if no wallet connected
+    const address = accountAddress || ('0x' + playerNumber.toString().padStart(64, '0'));
     proofs.generateHandProof(
       cardIds,
       cardRanks,
@@ -191,13 +225,23 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
     collectedMoveProofs.length >= 9;
 
   const addMoveProof = useCallback((proof: MoveProofData) => {
-    setCollectedMoveProofs(prev => [...prev, proof]);
+    setCollectedMoveProofs(prev => {
+      // Deduplicate: don't add if a proof with the same state hashes already exists
+      const isDuplicate = prev.some(
+        p => p.startStateHash === proof.startStateHash && p.endStateHash === proof.endStateHash,
+      );
+      if (isDuplicate) {
+        console.log('[useGameFlow] Skipping duplicate move proof (same state hashes)');
+        return prev;
+      }
+      return [...prev, proof];
+    });
   }, []);
 
   // Build PlayerHandData for passing to move proof generation
   const playerHandData: PlayerHandData | null = useMemo(() => {
     if (!gameId || !playerNumber || cardIds.length !== 5) return null;
-    const address = accountAddress || `player_${playerNumber}_address`;
+    const address = accountAddress || ('0x' + playerNumber.toString().padStart(64, '0'));
     return {
       playerSecret,
       playerAddress: address,

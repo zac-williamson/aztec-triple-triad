@@ -40,14 +40,16 @@ fn compute_shared_secret(my_private_key: Field, opponent_pubkey: EmbeddedCurvePo
     shared_point.x
 }
 
-/// Key expansion for symmetric encryption using pedersen hash
-fn expand_secret_1(secret: Field) -> Field {
-    std::hash::pedersen_hash([secret, 0])
+/// Key expansion for symmetric encryption using pedersen hash with move-index nonce.
+/// The nonce (current_turn_before) ensures a unique key per move, preventing
+/// an attacker who recovers one plaintext from decrypting all other moves.
+fn expand_secret(secret: Field, nonce: Field) -> Field {
+    std::hash::pedersen_hash([secret, nonce])
 }
 
-/// Symmetric encrypt a single field element using ECDH shared secret
-fn symmetric_encrypt_field(plaintext: Field, secret: Field) -> Field {
-    let key = expand_secret_1(secret);
+/// Symmetric encrypt a single field element using ECDH shared secret and move nonce.
+fn symmetric_encrypt_field(plaintext: Field, secret: Field, nonce: Field) -> Field {
+    let key = expand_secret(secret, nonce);
     key + plaintext
 }
 
@@ -426,14 +428,24 @@ fn main(
     assert(scores_after[0] == expected_p1_score as Field, "P1 score mismatch");
     assert(scores_after[1] == expected_p2_score as Field, "P2 score mismatch");
 
-    // ===== 13. ECDH encryption of card nullifier (FIX-3) =====
+    // ===== 13. Validate Grumpkin private key is non-zero (V6 Fix 3.1) =====
+    assert(grumpkin_private_key != 0, "grumpkin_private_key must be non-zero");
+
+    // ===== 14. Validate opponent public key is on Grumpkin curve (V6 Fix 3.3) =====
+    // Grumpkin curve equation: y^2 = x^3 - 17 (a=0, b=-17)
+    let x3 = opponent_pubkey_x * opponent_pubkey_x * opponent_pubkey_x;
+    let y2 = opponent_pubkey_y * opponent_pubkey_y;
+    assert(y2 == x3 - 17, "opponent public key not on Grumpkin curve");
+
+    // ===== 15. ECDH encryption of card nullifier =====
     let opponent_pubkey = EmbeddedCurvePoint {
         x: opponent_pubkey_x,
         y: opponent_pubkey_y,
         is_infinite: false,
     };
     let shared_secret = compute_shared_secret(grumpkin_private_key, opponent_pubkey);
-    let computed_encrypted = symmetric_encrypt_field(placed_card_nullifier_secret, shared_secret);
+    // Use current_turn_before as nonce for per-move unique key (V6 Fix 3.2)
+    let computed_encrypted = symmetric_encrypt_field(placed_card_nullifier_secret, shared_secret, current_turn_before);
     assert(
         computed_encrypted == encrypted_card_nullifier,
         "Encrypted nullifier mismatch",
@@ -454,10 +466,10 @@ fn test_card_commit(
     compute_card_commit(player_secret, player_address, game_id, card_ids, card_ranks, nullifier_secrets)
 }
 
-/// Helper: compute encrypted nullifier for tests
-fn test_encrypt_nullifier(nullifier_secret: Field, player_grumpkin_key: Field, opponent_pubkey: EmbeddedCurvePoint) -> Field {
+/// Helper: compute encrypted nullifier for tests (with move nonce)
+fn test_encrypt_nullifier(nullifier_secret: Field, player_grumpkin_key: Field, opponent_pubkey: EmbeddedCurvePoint, nonce: Field) -> Field {
     let shared_secret = compute_shared_secret(player_grumpkin_key, opponent_pubkey);
-    symmetric_encrypt_field(nullifier_secret, shared_secret)
+    symmetric_encrypt_field(nullifier_secret, shared_secret, nonce)
 }
 
 /// Helper: derive Grumpkin public key
@@ -507,13 +519,13 @@ fn get_p2_pubkey() -> EmbeddedCurvePoint {
 }
 
 /// Helper: compute encrypted nullifier for P1 placing a card (P1 encrypts for P2 to decrypt)
-fn p1_encrypt_nullifier(nullifier_secret: Field) -> Field {
-    test_encrypt_nullifier(nullifier_secret, P1_GRUMPKIN_KEY, get_p2_pubkey())
+fn p1_encrypt_nullifier(nullifier_secret: Field, nonce: Field) -> Field {
+    test_encrypt_nullifier(nullifier_secret, P1_GRUMPKIN_KEY, get_p2_pubkey(), nonce)
 }
 
 /// Helper: compute encrypted nullifier for P2 placing a card (P2 encrypts for P1 to decrypt)
-fn p2_encrypt_nullifier(nullifier_secret: Field) -> Field {
-    test_encrypt_nullifier(nullifier_secret, P2_GRUMPKIN_KEY, get_p1_pubkey())
+fn p2_encrypt_nullifier(nullifier_secret: Field, nonce: Field) -> Field {
+    test_encrypt_nullifier(nullifier_secret, P2_GRUMPKIN_KEY, get_p1_pubkey(), nonce)
 }
 
 // ====================== TESTS ======================
@@ -537,8 +549,8 @@ fn test_first_move_no_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 1 (Mudwalker) has nullifier_secret = 100
-    let enc_null = p1_encrypt_nullifier(100);
+    // Card 1 (Mudwalker) has nullifier_secret = 100, nonce = current_turn_before = 1
+    let enc_null = p1_encrypt_nullifier(100, 1);
 
     main(
         cc1, cc2,
@@ -582,8 +594,8 @@ fn test_second_move_no_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    // Card 10 (Peaches) has nullifier_secret = 600
-    let enc_null = p2_encrypt_nullifier(600);
+    // Card 10 (Peaches) has nullifier_secret = 600, nonce = current_turn_before = 2
+    let enc_null = p2_encrypt_nullifier(600, 2);
 
     main(
         cc1, cc2,
@@ -629,8 +641,8 @@ fn test_capture_one_card() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 4 (Sunny) has nullifier_secret = 400
-    let enc_null = p1_encrypt_nullifier(400);
+    // Card 4 (Sunny) has nullifier_secret = 400, nonce = current_turn_before = 1
+    let enc_null = p1_encrypt_nullifier(400, 1);
 
     main(
         cc1, cc2,
@@ -681,8 +693,8 @@ fn test_capture_multiple_cards() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 1 (Mudwalker) has nullifier_secret = 100
-    let enc_null = p1_encrypt_nullifier(100);
+    // Card 1 (Mudwalker) has nullifier_secret = 100, nonce = current_turn_before = 1
+    let enc_null = p1_encrypt_nullifier(100, 1);
 
     main(
         cc1, cc2,
@@ -722,8 +734,8 @@ fn test_no_capture_higher_adjacent() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 3 (Snowdrop) has nullifier_secret = 300
-    let enc_null = p1_encrypt_nullifier(300);
+    // Card 3 (Snowdrop) has nullifier_secret = 300, nonce = current_turn_before = 1
+    let enc_null = p1_encrypt_nullifier(300, 1);
 
     main(
         cc1, cc2,
@@ -775,8 +787,8 @@ fn test_final_move_game_ends_p1_wins() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 5 (Inkwell) has nullifier_secret = 500
-    let enc_null = p1_encrypt_nullifier(500);
+    // Card 5 (Inkwell) has nullifier_secret = 500, nonce = current_turn_before = 1
+    let enc_null = p1_encrypt_nullifier(500, 1);
 
     main(
         cc1, cc2,
@@ -826,8 +838,8 @@ fn test_game_ends_draw() {
     let scores_after2: [Field; 2] = [5, 5];
     let end_hash2 = hash_board_state(board_after2, scores_after2, 2);
 
-    // Card 5 (Inkwell) has nullifier_secret = 500
-    let enc_null = p1_encrypt_nullifier(500);
+    // Card 5 (Inkwell) has nullifier_secret = 500, nonce = current_turn_before2 = 1
+    let enc_null = p1_encrypt_nullifier(500, 1);
 
     main(
         cc1, cc2,
@@ -893,8 +905,8 @@ fn test_final_move_game_ends_p2_wins() {
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    // Card 14 (Glow Bug) has nullifier_secret = 1000
-    let enc_null = p2_encrypt_nullifier(1000);
+    // Card 14 (Glow Bug) has nullifier_secret = 1000, nonce = current_turn_before = 2
+    let enc_null = p2_encrypt_nullifier(1000, 2);
 
     main(
         cc1, cc2,
@@ -934,7 +946,7 @@ fn test_fail_place_on_occupied_cell() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100);
+    let enc_null = p1_encrypt_nullifier(100, 1);
 
     main(
         cc1, cc2,
@@ -970,7 +982,7 @@ fn test_fail_wrong_player_turn() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    let enc_null = p2_encrypt_nullifier(600);
+    let enc_null = p2_encrypt_nullifier(600, 1);
 
     main(
         cc1, cc2,
@@ -1001,7 +1013,7 @@ fn test_fail_row_out_of_bounds() {
     let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
     let end_hash = start_hash;
 
-    let enc_null = p1_encrypt_nullifier(100);
+    let enc_null = p1_encrypt_nullifier(100, 1);
 
     main(
         cc1, cc2,
@@ -1036,7 +1048,7 @@ fn test_fail_card_not_in_hand() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100);
+    let enc_null = p1_encrypt_nullifier(100, 1);
 
     main(
         cc1, cc2,
@@ -1071,7 +1083,7 @@ fn test_fail_wrong_player_secret() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100);
+    let enc_null = p1_encrypt_nullifier(100, 1);
 
     main(
         cc1, cc2,
@@ -1108,7 +1120,7 @@ fn test_fail_false_capture() {
     let scores_after: [Field; 2] = [6, 4];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(300);
+    let enc_null = p1_encrypt_nullifier(300, 1);
 
     main(
         cc1, cc2,
@@ -1144,7 +1156,7 @@ fn test_fail_missing_capture() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(400);
+    let enc_null = p1_encrypt_nullifier(400, 1);
 
     main(
         cc1, cc2,
@@ -1180,7 +1192,7 @@ fn test_fail_card_id_changed() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100);
+    let enc_null = p1_encrypt_nullifier(100, 1);
 
     main(
         cc1, cc2,
@@ -1221,7 +1233,7 @@ fn test_player2_move_with_capture() {
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
     // Card 12 (Camo) has nullifier_secret = 800
-    let enc_null = p2_encrypt_nullifier(800);
+    let enc_null = p2_encrypt_nullifier(800, 2);
 
     main(
         cc1, cc2,
@@ -1262,7 +1274,7 @@ fn test_equal_ranks_no_capture() {
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
     // Card 1 (Mudwalker) has nullifier_secret = 100
-    let enc_null = p1_encrypt_nullifier(100);
+    let enc_null = p1_encrypt_nullifier(100, 1);
 
     main(
         cc1, cc2,
@@ -1330,11 +1342,12 @@ fn test_ecdh_symmetric_encryption() {
     let shared_2 = compute_shared_secret(P2_GRUMPKIN_KEY, p1_pub);
     assert(shared_1 == shared_2, "ECDH shared secrets should match");
 
-    // Encrypt and verify
+    // Encrypt and verify with nonce
     let plaintext: Field = 12345;
-    let ciphertext = symmetric_encrypt_field(plaintext, shared_1);
+    let nonce: Field = 3; // example move index
+    let ciphertext = symmetric_encrypt_field(plaintext, shared_1, nonce);
     // Decrypt: plaintext = ciphertext - key
-    let key = expand_secret_1(shared_2);
+    let key = expand_secret(shared_2, nonce);
     let decrypted = ciphertext - key;
     assert(decrypted == plaintext, "Decrypted value should match plaintext");
 }
@@ -1362,7 +1375,7 @@ fn test_score_fabrication_rejected() {
     let scores_after: [Field; 2] = [8, 2];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100);
+    let enc_null = p1_encrypt_nullifier(100, 1);
 
     main(
         cc1, cc2,
@@ -1411,7 +1424,7 @@ fn test_exact_scores_after_capture() {
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
     // Card 13 (Neon) has nullifier_secret = 900
-    let enc_null = p2_encrypt_nullifier(900);
+    let enc_null = p2_encrypt_nullifier(900, 2);
 
     main(
         cc1, cc2,
@@ -1454,7 +1467,7 @@ fn test_card_replay_rejected() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100);
+    let enc_null = p1_encrypt_nullifier(100, 1);
 
     main(
         cc1, cc2,
@@ -1496,7 +1509,7 @@ fn test_different_card_after_same_id_on_board() {
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
     // Card 2 (Blushy) has nullifier_secret = 200
-    let enc_null = p1_encrypt_nullifier(200);
+    let enc_null = p1_encrypt_nullifier(200, 1);
 
     main(
         cc1, cc2,

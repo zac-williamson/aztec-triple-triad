@@ -33,32 +33,12 @@ export interface UseGameContractReturn {
     moveProofs: MoveProofData[],
     loserAddress: string,
     cardToTransfer: number,
+    loserCardIds: number[],
   ) => Promise<string | null>;
   /** Query owned NFT cards */
   queryOwnedCards: (accountAddress: string) => Promise<OwnedCard[]>;
   /** Reset transaction state */
   resetTx: () => void;
-}
-
-/**
- * Convert a base64-encoded proof back to an array of field hex strings.
- * Each field is 32 bytes (64 hex chars).
- */
-function base64ProofToFields(b64: string): string[] {
-  const binaryStr = atob(b64);
-  const bytes = new Uint8Array(binaryStr.length);
-  for (let i = 0; i < binaryStr.length; i++) {
-    bytes[i] = binaryStr.charCodeAt(i);
-  }
-  // Each field is 32 bytes
-  const fieldCount = Math.floor(bytes.length / 32);
-  const fields: string[] = [];
-  for (let i = 0; i < fieldCount; i++) {
-    const slice = bytes.slice(i * 32, (i + 1) * 32);
-    const hex = '0x' + Array.from(slice).map(b => b.toString(16).padStart(2, '0')).join('');
-    fields.push(hex);
-  }
-  return fields;
 }
 
 /**
@@ -86,6 +66,7 @@ export function useGameContract(
       moveProofs: MoveProofData[],
       loserAddress: string,
       cardToTransfer: number,
+      loserCardIds: number[] = [],
     ): Promise<string | null> => {
       if (!wallet || !AZTEC_CONFIG.gameContractAddress) {
         setError('Aztec wallet or contract not available');
@@ -133,12 +114,18 @@ export function useGameContract(
           wallet as never,
         );
 
-        // 3. Decode aggregate proof and VK from base64/field arrays
-        const proofFields = base64ProofToFields(aggregateProof.proof);
+        // 3. Use pre-computed proof-as-fields and VK from recursive artifacts
+        const proofFields = aggregateProof.proofAsFields;
         const vkFields = aggregateProof.vkAsFields;
 
-        // 4. Call process_game with: aggregate_vk, aggregate_proof, aggregate_inputs, loser, card_to_transfer
+        // 4. Call process_game with: aggregate_vk, aggregate_proof, aggregate_inputs, loser, card_to_transfer, loser_card_ids
         const loser = aztecAddr.AztecAddress.fromString(loserAddress);
+
+        // Pad loser_card_ids to exactly 5 elements (contract expects [Field; 5])
+        const paddedLoserCardIds = [...loserCardIds];
+        while (paddedLoserCardIds.length < 5) {
+          paddedLoserCardIds.push(0);
+        }
 
         const feeMethod = new aztecFee.SponsoredFeePaymentMethod();
         const receipt = await contract.methods
@@ -148,6 +135,7 @@ export function useGameContract(
             aggregateProof.publicInputs,      // aggregate_inputs: [Field; 15]
             loser,                            // loser: AztecAddress
             cardToTransfer,                   // card_to_transfer: Field
+            paddedLoserCardIds,               // loser_card_ids: [Field; 5]
           )
           .send({ fee: feeMethod })
           .wait();

@@ -6,7 +6,7 @@ import { useGameContract } from './hooks/useGameContract';
 import { Lobby } from './components/Lobby';
 import { GameScreen } from './components/GameScreen';
 import { WalletStatus } from './components/WalletStatus';
-import type { Screen, GameState, MoveProofData, Card } from './types';
+import type { Screen, GameState, Card } from './types';
 import './App.css';
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
@@ -30,6 +30,21 @@ export function App() {
   const prevBoardRef = useRef<GameState['board'] | null>(null);
   const prevScoresRef = useRef<[number, number]>([5, 5]);
 
+  // Track opponent's original card IDs from game start (needed for settlement)
+  const opponentCardIdsRef = useRef<number[]>([]);
+
+  // Capture opponent's initial card IDs when the game starts
+  useEffect(() => {
+    if (ws.gameState && ws.playerNumber && opponentCardIdsRef.current.length === 0) {
+      const opponentHand = ws.playerNumber === 1
+        ? ws.gameState.player2Hand
+        : ws.gameState.player1Hand;
+      if (opponentHand.length === 5) {
+        opponentCardIdsRef.current = opponentHand.map(c => c.id);
+      }
+    }
+  }, [ws.gameState, ws.playerNumber]);
+
   // When opponent sends hand proof via WebSocket, store it in gameFlow
   useEffect(() => {
     if (ws.opponentHandProof) {
@@ -51,13 +66,21 @@ export function App() {
     }
   }, [ws.lastMoveProof]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Deep copy a board to prevent reference mutation issues
+  const deepCopyBoard = useCallback((board: GameState['board']): GameState['board'] => {
+    return board.map(row => row.map(cell => ({
+      card: cell.card ? { ...cell.card, ranks: { ...cell.card.ranks } } : null,
+      owner: cell.owner,
+    })));
+  }, []);
+
   // Store initial board state when game starts
   useEffect(() => {
     if (ws.gameState && ws.gameState.status === 'playing' && !prevBoardRef.current) {
-      prevBoardRef.current = ws.gameState.board;
+      prevBoardRef.current = deepCopyBoard(ws.gameState.board);
       prevScoresRef.current = [ws.gameState.player1Score, ws.gameState.player2Score];
     }
-  }, [ws.gameState]);
+  }, [ws.gameState, deepCopyBoard]);
 
   const handleCreateGame = useCallback((cardIds: number[]) => {
     setSelectedCardIds(cardIds);
@@ -78,8 +101,8 @@ export function App() {
   const handlePlaceCard = useCallback(async (handIndex: number, row: number, col: number) => {
     if (!ws.gameState || !ws.playerNumber || !ws.gameId) return;
 
-    // Capture current board state BEFORE the move
-    const boardBefore = ws.gameState.board;
+    // Deep copy board state BEFORE the move to prevent reference mutation
+    const boardBefore = deepCopyBoard(ws.gameState.board);
     const scoresBefore: [number, number] = [ws.gameState.player1Score, ws.gameState.player2Score];
 
     // Get the card being placed
@@ -99,13 +122,13 @@ export function App() {
     // Store pre-move state for proof generation
     prevBoardRef.current = boardBefore;
     prevScoresRef.current = scoresBefore;
-  }, [ws]);
+  }, [ws, deepCopyBoard]);
 
   // Generate move proof after receiving updated state from server
   useEffect(() => {
     if (!ws.gameState || !prevBoardRef.current || !ws.playerNumber || !ws.gameId) return;
 
-    const boardAfter = ws.gameState.board;
+    const boardAfter = deepCopyBoard(ws.gameState.board);
     const scoresAfter: [number, number] = [ws.gameState.player1Score, ws.gameState.player2Score];
     const boardBefore = prevBoardRef.current;
     const scoresBefore = prevScoresRef.current;
@@ -141,7 +164,11 @@ export function App() {
     // Only generate proof for OUR moves
     if (justPlayed === ws.playerNumber) {
       const gameEnded = ws.gameState.status === 'finished';
-      const winnerId = ws.gameState.winner === 'player1' ? 1 : ws.gameState.winner === 'player2' ? 2 : 0;
+      // winner_id: 0=not ended, 1=player1 wins, 2=player2 wins, 3=draw
+      const winnerId = ws.gameState.winner === 'player1' ? 1
+        : ws.gameState.winner === 'player2' ? 2
+        : ws.gameState.winner === 'draw' ? 3
+        : 0;
 
       gameFlow.generateMoveProofForPlacement(
         placedCardId,
@@ -167,19 +194,28 @@ export function App() {
   }, [ws.gameState]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSettleGame = useCallback(async (selectedCardTokenId: number) => {
-    if (!gameFlow.canSettle || !gameFlow.myHandProof || !gameFlow.opponentHandProof) return;
+    if (!gameFlow.canSettle || !gameFlow.myHandProof || !gameFlow.opponentHandProof || !ws.playerNumber) return;
 
     // Determine loser address
     const loserAddress = gameFlow.opponentHandProof.playerAddress;
 
+    // Aggregate circuit expects hand_proof_1 = Player 1, hand_proof_2 = Player 2.
+    // Reorder based on which player we are.
+    const handProof1 = ws.playerNumber === 1 ? gameFlow.myHandProof : gameFlow.opponentHandProof;
+    const handProof2 = ws.playerNumber === 2 ? gameFlow.myHandProof : gameFlow.opponentHandProof;
+
+    // The loser's escrowed card IDs (captured at game start from opponent's hand)
+    const loserCardIds = opponentCardIdsRef.current;
+
     await gameContract.settleGame(
-      gameFlow.myHandProof,
-      gameFlow.opponentHandProof,
+      handProof1,
+      handProof2,
       gameFlow.collectedMoveProofs,
       loserAddress,
       selectedCardTokenId,
+      loserCardIds,
     );
-  }, [gameFlow, gameContract]);
+  }, [gameFlow, gameContract, ws.playerNumber]);
 
   const handleBackToLobby = useCallback(() => {
     ws.disconnect();
@@ -188,6 +224,7 @@ export function App() {
     setSelectedCardIds([]);
     prevBoardRef.current = null;
     prevScoresRef.current = [5, 5];
+    opponentCardIdsRef.current = [];
     setScreen('lobby');
   }, [ws, gameFlow, gameContract]);
 

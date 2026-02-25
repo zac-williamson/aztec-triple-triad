@@ -102,8 +102,16 @@ export function useProofGeneration(): UseProofGenerationReturn {
         setHandProofStatus('ready');
         return proofData;
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Hand proof generation failed';
-        console.error('[useProofGeneration] Hand proof error:', message);
+        const rawMsg = err instanceof Error ? err.message : String(err);
+        let message: string;
+        if (rawMsg.includes('witness')) {
+          message = 'Circuit witness generation failed. This usually means input values are invalid.';
+        } else if (rawMsg.includes('memory') || rawMsg.includes('OOM')) {
+          message = 'Out of memory. Try closing other browser tabs.';
+        } else {
+          message = `Hand proof generation failed: ${rawMsg}`;
+        }
+        console.error('[useProofGeneration] Hand proof error:', rawMsg);
         setError(message);
         setHandProofStatus('error');
         return null;
@@ -157,8 +165,16 @@ export function useProofGeneration(): UseProofGenerationReturn {
             setMoveProofStatus('ready');
             resolve(proofData);
           } catch (err) {
-            const message = err instanceof Error ? err.message : 'Move proof generation failed';
-            console.error('[useProofGeneration] Move proof error:', message);
+            const rawMsg = err instanceof Error ? err.message : String(err);
+            let message: string;
+            if (rawMsg.includes('witness')) {
+              message = 'Circuit witness generation failed. This usually means input values are invalid.';
+            } else if (rawMsg.includes('memory') || rawMsg.includes('OOM')) {
+              message = 'Out of memory. Try closing other browser tabs.';
+            } else {
+              message = `Move proof generation failed: ${rawMsg}`;
+            }
+            console.error('[useProofGeneration] Move proof error:', rawMsg);
             setError(message);
             setMoveProofStatus('error');
             resolve(null);

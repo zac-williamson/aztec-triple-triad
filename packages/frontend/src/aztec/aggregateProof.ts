@@ -8,7 +8,7 @@
  */
 
 import { Noir } from '@noir-lang/noir_js';
-import { UltraHonkBackend, deflattenFields } from '@aztec/bb.js';
+import { UltraHonkBackend } from '@aztec/bb.js';
 import type { HandProofData, MoveProofData } from '../types';
 import { loadProveHandCircuit, loadGameMoveCircuit, loadAggregateGameCircuit } from './circuitLoader';
 import { getBarretenberg } from './proofBackend';
@@ -18,6 +18,8 @@ import { getBarretenberg } from './proofBackend';
 export interface AggregateProofData {
   /** Base64-encoded aggregate proof bytes */
   proof: string;
+  /** Proof as field elements (for contract submission) */
+  proofAsFields: string[];
   /** 15 public input field elements */
   publicInputs: string[];
   /** 115-element VK field array for aggregate circuit */
@@ -231,6 +233,7 @@ export async function generateAggregateProof(
 
   return {
     proof: proofToBase64(proofData.proof),
+    proofAsFields: aggArtifacts.proofAsFields,
     publicInputs: proofData.publicInputs,
     vkAsFields: aggArtifacts.vkAsFields,
     vkHash: aggArtifacts.vkHash,
