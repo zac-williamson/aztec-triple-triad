@@ -13,6 +13,34 @@ import type { HandProofData, MoveProofData } from '../types';
 import { loadProveHandCircuit, loadGameMoveCircuit } from './circuitLoader';
 import { getBarretenberg } from './proofBackend';
 
+// ====================== UltraHonkBackend Cache (Fix 5.1) ======================
+
+/**
+ * Cache UltraHonkBackend instances keyed by circuit name.
+ * Creating a backend is expensive (WASM allocation), so we reuse them.
+ */
+const backendCache = new Map<string, UltraHonkBackend>();
+
+async function getOrCreateBackend(circuitName: string, bytecode: string): Promise<UltraHonkBackend> {
+  const existing = backendCache.get(circuitName);
+  if (existing) return existing;
+  const api = await getBarretenberg();
+  const backend = new UltraHonkBackend(bytecode, api);
+  backendCache.set(circuitName, backend);
+  return backend;
+}
+
+/**
+ * Destroy all cached backends and free WASM memory.
+ * Call when navigating away from the game or when the game ends.
+ */
+export function destroyBackendCache(): void {
+  for (const [, backend] of backendCache) {
+    try { backend.destroy(); } catch { /* ignore */ }
+  }
+  backendCache.clear();
+}
+
 // ====================== Utility Functions ======================
 
 /**
@@ -119,15 +147,17 @@ async function computeECDHSharedSecret(
 }
 
 /**
- * Symmetric encrypt a field: encrypted = plaintext + expand_secret(shared_secret).
- * expand_secret = pedersen_hash([shared_secret, 0])
- * Matches the circuit's symmetric_encrypt_field().
+ * Symmetric encrypt a field: encrypted = plaintext + expand_secret(shared_secret, nonce).
+ * expand_secret = pedersen_hash([shared_secret, nonce])
+ * The nonce is the current_turn_before (move index), ensuring a unique key per move.
+ * Matches the circuit's symmetric_encrypt_field() after Fix 3.2.
  */
 async function symmetricEncryptField(
   plaintext: Uint8Array,
   sharedSecret: Uint8Array,
+  nonce: number,
 ): Promise<Uint8Array> {
-  const expandedKey = await pedersenHash([sharedSecret, numToField(0)]);
+  const expandedKey = await pedersenHash([sharedSecret, numToField(nonce)]);
   const ptBig = BigInt(bufToHex(plaintext));
   const keyBig = BigInt(bufToHex(expandedKey));
   // BN254 scalar field modulus (= Grumpkin base field)
@@ -208,7 +238,6 @@ export async function generateProveHandProof(
   console.log('[proofWorker] Generating prove_hand proof...');
   const startTime = performance.now();
 
-  const api = await getBarretenberg();
   const artifact = await loadProveHandCircuit();
 
   // Ensure we have a grumpkin private key
@@ -246,7 +275,8 @@ export async function generateProveHandProof(
   const { witness } = await noir.execute(inputs as never);
   console.log('[proofWorker] Witness generated, creating proof...');
 
-  const backend = new UltraHonkBackend(artifact.bytecode, api);
+  // Fix 5.1: Reuse cached backend instead of creating new one each time
+  const backend = await getOrCreateBackend('prove_hand', artifact.bytecode);
   const proofData = await backend.generateProof(witness, {
     verifierTarget: 'noir-recursive',
   });
@@ -321,7 +351,6 @@ export async function generateGameMoveProof(
   console.log(`[proofWorker] Generating game_move proof (card ${cardId} at [${row},${col}])...`);
   const startTime = performance.now();
 
-  const api = await getBarretenberg();
   const artifact = await loadGameMoveCircuit();
 
   // === Compute public inputs ===
@@ -346,7 +375,8 @@ export async function generateGameMoveProof(
   const nullifierBuf = hexToField(placedCardNullifierSecret);
 
   const sharedSecret = await computeECDHSharedSecret(privKeyBuf, oppPubXBuf, oppPubYBuf);
-  const encryptedNullifierBuf = await symmetricEncryptField(nullifierBuf, sharedSecret);
+  // Fix 5.2: Use current_turn_before as nonce (matches circuit Fix 3.2)
+  const encryptedNullifierBuf = await symmetricEncryptField(nullifierBuf, sharedSecret, currentTurnBefore);
   const encryptedNullifierHex = bufToHex(encryptedNullifierBuf);
 
   // === Build witness inputs matching exact circuit ABI parameter names ===
@@ -390,7 +420,8 @@ export async function generateGameMoveProof(
   const { witness } = await noir.execute(inputs as never);
   console.log('[proofWorker] game_move witness generated, creating proof...');
 
-  const backend = new UltraHonkBackend(artifact.bytecode, api);
+  // Fix 5.1: Reuse cached backend instead of creating new one each time
+  const backend = await getOrCreateBackend('game_move', artifact.bytecode);
   const proofData = await backend.generateProof(witness, {
     verifierTarget: 'noir-recursive',
   });
