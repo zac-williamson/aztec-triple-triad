@@ -5,7 +5,7 @@ import { GameManager } from './GameManager.js';
 import type { ClientMessage, ServerMessage } from './types.js';
 import type { GameState } from '@aztec-triple-triad/game-logic';
 
-const DEFAULT_PORT = 3001;
+const DEFAULT_PORT = 5174;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
 const DISCONNECT_TIMEOUT_MS = 60 * 1000; // 60 seconds reconnection window
@@ -39,6 +39,7 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
   const allowedOrigins = new Set([
     'http://localhost:3000',
     'http://localhost:5173',
+    'http://localhost:5174',
   ]);
 
   const httpServer = http.createServer((req, res) => {
