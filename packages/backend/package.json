@@ -13,12 +13,12 @@
   },
   "dependencies": {
     "@aztec-triple-triad/game-logic": "*",
-    "ws": "^8.16.0",
-    "uuid": "^9.0.0"
+    "uuid": "^9.0.0",
+    "ws": "^8.16.0"
   },
   "devDependencies": {
-    "@types/ws": "^8.5.10",
-    "@types/uuid": "^9.0.7",
+    "@types/uuid": "^9.0.8",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.4.0",
     "vitest": "^3.0.0"
   }

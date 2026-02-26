@@ -27,6 +27,7 @@ export default defineConfig({
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
   },
+  assetsInclude: ['**/*.glb', '**/*.gltf', '**/*.fbx'],
   build: {
     target: 'esnext',
   },
