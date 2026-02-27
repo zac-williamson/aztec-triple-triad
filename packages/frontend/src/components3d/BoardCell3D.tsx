@@ -1,9 +1,7 @@
-import { useRef, useState } from 'react';
-import { useFrame } from '@react-three/fiber';
-import { Html } from '@react-three/drei';
-import type { Mesh } from 'three';
-import type { Board } from '../types';
-import { Card } from '../components/Card';
+import { useState } from 'react';
+import type { Board, Player } from '../types';
+import { Card3D } from './Card3D';
+import { BOARD_CARD_WIDTH } from './utils/cardPositions';
 
 interface BoardCell3DProps {
   row: number;
@@ -11,8 +9,10 @@ interface BoardCell3DProps {
   position: [number, number, number];
   cellSize: number;
   cell: Board[number][number];
+  myPlayer: Player;
   isValid: boolean;
-  isCaptured: boolean;
+  isAnimating?: boolean;
+  pendingCaptureOwner?: 'blue' | 'red';
   onCellClick?: (row: number, col: number) => void;
 }
 
@@ -22,40 +22,24 @@ export function BoardCell3D({
   position,
   cellSize,
   cell,
+  myPlayer,
   isValid,
-  isCaptured,
+  isAnimating = false,
+  pendingCaptureOwner,
   onCellClick,
 }: BoardCell3DProps) {
-  const meshRef = useRef<Mesh>(null!);
   const [hovered, setHovered] = useState(false);
-  const captureFlashRef = useRef(0);
 
-  useFrame((_, delta) => {
-    if (!meshRef.current) return;
-    const mat = meshRef.current.material as any;
+  // Determine board card color: pendingCaptureOwner overrides with old color during cascade
+  const boardOwner = pendingCaptureOwner
+    ?? (cell.owner ? (cell.owner === myPlayer ? 'blue' : 'red') : undefined);
 
-    if (isCaptured) {
-      captureFlashRef.current = 1;
-    }
-    if (captureFlashRef.current > 0) {
-      captureFlashRef.current = Math.max(0, captureFlashRef.current - delta * 2);
-      mat.emissive?.set(0xff2200);
-      mat.emissiveIntensity = captureFlashRef.current * 0.8;
-    } else if (isValid) {
-      const pulse = Math.sin(Date.now() * 0.003) * 0.15 + 0.35;
-      mat.emissive?.set(0x00ff44);
-      mat.emissiveIntensity = hovered ? 0.6 : pulse;
-    } else {
-      mat.emissive?.set(0x000000);
-      mat.emissiveIntensity = 0;
-    }
-  });
+  const pulse = isValid ? 0.35 : 0;
 
   return (
     <group position={position}>
       {/* Click/hover target plane */}
       <mesh
-        ref={meshRef as any}
         rotation={[-Math.PI / 2, 0, 0]}
         onClick={(e) => {
           e.stopPropagation();
@@ -77,6 +61,8 @@ export function BoardCell3D({
           transparent
           opacity={isValid ? 0.5 : 0.2}
           roughness={0.9}
+          emissive={isValid ? '#00ff44' : '#000000'}
+          emissiveIntensity={isValid ? (hovered ? 0.6 : pulse) : 0}
         />
       </mesh>
 
@@ -91,25 +77,17 @@ export function BoardCell3D({
         />
       </mesh>
 
-      {/* Card overlay using Html */}
-      {cell.card && (
-        <Html
-          center
-          transform
-          distanceFactor={1.2}
-          position={[0, 0.03, 0]}
-          rotation={[-Math.PI / 2.5, 0, 0]}
-          style={{ pointerEvents: 'none' }}
-        >
-          <div style={{ transform: 'scale(0.28)', pointerEvents: 'none' }}>
-            <Card
-              card={cell.card}
-              owner={cell.owner}
-              captured={isCaptured}
-              size="large"
-            />
-          </div>
-        </Html>
+      {/* 3D Card on board */}
+      {cell.card && !isAnimating && boardOwner && (
+        <group position={[0, 0.03 + row * 0.001, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <Card3D
+            card={cell.card}
+            boardOwner={boardOwner as 'blue' | 'red'}
+            width={BOARD_CARD_WIDTH}
+            renderOrder={row * 3 + col + 1}
+            depthWrite={false}
+          />
+        </group>
       )}
 
       {/* Valid placement indicator dot */}

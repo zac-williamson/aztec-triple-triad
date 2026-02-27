@@ -4,21 +4,24 @@ import {
   TextureLoader, MeshStandardMaterial, RepeatWrapping,
   Group, Texture, Color,
 } from 'three';
-import type { Board } from '../types';
+import type { Board, Player } from '../types';
 import { MODELS, TEXTURES } from '../assets/modelManifest';
 import { useBoardPositions } from './hooks/useBoardPositions';
 import { BoardCell3D } from './BoardCell3D';
 
 interface GameBoardProps {
   board: Board;
+  myPlayer: Player;
   validPlacements: { row: number; col: number }[];
-  capturedCells: { row: number; col: number }[];
   onCellClick?: (row: number, col: number) => void;
+  isAnimatingCell?: (row: number, col: number) => boolean;
+  isCaptureAnimatingCell?: (row: number, col: number) => boolean;
+  getPendingCaptureOwner?: (row: number, col: number) => 'blue' | 'red' | undefined;
 }
 
-const CRATE_SCALE = 0.0035;
-const CRATE_TOP = 0.375;
-const SPACING = 0.385;
+const CRATE_SCALE = 0.006;
+const CRATE_TOP = 0.643;
+const SPACING = 0.66;
 
 // ---------- Simple FBX model component (same pattern as SwampEnvironment) ----------
 
@@ -114,10 +117,10 @@ const CRATE_CONFIGS: CrateConfig[] = [
 ];
 
 // Moss overlay definitions: which crate, which model, scale, rotation
-// Scaled to be subtle corner/edge accents (~7-9cm) on 38cm crate tops:
-//   MossMound_01: 222cm wide → scale 0.0004 = 8.9cm
-//   MossMound_02: 120cm wide → scale 0.0006 = 7.2cm
-//   MossMound_03: 207cm wide → scale 0.0004 = 8.3cm
+// Scaled to be subtle corner/edge accents (~12-15cm) on 64cm crate tops:
+//   MossMound_01: 222cm wide → scale 0.0007 = 15.5cm
+//   MossMound_02: 120cm wide → scale 0.001  = 12.0cm
+//   MossMound_03: 207cm wide → scale 0.0007 = 14.5cm
 interface MossOverlay {
   crateRow: number;
   crateCol: number;
@@ -130,19 +133,19 @@ interface MossOverlay {
 
 const MOSS_OVERLAYS: MossOverlay[] = [
   // Top-left crate: small mound near back-left corner
-  { crateRow: 0, crateCol: 0, model: MODELS.mossMound2, scale: 0.0006, rotY: 0.3,  offsetX: -0.08, offsetZ: -0.06 },
+  { crateRow: 0, crateCol: 0, model: MODELS.mossMound2, scale: 0.001,  rotY: 0.3,  offsetX: -0.14, offsetZ: -0.10 },
   // Top-right crate: mound near front-right edge
-  { crateRow: 0, crateCol: 2, model: MODELS.mossMound3, scale: 0.0004, rotY: 1.8,  offsetX: 0.07,  offsetZ: 0.05 },
+  { crateRow: 0, crateCol: 2, model: MODELS.mossMound3, scale: 0.0007, rotY: 1.8,  offsetX: 0.12,  offsetZ: 0.09 },
   // Middle-left crate: mound near left edge
-  { crateRow: 1, crateCol: 0, model: MODELS.mossMound1, scale: 0.0004, rotY: 0.9,  offsetX: -0.07, offsetZ: 0.02 },
+  { crateRow: 1, crateCol: 0, model: MODELS.mossMound1, scale: 0.0007, rotY: 0.9,  offsetX: -0.12, offsetZ: 0.03 },
   // Middle-right crate: small mound near back edge
-  { crateRow: 1, crateCol: 2, model: MODELS.mossMound2, scale: 0.0005, rotY: 2.5,  offsetX: 0.03,  offsetZ: -0.07 },
+  { crateRow: 1, crateCol: 2, model: MODELS.mossMound2, scale: 0.0009, rotY: 2.5,  offsetX: 0.05,  offsetZ: -0.12 },
   // Bottom-left crate: mound near front-left corner
-  { crateRow: 2, crateCol: 0, model: MODELS.mossMound3, scale: 0.0004, rotY: 4.2,  offsetX: -0.06, offsetZ: 0.07 },
+  { crateRow: 2, crateCol: 0, model: MODELS.mossMound3, scale: 0.0007, rotY: 4.2,  offsetX: -0.10, offsetZ: 0.12 },
   // Bottom-right crate: small mound near right edge
-  { crateRow: 2, crateCol: 2, model: MODELS.mossMound1, scale: 0.00035, rotY: 1.2, offsetX: 0.08,  offsetZ: -0.03 },
+  { crateRow: 2, crateCol: 2, model: MODELS.mossMound1, scale: 0.0006, rotY: 1.2,  offsetX: 0.14,  offsetZ: -0.05 },
   // Center crate: tiny accent near back edge
-  { crateRow: 1, crateCol: 1, model: MODELS.mossMound2, scale: 0.0004, rotY: 3.1,  offsetX: 0.02,  offsetZ: -0.08 },
+  { crateRow: 1, crateCol: 1, model: MODELS.mossMound2, scale: 0.0007, rotY: 3.1,  offsetX: 0.03,  offsetZ: -0.14 },
 ];
 
 // ---------- Crate grid (just crates, no overlays) ----------
@@ -215,13 +218,11 @@ function CrateGrid() {
 
 // ---------- Main board ----------
 
-export function GameBoard({ board, validPlacements, capturedCells, onCellClick }: GameBoardProps) {
+export function GameBoard({ board, myPlayer, validPlacements, onCellClick, isAnimatingCell, isCaptureAnimatingCell, getPendingCaptureOwner }: GameBoardProps) {
   const { positions, cellSize } = useBoardPositions();
 
   const isValid = (row: number, col: number) =>
     validPlacements.some(p => p.row === row && p.col === col);
-  const isCaptured = (row: number, col: number) =>
-    capturedCells.some(p => p.row === row && p.col === col);
 
   return (
     <group>
@@ -252,8 +253,10 @@ export function GameBoard({ board, validPlacements, capturedCells, onCellClick }
             position={[positions[r][c].x, positions[r][c].y, positions[r][c].z]}
             cellSize={cellSize}
             cell={cell}
+            myPlayer={myPlayer}
             isValid={isValid(r, c)}
-            isCaptured={isCaptured(r, c)}
+            isAnimating={(isAnimatingCell?.(r, c) ?? false) || (isCaptureAnimatingCell?.(r, c) ?? false)}
+            pendingCaptureOwner={getPendingCaptureOwner?.(r, c)}
             onCellClick={onCellClick}
           />
         ))

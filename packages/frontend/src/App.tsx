@@ -5,7 +5,7 @@ import { GameScreen3D as GameScreen } from './components3d/GameScreen3D';
 import type { Screen } from './types';
 import './App.css';
 
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:5174';
+const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
 
 export function App() {
   const [screen, setScreen] = useState<Screen>('lobby');

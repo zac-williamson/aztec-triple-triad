@@ -37,27 +37,41 @@ const DIRECTIONS: { dr: number; dc: number; attackerRank: keyof Card['ranks']; d
 ];
 
 function resolveCaptures(board: Board, row: number, col: number, player: Player): { row: number; col: number }[] {
-  const placedCard = board[row][col].card!;
-  const captures: { row: number; col: number }[] = [];
+  const allCaptures: { row: number; col: number }[] = [];
+  const captured = new Set<string>();
 
-  for (const dir of DIRECTIONS) {
-    const nr = row + dir.dr;
-    const nc = col + dir.dc;
+  // BFS: each captured card can chain-capture its own neighbors
+  const queue: { row: number; col: number }[] = [{ row, col }];
 
-    if (nr < 0 || nr > 2 || nc < 0 || nc > 2) continue;
+  while (queue.length > 0) {
+    const { row: r, col: c } = queue.shift()!;
+    const attackingCard = board[r][c].card!;
 
-    const neighbor = board[nr][nc];
-    if (!neighbor.card || neighbor.owner === player) continue;
+    for (const dir of DIRECTIONS) {
+      const nr = r + dir.dr;
+      const nc = c + dir.dc;
 
-    const attackValue = placedCard.ranks[dir.attackerRank];
-    const defendValue = neighbor.card.ranks[dir.defenderRank];
+      if (nr < 0 || nr > 2 || nc < 0 || nc > 2) continue;
 
-    if (attackValue > defendValue) {
-      captures.push({ row: nr, col: nc });
+      const key = `${nr},${nc}`;
+      if (captured.has(key)) continue;
+
+      const neighbor = board[nr][nc];
+      if (!neighbor.card || neighbor.owner === player) continue;
+
+      const attackValue = attackingCard.ranks[dir.attackerRank];
+      const defendValue = neighbor.card.ranks[dir.defenderRank];
+
+      if (attackValue > defendValue) {
+        captured.add(key);
+        board[nr][nc].owner = player;
+        allCaptures.push({ row: nr, col: nc });
+        queue.push({ row: nr, col: nc });
+      }
     }
   }
 
-  return captures;
+  return allCaptures;
 }
 
 export function calculateScores(state: GameState): { player1: number; player2: number } {
@@ -135,11 +149,8 @@ export function placeCard(
   // Place the card
   newBoard[row][col] = { card, owner: player };
 
-  // Resolve captures
+  // Resolve captures (includes chain captures — flips are applied inside)
   const captures = resolveCaptures(newBoard, row, col, player);
-  for (const cap of captures) {
-    newBoard[cap.row][cap.col].owner = player;
-  }
 
   // Build new state
   const nextTurn: Player = player === 'player1' ? 'player2' : 'player1';

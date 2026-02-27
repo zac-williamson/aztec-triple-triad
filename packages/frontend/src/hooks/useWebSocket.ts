@@ -164,10 +164,19 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const placeCard = useCallback((handIndex: number, row: number, col: number) => {
     if (!gameId) return;
     setError(null);
-    const moveNumber = moveNumberRef.current;
+    // Derive global move number from board state (count occupied cells).
+    // Server's expectedMoveNumber is a global counter for ALL moves (both players),
+    // so each client must send the total move count, not a per-player count.
+    let moveNumber = 0;
+    if (gameState) {
+      for (const row of gameState.board) {
+        for (const cell of row) {
+          if (cell.card !== null) moveNumber++;
+        }
+      }
+    }
     send({ type: 'PLACE_CARD', gameId, handIndex, row, col, moveNumber });
-    moveNumberRef.current++;
-  }, [send, gameId]);
+  }, [send, gameId, gameState]);
 
   const refreshGameList = useCallback(() => {
     send({ type: 'LIST_GAMES' });
