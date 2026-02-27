@@ -25,6 +25,9 @@ export function WaterSurface() {
     normalMap.offset.y += delta * 0.015;
   });
 
+  // Wait for the normal map to load before rendering
+  if (!normalMap) return null;
+
   return (
     <mesh
       ref={meshRef as any}

@@ -930,10 +930,10 @@ describe('Move nonce validation via WebSocket (V7 Fix 4.1)', () => {
 });
 
 describe('CORS restriction (V7 Fix 4.4)', () => {
-  it('should set CORS header for allowed origin localhost:5173', async () => {
+  it('should set CORS header for allowed origin localhost:5174', async () => {
     const result = await new Promise<{ headers: http.IncomingHttpHeaders }>((resolve, reject) => {
       const req = http.request(`${getHttpUrl()}/health`, {
-        headers: { 'Origin': 'http://localhost:5173' },
+        headers: { 'Origin': 'http://localhost:5174' },
       }, (res) => {
         let data = '';
         res.on('data', (chunk) => { data += chunk; });
@@ -942,7 +942,7 @@ describe('CORS restriction (V7 Fix 4.4)', () => {
       req.on('error', reject);
       req.end();
     });
-    expect(result.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+    expect(result.headers['access-control-allow-origin']).toBe('http://localhost:5174');
   });
 
   it('should set CORS header for allowed origin localhost:3000', async () => {

@@ -38,7 +38,6 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
   // Fix 4.4: Restrict CORS to allowed origins
   const allowedOrigins = new Set([
     'http://localhost:3000',
-    'http://localhost:5173',
     'http://localhost:5174',
   ]);
 

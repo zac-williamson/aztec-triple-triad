@@ -1,7 +1,15 @@
 import { useMemo, useEffect, useState } from 'react';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
-import { TextureLoader, MeshStandardMaterial, RepeatWrapping, Group, Texture } from 'three';
+import { TextureLoader, MeshStandardMaterial, RepeatWrapping, Group, Texture, Color } from 'three';
 import { TEXTURES } from '../../assets/modelManifest';
+
+// Atlas-material detection: Synty FBX vegetation models contain LOD0 meshes
+// with atlas UVs (tiny pixel region) and LOD1/2 meshes with dedicated texture
+// UVs. Applying a dedicated texture to atlas-UV meshes causes green rectangles.
+const ATLAS_MAT_PREFIXES = ['Nature', 'Explorer_MAT', 'Nature_Base_Mat', 'lambert'];
+function isAtlasMaterial(name: string): boolean {
+  return ATLAS_MAT_PREFIXES.some(prefix => name.startsWith(prefix));
+}
 
 // Simple sync cache for loaded assets
 const fbxCache = new Map<string, Group>();
@@ -59,12 +67,32 @@ export function useFBXModel(
     texture.wrapS = RepeatWrapping;
     texture.wrapT = RepeatWrapping;
 
+    const isAtlasTexture = texturePath.includes('PolygonNatureBiomes');
+    let keptOne = false;
+
     clone.traverse((child: any) => {
       if (child.isMesh) {
+        const origMatName = child.material?.name || '';
+
+        // Hide atlas-UV meshes when applying a non-atlas texture
+        if (isAtlasMaterial(origMatName) && !isAtlasTexture) {
+          child.visible = false;
+          return;
+        }
+
+        // Only keep the first compatible mesh to avoid LOD z-fighting
+        if (keptOne) {
+          child.visible = false;
+          return;
+        }
+        keptOne = true;
+
         const mat = new MeshStandardMaterial({
           map: texture,
           roughness: 0.8,
           metalness: 0.1,
+          transparent: true,
+          alphaTest: 0.5,
         });
         if (options?.tint) {
           mat.color.set(options.tint);

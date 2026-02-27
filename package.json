@@ -10,5 +10,9 @@
     "copy-circuits": "mkdir -p packages/frontend/public/circuits && cp circuits/target/prove_hand.json circuits/target/game_move.json circuits/target/aggregate_game.json packages/frontend/public/circuits/",
     "copy-contracts": "mkdir -p packages/frontend/public/contracts && cp packages/contracts/target/triple_triad_nft-TripleTriadNFT.json packages/contracts/target/triple_triad_game-TripleTriadGame.json packages/frontend/public/contracts/",
     "build": "npm run copy-circuits && npm run copy-contracts && npm run build --workspaces"
+  },
+  "devDependencies": {
+    "openai": "^6.25.0",
+    "sharp": "^0.34.5"
   }
 }

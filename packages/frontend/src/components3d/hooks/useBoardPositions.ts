@@ -1,12 +1,12 @@
 import { useMemo } from 'react';
 import { Vector3 } from 'three';
 
-// Crate_02 model at CRATE_SCALE=0.0035:
-//   Perfect cube: 0.375m x 0.375m x 0.375m
-// Grid spacing: 0.385m (crate width + small gap)
-// Crate top at Y: 0.375m
-const CELL_SIZE = 0.385;
-const CRATE_TOP_Y = 0.375;
+// Crate_02 model at CRATE_SCALE=0.006:
+//   Perfect cube: 0.643m x 0.643m x 0.643m
+// Grid spacing: 0.66m (crate width + small gap)
+// Crate top at Y: 0.643m
+const CELL_SIZE = 0.66;
+const CRATE_TOP_Y = 0.643;
 const BOARD_CENTER = new Vector3(0, CRATE_TOP_Y + 0.005, 0); // Just above crate top
 
 export function useBoardPositions() {

@@ -4,10 +4,8 @@ import { Quaternion, Vector3 } from 'three';
 import type { ThreeEvent } from '@react-three/fiber';
 import type { Card, Player } from '../types';
 import { Card3D } from './Card3D';
-import { CardGlow } from './CardGlow';
 import {
   getCardFanTransform,
-  CARD_ASPECT,
   PLAYER_HAND_POS,
   PLAYER_HAND_ROT,
   HAND_CARD_WIDTH,
@@ -185,15 +183,8 @@ export function PlayerHand3D({
               width={HAND_CARD_WIDTH}
               renderOrder={ro}
               depthWrite={false}
+              glowColor={glowColor ?? undefined}
             />
-            {glowColor && (
-              <CardGlow
-                width={HAND_CARD_WIDTH}
-                height={HAND_CARD_WIDTH * CARD_ASPECT}
-                color={glowColor}
-                renderOrder={ro - 1}
-              />
-            )}
           </group>
         );
       })}

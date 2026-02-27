@@ -66,6 +66,8 @@ interface Card3DProps {
   renderOrder?: number;
   opacity?: number;
   depthWrite?: boolean;
+  /** Emissive glow color — rendered as a border behind the card, picked up by Bloom */
+  glowColor?: string;
 }
 
 // Owner color values for the background quad
@@ -73,6 +75,8 @@ const OWNER_COLORS: Record<string, string> = {
   blue: '#1a3080',
   red: '#801a1a',
 };
+
+const GLOW_PAD = 0.02;
 
 export function Card3D({
   card,
@@ -82,6 +86,7 @@ export function Card3D({
   renderOrder,
   opacity = 1,
   depthWrite = true,
+  glowColor,
 }: Card3DProps) {
   const texture = useCardTexture(card.id, faceDown, !!boardOwner);
   // Board cards are square (1:1), hand cards use CARD_ASPECT
@@ -91,6 +96,19 @@ export function Card3D({
 
   return (
     <group>
+      {/* Emissive glow border — Bloom post-processing creates the soft halo */}
+      {glowColor && (
+        <mesh renderOrder={renderOrder != null ? renderOrder - 2 : undefined} position={[0, 0, -0.002]}>
+          <planeGeometry args={[width + GLOW_PAD * 2, height + GLOW_PAD * 2]} />
+          <meshStandardMaterial
+            color="#000000"
+            emissive={glowColor}
+            emissiveIntensity={3}
+            toneMapped={false}
+            depthWrite={false}
+          />
+        </mesh>
+      )}
       {/* Colored background quad for board cards (sits behind the card texture) */}
       {boardOwner && (
         <mesh renderOrder={renderOrder != null ? renderOrder - 1 : undefined} position={[0, 0, -0.001]}>
