@@ -5,5 +5,6 @@ authors = [""]
 compiler_version = ">=0.18.0"
 
 [dependencies]
-aztec = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v4.0.0-devnet.2-patch.0", directory = "noir-projects/aztec-nr/aztec" }
-compressed_string = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v4.0.0-devnet.2-patch.0", directory = "noir-projects/aztec-nr/compressed-string" }
+field_note = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v4.0.0-devnet.2-patch.1", directory = "noir-projects/aztec-nr/field-note" }
+aztec = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v4.0.0-devnet.2-patch.1", directory = "noir-projects/aztec-nr/aztec" }
+compressed_string = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v4.0.0-devnet.2-patch.1", directory = "noir-projects/aztec-nr/compressed-string" }

@@ -1,3 +1,6 @@
+mod filters;
+mod test;
+
 use aztec::macros::aztec;
 
 /// Card pool sizes per rarity: [common, rare, epic, legendary]
@@ -69,6 +72,7 @@ global COOLDOWN_DOCKYARD: u64 = 72000; // 20 hours
 /// Supports private ownership for hidden hand information and public ownership for trading.
 #[aztec]
 pub contract TripleTriadNFT {
+    use field_note::FieldNote;
     use aztec::{
         macros::{
             events::event,
@@ -87,13 +91,14 @@ pub contract TripleTriadNFT {
         protocol::{
             address::AztecAddress,
             constants::{DOM_SEP__NOTE_HASH, DOM_SEP__NOTE_NULLIFIER},
-            hash::poseidon2_hash_with_separator,
+            hash::{poseidon2_hash, poseidon2_hash_with_separator},
             traits::{Hash, Packable, Serialize, ToField},
         },
         state_vars::{Map, Owned, PrivateSet, PublicImmutable, PublicMutable},
         utils::comparison::Comparator,
     };
     use compressed_string::FieldCompressedString;
+    use super::filters::filter_by_token_ids;
     use super::{
         generate_card,
         STARTER_CARD_IDS, COOLDOWN_SEPARATOR,
@@ -103,56 +108,56 @@ pub contract TripleTriadNFT {
 
     // --- Note ---
 
-    #[derive(Eq, Serialize, Packable)]
-    #[custom_note]
-    pub struct CardNote {
-        pub token_id: Field,
-    }
+    // #[derive(Eq, Serialize, Packable)]
+    // #[custom_note]
+    // pub struct FieldNote {
+    //     pub token_id: Field,
+    // }
 
-    impl NoteHash for CardNote {
-        fn compute_note_hash(
-            self,
-            owner: AztecAddress,
-            storage_slot: Field,
-            randomness: Field,
-        ) -> Field {
-            poseidon2_hash_with_separator(
-                [storage_slot, self.token_id, owner.to_field(), randomness],
-                DOM_SEP__NOTE_HASH,
-            )
-        }
+    // impl NoteHash for FieldNote {
+    //     fn compute_note_hash(
+    //         self,
+    //         owner: AztecAddress,
+    //         storage_slot: Field,
+    //         randomness: Field,
+    //     ) -> Field {
+    //         poseidon2_hash_with_separator(
+    //             [storage_slot, self.token_id, owner.to_field(), randomness],
+    //             DOM_SEP__NOTE_HASH,
+    //         )
+    //     }
 
-        fn compute_nullifier(
-            self,
-            context: &mut aztec::context::PrivateContext,
-            owner: AztecAddress,
-            note_hash_for_nullification: Field,
-        ) -> Field {
-            let owner_npk_m = get_public_keys(owner).npk_m;
-            let owner_npk_m_hash = owner_npk_m.hash();
-            let secret = context.request_nhk_app(owner_npk_m_hash);
-            poseidon2_hash_with_separator(
-                [note_hash_for_nullification, secret],
-                DOM_SEP__NOTE_NULLIFIER,
-            )
-        }
+    //     fn compute_nullifier(
+    //         self,
+    //         context: &mut aztec::context::PrivateContext,
+    //         owner: AztecAddress,
+    //         note_hash_for_nullification: Field,
+    //     ) -> Field {
+    //         let owner_npk_m = get_public_keys(owner).npk_m;
+    //         let owner_npk_m_hash = owner_npk_m.hash();
+    //         let secret = context.request_nhk_app(owner_npk_m_hash);
+    //         poseidon2_hash_with_separator(
+    //             [note_hash_for_nullification, secret],
+    //             DOM_SEP__NOTE_NULLIFIER,
+    //         )
+    //     }
 
-        unconstrained fn compute_nullifier_unconstrained(
-            self,
-            owner: AztecAddress,
-            note_hash_for_nullification: Field,
-        ) -> Option<Field> {
-            try_get_public_keys(owner).map(|public_keys| {
-                let owner_npk_m = public_keys.npk_m;
-                let owner_npk_m_hash = owner_npk_m.hash();
-                let secret = get_nhk_app(owner_npk_m_hash);
-                poseidon2_hash_with_separator(
-                    [note_hash_for_nullification, secret],
-                    DOM_SEP__NOTE_NULLIFIER,
-                )
-            })
-        }
-    }
+    //     unconstrained fn compute_nullifier_unconstrained(
+    //         self,
+    //         owner: AztecAddress,
+    //         note_hash_for_nullification: Field,
+    //     ) -> Option<Field> {
+    //         try_get_public_keys(owner).map(|public_keys| {
+    //             let owner_npk_m = public_keys.npk_m;
+    //             let owner_npk_m_hash = owner_npk_m.hash();
+    //             let secret = get_nhk_app(owner_npk_m_hash);
+    //             poseidon2_hash_with_separator(
+    //                 [note_hash_for_nullification, secret],
+    //                 DOM_SEP__NOTE_NULLIFIER,
+    //             )
+    //         })
+    //     }
+    // }
 
     // --- Events ---
 
@@ -182,7 +187,7 @@ pub contract TripleTriadNFT {
         symbol: PublicImmutable<FieldCompressedString, Context>,
         minter: PublicImmutable<AztecAddress, Context>,
         game_contract: PublicImmutable<AztecAddress, Context>,
-        private_nfts: Owned<PrivateSet<CardNote, Context>, Context>,
+        private_nfts: Owned<PrivateSet<FieldNote, Context>, Context>,
         nft_exists: Map<Field, PublicMutable<bool, Context>, Context>,
         public_owners: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
         card_ranks: Map<Field, PublicImmutable<Field, Context>, Context>,
@@ -244,7 +249,7 @@ pub contract TripleTriadNFT {
         let owner = self.msg_sender();
 
         for i in 0..5 {
-            let note = CardNote { token_id: STARTER_CARD_IDS[i] };
+            let note = FieldNote { value: STARTER_CARD_IDS[i] };
             self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
         }
 
@@ -261,7 +266,7 @@ pub contract TripleTriadNFT {
 
         for i in 0..10 {
             let (_, card_id) = generate_card(seed, counter + i as Field);
-            let note = CardNote { token_id: card_id as Field };
+            let note = FieldNote { value: card_id as Field };
             self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
         }
 
@@ -280,7 +285,7 @@ pub contract TripleTriadNFT {
 
         for i in 0..10 {
             let (_, card_id) = generate_card(seed, counter + i as Field);
-            let note = CardNote { token_id: card_id as Field };
+            let note = FieldNote { value: card_id as Field };
             self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
         }
 
@@ -299,7 +304,7 @@ pub contract TripleTriadNFT {
 
         for i in 0..10 {
             let (_, card_id) = generate_card(seed, counter + i as Field);
-            let note = CardNote { token_id: card_id as Field };
+            let note = FieldNote { value: card_id as Field };
             self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
         }
 
@@ -318,7 +323,7 @@ pub contract TripleTriadNFT {
 
         for i in 0..10 {
             let (_, card_id) = generate_card(seed, counter + i as Field);
-            let note = CardNote { token_id: card_id as Field };
+            let note = FieldNote { value: card_id as Field };
             self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
         }
 
@@ -337,7 +342,7 @@ pub contract TripleTriadNFT {
 
         for i in 0..10 {
             let (_, card_id) = generate_card(seed, counter + i as Field);
-            let note = CardNote { token_id: card_id as Field };
+            let note = FieldNote { value: card_id as Field };
             self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
         }
 
@@ -353,7 +358,7 @@ pub contract TripleTriadNFT {
         let minter = self.storage.minter.read();
         assert(self.msg_sender() == minter, "Only minter can mint");
 
-        let note = CardNote { token_id };
+        let note = FieldNote { value: token_id };
         self.storage.private_nfts.at(to).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
 
         self.enqueue_self.finalize_mint(to, token_id, packed_ranks);
@@ -377,16 +382,76 @@ pub contract TripleTriadNFT {
     // --- Transfers ---
 
     #[external("private")]
+    fn commit_five_nfts(token_ids: [Field; 5]) -> Field {
+        let owner = self.msg_sender();
+
+        // FieldNote has Packable::N = 1 (single Field), so the second type param is 1.
+        // Use a filter to match notes whose `value` is in our token_ids array.
+        let options = NoteGetterOptions::with_filter(
+            filter_by_token_ids,
+            token_ids,
+        );
+
+        let notes = self.storage.private_nfts.at(owner).pop_notes(options);
+        assert(notes.len() == 5, "Could not find all 5 cards");
+
+        let mut to_hash: [Field; 6] = [0; 6];
+        for i in 0.. 5 {
+            to_hash[i] = notes.get(i).value;
+        }
+
+        let owner_npk_m = get_public_keys(owner).npk_m;
+        let owner_npk_m_hash = owner_npk_m.hash();
+        let seed = self.context.request_nhk_app(owner_npk_m_hash);
+        to_hash[5] = poseidon2_hash([seed, self.address.to_field()]);
+        poseidon2_hash(to_hash)
+    }
+
+
+    #[external("private")]
+    fn mint_for_game_winner(token_ids: [Field; 6], to: AztecAddress) {
+        let game = self.storage.game_contract.read();
+        assert(self.msg_sender() == game, "Only game contract can call");
+
+        for i in 0..6 {
+            let note = FieldNote { value: token_ids[i] };
+            self.storage.private_nfts.at(to).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        }
+    }
+
+    #[external("private")]
+    fn mint_for_game_loser(token_ids: [Field; 4], to: AztecAddress) {
+        let game = self.storage.game_contract.read();
+        assert(self.msg_sender() == game, "Only game contract can call");
+
+        for i in 0..4 {
+            let note = FieldNote { value: token_ids[i] };
+            self.storage.private_nfts.at(to).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        }
+    }
+
+    #[external("private")]
+    fn mint_for_game_draw(token_ids: [Field; 5], to: AztecAddress) {
+        let game = self.storage.game_contract.read();
+        assert(self.msg_sender() == game, "Only game contract can call");
+
+        for i in 0..5 {
+            let note = FieldNote { value: token_ids[i] };
+            self.storage.private_nfts.at(to).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        }
+    }
+
+    #[external("private")]
     fn transfer_private(from: AztecAddress, to: AztecAddress, token_id: Field) {
         assert(self.msg_sender() == from, "Sender must be owner");
 
-        let options = NoteGetterOptions::new()
-            .select(CardNote::properties().token_id, Comparator.EQ, token_id)
+        let options: NoteGetterOptions<FieldNote, 1, Field, Field> = NoteGetterOptions::new()
+            .select(FieldNote::properties().value, Comparator.EQ, token_id)
             .set_limit(1);
         let notes = self.storage.private_nfts.at(from).pop_notes(options);
         assert(notes.len() == 1, "Card not found in sender's set");
 
-        let note = CardNote { token_id };
+        let note = FieldNote { value: token_id };
         self.storage.private_nfts.at(to).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
     }
 
@@ -435,7 +500,7 @@ pub contract TripleTriadNFT {
         assert(self.msg_sender() == from, "Sender must be owner");
 
         let options = NoteGetterOptions::new()
-            .select(CardNote::properties().token_id, Comparator.EQ, token_id)
+            .select(FieldNote::properties().value, Comparator.EQ, token_id)
             .set_limit(1);
         let notes = self.storage.private_nfts.at(from).pop_notes(options);
         assert(notes.len() == 1, "Card not found");
@@ -452,7 +517,7 @@ pub contract TripleTriadNFT {
 
         for i in 0..5 {
             let options = NoteGetterOptions::new()
-                .select(CardNote::properties().token_id, Comparator.EQ, card_ids[i])
+                .select(FieldNote::properties().value, Comparator.EQ, card_ids[i])
                 .set_limit(1);
             let notes = self.storage.private_nfts.at(owner).pop_notes(options);
             assert(notes.len() == 1, "Card not found in private set");
@@ -467,7 +532,7 @@ pub contract TripleTriadNFT {
     fn reclaim_card(token_id: Field) {
         let owner = self.msg_sender();
 
-        let note = CardNote { token_id };
+        let note = FieldNote { value: token_id };
         self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
 
         self.enqueue_self.finalize_reclaim(owner, token_id);
@@ -625,7 +690,7 @@ pub contract TripleTriadNFT {
         let has_more = notes.len() == MAX_NOTES_PER_PAGE;
         for i in 0..MAX_NOTES_PER_PAGE {
             if i < notes.len() {
-                page[i] = notes.get(i).token_id;
+                page[i] = notes.get(i).value;
             }
         }
         (page, has_more)

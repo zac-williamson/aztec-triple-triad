@@ -1,41 +1,18 @@
 /// Prove Hand circuit.
 /// Proves that a player owns 5 specific cards without revealing which ones.
-/// Commits to card IDs, their ranks, and nullifier secrets.
-/// Also derives a Grumpkin ECDH public key for encrypted communication.
+/// Commits to card IDs using poseidon2 hash with a blinding factor.
 ///
 /// Public inputs:
-///   card_commit - hash commitment of the player's hand (includes ranks)
-///   player_address - the player's Aztec address (as Field)
-///   game_id - unique game identifier
-///   grumpkin_public_key_x - x-coordinate of player's Grumpkin public key
-///   grumpkin_public_key_y - y-coordinate of player's Grumpkin public key
+///   card_commit_hash - poseidon2 hash commitment of the player's hand
 ///
 /// Private inputs:
-///   player_secret - player's secret key (used to bind commitment to player)
 ///   card_ids - the 5 card token IDs
-///   card_ranks - ranks for each of the 5 cards [top, right, bottom, left]
-///   card_nullifier_secrets - 5 nullifier secrets for each card
-///   grumpkin_private_key - player's Grumpkin private key for ECDH
+///   blinding_factor - blinding factor (e.g. poseidon2_hash([nhk_app_secret, contract_address]))
 ///
-/// Commitment format (33 fields):
-///   hash(player_secret, player_address, game_id,
-///        card_ids[5],
-///        card_ranks[0..4], card_ranks[1..4], ..., card_ranks[4..4],
-///        nullifier_secrets[5])
+/// Commitment format (6 fields):
+///   poseidon2_hash([card_ids[0], card_ids[1], card_ids[2], card_ids[3], card_ids[4], blinding_factor])
 
-use std::embedded_curve_ops::{EmbeddedCurvePoint, EmbeddedCurveScalar, multi_scalar_mul};
-
-/// Grumpkin generator point G
-global G: EmbeddedCurvePoint = EmbeddedCurvePoint {
-    x: 0x083e7911d835097629f0067531fc15cafd79a89beecb39903f69572c636f4a5a,
-    y: 0x1a7f5efaad7f315c25a918f30cc8d7333fccab7ad7c90f14de81bcc528f9935d,
-    is_infinite: false,
-};
-
-/// Derive Grumpkin public key from private key: pub_key = private_key * G
-fn derive_public_key(private_key: Field) -> EmbeddedCurvePoint {
-    multi_scalar_mul([G], [EmbeddedCurveScalar::from_field(private_key)])
-}
+use poseidon::poseidon2::Poseidon2;
 
 /// Hardcoded card rank database: 50 cards with ranks [top, right, bottom, left].
 /// Index 0 is unused (card IDs are 1-50).
@@ -101,49 +78,12 @@ fn get_card_ranks(card_id: u32) -> [Field; 4] {
     else { [7, 2, 7, 4] }                    // Lerma (card_id == 50)
 }
 
-/// Compute the card commitment hash from all hand data including ranks.
-/// Format: hash(player_secret, player_address, game_id,
-///              card_ids[5], card_ranks[5*4], nullifier_secrets[5])
-/// Total: 33 fields
-fn compute_card_commit(
-    player_secret: Field,
-    player_address: Field,
-    game_id: Field,
-    card_ids: [Field; 5],
-    card_ranks: [[Field; 4]; 5],
-    nullifier_secrets: [Field; 5],
-) -> Field {
-    let mut hash_inputs: [Field; 33] = [0; 33];
-    hash_inputs[0] = player_secret;
-    hash_inputs[1] = player_address;
-    hash_inputs[2] = game_id;
-    for i in 0..5 {
-        hash_inputs[3 + i] = card_ids[i];
-    }
-    for i in 0..5 {
-        for j in 0..4 {
-            hash_inputs[8 + i * 4 + j] = card_ranks[i][j];
-        }
-    }
-    for i in 0..5 {
-        hash_inputs[28 + i] = nullifier_secrets[i];
-    }
-    std::hash::pedersen_hash(hash_inputs)
-}
-
 fn main(
     // Public inputs
-    card_commit: pub Field,
-    player_address: pub Field,
-    game_id: pub Field,
-    grumpkin_public_key_x: pub Field,
-    grumpkin_public_key_y: pub Field,
+    card_commit_hash: pub Field,
     // Private inputs
-    player_secret: Field,
     card_ids: [Field; 5],
-    card_ranks: [[Field; 4]; 5],
-    card_nullifier_secrets: [Field; 5],
-    grumpkin_private_key: Field,
+    blinding_factor: Field,
 ) {
     // 1. Verify all card IDs are valid (1-50) and unique
     for i in 0..5 {
@@ -157,370 +97,110 @@ fn main(
         }
     }
 
-    // 2. Verify provided card ranks match the hardcoded card database
+    // 2. Compute commitment and verify it matches the public input
+    let mut to_hash: [Field; 6] = [0; 6];
     for i in 0..5 {
-        let expected_ranks = get_card_ranks(card_ids[i] as u32);
-        for j in 0..4 {
-            assert(
-                card_ranks[i][j] == expected_ranks[j],
-                "Card ranks do not match database",
-            );
-        }
+        to_hash[i] = card_ids[i];
     }
-
-    // 3. Verify all ranks are in valid range (1-10)
-    for i in 0..5 {
-        for j in 0..4 {
-            let rank = card_ranks[i][j] as u32;
-            assert(rank >= 1, "Rank must be >= 1");
-            assert(rank <= 10, "Rank must be <= 10");
-        }
-    }
-
-    // 4. Compute the card commitment and verify
-    let computed_commit = compute_card_commit(
-        player_secret,
-        player_address,
-        game_id,
-        card_ids,
-        card_ranks,
-        card_nullifier_secrets,
-    );
-    assert(computed_commit == card_commit, "Card commitment mismatch");
-
-    // 5. Reject zero private key (degenerate point at infinity)
-    assert(grumpkin_private_key != 0, "Grumpkin private key must not be zero");
-
-    // 6. Derive Grumpkin public key and verify it matches public inputs (FIX-3)
-    let computed_pubkey = derive_public_key(grumpkin_private_key);
-    assert(computed_pubkey.x == grumpkin_public_key_x, "Grumpkin public key X mismatch");
-    assert(computed_pubkey.y == grumpkin_public_key_y, "Grumpkin public key Y mismatch");
+    to_hash[5] = blinding_factor;
+    let computed_commit = Poseidon2::hash(to_hash, 6);
+    assert(computed_commit == card_commit_hash, "Card commitment mismatch");
 }
 
 // ====================== TESTS ======================
 
-/// Helper to compute card_commit in tests
-fn test_compute_commit(
-    player_secret: Field,
-    player_address: Field,
-    game_id: Field,
-    card_ids: [Field; 5],
-    card_ranks: [[Field; 4]; 5],
-    nullifier_secrets: [Field; 5],
-) -> Field {
-    compute_card_commit(player_secret, player_address, game_id, card_ids, card_ranks, nullifier_secrets)
-}
-
-/// Helper to derive Grumpkin public key for tests
-fn test_derive_pubkey(private_key: Field) -> EmbeddedCurvePoint {
-    derive_public_key(private_key)
+/// Helper to compute card_commit_hash in tests
+fn test_compute_commit(card_ids: [Field; 5], blinding_factor: Field) -> Field {
+    let mut to_hash: [Field; 6] = [0; 6];
+    for i in 0..5 {
+        to_hash[i] = card_ids[i];
+    }
+    to_hash[5] = blinding_factor;
+    Poseidon2::hash(to_hash, 6)
 }
 
 #[test]
 fn test_prove_hand() {
-    let player_secret: Field = 12345;
-    let player_address: Field = 0xabcdef;
-    let game_id: Field = 1;
     let card_ids: [Field; 5] = [1, 2, 3, 4, 5];
-    let card_ranks: [[Field; 4]; 5] = [
-        [1, 4, 1, 5],  // Mudwalker
-        [5, 1, 1, 3],  // Blushy
-        [1, 3, 3, 5],  // Snowdrop
-        [6, 1, 1, 2],  // Sunny
-        [2, 3, 1, 5],  // Inkwell
-    ];
-    let nullifier_secrets: [Field; 5] = [100, 200, 300, 400, 500];
-    let grumpkin_private_key: Field = 42;
+    let blinding_factor: Field = 12345;
 
-    let commit = test_compute_commit(
-        player_secret, player_address, game_id,
-        card_ids, card_ranks, nullifier_secrets,
-    );
+    let commit = test_compute_commit(card_ids, blinding_factor);
 
-    let pubkey = test_derive_pubkey(grumpkin_private_key);
-
-    main(
-        commit, player_address, game_id,
-        pubkey.x, pubkey.y,
-        player_secret, card_ids, card_ranks, nullifier_secrets,
-        grumpkin_private_key,
-    );
+    main(commit, card_ids, blinding_factor);
 }
 
 #[test]
 fn test_prove_hand_high_card_ids() {
-    let player_secret: Field = 99999;
-    let player_address: Field = 0x1234567890;
-    let game_id: Field = 42;
     let card_ids: [Field; 5] = [46, 47, 48, 49, 50];
-    let card_ranks: [[Field; 4]; 5] = [
-        [3, 10, 2, 1],  // Rosita
-        [6, 2, 6, 7],   // Brooklet
-        [5, 5, 7, 6],   // Whisper
-        [7, 7, 4, 2],   // Misty
-        [7, 2, 7, 4],   // Lerma
-    ];
-    let nullifier_secrets: [Field; 5] = [1000, 2000, 3000, 4000, 5000];
-    let grumpkin_private_key: Field = 7777;
+    let blinding_factor: Field = 99999;
 
-    let commit = test_compute_commit(
-        player_secret, player_address, game_id,
-        card_ids, card_ranks, nullifier_secrets,
-    );
+    let commit = test_compute_commit(card_ids, blinding_factor);
 
-    let pubkey = test_derive_pubkey(grumpkin_private_key);
-
-    main(
-        commit, player_address, game_id,
-        pubkey.x, pubkey.y,
-        player_secret, card_ids, card_ranks, nullifier_secrets,
-        grumpkin_private_key,
-    );
+    main(commit, card_ids, blinding_factor);
 }
 
 #[test]
 fn test_prove_hand_level4_cards() {
-    let player_secret: Field = 55555;
-    let player_address: Field = 0xbeef;
-    let game_id: Field = 7;
     let card_ids: [Field; 5] = [31, 32, 33, 34, 35];
-    let card_ranks: [[Field; 4]; 5] = [
-        [3, 6, 4, 7],  // Glitter
-        [7, 2, 3, 7],  // Starfield
-        [2, 3, 7, 7],  // Specter
-        [6, 5, 5, 5],  // Saffron
-        [4, 7, 6, 2],  // Stardust
-    ];
-    let nullifier_secrets: [Field; 5] = [10, 20, 30, 40, 50];
-    let grumpkin_private_key: Field = 12345678;
+    let blinding_factor: Field = 55555;
 
-    let commit = test_compute_commit(
-        player_secret, player_address, game_id,
-        card_ids, card_ranks, nullifier_secrets,
-    );
+    let commit = test_compute_commit(card_ids, blinding_factor);
 
-    let pubkey = test_derive_pubkey(grumpkin_private_key);
-
-    main(
-        commit, player_address, game_id,
-        pubkey.x, pubkey.y,
-        player_secret, card_ids, card_ranks, nullifier_secrets,
-        grumpkin_private_key,
-    );
+    main(commit, card_ids, blinding_factor);
 }
 
 #[test]
-fn test_grumpkin_key_derivation() {
-    // Verify that different private keys produce different public keys
-    let pk1 = test_derive_pubkey(1);
-    let pk2 = test_derive_pubkey(2);
-    assert(pk1.x != pk2.x, "Different private keys should give different public keys");
+fn test_prove_hand_mixed_levels() {
+    let card_ids: [Field; 5] = [1, 15, 25, 35, 50];
+    let blinding_factor: Field = 777;
+
+    let commit = test_compute_commit(card_ids, blinding_factor);
+
+    main(commit, card_ids, blinding_factor);
 }
 
 #[test(should_fail_with = "Card ID must be >= 1")]
 fn test_fail_card_id_zero() {
-    let player_secret: Field = 12345;
-    let player_address: Field = 0xabcdef;
-    let game_id: Field = 1;
     let card_ids: [Field; 5] = [0, 2, 3, 4, 5];
-    let card_ranks: [[Field; 4]; 5] = [
-        [0, 0, 0, 0],
-        [5, 1, 1, 3],
-        [1, 3, 3, 5],
-        [6, 1, 1, 2],
-        [2, 3, 1, 5],
-    ];
-    let nullifier_secrets: [Field; 5] = [100, 200, 300, 400, 500];
-    let grumpkin_private_key: Field = 42;
+    let blinding_factor: Field = 12345;
+    let commit = test_compute_commit(card_ids, blinding_factor);
 
-    let commit = test_compute_commit(
-        player_secret, player_address, game_id,
-        card_ids, card_ranks, nullifier_secrets,
-    );
-    let pubkey = test_derive_pubkey(grumpkin_private_key);
-
-    main(
-        commit, player_address, game_id,
-        pubkey.x, pubkey.y,
-        player_secret, card_ids, card_ranks, nullifier_secrets,
-        grumpkin_private_key,
-    );
+    main(commit, card_ids, blinding_factor);
 }
 
 #[test(should_fail_with = "Card ID must be <= 50")]
 fn test_fail_card_id_too_high() {
-    let player_secret: Field = 12345;
-    let player_address: Field = 0xabcdef;
-    let game_id: Field = 1;
     let card_ids: [Field; 5] = [1, 2, 3, 4, 51];
-    let card_ranks: [[Field; 4]; 5] = [
-        [1, 4, 1, 5],
-        [5, 1, 1, 3],
-        [1, 3, 3, 5],
-        [6, 1, 1, 2],
-        [0, 0, 0, 0],
-    ];
-    let nullifier_secrets: [Field; 5] = [100, 200, 300, 400, 500];
-    let grumpkin_private_key: Field = 42;
+    let blinding_factor: Field = 12345;
+    let commit = test_compute_commit(card_ids, blinding_factor);
 
-    let commit = test_compute_commit(
-        player_secret, player_address, game_id,
-        card_ids, card_ranks, nullifier_secrets,
-    );
-    let pubkey = test_derive_pubkey(grumpkin_private_key);
-
-    main(
-        commit, player_address, game_id,
-        pubkey.x, pubkey.y,
-        player_secret, card_ids, card_ranks, nullifier_secrets,
-        grumpkin_private_key,
-    );
+    main(commit, card_ids, blinding_factor);
 }
 
 #[test(should_fail_with = "Duplicate card IDs not allowed")]
 fn test_fail_duplicate_card_ids() {
-    let player_secret: Field = 12345;
-    let player_address: Field = 0xabcdef;
-    let game_id: Field = 1;
     let card_ids: [Field; 5] = [1, 2, 3, 4, 1];
-    let card_ranks: [[Field; 4]; 5] = [
-        [1, 4, 1, 5],
-        [5, 1, 1, 3],
-        [1, 3, 3, 5],
-        [6, 1, 1, 2],
-        [1, 4, 1, 5],
-    ];
-    let nullifier_secrets: [Field; 5] = [100, 200, 300, 400, 500];
-    let grumpkin_private_key: Field = 42;
+    let blinding_factor: Field = 12345;
+    let commit = test_compute_commit(card_ids, blinding_factor);
 
-    let commit = test_compute_commit(
-        player_secret, player_address, game_id,
-        card_ids, card_ranks, nullifier_secrets,
-    );
-    let pubkey = test_derive_pubkey(grumpkin_private_key);
-
-    main(
-        commit, player_address, game_id,
-        pubkey.x, pubkey.y,
-        player_secret, card_ids, card_ranks, nullifier_secrets,
-        grumpkin_private_key,
-    );
+    main(commit, card_ids, blinding_factor);
 }
 
 #[test(should_fail_with = "Card commitment mismatch")]
 fn test_fail_wrong_commitment() {
-    let player_secret: Field = 12345;
-    let player_address: Field = 0xabcdef;
-    let game_id: Field = 1;
     let card_ids: [Field; 5] = [1, 2, 3, 4, 5];
-    let card_ranks: [[Field; 4]; 5] = [
-        [1, 4, 1, 5],
-        [5, 1, 1, 3],
-        [1, 3, 3, 5],
-        [6, 1, 1, 2],
-        [2, 3, 1, 5],
-    ];
-    let nullifier_secrets: [Field; 5] = [100, 200, 300, 400, 500];
-    let grumpkin_private_key: Field = 42;
-    let pubkey = test_derive_pubkey(grumpkin_private_key);
-
+    let blinding_factor: Field = 12345;
     let wrong_commit: Field = 0xdeadbeef;
 
-    main(
-        wrong_commit, player_address, game_id,
-        pubkey.x, pubkey.y,
-        player_secret, card_ids, card_ranks, nullifier_secrets,
-        grumpkin_private_key,
-    );
+    main(wrong_commit, card_ids, blinding_factor);
 }
 
-#[test(should_fail_with = "Card ranks do not match database")]
-fn test_fail_wrong_card_ranks() {
-    let player_secret: Field = 12345;
-    let player_address: Field = 0xabcdef;
-    let game_id: Field = 1;
+#[test(should_fail_with = "Card commitment mismatch")]
+fn test_fail_wrong_blinding_factor() {
     let card_ids: [Field; 5] = [1, 2, 3, 4, 5];
-    let card_ranks: [[Field; 4]; 5] = [
-        [10, 10, 10, 10],  // WRONG ranks for Mudwalker
-        [5, 1, 1, 3],
-        [1, 3, 3, 5],
-        [6, 1, 1, 2],
-        [2, 3, 1, 5],
-    ];
-    let nullifier_secrets: [Field; 5] = [100, 200, 300, 400, 500];
-    let grumpkin_private_key: Field = 42;
+    let blinding_factor: Field = 12345;
+    let commit = test_compute_commit(card_ids, blinding_factor);
 
-    let commit = test_compute_commit(
-        player_secret, player_address, game_id,
-        card_ids, card_ranks, nullifier_secrets,
-    );
-    let pubkey = test_derive_pubkey(grumpkin_private_key);
-
-    main(
-        commit, player_address, game_id,
-        pubkey.x, pubkey.y,
-        player_secret, card_ids, card_ranks, nullifier_secrets,
-        grumpkin_private_key,
-    );
-}
-
-#[test(should_fail_with = "Grumpkin public key X mismatch")]
-fn test_fail_wrong_grumpkin_pubkey() {
-    let player_secret: Field = 12345;
-    let player_address: Field = 0xabcdef;
-    let game_id: Field = 1;
-    let card_ids: [Field; 5] = [1, 2, 3, 4, 5];
-    let card_ranks: [[Field; 4]; 5] = [
-        [1, 4, 1, 5],
-        [5, 1, 1, 3],
-        [1, 3, 3, 5],
-        [6, 1, 1, 2],
-        [2, 3, 1, 5],
-    ];
-    let nullifier_secrets: [Field; 5] = [100, 200, 300, 400, 500];
-    let grumpkin_private_key: Field = 42;
-
-    let commit = test_compute_commit(
-        player_secret, player_address, game_id,
-        card_ids, card_ranks, nullifier_secrets,
-    );
-
-    // Use wrong public key (from a different private key)
-    let wrong_pubkey = test_derive_pubkey(99);
-
-    main(
-        commit, player_address, game_id,
-        wrong_pubkey.x, wrong_pubkey.y,
-        player_secret, card_ids, card_ranks, nullifier_secrets,
-        grumpkin_private_key,
-    );
-}
-
-#[test(should_fail_with = "Grumpkin private key must not be zero")]
-fn test_fail_zero_grumpkin_private_key() {
-    let player_secret: Field = 12345;
-    let player_address: Field = 0xabcdef;
-    let game_id: Field = 1;
-    let card_ids: [Field; 5] = [1, 2, 3, 4, 5];
-    let card_ranks: [[Field; 4]; 5] = [
-        [1, 4, 1, 5],
-        [5, 1, 1, 3],
-        [1, 3, 3, 5],
-        [6, 1, 1, 2],
-        [2, 3, 1, 5],
-    ];
-    let nullifier_secrets: [Field; 5] = [100, 200, 300, 400, 500];
-
-    let commit = test_compute_commit(
-        player_secret, player_address, game_id,
-        card_ids, card_ranks, nullifier_secrets,
-    );
-
-    // Zero private key should be rejected
-    main(
-        commit, player_address, game_id,
-        0, 0,
-        player_secret, card_ids, card_ranks, nullifier_secrets,
-        0,
-    );
+    // Use wrong blinding factor
+    main(commit, card_ids, 99999);
 }

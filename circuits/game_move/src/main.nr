@@ -1,15 +1,13 @@
 /// Game Move circuit.
 /// Proves that a game move is valid: one card placed from correct player,
 /// board state correctly updated with capture logic.
-/// Also computes ECDH shared secret to encrypt the placed card's nullifier.
 ///
 /// Public inputs:
-///   card_commit_1, card_commit_2 - player card commitments (include ranks)
+///   card_commit_1, card_commit_2 - player card commitments (poseidon2 hash)
 ///   start_state_hash - hash of board state before this move
 ///   end_state_hash - hash of board state after this move
 ///   game_ended - 1 if game over, 0 otherwise
 ///   winner_id - 0=not ended, 1=player1 wins, 2=player2 wins, 3=draw
-///   encrypted_card_nullifier - the placed card's nullifier secret, encrypted with ECDH shared key
 ///
 /// The circuit verifies:
 /// 1. The placed card is in the current player's committed hand (card_commit binding)
@@ -17,41 +15,10 @@
 /// 3. Non-placed, non-captured cells are unchanged between board_before/board_after
 /// 4. Scores are consistent with board ownership + hand counts
 /// 5. Game end detection and winner determination
-/// 6. ECDH encryption of placed card's nullifier secret
 
 /// Board cell: each cell is (card_id, owner) where owner 0=empty, 1=player1, 2=player2
 
-use std::embedded_curve_ops::{EmbeddedCurvePoint, EmbeddedCurveScalar, multi_scalar_mul};
-// External poseidon dep removed; using stdlib pedersen_hash instead
-
-/// Grumpkin generator point G
-global G: EmbeddedCurvePoint = EmbeddedCurvePoint {
-    x: 0x083e7911d835097629f0067531fc15cafd79a89beecb39903f69572c636f4a5a,
-    y: 0x1a7f5efaad7f315c25a918f30cc8d7333fccab7ad7c90f14de81bcc528f9935d,
-    is_infinite: false,
-};
-
-/// Compute ECDH shared secret: shared_point = my_private_key * opponent_public_key
-fn compute_shared_secret(my_private_key: Field, opponent_pubkey: EmbeddedCurvePoint) -> Field {
-    let shared_point = multi_scalar_mul(
-        [opponent_pubkey],
-        [EmbeddedCurveScalar::from_field(my_private_key)],
-    );
-    shared_point.x
-}
-
-/// Key expansion for symmetric encryption using pedersen hash with move-index nonce.
-/// The nonce (current_turn_before) ensures a unique key per move, preventing
-/// an attacker who recovers one plaintext from decrypting all other moves.
-fn expand_secret(secret: Field, nonce: Field) -> Field {
-    std::hash::pedersen_hash([secret, nonce])
-}
-
-/// Symmetric encrypt a single field element using ECDH shared secret and move nonce.
-fn symmetric_encrypt_field(plaintext: Field, secret: Field, nonce: Field) -> Field {
-    let key = expand_secret(secret, nonce);
-    key + plaintext
-}
+use poseidon::poseidon2::Poseidon2;
 
 // ====================== CARD DATABASE ======================
 /// Hardcoded card rank database: 50 cards with ranks [top, right, bottom, left].
@@ -128,35 +95,6 @@ fn hash_board_state(board: [Field; 18], scores: [Field; 2], current_turn: Field)
     std::hash::pedersen_hash(inputs)
 }
 
-/// Compute card commitment hash (must match prove_hand format).
-/// Format: hash(player_secret, player_address, game_id,
-///              card_ids[5], card_ranks[5*4], nullifier_secrets[5])
-fn compute_card_commit(
-    player_secret: Field,
-    player_address: Field,
-    game_id: Field,
-    card_ids: [Field; 5],
-    card_ranks: [[Field; 4]; 5],
-    nullifier_secrets: [Field; 5],
-) -> Field {
-    let mut hash_inputs: [Field; 33] = [0; 33];
-    hash_inputs[0] = player_secret;
-    hash_inputs[1] = player_address;
-    hash_inputs[2] = game_id;
-    for i in 0..5 {
-        hash_inputs[3 + i] = card_ids[i];
-    }
-    for i in 0..5 {
-        for j in 0..4 {
-            hash_inputs[8 + i * 4 + j] = card_ranks[i][j];
-        }
-    }
-    for i in 0..5 {
-        hash_inputs[28 + i] = nullifier_secrets[i];
-    }
-    std::hash::pedersen_hash(hash_inputs)
-}
-
 // ====================== MAIN CIRCUIT ======================
 
 fn main(
@@ -167,7 +105,6 @@ fn main(
     end_state_hash: pub Field,
     game_ended: pub Field,
     winner_id: pub Field,
-    encrypted_card_nullifier: pub Field,
     // Private inputs - move data
     current_player: Field,       // 1 or 2
     card_id: Field,              // ID of card being placed
@@ -180,18 +117,8 @@ fn main(
     scores_after: [Field; 2],
     current_turn_before: Field,
     // Private inputs - current player's hand commitment data
-    player_secret: Field,
-    player_address: Field,
-    game_id: Field,
     player_card_ids: [Field; 5],
-    player_card_ranks: [[Field; 4]; 5],
-    player_nullifier_secrets: [Field; 5],
-    // Private inputs - ECDH encryption (FIX-3)
-    grumpkin_private_key: Field,
-    opponent_pubkey_x: Field,
-    opponent_pubkey_y: Field,
-    // Private input - move index for unique encryption nonce (V7 Fix 3.1)
-    move_index: Field,
+    blinding_factor: Field,
 ) {
     // ===== 1. Validate current player =====
     assert(
@@ -206,28 +133,14 @@ fn main(
     assert(r < 3, "Row out of bounds");
     assert(c < 3, "Col out of bounds");
 
-    // ===== 2b. Validate move_index (V7 Fix 3.1) =====
-    let mi = move_index as u32;
-    assert(mi < 9, "move_index must be 0-8");
-    // Verify move_index matches number of filled cells in board_before
-    let mut filled_before: u32 = 0;
-    for i in 0..9 {
-        if board_before[i * 2] != 0 {
-            filled_before += 1;
-        }
-    }
-    assert(move_index == filled_before as Field, "move_index does not match board state");
-
-    // ===== 3. Verify card_commit binding (FIX-1) =====
+    // ===== 3. Verify card_commit binding =====
     // Recompute the current player's card_commit from their hand data
-    let recomputed_commit = compute_card_commit(
-        player_secret,
-        player_address,
-        game_id,
-        player_card_ids,
-        player_card_ranks,
-        player_nullifier_secrets,
-    );
+    let mut to_hash: [Field; 6] = [0; 6];
+    for i in 0..5 {
+        to_hash[i] = player_card_ids[i];
+    }
+    to_hash[5] = blinding_factor;
+    let recomputed_commit = Poseidon2::hash(to_hash, 6);
 
     // Verify it matches the correct card_commit (1 or 2 based on current_player)
     if current_player == 1 {
@@ -238,13 +151,9 @@ fn main(
 
     // ===== 4. Verify placed card is in committed hand =====
     let mut card_found: bool = false;
-    let mut placed_card_ranks: [Field; 4] = [0; 4];
-    let mut placed_card_nullifier_secret: Field = 0;
     for i in 0..5 {
         if player_card_ids[i] == card_id {
             card_found = true;
-            placed_card_ranks = player_card_ranks[i];
-            placed_card_nullifier_secret = player_nullifier_secrets[i];
         }
     }
     assert(card_found, "Placed card not in committed hand");
@@ -257,14 +166,8 @@ fn main(
         }
     }
 
-    // Verify the committed ranks match the hardcoded card database
-    let db_ranks = get_card_ranks(card_id as u32);
-    for i in 0..4 {
-        assert(
-            placed_card_ranks[i] == db_ranks[i],
-            "Placed card ranks do not match database",
-        );
-    }
+    // Look up placed card ranks from database
+    let placed_card_ranks = get_card_ranks(card_id as u32);
 
     // ===== 5. Verify the cell was empty before the move =====
     let cell_idx = r * 3 + c;
@@ -278,7 +181,7 @@ fn main(
         "Owner not set correctly",
     );
 
-    // ===== 7. Capture logic (FIX-2) =====
+    // ===== 7. Capture logic =====
     // Determine the opponent
     let opponent: Field = if current_player == 1 { 2 } else { 1 };
 
@@ -286,15 +189,7 @@ fn main(
     let mut captured: [bool; 9] = [false; 9];
 
     // Check all 4 adjacent directions:
-    // Direction 0: Top    (row-1, col)   - placed card's top vs adjacent card's bottom
-    // Direction 1: Right  (row, col+1)   - placed card's right vs adjacent card's left
-    // Direction 2: Bottom (row+1, col)   - placed card's bottom vs adjacent card's top
-    // Direction 3: Left   (row, col-1)   - placed card's left vs adjacent card's right
-
     // placed_card_ranks: [top, right, bottom, left]
-    // adjacent ranks:    [top=0, right=1, bottom=2, left=3]
-    // Facing rank pairs: placed_top vs adj_bottom, placed_right vs adj_left,
-    //                    placed_bottom vs adj_top, placed_left vs adj_right
 
     // Direction 0: Top (row-1, col)
     if r > 0 {
@@ -361,10 +256,6 @@ fn main(
     }
 
     // ===== 8. Verify board_after matches expected state =====
-    // For each cell, verify:
-    // - Placed cell: already verified above (card_id and owner)
-    // - Captured cell: card_id unchanged, owner changed to current_player
-    // - All other cells: identical to board_before
     for i in 0..9 {
         if i as u32 != cell_idx {
             let before_card = board_before[i * 2];
@@ -441,107 +332,38 @@ fn main(
     let expected_p2_score = p2_board + p2_hand;
     assert(scores_after[0] == expected_p1_score as Field, "P1 score mismatch");
     assert(scores_after[1] == expected_p2_score as Field, "P2 score mismatch");
-
-    // ===== 13. Validate Grumpkin private key is non-zero (V6 Fix 3.1) =====
-    assert(grumpkin_private_key != 0, "grumpkin_private_key must be non-zero");
-
-    // ===== 14. Validate opponent public key (V7 Fix 3.2 + V6 Fix 3.3) =====
-    // Check point-at-infinity (V7 Fix 3.2)
-    assert((opponent_pubkey_x != 0) | (opponent_pubkey_y != 0), "Opponent pubkey is point at infinity");
-    // Grumpkin curve equation: y^2 = x^3 - 17 (a=0, b=-17)
-    let x3 = opponent_pubkey_x * opponent_pubkey_x * opponent_pubkey_x;
-    let y2 = opponent_pubkey_y * opponent_pubkey_y;
-    assert(y2 == x3 - 17, "opponent public key not on Grumpkin curve");
-
-    // ===== 15. ECDH encryption of card nullifier =====
-    let opponent_pubkey = EmbeddedCurvePoint {
-        x: opponent_pubkey_x,
-        y: opponent_pubkey_y,
-        is_infinite: false,
-    };
-    let shared_secret = compute_shared_secret(grumpkin_private_key, opponent_pubkey);
-    // Use move_index as nonce for per-move unique key (V7 Fix 3.1, replaces V6 current_turn_before)
-    let computed_encrypted = symmetric_encrypt_field(placed_card_nullifier_secret, shared_secret, move_index);
-    assert(
-        computed_encrypted == encrypted_card_nullifier,
-        "Encrypted nullifier mismatch",
-    );
 }
 
 // ====================== TEST HELPERS ======================
 
-/// Helper: create a card_commit for test use
-fn test_card_commit(
-    player_secret: Field,
-    player_address: Field,
-    game_id: Field,
-    card_ids: [Field; 5],
-    card_ranks: [[Field; 4]; 5],
-    nullifier_secrets: [Field; 5],
-) -> Field {
-    compute_card_commit(player_secret, player_address, game_id, card_ids, card_ranks, nullifier_secrets)
-}
-
-/// Helper: compute encrypted nullifier for tests (with move_index nonce)
-fn test_encrypt_nullifier(nullifier_secret: Field, player_grumpkin_key: Field, opponent_pubkey: EmbeddedCurvePoint, move_index: Field) -> Field {
-    let shared_secret = compute_shared_secret(player_grumpkin_key, opponent_pubkey);
-    symmetric_encrypt_field(nullifier_secret, shared_secret, move_index)
-}
-
-/// Helper: derive Grumpkin public key
-fn test_derive_pubkey(private_key: Field) -> EmbeddedCurvePoint {
-    multi_scalar_mul([G], [EmbeddedCurveScalar::from_field(private_key)])
+/// Helper: create a card_commit for test use (poseidon2)
+fn test_card_commit(card_ids: [Field; 5], blinding_factor: Field) -> Field {
+    let mut to_hash: [Field; 6] = [0; 6];
+    for i in 0..5 {
+        to_hash[i] = card_ids[i];
+    }
+    to_hash[5] = blinding_factor;
+    Poseidon2::hash(to_hash, 6)
 }
 
 // Default hand data for Player 1 in tests: cards 1-5
 // Mudwalker[1,4,1,5], Blushy[5,1,1,3], Snowdrop[1,3,3,5], Sunny[6,1,1,2], Inkwell[2,3,1,5]
-global P1_SECRET: Field = 111;
-global P1_ADDRESS: Field = 0xaaa;
-global TEST_GAME_ID: Field = 1;
-global P1_GRUMPKIN_KEY: Field = 42;
+global P1_BLINDING: Field = 111;
 
 fn p1_card_ids() -> [Field; 5] { [1, 2, 3, 4, 5] }
-fn p1_card_ranks() -> [[Field; 4]; 5] {
-    [[1, 4, 1, 5], [5, 1, 1, 3], [1, 3, 3, 5], [6, 1, 1, 2], [2, 3, 1, 5]]
-}
-fn p1_nullifier_secrets() -> [Field; 5] { [100, 200, 300, 400, 500] }
 
 // Default hand data for Player 2 in tests: cards 10-14
 // Peaches[4,3,2,4], Freckles[2,6,1,6], Camo[7,1,3,1], Neon[6,2,2,3], Glow Bug[5,3,3,4]
-global P2_SECRET: Field = 222;
-global P2_ADDRESS: Field = 0xbbb;
-global P2_GRUMPKIN_KEY: Field = 77;
+global P2_BLINDING: Field = 222;
 
 fn p2_card_ids() -> [Field; 5] { [10, 11, 12, 13, 14] }
-fn p2_card_ranks() -> [[Field; 4]; 5] {
-    [[4, 3, 2, 4], [2, 6, 1, 6], [7, 1, 3, 1], [6, 2, 2, 3], [5, 3, 3, 4]]
-}
-fn p2_nullifier_secrets() -> [Field; 5] { [600, 700, 800, 900, 1000] }
 
 fn get_p1_commit() -> Field {
-    test_card_commit(P1_SECRET, P1_ADDRESS, TEST_GAME_ID, p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets())
+    test_card_commit(p1_card_ids(), P1_BLINDING)
 }
 
 fn get_p2_commit() -> Field {
-    test_card_commit(P2_SECRET, P2_ADDRESS, TEST_GAME_ID, p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets())
-}
-
-fn get_p1_pubkey() -> EmbeddedCurvePoint {
-    test_derive_pubkey(P1_GRUMPKIN_KEY)
-}
-
-fn get_p2_pubkey() -> EmbeddedCurvePoint {
-    test_derive_pubkey(P2_GRUMPKIN_KEY)
-}
-
-/// Helper: compute encrypted nullifier for P1 placing a card (P1 encrypts for P2 to decrypt)
-fn p1_encrypt_nullifier(nullifier_secret: Field, nonce: Field) -> Field {
-    test_encrypt_nullifier(nullifier_secret, P1_GRUMPKIN_KEY, get_p2_pubkey(), nonce)
-}
-
-/// Helper: compute encrypted nullifier for P2 placing a card (P2 encrypts for P1 to decrypt)
-fn p2_encrypt_nullifier(nullifier_secret: Field, nonce: Field) -> Field {
-    test_encrypt_nullifier(nullifier_secret, P2_GRUMPKIN_KEY, get_p1_pubkey(), nonce)
+    test_card_commit(p2_card_ids(), P2_BLINDING)
 }
 
 // ====================== TESTS ======================
@@ -551,7 +373,6 @@ fn test_first_move_no_capture() {
     // Player 1 places card 1 (Mudwalker) at (0,0) on empty board - no captures possible
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let board_before: [Field; 18] = [0; 18];
     let scores_before: [Field; 2] = [5, 5];
@@ -565,26 +386,17 @@ fn test_first_move_no_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 1 (Mudwalker) has nullifier_secret = 100, move_index = 0 (empty board)
-    let enc_null = p1_encrypt_nullifier(100, 0);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,       // game not ended
-        enc_null,
         1,          // current_player
         1,          // card_id (Mudwalker)
         0, 0,       // row, col
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        // Player 1 hand data
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        // ECDH data
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        0,          // move_index = 0 (empty board)
+        p1_card_ids(), P1_BLINDING,
     );
 }
 
@@ -593,7 +405,6 @@ fn test_second_move_no_capture() {
     // Player 2 places card 10 (Peaches) at (1,1)
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p1_pubkey = get_p1_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     board_before[0] = 1; // card at (0,0): card_id=1, owner=player1
@@ -611,26 +422,17 @@ fn test_second_move_no_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    // Card 10 (Peaches) has nullifier_secret = 600, move_index = 1 (1 card on board)
-    let enc_null = p2_encrypt_nullifier(600, 1);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         2,          // current_player = player2
         10,         // card_id = Peaches
         1, 1,       // row=1, col=1
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        // Player 2 hand data
-        P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
-        p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
-        // ECDH data
-        P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
-        1,          // move_index = 1 (1 card on board)
+        p2_card_ids(), P2_BLINDING,
     );
 }
 
@@ -642,7 +444,6 @@ fn test_capture_one_card() {
     // (1,1) is adjacent to (0,1) - placed card's top=6 vs Peaches's bottom=2 -> 6>2 CAPTURE!
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     board_before[0] = 1; board_before[1] = 1;   // (0,0) card 1, player 1
@@ -659,24 +460,17 @@ fn test_capture_one_card() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 4 (Sunny) has nullifier_secret = 400, move_index = 2 (2 cards on board)
-    let enc_null = p1_encrypt_nullifier(400, 2);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         1,          // current_player
         4,          // card_id = Sunny
         1, 1,       // row=1, col=1
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        2,          // move_index = 2 (2 cards on board)
+        p1_card_ids(), P1_BLINDING,
     );
 }
 
@@ -689,7 +483,6 @@ fn test_capture_multiple_cards() {
     // Bottom (2,1): Card 13 Neon top=6 vs placed bottom=1 -> NO
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     board_before[2] = 11; board_before[3] = 2;   // (0,1) Freckles
@@ -712,24 +505,17 @@ fn test_capture_multiple_cards() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 1 (Mudwalker) has nullifier_secret = 100, move_index = 4 (4 cards on board)
-    let enc_null = p1_encrypt_nullifier(100, 4);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         1,
         1,          // card_id = Mudwalker
         1, 1,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        4,          // move_index = 4 (4 cards on board)
+        p1_card_ids(), P1_BLINDING,
     );
 }
 
@@ -739,7 +525,6 @@ fn test_no_capture_higher_adjacent() {
     // Placed right=3 vs adj left=4. 3<4 -> NO capture.
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     board_before[2] = 14; board_before[3] = 2;
@@ -754,24 +539,17 @@ fn test_no_capture_higher_adjacent() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 3 (Snowdrop) has nullifier_secret = 300, move_index = 1 (1 card on board)
-    let enc_null = p1_encrypt_nullifier(300, 1);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         1,
         3,
         0, 0,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        1,          // move_index = 1 (1 card on board)
+        p1_card_ids(), P1_BLINDING,
     );
 }
 
@@ -779,7 +557,6 @@ fn test_no_capture_higher_adjacent() {
 fn test_final_move_game_ends_p1_wins() {
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     board_before[0] = 1; board_before[1] = 1;
@@ -808,24 +585,17 @@ fn test_final_move_game_ends_p1_wins() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 5 (Inkwell) has nullifier_secret = 500, move_index = 8 (8 cards on board)
-    let enc_null = p1_encrypt_nullifier(500, 8);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         1, 1,       // game ended, player 1 wins
-        enc_null,
         1,
         5,
         2, 2,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        8,          // move_index = 8 (8 cards on board)
+        p1_card_ids(), P1_BLINDING,
     );
 }
 
@@ -833,7 +603,6 @@ fn test_final_move_game_ends_p1_wins() {
 fn test_game_ends_draw() {
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     // Board where no captures happen on final move -> draw
     let mut board_before2: [Field; 18] = [0; 18];
@@ -860,36 +629,25 @@ fn test_game_ends_draw() {
     let scores_after2: [Field; 2] = [5, 5];
     let end_hash2 = hash_board_state(board_after2, scores_after2, 2);
 
-    // Card 5 (Inkwell) has nullifier_secret = 500, move_index = 8 (8 cards on board)
-    let enc_null = p1_encrypt_nullifier(500, 8);
-
     main(
         cc1, cc2,
         start_hash2, end_hash2,
         1, 3,       // game ended, draw
-        enc_null,
         1,
         5,
         2, 2,
         board_before2, board_after2,
         scores_before2, scores_after2,
         current_turn_before2,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        8,          // move_index = 8 (8 cards on board)
+        p1_card_ids(), P1_BLINDING,
     );
 }
 
 #[test]
 fn test_final_move_game_ends_p2_wins() {
     // P2 places the 9th card and wins with a higher score
-    // Board has 8 cards, it's P2's turn. P2 places card 14 (Glow Bug [5,3,3,4]) at (2,2)
-    // capturing (2,1) which has P1's card 5 (Inkwell [2,3,1,5]) - placed bottom=3 vs adj top=1 -> NO
-    // but (1,2) has P1's card 3 (BiteBug [1,3,3,5]) - placed left=4 vs adj right=3 -> 4>3 CAPTURE!
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p1_pubkey = get_p1_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     // Row 0: P1 card 1, P2 card 10, P1 card 2
@@ -899,7 +657,7 @@ fn test_final_move_game_ends_p2_wins() {
     // Row 1: P2 card 11, P2 card 12, P1 card 3
     board_before[6] = 11; board_before[7] = 2;   // (1,0) Freckles P2
     board_before[8] = 12; board_before[9] = 2;   // (1,1) Camo P2
-    board_before[10] = 3; board_before[11] = 1;  // (1,2) BiteBug P1
+    board_before[10] = 3; board_before[11] = 1;  // (1,2) Snowdrop P1
     // Row 2: P2 card 13, P1 card 5, empty (2,2)
     board_before[12] = 13; board_before[13] = 2; // (2,0) Neon P2
     board_before[14] = 5; board_before[15] = 1;  // (2,1) Inkwell P1
@@ -917,8 +675,8 @@ fn test_final_move_game_ends_p2_wins() {
     board_after[16] = 14; board_after[17] = 2;
 
     // Check captures:
-    // (1,2) BiteBug P1 [1,3,3,5]: placed top=5 vs adj bottom=3 -> 5>3 CAPTURE!
-    board_after[11] = 2; // BiteBug captured by P2
+    // (1,2) Snowdrop P1 [1,3,3,5]: placed top=5 vs adj bottom=3 -> 5>3 CAPTURE!
+    board_after[11] = 2; // Snowdrop captured by P2
     // (2,1) Inkwell P1 [2,3,1,5]: placed left=4 vs adj right=3 -> 4>3 CAPTURE!
     board_after[15] = 2; // Inkwell captured by P2
 
@@ -928,24 +686,17 @@ fn test_final_move_game_ends_p2_wins() {
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    // Card 14 (Glow Bug) has nullifier_secret = 1000, move_index = 8 (8 cards on board)
-    let enc_null = p2_encrypt_nullifier(1000, 8);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         1, 2,       // game ended, player 2 wins
-        enc_null,
         2,          // current_player = P2
         14,         // card_id = Glow Bug
         2, 2,       // row=2, col=2
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
-        p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
-        P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
-        8,          // move_index = 8 (8 cards on board)
+        p2_card_ids(), P2_BLINDING,
     );
 }
 
@@ -955,7 +706,6 @@ fn test_final_move_game_ends_p2_wins() {
 fn test_fail_place_on_occupied_cell() {
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     board_before[0] = 10;
@@ -970,22 +720,16 @@ fn test_fail_place_on_occupied_cell() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100, 1);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         1, 1,
         0, 0,       // (0,0) is occupied
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        1,          // move_index = 1
+        p1_card_ids(), P1_BLINDING,
     );
 }
 
@@ -993,7 +737,6 @@ fn test_fail_place_on_occupied_cell() {
 fn test_fail_wrong_player_turn() {
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p1_pubkey = get_p1_pubkey();
 
     let board_before: [Field; 18] = [0; 18];
     let scores_before: [Field; 2] = [5, 5];
@@ -1007,23 +750,17 @@ fn test_fail_wrong_player_turn() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    let enc_null = p2_encrypt_nullifier(600, 0);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         2,          // P2 trying to play on P1's turn
         10,
         0, 0,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
-        p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
-        P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
-        0,          // move_index = 0
+        p2_card_ids(), P2_BLINDING,
     );
 }
 
@@ -1031,7 +768,6 @@ fn test_fail_wrong_player_turn() {
 fn test_fail_row_out_of_bounds() {
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let board_before: [Field; 18] = [0; 18];
     let scores_before: [Field; 2] = [5, 5];
@@ -1039,22 +775,16 @@ fn test_fail_row_out_of_bounds() {
     let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
     let end_hash = start_hash;
 
-    let enc_null = p1_encrypt_nullifier(100, 0);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         1, 1,
         3, 0,       // row=3 out of bounds
         board_before, board_before,
         scores_before, scores_before,
         current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        0,          // move_index = 0
+        p1_card_ids(), P1_BLINDING,
     );
 }
 
@@ -1062,7 +792,6 @@ fn test_fail_row_out_of_bounds() {
 fn test_fail_card_not_in_hand() {
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let board_before: [Field; 18] = [0; 18];
     let scores_before: [Field; 2] = [5, 5];
@@ -1075,30 +804,23 @@ fn test_fail_card_not_in_hand() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100, 0);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         1, 20,      // card 20 not in P1's hand
         0, 0,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        0,          // move_index = 0
+        p1_card_ids(), P1_BLINDING,
     );
 }
 
 #[test(should_fail_with = "Player 1 card commit mismatch")]
-fn test_fail_wrong_player_secret() {
+fn test_fail_wrong_blinding_factor() {
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let board_before: [Field; 18] = [0; 18];
     let scores_before: [Field; 2] = [5, 5];
@@ -1111,23 +833,17 @@ fn test_fail_wrong_player_secret() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100, 0);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         1, 1,
         0, 0,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        999,        // WRONG player secret
-        P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        0,          // move_index = 0
+        p1_card_ids(),
+        999,        // WRONG blinding factor
     );
 }
 
@@ -1135,7 +851,6 @@ fn test_fail_wrong_player_secret() {
 fn test_fail_false_capture() {
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     board_before[2] = 14; board_before[3] = 2;
@@ -1149,22 +864,16 @@ fn test_fail_false_capture() {
     let scores_after: [Field; 2] = [6, 4];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(300, 1);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         1, 3,
         0, 0,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        1,          // move_index = 1
+        p1_card_ids(), P1_BLINDING,
     );
 }
 
@@ -1172,7 +881,6 @@ fn test_fail_false_capture() {
 fn test_fail_missing_capture() {
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     board_before[2] = 11; board_before[3] = 2;
@@ -1186,22 +894,16 @@ fn test_fail_missing_capture() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(400, 1);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         1, 4,
         1, 1,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        1,          // move_index = 1
+        p1_card_ids(), P1_BLINDING,
     );
 }
 
@@ -1209,7 +911,6 @@ fn test_fail_missing_capture() {
 fn test_fail_card_id_changed() {
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     board_before[2] = 14; board_before[3] = 2;
@@ -1223,22 +924,16 @@ fn test_fail_card_id_changed() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100, 1);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         1, 1,
         0, 0,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        1,          // move_index = 1
+        p1_card_ids(), P1_BLINDING,
     );
 }
 
@@ -1249,7 +944,6 @@ fn test_player2_move_with_capture() {
     // Placed top=7 vs adj bottom=1 -> 7>1 CAPTURE!
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p1_pubkey = get_p1_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     board_before[0] = 1; board_before[1] = 1;
@@ -1264,24 +958,17 @@ fn test_player2_move_with_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    // Card 12 (Camo) has nullifier_secret = 800, move_index = 1 (1 card on board)
-    let enc_null = p2_encrypt_nullifier(800, 1);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         2,
         12,
         1, 0,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
-        p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
-        P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
-        1,          // move_index = 1 (1 card on board)
+        p2_card_ids(), P2_BLINDING,
     );
 }
 
@@ -1291,7 +978,6 @@ fn test_equal_ranks_no_capture() {
     // 4 == 4 -> NO capture.
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     board_before[2] = 10; board_before[3] = 2;
@@ -1306,97 +992,25 @@ fn test_equal_ranks_no_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 1 (Mudwalker) has nullifier_secret = 100, move_index = 1 (1 card on board)
-    let enc_null = p1_encrypt_nullifier(100, 1);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         1, 1,
         0, 0,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        1,          // move_index = 1 (1 card on board)
+        p1_card_ids(), P1_BLINDING,
     );
-}
-
-#[test(should_fail_with = "Encrypted nullifier mismatch")]
-fn test_fail_wrong_encrypted_nullifier() {
-    // Correct move but wrong encrypted nullifier
-    let cc1 = get_p1_commit();
-    let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
-
-    let board_before: [Field; 18] = [0; 18];
-    let scores_before: [Field; 2] = [5, 5];
-    let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
-
-    let mut board_after: [Field; 18] = [0; 18];
-    board_after[0] = 1;
-    board_after[1] = 1;
-    let scores_after: [Field; 2] = [5, 5];
-    let end_hash = hash_board_state(board_after, scores_after, 2);
-
-    // Use a wrong encrypted nullifier value
-    let wrong_enc_null: Field = 0xdeadbeef;
-
-    main(
-        cc1, cc2,
-        start_hash, end_hash,
-        0, 0,
-        wrong_enc_null,
-        1, 1,
-        0, 0,
-        board_before, board_after,
-        scores_before, scores_after,
-        current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        0,          // move_index = 0
-    );
-}
-
-#[test]
-fn test_ecdh_symmetric_encryption() {
-    // Verify that P1 encrypting with P2's pubkey produces something P2 can decrypt
-    // P1 encrypts: shared = P1_priv * P2_pub
-    // P2 decrypts: shared = P2_priv * P1_pub
-    // Both shared secrets should be equal (ECDH property)
-    let p1_pub = get_p1_pubkey();
-    let p2_pub = get_p2_pubkey();
-
-    let shared_1 = compute_shared_secret(P1_GRUMPKIN_KEY, p2_pub);
-    let shared_2 = compute_shared_secret(P2_GRUMPKIN_KEY, p1_pub);
-    assert(shared_1 == shared_2, "ECDH shared secrets should match");
-
-    // Encrypt and verify with nonce
-    let plaintext: Field = 12345;
-    let nonce: Field = 3; // example move index
-    let ciphertext = symmetric_encrypt_field(plaintext, shared_1, nonce);
-    // Decrypt: plaintext = ciphertext - key
-    let key = expand_secret(shared_2, nonce);
-    let decrypted = ciphertext - key;
-    assert(decrypted == plaintext, "Decrypted value should match plaintext");
 }
 
 // ====================== C1 FIX TESTS: Exact Score Verification ======================
 
 #[test(should_fail_with = "P1 score mismatch")]
 fn test_score_fabrication_rejected() {
-    // Valid first move (P1 places card 1 at (0,0) on empty board) but with fabricated scores.
-    // Correct scores: p1=5, p2=5 (1 on board + 4 in hand, 0 on board + 5 in hand)
-    // Fabricated: p1=8, p2=2 (would pass the old weak check since 8+2=10, 8>=1, 2>=0)
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let board_before: [Field; 18] = [0; 18];
     let scores_before: [Field; 2] = [5, 5];
@@ -1410,22 +1024,16 @@ fn test_score_fabrication_rejected() {
     let scores_after: [Field; 2] = [8, 2];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100, 0);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         1, 1,
         0, 0,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        0,          // move_index = 0
+        p1_card_ids(), P1_BLINDING,
     );
 }
 
@@ -1434,12 +1042,8 @@ fn test_exact_scores_after_capture() {
     // P2 places card 13 (Neon [6,2,2,3]) at (0,1).
     // (0,0) has P1 card 5 (Inkwell [2,3,1,5]). Placed left=3 vs adj right=3 -> NO (equal)
     // (1,1) has P1 card 1 (Mudwalker [1,4,1,5]). Placed bottom=2 vs adj top=1 -> 2>1 CAPTURE!
-    // After: filled=4, p1_board=1, p2_board=3(card 10 + card 13 + captured card 1)
-    // p1_played=(4+1)/2=2, p2_played=4/2=2
-    // p1_score=1+(5-2)=4, p2_score=3+(5-2)=6
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p1_pubkey = get_p1_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     board_before[0] = 5; board_before[1] = 1;    // (0,0) Inkwell P1
@@ -1459,24 +1063,17 @@ fn test_exact_scores_after_capture() {
 
     let end_hash = hash_board_state(board_after, scores_after, 1);
 
-    // Card 13 (Neon) has nullifier_secret = 900, move_index = 3 (3 cards on board)
-    let enc_null = p2_encrypt_nullifier(900, 3);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         2,
         13,
         0, 1,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P2_SECRET, P2_ADDRESS, TEST_GAME_ID,
-        p2_card_ids(), p2_card_ranks(), p2_nullifier_secrets(),
-        P2_GRUMPKIN_KEY, p1_pubkey.x, p1_pubkey.y,
-        3,          // move_index = 3 (3 cards on board)
+        p2_card_ids(), P2_BLINDING,
     );
 }
 
@@ -1484,11 +1081,8 @@ fn test_exact_scores_after_capture() {
 
 #[test(should_fail_with = "Card already placed on board")]
 fn test_card_replay_rejected() {
-    // P1 already has card 1 (Mudwalker) on board at (0,0).
-    // P1 tries to place card 1 AGAIN at (1,1). Should be rejected.
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     board_before[0] = 1; board_before[1] = 1;   // (0,0) card 1, P1
@@ -1504,22 +1098,16 @@ fn test_card_replay_rejected() {
     let scores_after: [Field; 2] = [5, 5];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    let enc_null = p1_encrypt_nullifier(100, 2);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         1, 1,          // card_id = 1 (already on board!)
         1, 1,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        2,          // move_index = 2 (2 cards on board)
+        p1_card_ids(), P1_BLINDING,
     );
 }
 
@@ -1528,7 +1116,6 @@ fn test_different_card_after_same_id_on_board() {
     // P1 has card 1 on board. P1 places card 2 (different card). Should succeed.
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
 
     let mut board_before: [Field; 18] = [0; 18];
     board_before[0] = 1; board_before[1] = 1;   // (0,0) card 1, P1
@@ -1546,152 +1133,15 @@ fn test_different_card_after_same_id_on_board() {
     let scores_after: [Field; 2] = [6, 4];
     let end_hash = hash_board_state(board_after, scores_after, 2);
 
-    // Card 2 (Blushy) has nullifier_secret = 200, move_index = 2 (2 cards on board)
-    let enc_null = p1_encrypt_nullifier(200, 2);
-
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        enc_null,
         1, 2,          // card_id = 2 (different, valid)
         1, 1,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        2,          // move_index = 2 (2 cards on board)
+        p1_card_ids(), P1_BLINDING,
     );
-}
-
-// ====================== V7 FIX TESTS: move_index nonce + point-at-infinity ======================
-
-#[test(should_fail_with = "move_index must be 0-8")]
-fn test_fail_move_index_out_of_range() {
-    let cc1 = get_p1_commit();
-    let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
-
-    let board_before: [Field; 18] = [0; 18];
-    let scores_before: [Field; 2] = [5, 5];
-    let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
-
-    let mut board_after: [Field; 18] = [0; 18];
-    board_after[0] = 1;
-    board_after[1] = 1;
-    let scores_after: [Field; 2] = [5, 5];
-    let end_hash = hash_board_state(board_after, scores_after, 2);
-
-    let enc_null = p1_encrypt_nullifier(100, 9);
-
-    main(
-        cc1, cc2,
-        start_hash, end_hash,
-        0, 0,
-        enc_null,
-        1, 1,
-        0, 0,
-        board_before, board_after,
-        scores_before, scores_after,
-        current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        9,          // move_index = 9 (out of range!)
-    );
-}
-
-#[test(should_fail_with = "move_index does not match board state")]
-fn test_fail_move_index_mismatch() {
-    // Empty board but claim move_index = 3 -> should fail
-    let cc1 = get_p1_commit();
-    let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
-
-    let board_before: [Field; 18] = [0; 18];
-    let scores_before: [Field; 2] = [5, 5];
-    let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
-
-    let mut board_after: [Field; 18] = [0; 18];
-    board_after[0] = 1;
-    board_after[1] = 1;
-    let scores_after: [Field; 2] = [5, 5];
-    let end_hash = hash_board_state(board_after, scores_after, 2);
-
-    // Encrypt with mismatched nonce
-    let enc_null = p1_encrypt_nullifier(100, 3);
-
-    main(
-        cc1, cc2,
-        start_hash, end_hash,
-        0, 0,
-        enc_null,
-        1, 1,
-        0, 0,
-        board_before, board_after,
-        scores_before, scores_after,
-        current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        P1_GRUMPKIN_KEY, p2_pubkey.x, p2_pubkey.y,
-        3,          // move_index = 3 but board is empty (should be 0)
-    );
-}
-
-#[test(should_fail_with = "grumpkin_private_key must be non-zero")]
-fn test_fail_zero_grumpkin_key_game_move() {
-    let cc1 = get_p1_commit();
-    let cc2 = get_p2_commit();
-    let p2_pubkey = get_p2_pubkey();
-
-    let board_before: [Field; 18] = [0; 18];
-    let scores_before: [Field; 2] = [5, 5];
-    let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
-
-    let mut board_after: [Field; 18] = [0; 18];
-    board_after[0] = 1;
-    board_after[1] = 1;
-    let scores_after: [Field; 2] = [5, 5];
-    let end_hash = hash_board_state(board_after, scores_after, 2);
-
-    let enc_null = p1_encrypt_nullifier(100, 0);
-
-    main(
-        cc1, cc2,
-        start_hash, end_hash,
-        0, 0,
-        enc_null,
-        1, 1,
-        0, 0,
-        board_before, board_after,
-        scores_before, scores_after,
-        current_turn_before,
-        P1_SECRET, P1_ADDRESS, TEST_GAME_ID,
-        p1_card_ids(), p1_card_ranks(), p1_nullifier_secrets(),
-        0,          // ZERO grumpkin key - should fail
-        p2_pubkey.x, p2_pubkey.y,
-        0,
-    );
-}
-
-#[test]
-fn test_unique_encryption_per_move_index() {
-    // Verify that different move_index values produce different encrypted values
-    let p2_pub = get_p2_pubkey();
-    let shared = compute_shared_secret(P1_GRUMPKIN_KEY, p2_pub);
-    let plaintext: Field = 12345;
-
-    let enc0 = symmetric_encrypt_field(plaintext, shared, 0);
-    let enc1 = symmetric_encrypt_field(plaintext, shared, 1);
-    let enc2 = symmetric_encrypt_field(plaintext, shared, 2);
-
-    // All should be different (unique nonce -> unique key -> unique ciphertext)
-    assert(enc0 != enc1, "move_index 0 and 1 should produce different ciphertexts");
-    assert(enc1 != enc2, "move_index 1 and 2 should produce different ciphertexts");
-    assert(enc0 != enc2, "move_index 0 and 2 should produce different ciphertexts");
 }
