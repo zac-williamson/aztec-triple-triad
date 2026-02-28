@@ -15,23 +15,24 @@ export type CircuitBoard = string[];
 
 /**
  * Input for the prove_hand circuit.
+ * Public: card_commit_hash (1 field)
+ * Private: card_ids (5), blinding_factor (1)
  */
 export interface ProveHandInput {
-  // Public inputs
-  card_commit: string;
-  player_address: string;
-  game_id: string;
+  // Public inputs (1)
+  card_commit_hash: string;
   // Private inputs
-  player_secret: string;
   card_ids: string[];
-  card_nullifier_secrets: string[];
+  blinding_factor: string;
 }
 
 /**
  * Input for the game_move circuit.
+ * Public: 6 fields
+ * Private: current_player, card_id, row, col, board states, scores, turn, player_card_ids, blinding
  */
 export interface GameMoveInput {
-  // Public inputs
+  // Public inputs (6)
   card_commit_1: string;
   card_commit_2: string;
   start_state_hash: string;
@@ -41,7 +42,6 @@ export interface GameMoveInput {
   // Private inputs
   current_player: string;
   card_id: string;
-  card_ranks: string[];
   row: string;
   col: string;
   board_before: string[];
@@ -49,8 +49,8 @@ export interface GameMoveInput {
   scores_before: string[];
   scores_after: string[];
   current_turn_before: string;
-  player1_hand_count_after: string;
-  player2_hand_count_after: string;
+  player_card_ids: string[];
+  blinding_factor: string;
 }
 
 /**
@@ -71,16 +71,16 @@ export interface SerializedProof {
 
 /**
  * Hand proof: proves a player owns 5 specific cards.
+ * Public inputs: [card_commit_hash]
  */
 export interface HandProof extends SerializedProof {
   type: 'hand';
   cardCommit: string;
-  playerAddress: string;
-  gameId: string;
 }
 
 /**
  * Move proof: proves a valid game state transition.
+ * Public inputs: [card_commit_1, card_commit_2, start_state_hash, end_state_hash, game_ended, winner_id]
  */
 export interface MoveProof extends SerializedProof {
   type: 'move';
@@ -108,10 +108,8 @@ export interface GameProofBundle {
  * Player's secret game session data (never shared).
  */
 export interface PlayerSession {
-  playerSecret: string;
-  playerAddress: string;
   cardIds: number[];
-  cardNullifierSecrets: string[];
+  blindingFactor: string;
   cardCommit: string;
 }
 

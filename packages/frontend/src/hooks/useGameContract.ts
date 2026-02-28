@@ -29,11 +29,13 @@ export interface UseGameContractReturn {
   isAvailable: boolean;
   /** Call process_game to settle the game on-chain */
   settleGame: (
+    gameId: string,
     handProof1: HandProofData,
     handProof2: HandProofData,
     moveProofs: MoveProofData[],
     loserAddress: string,
     cardToTransfer: number,
+    callerCardIds: number[],
     loserCardIds: number[],
   ) => Promise<string | null>;
   /** Query owned NFT cards */
@@ -84,11 +86,13 @@ export function useGameContract(
 
   const settleGame = useCallback(
     async (
+      gameId: string,
       handProof1: HandProofData,
       handProof2: HandProofData,
       moveProofs: MoveProofData[],
       loserAddress: string,
       cardToTransfer: number,
+      callerCardIds: number[] = [],
       loserCardIds: number[] = [],
     ): Promise<string | null> => {
       if (!wallet || !AZTEC_CONFIG.gameContractAddress) {
@@ -114,17 +118,61 @@ export function useGameContract(
 
         setTxStatus('proving');
 
-        // 1. Generate the aggregate proof from all hand + move proofs
-        const { generateAggregateProof } = await import('../aztec/aggregateProof');
-        const aggregateProof = await generateAggregateProof(
-          handProof1, handProof2, moveProofs,
-        );
+        // 1. Load circuit artifacts and extract VKs
+        const { loadProveHandCircuit, loadGameMoveCircuit } = await import('../aztec/circuitLoader');
+        const { UltraHonkBackend } = await import('@aztec/bb.js');
+        const { getBarretenberg } = await import('../aztec/proofBackend');
 
-        console.log('[useGameContract] Aggregate proof generated, publicInputs:', aggregateProof.publicInputs.length);
+        const [handArtifact, moveArtifact] = await Promise.all([
+          loadProveHandCircuit(),
+          loadGameMoveCircuit(),
+        ]);
+
+        const api = await getBarretenberg();
+        const handBackend = new UltraHonkBackend(handArtifact.bytecode, api);
+        const moveBackend = new UltraHonkBackend(moveArtifact.bytecode, api);
+
+        const [handVk, moveVk] = await Promise.all([
+          handBackend.getVerificationKey(),
+          moveBackend.getVerificationKey(),
+        ]);
+
+        // 2. Convert proofs from base64 back to field arrays
+        function base64ToFields(b64: string): string[] {
+          const binary = atob(b64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          // Each 32 bytes = 1 field element
+          const fields: string[] = [];
+          for (let i = 0; i < bytes.length; i += 32) {
+            const chunk = bytes.slice(i, i + 32);
+            const hex = '0x' + Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join('');
+            fields.push(hex);
+          }
+          return fields;
+        }
+
+        // Convert VK Uint8Array to field array (each 32 bytes = 1 field)
+        function vkToFields(vk: Uint8Array): string[] {
+          const fields: string[] = [];
+          for (let i = 0; i < vk.length; i += 32) {
+            const chunk = vk.slice(i, i + 32);
+            const hex = '0x' + Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join('');
+            fields.push(hex);
+          }
+          return fields;
+        }
+
+        const handVkFields = vkToFields(handVk);
+        const moveVkFields = vkToFields(moveVk);
+
+        console.log('[useGameContract] VKs extracted, hand VK fields:', handVkFields.length, 'move VK fields:', moveVkFields.length);
 
         setTxStatus('sending');
 
-        // 2. Load the game contract artifact and get contract instance
+        // 3. Load the game contract artifact and get contract instance
         const gameArtifactResp = await fetch('/contracts/triple_triad_game-TripleTriadGame.json');
         if (!gameArtifactResp.ok) {
           throw new Error('Failed to load game contract artifact');
@@ -137,28 +185,36 @@ export function useGameContract(
           wallet as never,
         );
 
-        // 3. Use pre-computed proof-as-fields and VK from recursive artifacts
-        const proofFields = aggregateProof.proofAsFields;
-        const vkFields = aggregateProof.vkAsFields;
+        const opponent = aztecAddr.AztecAddress.fromString(loserAddress);
 
-        // 4. Call process_game with: aggregate_vk, aggregate_proof, aggregate_inputs, loser, card_to_transfer, loser_card_ids
-        const loser = aztecAddr.AztecAddress.fromString(loserAddress);
-
-        // Pad loser_card_ids to exactly 5 elements (contract expects [Field; 5])
+        // Pad card ID arrays to exactly 5 elements
         const paddedLoserCardIds = [...loserCardIds];
-        while (paddedLoserCardIds.length < 5) {
-          paddedLoserCardIds.push(0);
-        }
+        while (paddedLoserCardIds.length < 5) paddedLoserCardIds.push(0);
+        const paddedCallerCardIds = [...callerCardIds];
+        while (paddedCallerCardIds.length < 5) paddedCallerCardIds.push(0);
+
+        // 4. Build process_game arguments: game_id, hand_vk, move_vk,
+        //    2 hand proofs + inputs, 9 move proofs + inputs, settlement data
+        const handProof1Fields = base64ToFields(handProof1.proof);
+        const handProof2Fields = base64ToFields(handProof2.proof);
+        const moveProofFields = moveProofs.map(mp => base64ToFields(mp.proof));
 
         const feeMethod = new aztecFee.SponsoredFeePaymentMethod();
         const receipt = await contract.methods
           .process_game(
-            vkFields,                         // aggregate_vk: [Field; 115]
-            proofFields,                      // aggregate_proof: [Field; 500]
-            aggregateProof.publicInputs,      // aggregate_inputs: [Field; 15]
-            loser,                            // loser: AztecAddress
-            cardToTransfer,                   // card_to_transfer: Field
-            paddedLoserCardIds,               // loser_card_ids: [Field; 5]
+            gameId,
+            handVkFields,
+            moveVkFields,
+            handProof1Fields, handProof1.publicInputs,
+            handProof2Fields, handProof2.publicInputs,
+            ...moveProofs.flatMap((mp, _i) => [
+              moveProofFields[_i],
+              mp.publicInputs,
+            ]),
+            opponent,
+            cardToTransfer,
+            paddedCallerCardIds,
+            paddedLoserCardIds,
           )
           .send({ fee: feeMethod })
           .wait();
@@ -167,6 +223,11 @@ export function useGameContract(
         setTxHash(hash);
         setTxStatus('confirmed');
         console.log('[useGameContract] Game settled on-chain, txHash:', hash);
+
+        // Clean up backends
+        try { handBackend.destroy(); } catch { /* ignore */ }
+        try { moveBackend.destroy(); } catch { /* ignore */ }
+
         return hash;
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Transaction failed';

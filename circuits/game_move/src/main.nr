@@ -11,7 +11,8 @@
 ///
 /// The circuit verifies:
 /// 1. The placed card is in the current player's committed hand (card_commit binding)
-/// 2. Capture logic: rank comparison for all adjacent opponent cells
+/// 2. Chain capture logic: BFS-style iterative capture with up to 8 passes
+///    (a captured card can trigger further captures of adjacent opponent cards)
 /// 3. Non-placed, non-captured cells are unchanged between board_before/board_after
 /// 4. Scores are consistent with board ownership + hand counts
 /// 5. Game end detection and winner determination
@@ -95,6 +96,29 @@ fn hash_board_state(board: [Field; 18], scores: [Field; 2], current_turn: Field)
     std::hash::pedersen_hash(inputs)
 }
 
+// ====================== ADJACENCY TABLES ======================
+
+// NEIGHBORS[cell][dir] = neighbor cell index, or 9 = out-of-bounds
+// Directions: 0=top, 1=right, 2=bottom, 3=left
+global NEIGHBORS: [[u32; 4]; 9] = [
+    [9, 1, 3, 9], // cell 0 (0,0)
+    [9, 2, 4, 0], // cell 1 (0,1)
+    [9, 9, 5, 1], // cell 2 (0,2)
+    [0, 4, 6, 9], // cell 3 (1,0)
+    [1, 5, 7, 3], // cell 4 (1,1)
+    [2, 9, 8, 4], // cell 5 (1,2)
+    [3, 7, 9, 9], // cell 6 (2,0)
+    [4, 8, 9, 6], // cell 7 (2,1)
+    [5, 9, 9, 7], // cell 8 (2,2)
+];
+
+// DIR_RANKS[dir] = [attacker_rank_idx, defender_rank_idx]
+// top: attacker's top(0) vs defender's bottom(2)
+// right: attacker's right(1) vs defender's left(3)
+// bottom: attacker's bottom(2) vs defender's top(0)
+// left: attacker's left(3) vs defender's right(1)
+global DIR_RANKS: [[u32; 2]; 4] = [[0, 2], [1, 3], [2, 0], [3, 1]];
+
 // ====================== MAIN CIRCUIT ======================
 
 fn main(
@@ -166,9 +190,6 @@ fn main(
         }
     }
 
-    // Look up placed card ranks from database
-    let placed_card_ranks = get_card_ranks(card_id as u32);
-
     // ===== 5. Verify the cell was empty before the move =====
     let cell_idx = r * 3 + c;
     assert(board_before[cell_idx * 2] == 0, "Cell not empty");
@@ -181,77 +202,58 @@ fn main(
         "Owner not set correctly",
     );
 
-    // ===== 7. Capture logic =====
+    // ===== 7. Chain capture logic =====
     // Determine the opponent
     let opponent: Field = if current_player == 1 { 2 } else { 1 };
 
-    // Track which cells are captured (1 = captured, 0 = not)
+    // Precompute ranks for all 9 cells (placed cell uses card_id, others use board_before)
+    // This avoids calling get_card_ranks inside the 8-pass loop (9 calls vs up to 288)
+    let mut all_ranks: [[Field; 4]; 9] = [[0; 4]; 9];
+    for i in 0..9 {
+        let cid = if i as u32 == cell_idx { card_id } else { board_before[i * 2] };
+        if cid != 0 {
+            all_ranks[i] = get_card_ranks(cid as u32);
+        }
+    }
+
+    // Track owner state (mutable copy, updated as captures happen)
+    let mut owner_state: [Field; 9] = [0; 9];
+    for i in 0..9 {
+        owner_state[i] = board_before[i * 2 + 1];
+    }
+    owner_state[cell_idx] = current_player;
+
+    // Track which cells are active attackers this pass
+    let mut active: [bool; 9] = [false; 9];
+    active[cell_idx] = true; // Seed: only the placed card
+
+    // Track all cells captured during this move
     let mut captured: [bool; 9] = [false; 9];
 
-    // Check all 4 adjacent directions:
-    // placed_card_ranks: [top, right, bottom, left]
-
-    // Direction 0: Top (row-1, col)
-    if r > 0 {
-        let adj_idx = (r - 1) * 3 + c;
-        let adj_card_id = board_before[adj_idx * 2];
-        let adj_owner = board_before[adj_idx * 2 + 1];
-        if (adj_card_id != 0) & (adj_owner == opponent) {
-            let adj_ranks = get_card_ranks(adj_card_id as u32);
-            // Placed card's top vs adjacent card's bottom
-            let placed_rank = placed_card_ranks[0] as u32;
-            let adj_rank = adj_ranks[2] as u32;
-            if placed_rank > adj_rank {
-                captured[adj_idx] = true;
+    // Up to 8 passes (max captures on 3x3 board = 8 cells)
+    for _pass in 0..8 {
+        let mut next_active: [bool; 9] = [false; 9];
+        for a in 0..9 {
+            if active[a] {
+                for d in 0..4 {
+                    let n = NEIGHBORS[a][d];
+                    if n != 9 {
+                        // Neighbor must be occupied, owned by opponent, and not already captured
+                        if (board_before[n * 2] != 0) & (owner_state[n] == opponent) & !captured[n] {
+                            let a_rank = all_ranks[a][DIR_RANKS[d][0]] as u32;
+                            let d_rank = all_ranks[n][DIR_RANKS[d][1]] as u32;
+                            if a_rank > d_rank {
+                                owner_state[n] = current_player;
+                                captured[n] = true;
+                                next_active[n] = true;
+                            }
+                        }
+                    }
+                }
             }
         }
-    }
-
-    // Direction 1: Right (row, col+1)
-    if c < 2 {
-        let adj_idx = r * 3 + (c + 1);
-        let adj_card_id = board_before[adj_idx * 2];
-        let adj_owner = board_before[adj_idx * 2 + 1];
-        if (adj_card_id != 0) & (adj_owner == opponent) {
-            let adj_ranks = get_card_ranks(adj_card_id as u32);
-            // Placed card's right vs adjacent card's left
-            let placed_rank = placed_card_ranks[1] as u32;
-            let adj_rank = adj_ranks[3] as u32;
-            if placed_rank > adj_rank {
-                captured[adj_idx] = true;
-            }
-        }
-    }
-
-    // Direction 2: Bottom (row+1, col)
-    if r < 2 {
-        let adj_idx = (r + 1) * 3 + c;
-        let adj_card_id = board_before[adj_idx * 2];
-        let adj_owner = board_before[adj_idx * 2 + 1];
-        if (adj_card_id != 0) & (adj_owner == opponent) {
-            let adj_ranks = get_card_ranks(adj_card_id as u32);
-            // Placed card's bottom vs adjacent card's top
-            let placed_rank = placed_card_ranks[2] as u32;
-            let adj_rank = adj_ranks[0] as u32;
-            if placed_rank > adj_rank {
-                captured[adj_idx] = true;
-            }
-        }
-    }
-
-    // Direction 3: Left (row, col-1)
-    if c > 0 {
-        let adj_idx = r * 3 + (c - 1);
-        let adj_card_id = board_before[adj_idx * 2];
-        let adj_owner = board_before[adj_idx * 2 + 1];
-        if (adj_card_id != 0) & (adj_owner == opponent) {
-            let adj_ranks = get_card_ranks(adj_card_id as u32);
-            // Placed card's left vs adjacent card's right
-            let placed_rank = placed_card_ranks[3] as u32;
-            let adj_rank = adj_ranks[1] as u32;
-            if placed_rank > adj_rank {
-                captured[adj_idx] = true;
-            }
+        for i in 0..9 {
+            active[i] = next_active[i];
         }
     }
 
@@ -1139,6 +1141,209 @@ fn test_different_card_after_same_id_on_board() {
         0, 0,
         1, 2,          // card_id = 2 (different, valid)
         1, 1,
+        board_before, board_after,
+        scores_before, scores_after,
+        current_turn_before,
+        p1_card_ids(), P1_BLINDING,
+    );
+}
+
+// ===== Chain capture tests =====
+
+#[test]
+fn test_chain_capture_two_levels() {
+    // P2 has: (0,0) Freckles id=11 [2,6,1,6], (0,1) Peaches id=10 [4,3,2,4]
+    // P1 places Sunny id=4 [6,1,1,2] at (1,0).
+    // Direct: Sunny top=6 > Freckles bottom=1 -> capture (0,0)
+    // Chain:  Freckles(now P1) right=6 > Peaches left=4 -> capture (0,1)
+    let cc1 = get_p1_commit();
+    let cc2 = get_p2_commit();
+
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[0] = 11; board_before[1] = 2;  // (0,0) Freckles P2
+    board_before[2] = 10; board_before[3] = 2;  // (0,1) Peaches P2
+
+    let scores_before: [Field; 2] = [5, 5];
+    let current_turn_before: Field = 1;
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 11; board_after[1] = 1;  // (0,0) Freckles captured by P1
+    board_after[2] = 10; board_after[3] = 1;  // (0,1) Peaches chain-captured by P1
+    board_after[6] = 4;  board_after[7] = 1;  // (1,0) Sunny placed by P1
+
+    // filled=3: p1_played=2, p2_played=1, p1_hand=3, p2_hand=4
+    // p1_board=3, p2_board=0: scores = [3+3, 0+4] = [6, 4]
+    let scores_after: [Field; 2] = [6, 4];
+    let end_hash = hash_board_state(board_after, scores_after, 2);
+
+    main(
+        cc1, cc2,
+        start_hash, end_hash,
+        0, 0,
+        1, 4,          // card_id = 4 (Sunny)
+        1, 0,          // row=1, col=0
+        board_before, board_after,
+        scores_before, scores_after,
+        current_turn_before,
+        p1_card_ids(), P1_BLINDING,
+    );
+}
+
+#[test]
+fn test_chain_capture_three_levels() {
+    // P2 hand = [11, 23, 10, 13, 14] (custom hand with Faded)
+    // Board: (0,0) Freckles id=11 [2,6,1,6] P2
+    //        (0,1) Faded    id=23 [6,6,3,3] P2
+    //        (0,2) Peaches  id=10 [4,3,2,4] P2
+    // P1 places Sunny id=4 [6,1,1,2] at (1,0)
+    // Direct: Sunny top=6 > Freckles bottom=1 -> capture (0,0)
+    // Chain1: Freckles right=6 > Faded left=3 -> capture (0,1)
+    // Chain2: Faded right=6 > Peaches left=4 -> capture (0,2)
+    let cc1 = get_p1_commit();
+    let cc2 = Poseidon2::hash([11, 23, 10, 13, 14, P2_BLINDING], 6);
+
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[0] = 11; board_before[1] = 2;  // (0,0) Freckles P2
+    board_before[2] = 23; board_before[3] = 2;  // (0,1) Faded P2
+    board_before[4] = 10; board_before[5] = 2;  // (0,2) Peaches P2
+
+    let scores_before: [Field; 2] = [5, 5];
+    let current_turn_before: Field = 1;
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 11; board_after[1] = 1;   // captured
+    board_after[2] = 23; board_after[3] = 1;   // chain-captured
+    board_after[4] = 10; board_after[5] = 1;   // chain-captured
+    board_after[6] = 4;  board_after[7] = 1;   // placed
+
+    // filled=4: p1_played=2, p2_played=2, p1_hand=3, p2_hand=3
+    // p1_board=4, p2_board=0: scores = [4+3, 0+3] = [7, 3]
+    let scores_after: [Field; 2] = [7, 3];
+    let end_hash = hash_board_state(board_after, scores_after, 2);
+
+    main(
+        cc1, cc2,
+        start_hash, end_hash,
+        0, 0,
+        1, 4,
+        1, 0,
+        board_before, board_after,
+        scores_before, scores_after,
+        current_turn_before,
+        p1_card_ids(), P1_BLINDING,
+    );
+}
+
+#[test]
+fn test_chain_capture_stops_when_rank_too_low() {
+    // P1 places Blushy id=2 [5,1,1,3] at (1,0)
+    // (0,0) Peaches id=10 [4,3,2,4] P2: Blushy top=5 > Peaches bottom=2 -> captured
+    // (0,1) Freckles id=11 [2,6,1,6] P2: Peaches right=3 vs Freckles left=6 -> 3<6, NO chain
+    let cc1 = get_p1_commit();
+    let cc2 = get_p2_commit();
+
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[0] = 10; board_before[1] = 2;  // (0,0) Peaches P2
+    board_before[2] = 11; board_before[3] = 2;  // (0,1) Freckles P2
+
+    let scores_before: [Field; 2] = [5, 5];
+    let current_turn_before: Field = 1;
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 10; board_after[1] = 1;   // captured
+    board_after[2] = 11; board_after[3] = 2;   // NOT captured (3 < 6)
+    board_after[6] = 2;  board_after[7] = 1;   // placed Blushy
+
+    // filled=3: p1_played=2, p2_played=1, p1_hand=3, p2_hand=4
+    // p1_board=2, p2_board=1: scores = [2+3, 1+4] = [5, 5]
+    let scores_after: [Field; 2] = [5, 5];
+    let end_hash = hash_board_state(board_after, scores_after, 2);
+
+    main(
+        cc1, cc2,
+        start_hash, end_hash,
+        0, 0,
+        1, 2,          // card_id = 2 (Blushy)
+        1, 0,
+        board_before, board_after,
+        scores_before, scores_after,
+        current_turn_before,
+        p1_card_ids(), P1_BLINDING,
+    );
+}
+
+#[test(should_fail_with = "Captured cell owner not updated")]
+fn test_chain_capture_missing_chain_rejected() {
+    // Same setup as two-level chain (Sunny at (1,0), Freckles+Peaches at (0,0)+(0,1))
+    // but board_after OMITS the chain capture of Peaches at (0,1)
+    let cc1 = get_p1_commit();
+    let cc2 = get_p2_commit();
+
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[0] = 11; board_before[1] = 2;  // (0,0) Freckles P2
+    board_before[2] = 10; board_before[3] = 2;  // (0,1) Peaches P2
+
+    let scores_before: [Field; 2] = [5, 5];
+    let current_turn_before: Field = 1;
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 11; board_after[1] = 1;   // captured
+    board_after[2] = 10; board_after[3] = 2;   // NOT captured (but should be!)
+    board_after[6] = 4;  board_after[7] = 1;   // placed Sunny
+
+    // Scores as if chain DID NOT happen (wrong)
+    let scores_after: [Field; 2] = [6, 4];
+    let end_hash = hash_board_state(board_after, scores_after, 2);
+
+    main(
+        cc1, cc2,
+        start_hash, end_hash,
+        0, 0,
+        1, 4,
+        1, 0,
+        board_before, board_after,
+        scores_before, scores_after,
+        current_turn_before,
+        p1_card_ids(), P1_BLINDING,
+    );
+}
+
+#[test(should_fail_with = "Non-captured cell owner changed")]
+fn test_chain_capture_false_chain_rejected() {
+    // P1 places Blushy id=2 [5,1,1,3] at (1,0)
+    // (0,0) Peaches id=10 [4,3,2,4] P2: Blushy top=5 > Peaches bottom=2 -> captured
+    // (0,1) Freckles id=11 [2,6,1,6] P2: Peaches right=3 vs Freckles left=6 -> NO chain
+    // But board_after falsely claims Freckles was captured -> should fail
+    let cc1 = get_p1_commit();
+    let cc2 = get_p2_commit();
+
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[0] = 10; board_before[1] = 2;  // (0,0) Peaches P2
+    board_before[2] = 11; board_before[3] = 2;  // (0,1) Freckles P2
+
+    let scores_before: [Field; 2] = [5, 5];
+    let current_turn_before: Field = 1;
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 10; board_after[1] = 1;   // captured
+    board_after[2] = 11; board_after[3] = 1;   // falsely claimed chain capture
+    board_after[6] = 2;  board_after[7] = 1;   // placed Blushy
+
+    // Scores as if both captured (wrong)
+    let scores_after: [Field; 2] = [7, 3];
+    let end_hash = hash_board_state(board_after, scores_after, 2);
+
+    main(
+        cc1, cc2,
+        start_hash, end_hash,
+        0, 0,
+        1, 2,
+        1, 0,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,

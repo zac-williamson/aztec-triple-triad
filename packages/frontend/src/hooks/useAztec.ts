@@ -31,7 +31,7 @@ export interface UseAztecReturn {
 /**
  * Hook for managing Aztec wallet connection.
  *
- * Connects to an Aztec node via PXE, creates an embedded TestWallet,
+ * Connects to an Aztec node via PXE, creates an EmbeddedWallet,
  * and persists account secrets in localStorage for session continuity.
  *
  * Falls back gracefully if Aztec SDK is unavailable or the node is unreachable.
@@ -66,14 +66,16 @@ export function useAztec(): UseAztecReturn {
 
     try {
       // Dynamically import Aztec SDK subpath modules
-      const [nodeModule, testWallet, stdlibKeys, fieldsModule] = await Promise.all([
+      const [nodeModule, walletsModule, foundationModule, fieldsModule] = await Promise.all([
         import('@aztec/aztec.js/node'),
-        import('@aztec/test-wallet/client/lazy'),
-        import('@aztec/stdlib/keys'),
+        import('@aztec/wallets/embedded'),
+        import('@aztec/foundation/curves/grumpkin'),
         import('@aztec/aztec.js/fields'),
       ]);
 
       const { createAztecNodeClient } = nodeModule;
+      const { EmbeddedWallet } = walletsModule;
+      const { GrumpkinScalar } = foundationModule;
       const { Fr } = fieldsModule;
 
       // Connect to the Aztec node
@@ -98,16 +100,55 @@ export function useAztec(): UseAztecReturn {
         localStorage.setItem(AZTEC_CONFIG.storageKeys.accountSalt, salt);
       }
 
-      // Create embedded PXE wallet — runs a full PXE in the browser tab
-      const wallet = await testWallet.TestWallet.create(node);
+      // Create EmbeddedWallet — runs a full PXE in the browser tab
+      const wallet = await EmbeddedWallet.create(node, { ephemeral: true });
+
+      // Wait for PXE to sync so tx expiration timestamps are valid
+      await new Promise(r => setTimeout(r, 5000));
+
+      // Register SponsoredFPC for fee payments
+      const [{ getContractInstanceFromInstantiationParams }, { SponsoredFPCContractArtifact }, { SPONSORED_FPC_SALT }, { SponsoredFeePaymentMethod }, { AztecAddress }] = await Promise.all([
+        import('@aztec/stdlib/contract'),
+        import('@aztec/noir-contracts.js/SponsoredFPC'),
+        import('@aztec/constants'),
+        import('@aztec/aztec.js/fee'),
+        import('@aztec/aztec.js/addresses'),
+      ]);
+
+      const sponsoredFPC = await getContractInstanceFromInstantiationParams(SponsoredFPCContractArtifact, {
+        salt: new Fr(SPONSORED_FPC_SALT),
+      });
+      await wallet.registerContract(sponsoredFPC, SponsoredFPCContractArtifact);
+      const paymentMethod = new SponsoredFeePaymentMethod(sponsoredFPC.address);
 
       // Create a Schnorr account within the wallet using persisted secret + salt
-      const signingKey = stdlibKeys.deriveSigningKey(secret);
+      const signingKey = GrumpkinScalar.random();
       const accountManager = await wallet.createSchnorrAccount(
         Fr.fromHexString('0x' + secret),
         Fr.fromHexString('0x' + salt),
         signingKey,
       );
+
+      // Deploy the account on-chain
+      const deployMethod = await accountManager.getDeployMethod();
+      await deployMethod.send({
+        from: AztecAddress.ZERO,
+        fee: { paymentMethod },
+        skipClassPublication: true,
+        skipInstancePublication: true,
+        wait: { timeout: 300 },
+      });
+
+      // Register this account as a sender for note discovery
+      await wallet.registerSender(accountManager.address, 'player');
+
+      // Register the NFT contract if configured (for note discovery)
+      if (AZTEC_CONFIG.nftContractAddress) {
+        await wallet.registerSender(
+          AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress),
+          'nft-contract',
+        );
+      }
 
       walletRef.current = wallet;
 
@@ -116,6 +157,7 @@ export function useAztec(): UseAztecReturn {
       setAccountAddress(address);
       localStorage.setItem(AZTEC_CONFIG.storageKeys.accountAddress, address);
 
+      console.log('[useAztec] Connected, account deployed:', address);
       setStatus('connected');
     } catch (err) {
       console.error('[useAztec] Connection failed:', err);

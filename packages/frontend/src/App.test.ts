@@ -1,4 +1,39 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+// Mock Aztec-dependent hooks to prevent Vite from resolving uninstalled @aztec/* packages
+vi.mock('./hooks/useAztec', () => ({
+  useAztec: () => ({
+    status: 'unsupported' as const,
+    accountAddress: null,
+    isAvailable: false,
+    error: null,
+    wallet: null,
+    nodeClient: null,
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  }),
+}));
+
+vi.mock('./hooks/useGameContract', () => ({
+  useGameContract: () => ({
+    txStatus: 'idle' as const,
+    txHash: null,
+    error: null,
+    ownedCards: [],
+    isAvailable: false,
+    settleGame: vi.fn(),
+    queryOwnedCards: vi.fn().mockResolvedValue([]),
+    resetTx: vi.fn(),
+    lifecycleTxStatus: 'idle' as const,
+    onChainStatus: null,
+    canSettleOnChain: false,
+    createGameOnChain: vi.fn(),
+    joinGameOnChain: vi.fn(),
+    handleOnChainStatus: vi.fn(),
+    resetLifecycle: vi.fn(),
+  }),
+}));
+
 import { mapWinnerId } from './App';
 
 describe('mapWinnerId', () => {

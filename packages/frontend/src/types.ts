@@ -43,10 +43,6 @@ export interface SerializedProof {
 
 export interface HandProofData extends SerializedProof {
   cardCommit: string;
-  playerAddress: string;
-  gameId: string;
-  grumpkinPublicKeyX: string;
-  grumpkinPublicKeyY: string;
 }
 
 export interface MoveProofData extends SerializedProof {
@@ -56,7 +52,6 @@ export interface MoveProofData extends SerializedProof {
   endStateHash: string;
   gameEnded: boolean;
   winnerId: number;
-  encryptedCardNullifier: string;
 }
 
 // On-chain transaction status tracking

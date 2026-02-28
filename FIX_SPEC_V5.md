@@ -434,7 +434,7 @@ cd packages/frontend && npm run build 2>&1 | tail -10
 Create `scripts/deploy-contracts.ts`:
 
 1. Connect to local Aztec node at `http://localhost:8080`
-2. Create a TestWallet
+2. Create an EmbeddedWallet
 3. Deploy `TripleTriadNFT` contract (minter = deployer)
 4. Deploy `TripleTriadGame` contract (NFT address passed in constructor or via setter)
 5. Call `set_game_contract` on NFT to register the game contract

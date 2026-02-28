@@ -2,5 +2,4 @@
 members = [
     "prove_hand",
     "game_move",
-    "aggregate_game",
 ]

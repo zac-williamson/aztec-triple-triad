@@ -159,8 +159,6 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     send({ type: 'JOIN_GAME', gameId: id, cardIds });
   }, [send]);
 
-  const moveNumberRef = useRef(0);
-
   const placeCard = useCallback((handIndex: number, row: number, col: number) => {
     if (!gameId) return;
     setError(null);
@@ -190,10 +188,18 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const submitMoveProof = useCallback((gId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData) => {
     if (!gId) return;
     setError(null);
-    const moveNumber = moveNumberRef.current;
+    // Derive global move number from board state (count occupied cells),
+    // consistent with how placeCard derives it.
+    let moveNumber = 0;
+    if (gameState) {
+      for (const r of gameState.board) {
+        for (const cell of r) {
+          if (cell.card !== null) moveNumber++;
+        }
+      }
+    }
     send({ type: 'SUBMIT_MOVE_PROOF', gameId: gId, handIndex, row, col, moveNumber, moveProof });
-    moveNumberRef.current++;
-  }, [send]);
+  }, [send, gameState]);
 
   const disconnect = useCallback(() => {
     wsRef.current?.close();
@@ -203,7 +209,6 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     setGameOver(null);
     setOpponentDisconnected(false);
     setOpponentHandProof(null);
-    moveNumberRef.current = 0;
     setLastMoveProof(null);
   }, []);
 

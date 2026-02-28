@@ -27,24 +27,18 @@ export class ProofService {
    * Generate a hand ownership proof.
    */
   async proveHand(
-    playerSecret: string,
-    playerAddress: string,
-    gameId: string,
     cardIds: number[],
-    cardNullifierSecrets: string[],
-    cardCommit: string,
+    blindingFactor: string,
+    cardCommitHash: string,
   ): Promise<HandProof> {
     const input: ProveHandInput = {
-      card_commit: cardCommit,
-      player_address: playerAddress,
-      game_id: gameId,
-      player_secret: playerSecret,
+      card_commit_hash: cardCommitHash,
       card_ids: cardIds.map(String),
-      card_nullifier_secrets: cardNullifierSecrets,
+      blinding_factor: blindingFactor,
     };
 
     const proof = await this.backend.generateProveHandProof(input);
-    return createHandProof(proof, cardCommit, playerAddress, gameId);
+    return createHandProof(proof, cardCommitHash);
   }
 
   /**
@@ -77,13 +71,12 @@ export class ProofService {
  */
 export class MockProofBackend implements ProofBackend {
   async generateProveHandProof(input: ProveHandInput): Promise<Proof> {
-    // Create a deterministic mock proof from the inputs
     const proofData = new TextEncoder().encode(
-      `mock-hand-proof:${input.card_commit}:${input.player_address}`
+      `mock-hand-proof:${input.card_commit_hash}`
     );
     return {
       proof: proofData,
-      publicInputs: [input.card_commit, input.player_address, input.game_id],
+      publicInputs: [input.card_commit_hash],
     };
   }
 
@@ -105,7 +98,6 @@ export class MockProofBackend implements ProofBackend {
   }
 
   async verifyProof(_circuitName: string, proof: Proof): Promise<boolean> {
-    // Mock verification: check proof starts with "mock-"
     const text = new TextDecoder().decode(proof.proof);
     return text.startsWith('mock-');
   }

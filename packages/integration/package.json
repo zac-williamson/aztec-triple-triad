@@ -15,7 +15,13 @@
     "@aztec-triple-triad/backend": "*",
     "@noir-lang/noir_js": "1.0.0-beta.18-2db78f8.nightly",
     "@noir-lang/types": "1.0.0-beta.18-2db78f8.nightly",
-    "@aztec/bb.js": "4.0.0-nightly.20260212",
+    "@aztec/bb.js": "4.0.0-devnet.2-patch.1",
+    "@aztec/aztec.js": "4.0.0-devnet.2-patch.1",
+    "@aztec/wallets": "4.0.0-devnet.2-patch.1",
+    "@aztec/foundation": "4.0.0-devnet.2-patch.1",
+    "@aztec/constants": "4.0.0-devnet.2-patch.1",
+    "@aztec/noir-contracts.js": "4.0.0-devnet.2-patch.1",
+    "@aztec/stdlib": "4.0.0-devnet.2-patch.1",
     "ws": "^8.16.0"
   },
   "devDependencies": {

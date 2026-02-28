@@ -155,95 +155,68 @@ location_unlocked: {
   /** Type-safe wrappers for the public methods exposed by the contract. */
   public declare methods: {
     
-    /** __aztec_nr_internals__commit_five_nfts(token_ids: array) */
-    __aztec_nr_internals__commit_five_nfts: ((token_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** commit_five_nfts(owner: struct, token_ids: array) */
+    commit_five_nfts: ((owner: AztecAddressLike, token_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__constructor(minter: struct, name: struct, symbol: struct) */
-    __aztec_nr_internals__constructor: ((minter: AztecAddressLike, name: { value: FieldLike }, symbol: { value: FieldLike }) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** compute_blinding_factor() */
+    compute_blinding_factor: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__game_transfer(from: struct, to: struct, token_id: field) */
-    __aztec_nr_internals__game_transfer: ((from: AztecAddressLike, to: AztecAddressLike, token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** constructor(minter: struct, name: struct, symbol: struct) */
+    constructor: ((minter: AztecAddressLike, name: { value: FieldLike }, symbol: { value: FieldLike }) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_card_ranks(token_id: field) */
-    __aztec_nr_internals__get_card_ranks: ((token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** game_transfer(from: struct, to: struct, token_id: field) */
+    game_transfer: ((from: AztecAddressLike, to: AztecAddressLike, token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_cards_for_new_player() */
-    __aztec_nr_internals__get_cards_for_new_player: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_card_ranks(token_id: field) */
+    get_card_ranks: ((token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_cards_from_beach(counter: field) */
-    __aztec_nr_internals__get_cards_from_beach: ((counter: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_cards_for_new_player() */
+    get_cards_for_new_player: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_cards_from_city(counter: field) */
-    __aztec_nr_internals__get_cards_from_city: ((counter: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_cards_from_beach(counter: field) */
+    get_cards_from_beach: ((counter: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_cards_from_dockyard(counter: field) */
-    __aztec_nr_internals__get_cards_from_dockyard: ((counter: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_cards_from_city(counter: field) */
+    get_cards_from_city: ((counter: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_cards_from_forest(counter: field) */
-    __aztec_nr_internals__get_cards_from_forest: ((counter: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_cards_from_dockyard(counter: field) */
+    get_cards_from_dockyard: ((counter: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_cards_from_river(counter: field) */
-    __aztec_nr_internals__get_cards_from_river: ((counter: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_cards_from_forest(counter: field) */
+    get_cards_from_forest: ((counter: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_player_counter(owner: struct) */
-    __aztec_nr_internals__get_player_counter: ((owner: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_cards_from_river(counter: field) */
+    get_cards_from_river: ((counter: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_private_cards(owner: struct, page_index: integer) */
-    __aztec_nr_internals__get_private_cards: ((owner: AztecAddressLike, page_index: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_player_counter(owner: struct) */
+    get_player_counter: ((owner: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__has_claimed_starter(owner: struct) */
-    __aztec_nr_internals__has_claimed_starter: ((owner: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_private_cards(owner: struct, page_index: integer) */
+    get_private_cards: ((owner: AztecAddressLike, page_index: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__is_location_unlocked(location_id: field) */
-    __aztec_nr_internals__is_location_unlocked: ((location_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** has_claimed_starter(owner: struct) */
+    has_claimed_starter: ((owner: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__mint_for_game_draw(token_ids: array, to: struct) */
-    __aztec_nr_internals__mint_for_game_draw: ((token_ids: FieldLike[], to: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** is_location_unlocked(location_id: field) */
+    is_location_unlocked: ((location_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__mint_for_game_loser(token_ids: array, to: struct) */
-    __aztec_nr_internals__mint_for_game_loser: ((token_ids: FieldLike[], to: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** mint_for_game_draw(token_ids: array, to: struct) */
+    mint_for_game_draw: ((token_ids: FieldLike[], to: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__mint_for_game_winner(token_ids: array, to: struct) */
-    __aztec_nr_internals__mint_for_game_winner: ((token_ids: FieldLike[], to: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** mint_for_game_loser(token_ids: array, to: struct) */
+    mint_for_game_loser: ((token_ids: FieldLike[], to: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__mint_to_private(to: struct, token_id: field, packed_ranks: field) */
-    __aztec_nr_internals__mint_to_private: ((to: AztecAddressLike, token_id: FieldLike, packed_ranks: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** mint_for_game_winner(token_ids: array, to: struct) */
+    mint_for_game_winner: ((token_ids: FieldLike[], to: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__mint_to_public(to: struct, token_id: field, packed_ranks: field) */
-    __aztec_nr_internals__mint_to_public: ((to: AztecAddressLike, token_id: FieldLike, packed_ranks: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** mint_to_private(to: struct, token_id: field, packed_ranks: field) */
+    mint_to_private: ((to: AztecAddressLike, token_id: FieldLike, packed_ranks: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__prepare_for_game(card_ids: array, game_id: field) */
-    __aztec_nr_internals__prepare_for_game: ((card_ids: FieldLike[], game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** mint_to_public(to: struct, token_id: field, packed_ranks: field) */
+    mint_to_public: ((to: AztecAddressLike, token_id: FieldLike, packed_ranks: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__public_get_name() */
-    __aztec_nr_internals__public_get_name: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** __aztec_nr_internals__public_get_symbol() */
-    __aztec_nr_internals__public_get_symbol: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** __aztec_nr_internals__public_owner_of(token_id: field) */
-    __aztec_nr_internals__public_owner_of: ((token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** __aztec_nr_internals__reclaim_card(token_id: field) */
-    __aztec_nr_internals__reclaim_card: ((token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** __aztec_nr_internals__set_game_contract(game_address: struct) */
-    __aztec_nr_internals__set_game_contract: ((game_address: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** __aztec_nr_internals__transfer_private(from: struct, to: struct, token_id: field) */
-    __aztec_nr_internals__transfer_private: ((from: AztecAddressLike, to: AztecAddressLike, token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** __aztec_nr_internals__transfer_private_to_public(from: struct, token_id: field) */
-    __aztec_nr_internals__transfer_private_to_public: ((from: AztecAddressLike, token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** __aztec_nr_internals__transfer_public(from: struct, to: struct, token_id: field) */
-    __aztec_nr_internals__transfer_public: ((from: AztecAddressLike, to: AztecAddressLike, token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** __aztec_nr_internals__unlock_cards(token_ids: array, game_id: field) */
-    __aztec_nr_internals__unlock_cards: ((token_ids: FieldLike[], game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** __aztec_nr_internals__unlock_location(location_id: field) */
-    __aztec_nr_internals__unlock_location: ((location_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** prepare_for_game(card_ids: array, game_id: field) */
+    prepare_for_game: ((card_ids: FieldLike[], game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** process_message(message_ciphertext: struct, message_context: struct) */
     process_message: ((message_ciphertext: FieldLike[], message_context: { tx_hash: FieldLike, unique_note_hashes_in_tx: FieldLike[], first_nullifier_in_tx: FieldLike, recipient: AztecAddressLike }) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -251,8 +224,38 @@ location_unlocked: {
     /** public_dispatch(selector: field) */
     public_dispatch: ((selector: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
+    /** public_get_name() */
+    public_get_name: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** public_get_symbol() */
+    public_get_symbol: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** public_owner_of(token_id: field) */
+    public_owner_of: ((token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** reclaim_card(token_id: field) */
+    reclaim_card: ((token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** set_game_contract(game_address: struct) */
+    set_game_contract: ((game_address: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
     /** sync_state() */
     sync_state: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** transfer_private(from: struct, to: struct, token_id: field) */
+    transfer_private: ((from: AztecAddressLike, to: AztecAddressLike, token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** transfer_private_to_public(from: struct, token_id: field) */
+    transfer_private_to_public: ((from: AztecAddressLike, token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** transfer_public(from: struct, to: struct, token_id: field) */
+    transfer_public: ((from: AztecAddressLike, to: AztecAddressLike, token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** unlock_cards(token_ids: array, game_id: field) */
+    unlock_cards: ((token_ids: FieldLike[], game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** unlock_location(location_id: field) */
+    unlock_location: ((location_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
   };
 
   

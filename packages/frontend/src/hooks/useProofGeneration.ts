@@ -35,12 +35,8 @@ export interface UseProofGenerationReturn {
   error: string | null;
   generateHandProof: (
     cardIds: number[],
-    cardRanks: Array<{ top: number; right: number; bottom: number; left: number }>,
-    playerAddress: string,
-    gameId: string,
-    playerSecret: string,
-    nullifierSecrets: string[],
-    grumpkinPrivateKey?: string,
+    blindingFactor: string,
+    cardCommitHash: string,
   ) => Promise<HandProofData | null>;
   generateMoveProof: (
     cardId: number,
@@ -56,19 +52,12 @@ export interface UseProofGenerationReturn {
     gameEnded: boolean,
     winnerId: number,
     playerHandData: PlayerHandData,
-    grumpkinPrivateKey: string,
-    opponentPubkeyX: string,
-    opponentPubkeyY: string,
   ) => Promise<MoveProofData | null>;
   reset: () => void;
 }
 
 /**
  * Hook for generating ZK proofs for game moves and hand ownership.
- *
- * Uses compiled Noir circuit artifacts to generate real ZK proofs client-side
- * via bb.js (Barretenberg WASM). Proofs are queued and generated asynchronously
- * to avoid blocking the UI.
  */
 export function useProofGeneration(): UseProofGenerationReturn {
   const [handProofStatus, setHandProofStatus] = useState<ProofStatus>('idle');
@@ -81,12 +70,8 @@ export function useProofGeneration(): UseProofGenerationReturn {
   const generateHandProof = useCallback(
     async (
       cardIds: number[],
-      cardRanks: Array<{ top: number; right: number; bottom: number; left: number }>,
-      playerAddress: string,
-      gameId: string,
-      playerSecret: string,
-      nullifierSecrets: string[],
-      grumpkinPrivateKey?: string,
+      blindingFactor: string,
+      cardCommitHash: string,
     ): Promise<HandProofData | null> => {
       setHandProofStatus('generating');
       setError(null);
@@ -94,8 +79,7 @@ export function useProofGeneration(): UseProofGenerationReturn {
       try {
         const { generateProveHandProof } = await import('../aztec/proofWorker');
         const proofData = await generateProveHandProof(
-          cardIds, cardRanks, playerAddress, gameId,
-          playerSecret, nullifierSecrets, grumpkinPrivateKey,
+          cardIds, blindingFactor, cardCommitHash,
         );
 
         setHandProof(proofData);
@@ -135,11 +119,7 @@ export function useProofGeneration(): UseProofGenerationReturn {
       gameEnded: boolean,
       winnerId: number,
       playerHandData: PlayerHandData,
-      grumpkinPrivateKey: string,
-      opponentPubkeyX: string,
-      opponentPubkeyY: string,
     ): Promise<MoveProofData | null> => {
-      // Queue proof generation to avoid overlapping operations
       const proofPromise = new Promise<MoveProofData | null>((resolve) => {
         proofQueueRef.current = proofQueueRef.current.then(async () => {
           setMoveProofStatus('generating');
@@ -157,8 +137,6 @@ export function useProofGeneration(): UseProofGenerationReturn {
               cardCommit1, cardCommit2,
               gameEnded, winnerId,
               playerHandData,
-              grumpkinPrivateKey,
-              opponentPubkeyX, opponentPubkeyY,
             );
 
             setMoveProofs((prev) => [...prev, proofData]);

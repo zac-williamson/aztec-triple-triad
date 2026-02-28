@@ -3,22 +3,18 @@
  *
  * Generates real Noir circuit proofs using Barretenberg (bb.js) and noir_js.
  * Loads compiled circuit artifacts and generates UltraHonk proofs for:
- * - prove_hand: Proves ownership of 5 cards, derives Grumpkin ECDH public key
- * - game_move: Proves a valid game move with capture logic, encrypts nullifier via ECDH
+ * - prove_hand: Proves ownership of 5 cards (poseidon2 commitment)
+ * - game_move: Proves a valid game move with chain capture logic
  */
 
 import { Noir } from '@noir-lang/noir_js';
-import { UltraHonkBackend, GRUMPKIN_G1_GENERATOR } from '@aztec/bb.js';
+import { UltraHonkBackend } from '@aztec/bb.js';
 import type { HandProofData, MoveProofData } from '../types';
 import { loadProveHandCircuit, loadGameMoveCircuit } from './circuitLoader';
 import { getBarretenberg } from './proofBackend';
 
-// ====================== UltraHonkBackend Cache (Fix 5.1) ======================
+// ====================== UltraHonkBackend Cache ======================
 
-/**
- * Cache UltraHonkBackend instances keyed by circuit name.
- * Creating a backend is expensive (WASM allocation), so we reuse them.
- */
 const backendCache = new Map<string, UltraHonkBackend>();
 
 async function getOrCreateBackend(circuitName: string, bytecode: string): Promise<UltraHonkBackend> {
@@ -32,7 +28,6 @@ async function getOrCreateBackend(circuitName: string, bytecode: string): Promis
 
 /**
  * Destroy all cached backends and free WASM memory.
- * Call when navigating away from the game or when the game ends.
  */
 export function destroyBackendCache(): void {
   for (const [, backend] of backendCache) {
@@ -45,7 +40,6 @@ export function destroyBackendCache(): void {
 
 /**
  * Convert a number or hex string to a 0x-prefixed hex field string.
- * Throws on non-numeric strings (e.g., UUIDs, 'unknown', empty strings).
  */
 export function toFieldHex(value: number | string | bigint): string {
   if (typeof value === 'string') {
@@ -55,8 +49,6 @@ export function toFieldHex(value: number | string | bigint): string {
     if (value.startsWith('0x') || value.startsWith('0X')) {
       return value;
     }
-    // BigInt() can convert numeric strings but throws on non-numeric ones.
-    // This catches UUIDs, 'unknown', etc.
     return '0x' + BigInt(value).toString(16);
   }
   if (typeof value === 'bigint') {
@@ -109,7 +101,17 @@ function proofToBase64(proof: Uint8Array): string {
   );
 }
 
-// ====================== Cryptographic Helpers (bb.js) ======================
+// ====================== Cryptographic Helpers ======================
+
+/**
+ * Compute Poseidon2 hash of an array of field elements using bb.js.
+ * Matches the circuit's Poseidon2::hash() from the external poseidon library.
+ */
+async function poseidon2Hash(inputs: Uint8Array[]): Promise<Uint8Array> {
+  const api = await getBarretenberg();
+  const result = await api.poseidon2Hash({ inputs });
+  return result.hash;
+}
 
 /**
  * Compute Pedersen hash of an array of field elements using bb.js.
@@ -122,86 +124,22 @@ async function pedersenHash(inputs: Uint8Array[]): Promise<Uint8Array> {
 }
 
 /**
- * Derive Grumpkin public key from private key: pubkey = privateKey * G.
+ * Compute card commitment using Poseidon2.
+ * Matches the circuit: Poseidon2::hash([card_ids[0..5], blinding_factor], 6)
  */
-async function deriveGrumpkinPublicKey(
-  privateKey: Uint8Array,
-): Promise<{ x: Uint8Array; y: Uint8Array }> {
-  const api = await getBarretenberg();
-  const result = await api.grumpkinMul({
-    point: GRUMPKIN_G1_GENERATOR,
-    scalar: privateKey,
-  });
-  return result.point;
-}
-
-/**
- * Compute ECDH shared secret: shared_point = my_private_key * opponent_pubkey.
- * Returns the x-coordinate of the shared point.
- */
-async function computeECDHSharedSecret(
-  myPrivateKey: Uint8Array,
-  opponentPubkeyX: Uint8Array,
-  opponentPubkeyY: Uint8Array,
-): Promise<Uint8Array> {
-  const api = await getBarretenberg();
-  const result = await api.grumpkinMul({
-    point: { x: opponentPubkeyX, y: opponentPubkeyY },
-    scalar: myPrivateKey,
-  });
-  return result.point.x;
-}
-
-/**
- * Symmetric encrypt a field: encrypted = plaintext + expand_secret(shared_secret, nonce).
- * expand_secret = pedersen_hash([shared_secret, nonce])
- * The nonce is the current_turn_before (move index), ensuring a unique key per move.
- * Matches the circuit's symmetric_encrypt_field() after Fix 3.2.
- */
-async function symmetricEncryptField(
-  plaintext: Uint8Array,
-  sharedSecret: Uint8Array,
-  nonce: number,
-): Promise<Uint8Array> {
-  const expandedKey = await pedersenHash([sharedSecret, numToField(nonce)]);
-  const ptBig = BigInt(bufToHex(plaintext));
-  const keyBig = BigInt(bufToHex(expandedKey));
-  // BN254 scalar field modulus (= Grumpkin base field)
-  const p = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
-  const result = (ptBig + keyBig) % p;
-  return numToField(result);
-}
-
-/**
- * Compute the card commitment hash matching the circuit's compute_card_commit.
- * Hash 33 fields: [player_secret, player_address, game_id,
- *                   card_ids[5], card_ranks[5*4], nullifier_secrets[5]]
- */
-async function computeCardCommit(
-  playerSecret: string,
-  playerAddress: string,
-  gameId: string,
+export async function computeCardCommitPoseidon2(
   cardIds: number[],
-  cardRanks: Array<{ top: number; right: number; bottom: number; left: number }>,
-  nullifierSecrets: string[],
-): Promise<Uint8Array> {
-  const inputs: Uint8Array[] = [];
-  inputs.push(hexToField(playerSecret));
-  inputs.push(hexToField(playerAddress));
-  inputs.push(hexToField(gameId));
-  for (const id of cardIds) {
-    inputs.push(numToField(id));
+  blindingFactor: string,
+): Promise<string> {
+  if (cardIds.length !== 5) {
+    throw new Error(`computeCardCommitPoseidon2: expected 5 card IDs, got ${cardIds.length}`);
   }
-  for (const ranks of cardRanks) {
-    inputs.push(numToField(ranks.top));
-    inputs.push(numToField(ranks.right));
-    inputs.push(numToField(ranks.bottom));
-    inputs.push(numToField(ranks.left));
-  }
-  for (const secret of nullifierSecrets) {
-    inputs.push(hexToField(secret));
-  }
-  return pedersenHash(inputs);
+  const inputs: Uint8Array[] = [
+    ...cardIds.map((id) => numToField(id)),
+    hexToField(blindingFactor),
+  ];
+  const hash = await poseidon2Hash(inputs);
+  return bufToHex(hash);
 }
 
 /**
@@ -228,60 +166,31 @@ export async function computeBoardStateHash(
 /**
  * Generate a prove_hand proof.
  *
- * Loads the compiled prove_hand circuit artifact and generates a real ZK proof
- * that the player owns 5 specific cards without revealing which ones.
- * Also derives a Grumpkin ECDH public key from the player's private key.
+ * Proves ownership of 5 cards via poseidon2 commitment.
+ * Circuit has 1 public input: card_commit_hash.
+ * Private inputs: card_ids[5], blinding_factor.
  */
 export async function generateProveHandProof(
   cardIds: number[],
-  cardRanks: Array<{ top: number; right: number; bottom: number; left: number }>,
-  playerAddress: string,
-  gameId: string,
-  playerSecret: string,
-  nullifierSecrets: string[],
-  grumpkinPrivateKey?: string,
+  blindingFactor: string,
+  cardCommitHash: string,
 ): Promise<HandProofData> {
   console.log('[proofWorker] Generating prove_hand proof...');
   const startTime = performance.now();
 
   const artifact = await loadProveHandCircuit();
 
-  // Ensure we have a grumpkin private key
-  const privKey = grumpkinPrivateKey || '0x01';
-  const privKeyBuf = hexToField(privKey);
-
-  // Compute public inputs using bb.js (must match circuit's computation)
-  const cardCommitBuf = await computeCardCommit(
-    playerSecret, playerAddress, gameId, cardIds, cardRanks, nullifierSecrets,
-  );
-  const grumpkinPubkey = await deriveGrumpkinPublicKey(privKeyBuf);
-
-  const cardCommitHex = bufToHex(cardCommitBuf);
-  const pubkeyXHex = bufToHex(grumpkinPubkey.x);
-  const pubkeyYHex = bufToHex(grumpkinPubkey.y);
-
-  // Build witness inputs matching exact circuit parameter names
+  // Build witness inputs matching circuit parameter names
   const inputs: Record<string, unknown> = {
-    card_commit: cardCommitHex,
-    player_address: toFieldHex(playerAddress),
-    game_id: toFieldHex(gameId),
-    grumpkin_public_key_x: pubkeyXHex,
-    grumpkin_public_key_y: pubkeyYHex,
-    player_secret: toFieldHex(playerSecret),
+    card_commit_hash: toFieldHex(cardCommitHash),
     card_ids: cardIds.map((id) => toFieldHex(id)),
-    card_ranks: cardRanks.map((r) => [
-      toFieldHex(r.top), toFieldHex(r.right),
-      toFieldHex(r.bottom), toFieldHex(r.left),
-    ]),
-    card_nullifier_secrets: nullifierSecrets.map((s) => toFieldHex(s)),
-    grumpkin_private_key: toFieldHex(privKey),
+    blinding_factor: toFieldHex(blindingFactor),
   };
 
   const noir = new Noir(artifact as never);
   const { witness } = await noir.execute(inputs as never);
   console.log('[proofWorker] Witness generated, creating proof...');
 
-  // Fix 5.1: Reuse cached backend instead of creating new one each time
   const backend = await getOrCreateBackend('prove_hand', artifact.bytecode);
   const proofData = await backend.generateProof(witness, {
     verifierTarget: 'noir-recursive',
@@ -289,57 +198,39 @@ export async function generateProveHandProof(
 
   const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
   console.log(`[proofWorker] prove_hand proof generated in ${elapsed}s`);
-  console.log(`[proofWorker]   publicInputs: ${proofData.publicInputs.length} fields`);
-  console.log(`[proofWorker]   proof size: ${proofData.proof.length} bytes`);
 
-  // Public inputs: [0] card_commit, [1] player_address, [2] game_id,
-  // [3] grumpkin_public_key_x, [4] grumpkin_public_key_y
-  if (proofData.publicInputs.length < 5) {
+  // Public inputs: [0] card_commit_hash
+  if (proofData.publicInputs.length < 1) {
     throw new Error(
-      `prove_hand: expected at least 5 public inputs, got ${proofData.publicInputs.length}`
+      `prove_hand: expected at least 1 public input, got ${proofData.publicInputs.length}`
     );
   }
+
   return {
     proof: proofToBase64(proofData.proof),
     publicInputs: proofData.publicInputs,
     cardCommit: proofData.publicInputs[0],
-    playerAddress: proofData.publicInputs[1],
-    gameId: proofData.publicInputs[2],
-    grumpkinPublicKeyX: proofData.publicInputs[3],
-    grumpkinPublicKeyY: proofData.publicInputs[4],
   };
 }
 
 // ====================== game_move Proof ======================
 
 /**
- * Hand commitment data needed by the game_move circuit to verify
- * the current player's card_commit binding.
+ * Player's hand data needed by the game_move circuit.
  */
 export interface PlayerHandData {
-  playerSecret: string;
-  playerAddress: string;
-  gameId: string;
   cardIds: number[];
-  cardRanks: Array<{ top: number; right: number; bottom: number; left: number }>;
-  nullifierSecrets: string[];
+  blindingFactor: string;
 }
 
 /**
  * Generate a game_move proof.
  *
- * Proves that a game move is valid: correct card placement, capture logic,
- * board state transition. Encrypts the placed card's nullifier using ECDH
- * shared secret with the opponent's public key.
+ * Proves a valid game move: card placement, chain capture logic,
+ * board state transition, score verification.
  *
- * Circuit ABI parameters (from game_move/src/main.nr):
- *   Public:  card_commit_1, card_commit_2, start_state_hash, end_state_hash,
- *            game_ended, winner_id, encrypted_card_nullifier
- *   Private: current_player, card_id, row, col, board_before[18], board_after[18],
- *            scores_before[2], scores_after[2], current_turn_before,
- *            player_secret, player_address, game_id,
- *            player_card_ids[5], player_card_ranks[[4];5], player_nullifier_secrets[5],
- *            grumpkin_private_key, opponent_pubkey_x, opponent_pubkey_y
+ * Circuit public inputs (6): card_commit_1, card_commit_2,
+ *   start_state_hash, end_state_hash, game_ended, winner_id
  */
 export async function generateGameMoveProof(
   cardId: number,
@@ -355,42 +246,19 @@ export async function generateGameMoveProof(
   gameEnded: boolean,
   winnerId: number,
   playerHandData: PlayerHandData,
-  grumpkinPrivateKey: string,
-  opponentPubkeyX: string,
-  opponentPubkeyY: string,
 ): Promise<MoveProofData> {
   console.log(`[proofWorker] Generating game_move proof (card ${cardId} at [${row},${col}])...`);
   const startTime = performance.now();
 
   const artifact = await loadGameMoveCircuit();
 
-  // === Compute public inputs ===
-
-  // 1. State hashes using Pedersen (matching circuit's hash_board_state)
+  // Compute state hashes
   const currentTurnBefore = currentPlayer;
   const nextTurn = currentPlayer === 1 ? 2 : 1;
   const startStateHash = await computeBoardStateHash(boardBefore, scoresBefore, currentTurnBefore);
   const endStateHash = await computeBoardStateHash(boardAfter, scoresAfter, nextTurn);
 
-  // 2. ECDH encrypted card nullifier
-  // Find the nullifier secret for the placed card in the player's hand
-  const handCardIndex = playerHandData.cardIds.indexOf(cardId);
-  if (handCardIndex === -1) {
-    throw new Error(`Card ${cardId} not found in player hand data`);
-  }
-  const placedCardNullifierSecret = playerHandData.nullifierSecrets[handCardIndex];
-
-  const privKeyBuf = hexToField(grumpkinPrivateKey);
-  const oppPubXBuf = hexToField(opponentPubkeyX);
-  const oppPubYBuf = hexToField(opponentPubkeyY);
-  const nullifierBuf = hexToField(placedCardNullifierSecret);
-
-  const sharedSecret = await computeECDHSharedSecret(privKeyBuf, oppPubXBuf, oppPubYBuf);
-  // Fix 5.2: Use current_turn_before as nonce (matches circuit Fix 3.2)
-  const encryptedNullifierBuf = await symmetricEncryptField(nullifierBuf, sharedSecret, currentTurnBefore);
-  const encryptedNullifierHex = bufToHex(encryptedNullifierBuf);
-
-  // === Build witness inputs matching exact circuit ABI parameter names ===
+  // Build witness inputs matching circuit parameter names
   const inputs: Record<string, unknown> = {
     // Public inputs
     card_commit_1: toFieldHex(cardCommit1),
@@ -399,39 +267,24 @@ export async function generateGameMoveProof(
     end_state_hash: endStateHash,
     game_ended: gameEnded ? '0x1' : '0x0',
     winner_id: toFieldHex(winnerId),
-    encrypted_card_nullifier: encryptedNullifierHex,
-    // Private inputs - move data
+    // Private inputs
     current_player: toFieldHex(currentPlayer),
     card_id: toFieldHex(cardId),
     row: toFieldHex(row),
     col: toFieldHex(col),
-    // Private inputs - board state
     board_before: boardBefore.map((v) => toFieldHex(Number(v))),
     board_after: boardAfter.map((v) => toFieldHex(Number(v))),
     scores_before: scoresBefore.map((v) => toFieldHex(v)),
     scores_after: scoresAfter.map((v) => toFieldHex(v)),
     current_turn_before: toFieldHex(currentTurnBefore),
-    // Private inputs - player's hand commitment data
-    player_secret: toFieldHex(playerHandData.playerSecret),
-    player_address: toFieldHex(playerHandData.playerAddress),
-    game_id: toFieldHex(playerHandData.gameId),
     player_card_ids: playerHandData.cardIds.map((id) => toFieldHex(id)),
-    player_card_ranks: playerHandData.cardRanks.map((r) => [
-      toFieldHex(r.top), toFieldHex(r.right),
-      toFieldHex(r.bottom), toFieldHex(r.left),
-    ]),
-    player_nullifier_secrets: playerHandData.nullifierSecrets.map((s) => toFieldHex(s)),
-    // Private inputs - ECDH encryption
-    grumpkin_private_key: toFieldHex(grumpkinPrivateKey),
-    opponent_pubkey_x: toFieldHex(opponentPubkeyX),
-    opponent_pubkey_y: toFieldHex(opponentPubkeyY),
+    blinding_factor: toFieldHex(playerHandData.blindingFactor),
   };
 
   const noir = new Noir(artifact as never);
   const { witness } = await noir.execute(inputs as never);
   console.log('[proofWorker] game_move witness generated, creating proof...');
 
-  // Fix 5.1: Reuse cached backend instead of creating new one each time
   const backend = await getOrCreateBackend('game_move', artifact.bytecode);
   const proofData = await backend.generateProof(witness, {
     verifierTarget: 'noir-recursive',
@@ -439,17 +292,16 @@ export async function generateGameMoveProof(
 
   const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
   console.log(`[proofWorker] game_move proof generated in ${elapsed}s`);
-  console.log(`[proofWorker]   publicInputs: ${proofData.publicInputs.length} fields`);
-  console.log(`[proofWorker]   proof size: ${proofData.proof.length} bytes`);
 
   // Public inputs: [0] card_commit_1, [1] card_commit_2,
   // [2] start_state_hash, [3] end_state_hash,
-  // [4] game_ended, [5] winner_id, [6] encrypted_card_nullifier
-  if (proofData.publicInputs.length < 7) {
+  // [4] game_ended, [5] winner_id
+  if (proofData.publicInputs.length < 6) {
     throw new Error(
-      `game_move: expected at least 7 public inputs, got ${proofData.publicInputs.length}`
+      `game_move: expected at least 6 public inputs, got ${proofData.publicInputs.length}`
     );
   }
+
   const ZERO_FIELD = '0x0000000000000000000000000000000000000000000000000000000000000000';
   return {
     proof: proofToBase64(proofData.proof),
@@ -460,6 +312,5 @@ export async function generateGameMoveProof(
     endStateHash: proofData.publicInputs[3],
     gameEnded: proofData.publicInputs[4] !== ZERO_FIELD && proofData.publicInputs[4] !== '0',
     winnerId: Number(BigInt(proofData.publicInputs[5])),
-    encryptedCardNullifier: proofData.publicInputs[6],
   };
 }

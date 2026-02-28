@@ -93,7 +93,7 @@
           "status": "completed"
         },
         {
-          "name": "useAztec hook: wallet creation via TestWallet, node connection, localStorage persistence",
+          "name": "useAztec hook: wallet creation via EmbeddedWallet, node connection, localStorage persistence",
           "status": "completed"
         },
         {

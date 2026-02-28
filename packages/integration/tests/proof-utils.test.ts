@@ -54,16 +54,14 @@ describe('createHandProof', () => {
   it('creates a hand proof with correct metadata', () => {
     const proof: Proof = {
       proof: new Uint8Array([1, 2, 3]),
-      publicInputs: ['0xcommit', '0xaddr', '42'],
+      publicInputs: ['0xcommit'],
     };
 
-    const handProof = createHandProof(proof, '0xcommit', '0xaddr', '42');
+    const handProof = createHandProof(proof, '0xcommit');
 
     expect(handProof.type).toBe('hand');
     expect(handProof.cardCommit).toBe('0xcommit');
-    expect(handProof.playerAddress).toBe('0xaddr');
-    expect(handProof.gameId).toBe('42');
-    expect(handProof.publicInputs).toEqual(['0xcommit', '0xaddr', '42']);
+    expect(handProof.publicInputs).toEqual(['0xcommit']);
     expect(typeof handProof.proof).toBe('string'); // base64
   });
 });

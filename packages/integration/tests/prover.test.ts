@@ -6,17 +6,14 @@ describe('MockProofBackend', () => {
 
   it('generates a prove_hand proof', async () => {
     const proof = await backend.generateProveHandProof({
-      card_commit: '0xcommit',
-      player_address: '0xaddr',
-      game_id: '1',
-      player_secret: '12345',
+      card_commit_hash: '0xcommit',
       card_ids: ['1', '2', '3', '4', '5'],
-      card_nullifier_secrets: ['100', '200', '300', '400', '500'],
+      blinding_factor: '0x12345',
     });
 
     expect(proof.proof).toBeInstanceOf(Uint8Array);
     expect(proof.proof.length).toBeGreaterThan(0);
-    expect(proof.publicInputs).toEqual(['0xcommit', '0xaddr', '1']);
+    expect(proof.publicInputs).toEqual(['0xcommit']);
   });
 
   it('generates a game_move proof', async () => {
@@ -29,7 +26,6 @@ describe('MockProofBackend', () => {
       winner_id: '0',
       current_player: '1',
       card_id: '5',
-      card_ranks: ['3', '4', '5', '6'],
       row: '0',
       col: '0',
       board_before: Array(18).fill('0'),
@@ -37,8 +33,8 @@ describe('MockProofBackend', () => {
       scores_before: ['5', '5'],
       scores_after: ['5', '5'],
       current_turn_before: '1',
-      player1_hand_count_after: '4',
-      player2_hand_count_after: '5',
+      player_card_ids: ['1', '2', '3', '4', '5'],
+      blinding_factor: '0x111',
     });
 
     expect(proof.proof).toBeInstanceOf(Uint8Array);
@@ -47,12 +43,9 @@ describe('MockProofBackend', () => {
 
   it('verifies a mock proof', async () => {
     const proof = await backend.generateProveHandProof({
-      card_commit: '0xcommit',
-      player_address: '0xaddr',
-      game_id: '1',
-      player_secret: '12345',
+      card_commit_hash: '0xcommit',
       card_ids: ['1', '2', '3', '4', '5'],
-      card_nullifier_secrets: ['100', '200', '300', '400', '500'],
+      blinding_factor: '0x12345',
     });
 
     const isValid = await backend.verifyProof('prove_hand', proof);
@@ -62,7 +55,7 @@ describe('MockProofBackend', () => {
   it('rejects a non-mock proof', async () => {
     const fakeProof = {
       proof: new TextEncoder().encode('not-a-mock-proof'),
-      publicInputs: ['0xcommit', '0xaddr', '1'],
+      publicInputs: ['0xcommit'],
     };
 
     const isValid = await backend.verifyProof('prove_hand', fakeProof);
@@ -75,20 +68,15 @@ describe('ProofService', () => {
 
   it('generates a hand proof with correct type', async () => {
     const handProof = await service.proveHand(
-      '12345',
-      '0xaddr',
-      '42',
       [1, 2, 3, 4, 5],
-      ['100', '200', '300', '400', '500'],
+      '0x12345',
       '0xcommit',
     );
 
     expect(handProof.type).toBe('hand');
     expect(handProof.cardCommit).toBe('0xcommit');
-    expect(handProof.playerAddress).toBe('0xaddr');
-    expect(handProof.gameId).toBe('42');
     expect(typeof handProof.proof).toBe('string'); // base64
-    expect(handProof.publicInputs).toEqual(['0xcommit', '0xaddr', '42']);
+    expect(handProof.publicInputs).toEqual(['0xcommit']);
   });
 
   it('generates a move proof with correct type', async () => {
@@ -101,7 +89,6 @@ describe('ProofService', () => {
       winner_id: '2',
       current_player: '2',
       card_id: '10',
-      card_ranks: ['7', '3', '1', '5'],
       row: '1',
       col: '1',
       board_before: Array(18).fill('0'),
@@ -109,8 +96,8 @@ describe('ProofService', () => {
       scores_before: ['5', '5'],
       scores_after: ['5', '5'],
       current_turn_before: '2',
-      player1_hand_count_after: '0',
-      player2_hand_count_after: '0',
+      player_card_ids: ['6', '7', '8', '9', '10'],
+      blinding_factor: '0x222',
     });
 
     expect(moveProof.type).toBe('move');

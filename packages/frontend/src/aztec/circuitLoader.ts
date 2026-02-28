@@ -14,8 +14,6 @@ export interface CircuitArtifact {
 
 let proveHandArtifact: CircuitArtifact | null = null;
 let gameMoveArtifact: CircuitArtifact | null = null;
-let aggregateGameArtifact: CircuitArtifact | null = null;
-
 export async function loadProveHandCircuit(): Promise<CircuitArtifact> {
   if (!proveHandArtifact) {
     const resp = await fetch('/circuits/prove_hand.json');
@@ -38,13 +36,3 @@ export async function loadGameMoveCircuit(): Promise<CircuitArtifact> {
   return gameMoveArtifact!;
 }
 
-export async function loadAggregateGameCircuit(): Promise<CircuitArtifact> {
-  if (!aggregateGameArtifact) {
-    const resp = await fetch('/circuits/aggregate_game.json');
-    if (!resp.ok) {
-      throw new Error(`Failed to load aggregate_game circuit: ${resp.status} ${resp.statusText}`);
-    }
-    aggregateGameArtifact = await resp.json();
-  }
-  return aggregateGameArtifact!;
-}

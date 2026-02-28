@@ -5,6 +5,13 @@ import { GameHUD } from './GameHUD';
 import { useCardAnimation } from './hooks/useCardAnimation';
 import { useCaptureAnimation, type CaptureAnimationEntry } from './hooks/useCaptureAnimation';
 
+export type ProofStatusInfo = {
+  hand: string;
+  move: string;
+};
+
+export type SettleTxStatus = 'idle' | 'preparing' | 'proving' | 'sending' | 'confirmed' | 'error';
+
 interface GameScreenProps {
   gameState: GameState;
   playerNumber: 1 | 2;
@@ -14,6 +21,11 @@ interface GameScreenProps {
   opponentDisconnected: boolean;
   onPlaceCard: (handIndex: number, row: number, col: number) => void;
   onBackToLobby: () => void;
+  aztecStatus?: string;
+  proofStatus?: ProofStatusInfo;
+  canSettle?: boolean;
+  onSettle?: (selectedCardId: number) => void;
+  settleTxStatus?: SettleTxStatus;
 }
 
 export function GameScreen3D({
@@ -25,6 +37,11 @@ export function GameScreen3D({
   opponentDisconnected,
   onPlaceCard,
   onBackToLobby,
+  aztecStatus,
+  proofStatus,
+  canSettle,
+  onSettle,
+  settleTxStatus,
 }: GameScreenProps) {
   const [selectedCardIndex, setSelectedCardIndex] = useState<number | null>(null);
   const { flyingCard, startFlyAnimation, completeFlyAnimation, isAnimatingCell } = useCardAnimation();
@@ -218,6 +235,11 @@ export function GameScreen3D({
         myScore={myScore}
         opponentScore={opponentScore}
         onBackToLobby={onBackToLobby}
+        aztecStatus={aztecStatus}
+        proofStatus={proofStatus}
+        canSettle={canSettle}
+        onSettle={onSettle}
+        settleTxStatus={settleTxStatus}
       />
     </div>
   );

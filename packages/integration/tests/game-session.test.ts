@@ -11,15 +11,13 @@ async function mockComputeHash(fields: string[]): Promise<string> {
 }
 
 function createPlayerSession(
-  address: string,
   cardIds: number[],
+  blindingFactor: string,
 ): PlayerSession {
   return {
-    playerSecret: `secret_${address}`,
-    playerAddress: address,
     cardIds,
-    cardNullifierSecrets: cardIds.map((_, i) => `nullifier_${i}`),
-    cardCommit: `commit_${address}`,
+    blindingFactor,
+    cardCommit: `commit_${blindingFactor}`,
   };
 }
 
@@ -32,8 +30,8 @@ describe('GameSession', () => {
   const p1Cards = getCardsByIds(p1CardIds);
   const p2Cards = getCardsByIds(p2CardIds);
 
-  const p1Session = createPlayerSession('0xp1addr', p1CardIds);
-  const p2Session = createPlayerSession('0xp2addr', p2CardIds);
+  const p1Session = createPlayerSession(p1CardIds, '0xp1blinding');
+  const p2Session = createPlayerSession(p2CardIds, '0xp2blinding');
 
   it('initializes hand proof', async () => {
     const session = new GameSession(
@@ -47,8 +45,6 @@ describe('GameSession', () => {
     const handProof = await session.initializeHand();
     expect(handProof.type).toBe('hand');
     expect(handProof.cardCommit).toBe(p1Session.cardCommit);
-    expect(handProof.playerAddress).toBe(p1Session.playerAddress);
-    expect(handProof.gameId).toBe('game-1');
   });
 
   it('starts a game after hand proof exchange', async () => {
@@ -64,10 +60,8 @@ describe('GameSession', () => {
 
     // Simulate opponent hand proof
     const opponentProof = createHandProof(
-      { proof: new Uint8Array([1, 2, 3]), publicInputs: [p2Session.cardCommit, p2Session.playerAddress, 'game-1'] },
+      { proof: new Uint8Array([1, 2, 3]), publicInputs: [p2Session.cardCommit] },
       p2Session.cardCommit,
-      p2Session.playerAddress,
-      'game-1',
     );
     session.setOpponentHandProof(opponentProof);
 
@@ -92,10 +86,8 @@ describe('GameSession', () => {
 
     await session.initializeHand();
     const opponentProof = createHandProof(
-      { proof: new Uint8Array([1, 2, 3]), publicInputs: [p2Session.cardCommit, p2Session.playerAddress, 'game-1'] },
+      { proof: new Uint8Array([1, 2, 3]), publicInputs: [p2Session.cardCommit] },
       p2Session.cardCommit,
-      p2Session.playerAddress,
-      'game-1',
     );
     session.setOpponentHandProof(opponentProof);
     await session.startGame(p1Cards, p2Cards);
@@ -122,10 +114,8 @@ describe('GameSession', () => {
 
     await session.initializeHand();
     const opponentProof = createHandProof(
-      { proof: new Uint8Array([1, 2, 3]), publicInputs: [p2Session.cardCommit, p2Session.playerAddress, 'game-1'] },
+      { proof: new Uint8Array([1, 2, 3]), publicInputs: [p2Session.cardCommit] },
       p2Session.cardCommit,
-      p2Session.playerAddress,
-      'game-1',
     );
     session.setOpponentHandProof(opponentProof);
     await session.startGame(p1Cards, p2Cards);
@@ -168,10 +158,8 @@ describe('GameSession', () => {
 
     await session.initializeHand();
     const opponentProof = createHandProof(
-      { proof: new Uint8Array([1, 2, 3]), publicInputs: [p2Session.cardCommit, p2Session.playerAddress, 'game-1'] },
+      { proof: new Uint8Array([1, 2, 3]), publicInputs: [p2Session.cardCommit] },
       p2Session.cardCommit,
-      p2Session.playerAddress,
-      'game-1',
     );
     session.setOpponentHandProof(opponentProof);
     await session.startGame(p1Cards, p2Cards);
@@ -221,10 +209,8 @@ describe('GameSession', () => {
 
     await session.initializeHand();
     const opponentProof = createHandProof(
-      { proof: new Uint8Array([1, 2, 3]), publicInputs: [p2Session.cardCommit, p2Session.playerAddress, 'game-1'] },
+      { proof: new Uint8Array([1, 2, 3]), publicInputs: [p2Session.cardCommit] },
       p2Session.cardCommit,
-      p2Session.playerAddress,
-      'game-1',
     );
     session.setOpponentHandProof(opponentProof);
     await session.startGame(p1Cards, p2Cards);
@@ -276,10 +262,8 @@ describe('GameSession', () => {
 
     await session.initializeHand();
     const opponentProof = createHandProof(
-      { proof: new Uint8Array([1, 2, 3]), publicInputs: [p2Session.cardCommit, p2Session.playerAddress, 'game-1'] },
+      { proof: new Uint8Array([1, 2, 3]), publicInputs: [p2Session.cardCommit] },
       p2Session.cardCommit,
-      p2Session.playerAddress,
-      'game-1',
     );
     session.setOpponentHandProof(opponentProof);
     await session.startGame(p1Cards, p2Cards);

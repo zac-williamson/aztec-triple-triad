@@ -1,5 +1,5 @@
 import type { GameState, Board, Player, Card } from '@aztec-triple-triad/game-logic';
-import type { CircuitBoard, GameMoveInput } from './types.js';
+import type { CircuitBoard, GameMoveInput, ProveHandInput } from './types.js';
 
 /**
  * Convert a Player to circuit field value.
@@ -82,6 +82,8 @@ export function buildGameMoveInput(
   cardCommit2: string,
   startStateHash: string,
   endStateHash: string,
+  playerCardIds: number[],
+  blindingFactor: string,
 ): GameMoveInput {
   const gameEnded = stateAfter.status === 'finished' ? '1' : '0';
   const winnerId = winnerToField(stateAfter.winner);
@@ -97,12 +99,6 @@ export function buildGameMoveInput(
     // Private inputs
     current_player: playerToField(player),
     card_id: String(card.id),
-    card_ranks: [
-      String(card.ranks.top),
-      String(card.ranks.right),
-      String(card.ranks.bottom),
-      String(card.ranks.left),
-    ],
     row: String(row),
     col: String(col),
     board_before: boardToCircuitFormat(stateBefore.board),
@@ -110,28 +106,22 @@ export function buildGameMoveInput(
     scores_before: scoresToCircuitFormat(stateBefore),
     scores_after: scoresToCircuitFormat(stateAfter),
     current_turn_before: playerToField(stateBefore.currentTurn),
-    player1_hand_count_after: String(stateAfter.player1Hand.length),
-    player2_hand_count_after: String(stateAfter.player2Hand.length),
+    player_card_ids: playerCardIds.map(String),
+    blinding_factor: blindingFactor,
   };
 }
 
 /**
- * Build prove_hand input fields.
+ * Build a ProveHandInput from player session data.
  */
 export function buildProveHandInput(
-  playerSecret: string,
-  playerAddress: string,
-  gameId: string,
   cardIds: number[],
-  cardNullifierSecrets: string[],
-  cardCommit: string,
-) {
+  blindingFactor: string,
+  cardCommitHash: string,
+): ProveHandInput {
   return {
-    card_commit: cardCommit,
-    player_address: playerAddress,
-    game_id: gameId,
-    player_secret: playerSecret,
+    card_commit_hash: cardCommitHash,
     card_ids: cardIds.map(String),
-    card_nullifier_secrets: cardNullifierSecrets,
+    blinding_factor: blindingFactor,
   };
 }

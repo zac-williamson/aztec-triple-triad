@@ -3,11 +3,11 @@ use aztec::macros::aztec;
 /// Triple Triad Game contract.
 /// Manages on-chain game lifecycle: creation, joining, proof verification, and settlement.
 ///
-/// Game Lifecycle (new flow using commit_five_nfts):
+/// Game Lifecycle:
 /// 1. Player 1 calls create_game(card_ids) - commits cards via NFT.commit_five_nfts
 /// 2. Player 2 calls join_game(game_id, card_ids) - commits cards via NFT.commit_five_nfts
 /// 3. Game plays out off-chain with ZK proofs exchanged via WebSocket
-/// 4. Winner calls process_game with aggregate proof - re-mints cards to both players
+/// 4. Winner calls process_game with all 11 proofs (2 hand + 9 move) - verifies and settles
 ///
 /// Card commitment: poseidon2_hash([card_ids[0..5], blinding_factor])
 /// where blinding_factor = poseidon2_hash([nhk_app_secret, contract_address])
@@ -62,7 +62,6 @@ pub contract TripleTriadGame {
         nft_contract: PublicImmutable<AztecAddress, Context>,
         hand_vk_hash: PublicImmutable<Field, Context>,
         move_vk_hash: PublicImmutable<Field, Context>,
-        aggregate_vk_hash: PublicImmutable<Field, Context>,
         game_settled: Map<Field, PublicMutable<bool, Context>, Context>,
         game_id_counter: PublicMutable<Field, Context>,
         game_status: Map<Field, PublicMutable<Field, Context>, Context>,
@@ -80,12 +79,10 @@ pub contract TripleTriadGame {
         nft_address: AztecAddress,
         hand_vk_hash: Field,
         move_vk_hash: Field,
-        aggregate_vk_hash: Field,
     ) {
         self.storage.nft_contract.initialize(nft_address);
         self.storage.hand_vk_hash.initialize(hand_vk_hash);
         self.storage.move_vk_hash.initialize(move_vk_hash);
-        self.storage.aggregate_vk_hash.initialize(aggregate_vk_hash);
     }
 
     // --- Create Game ---
@@ -97,7 +94,7 @@ pub contract TripleTriadGame {
         let player = self.msg_sender();
         let nft_address = self.storage.nft_contract.read();
         let card_commit_hash = TripleTriadNFT::at(nft_address)
-            .commit_five_nfts(card_ids)
+            .commit_five_nfts(player, card_ids)
             .call(self.context);
 
         self.enqueue_self.create_game_public(player, card_commit_hash);
@@ -124,7 +121,7 @@ pub contract TripleTriadGame {
         let player = self.msg_sender();
         let nft_address = self.storage.nft_contract.read();
         let card_commit_hash = TripleTriadNFT::at(nft_address)
-            .commit_five_nfts(card_ids)
+            .commit_five_nfts(player, card_ids)
             .call(self.context);
 
         self.enqueue_self.join_game_public(game_id, player, card_commit_hash);
@@ -179,59 +176,128 @@ pub contract TripleTriadGame {
 
     // --- Process Game ---
 
-    /// Process a completed game using an aggregated proof.
-    /// Verifies the proof, then re-mints cards to winner and loser (or both on draw).
+    /// Process a completed game by verifying all 11 proofs directly:
+    /// 2 hand proofs (prove each player's card commitment) +
+    /// 9 move proofs (prove each game move is valid).
     ///
-    /// Aggregate proof public inputs (8 fields):
-    ///   [0] card_commit_1
-    ///   [1] card_commit_2
-    ///   [2] initial_state_hash
-    ///   [3] final_state_hash
-    ///   [4] game_ended (must be 1)
-    ///   [5] winner_id (1, 2, or 3=draw)
-    ///   [6] hand_vk_hash
-    ///   [7] move_vk_hash
+    /// Validates:
+    /// - All proofs are valid against stored VK hashes
+    /// - Card commits from hand proofs match all move proofs
+    /// - Move proofs chain correctly (end_state[i] == start_state[i+1])
+    /// - First move starts from canonical empty board
+    /// - Intermediate moves have game_ended=0
+    /// - Final move has game_ended=1 with valid winner_id
     ///
-    /// NOTE: Card IDs passed for re-minting are not verified against the commitment
-    /// (the blinding factor is private). Both players must provide honest card IDs.
-    /// The aggregate proof guarantees card_commits are valid; dishonest card IDs
-    /// only harm the dishonest party (their real cards are already nullified).
+    /// Then re-mints cards to winner and loser (or both on draw).
     #[external("private")]
     fn process_game(
         game_id: Field,
-        aggregate_vk: UltraHonkVerificationKey,
-        aggregate_proof: UltraHonkZKProof,
-        aggregate_inputs: [Field; 8],
+        // Verification keys (supplied by caller, validated against stored hashes)
+        hand_vk: UltraHonkVerificationKey,
+        move_vk: UltraHonkVerificationKey,
+        // Hand proofs (2): each has 1 public input [card_commit_hash]
+        hand_proof_1: UltraHonkZKProof,
+        hand_proof_1_inputs: [Field; 1],
+        hand_proof_2: UltraHonkZKProof,
+        hand_proof_2_inputs: [Field; 1],
+        // Move proofs (9): each has 6 public inputs
+        // [card_commit_1, card_commit_2, start_state, end_state, game_ended, winner_id]
+        move_proof_1: UltraHonkZKProof,
+        move_inputs_1: [Field; 6],
+        move_proof_2: UltraHonkZKProof,
+        move_inputs_2: [Field; 6],
+        move_proof_3: UltraHonkZKProof,
+        move_inputs_3: [Field; 6],
+        move_proof_4: UltraHonkZKProof,
+        move_inputs_4: [Field; 6],
+        move_proof_5: UltraHonkZKProof,
+        move_inputs_5: [Field; 6],
+        move_proof_6: UltraHonkZKProof,
+        move_inputs_6: [Field; 6],
+        move_proof_7: UltraHonkZKProof,
+        move_inputs_7: [Field; 6],
+        move_proof_8: UltraHonkZKProof,
+        move_inputs_8: [Field; 6],
+        move_proof_9: UltraHonkZKProof,
+        move_inputs_9: [Field; 6],
+        // Settlement data
         opponent: AztecAddress,
         card_to_transfer: Field,
         caller_card_ids: [Field; 5],
         opponent_card_ids: [Field; 5],
     ) {
-        // Verify aggregate proof
-        let stored_aggregate_vk_hash = self.storage.aggregate_vk_hash.read();
+        // Read stored VK hashes
         let stored_hand_vk_hash = self.storage.hand_vk_hash.read();
         let stored_move_vk_hash = self.storage.move_vk_hash.read();
 
-        verify_honk_proof(
-            aggregate_vk,
-            aggregate_proof,
-            aggregate_inputs,
-            stored_aggregate_vk_hash,
+        // ===== 1. Verify all 11 proofs =====
+        verify_honk_proof(hand_vk, hand_proof_1, hand_proof_1_inputs, stored_hand_vk_hash);
+        verify_honk_proof(hand_vk, hand_proof_2, hand_proof_2_inputs, stored_hand_vk_hash);
+
+        verify_honk_proof(move_vk, move_proof_1, move_inputs_1, stored_move_vk_hash);
+        verify_honk_proof(move_vk, move_proof_2, move_inputs_2, stored_move_vk_hash);
+        verify_honk_proof(move_vk, move_proof_3, move_inputs_3, stored_move_vk_hash);
+        verify_honk_proof(move_vk, move_proof_4, move_inputs_4, stored_move_vk_hash);
+        verify_honk_proof(move_vk, move_proof_5, move_inputs_5, stored_move_vk_hash);
+        verify_honk_proof(move_vk, move_proof_6, move_inputs_6, stored_move_vk_hash);
+        verify_honk_proof(move_vk, move_proof_7, move_inputs_7, stored_move_vk_hash);
+        verify_honk_proof(move_vk, move_proof_8, move_inputs_8, stored_move_vk_hash);
+        verify_honk_proof(move_vk, move_proof_9, move_inputs_9, stored_move_vk_hash);
+
+        // ===== 2. Extract card commits from hand proofs =====
+        let card_commit_1 = hand_proof_1_inputs[0];
+        let card_commit_2 = hand_proof_2_inputs[0];
+
+        // ===== 3. Collect move inputs for validation =====
+        let move_inputs: [[Field; 6]; 9] = [
+            move_inputs_1, move_inputs_2, move_inputs_3,
+            move_inputs_4, move_inputs_5, move_inputs_6,
+            move_inputs_7, move_inputs_8, move_inputs_9,
+        ];
+
+        // ===== 4. Validate card_commit consistency across all move proofs =====
+        for i in 0..9 {
+            assert(move_inputs[i][0] == card_commit_1, "Move proof card_commit_1 mismatch");
+            assert(move_inputs[i][1] == card_commit_2, "Move proof card_commit_2 mismatch");
+        }
+
+        // ===== 5. Validate proof chaining =====
+        for i in 0..8 {
+            assert(
+                move_inputs[i][3] == move_inputs[i + 1][2],
+                "Proof chaining failed: end_state != next start_state",
+            );
+        }
+
+        // ===== 6. Validate initial state (canonical empty board) =====
+        // Inline compute_initial_state_hash:
+        // pedersen_hash([board[18]=0s, scores=[5,5], current_turn=1])
+        let mut initial_inputs: [Field; 21] = [0; 21];
+        initial_inputs[18] = 5;
+        initial_inputs[19] = 5;
+        initial_inputs[20] = 1;
+        let canonical_initial = std::hash::pedersen_hash(initial_inputs);
+        assert(
+            move_inputs[0][2] == canonical_initial,
+            "First move start_state does not match initial state",
         );
 
-        // Extract proof public inputs
-        let proof_card_commit_1 = aggregate_inputs[0];
-        let proof_card_commit_2 = aggregate_inputs[1];
-        let game_ended = aggregate_inputs[4];
-        let winner_id = aggregate_inputs[5];
-        let proof_hand_vk_hash = aggregate_inputs[6];
-        let proof_move_vk_hash = aggregate_inputs[7];
+        // ===== 7. Validate intermediate moves have game_ended=0 =====
+        for i in 0..8 {
+            assert(move_inputs[i][4] == 0, "Intermediate move should not end the game");
+            assert(move_inputs[i][5] == 0, "Intermediate move should not have a winner");
+        }
 
-        // Verify VK hashes match stored values
-        assert(proof_hand_vk_hash == stored_hand_vk_hash, "Hand VK hash mismatch");
-        assert(proof_move_vk_hash == stored_move_vk_hash, "Move VK hash mismatch");
-        assert(game_ended == 1, "Game not ended");
+        // ===== 8. Validate game completion =====
+        let game_ended = move_inputs[8][4];
+        let winner_id = move_inputs[8][5];
+        assert(game_ended == 1, "Game must have ended");
+        assert(
+            (winner_id == 1) | (winner_id == 2) | (winner_id == 3),
+            "Invalid winner_id",
+        );
 
+        // ===== 9. Settlement =====
         let caller = self.msg_sender();
         let nft_address = self.storage.nft_contract.read();
 
@@ -274,13 +340,10 @@ pub contract TripleTriadGame {
 
             self.enqueue_self.settle_game(
                 game_id, caller, opponent, card_to_transfer,
-                proof_card_commit_1, proof_card_commit_2, winner_id,
+                card_commit_1, card_commit_2, winner_id,
             );
         } else {
             // Draw
-            assert(winner_id == 3, "Invalid winner ID");
-
-            // Both players get their cards back
             TripleTriadNFT::at(nft_address)
                 .mint_for_game_draw(caller_card_ids, caller)
                 .call(self.context);
@@ -290,7 +353,7 @@ pub contract TripleTriadGame {
                 .call(self.context);
 
             self.enqueue_self.settle_game_draw(
-                game_id, proof_card_commit_1, proof_card_commit_2,
+                game_id, card_commit_1, card_commit_2,
             );
         }
     }

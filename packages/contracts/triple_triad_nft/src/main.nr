@@ -382,8 +382,12 @@ pub contract TripleTriadNFT {
     // --- Transfers ---
 
     #[external("private")]
-    fn commit_five_nfts(token_ids: [Field; 5]) -> Field {
-        let owner = self.msg_sender();
+    fn commit_five_nfts(owner: AztecAddress, token_ids: [Field; 5]) -> Field {
+        // When called via game contract, msg_sender is the game contract address,
+        // not the player. Accept owner explicitly and authorize the caller.
+        let caller = self.msg_sender();
+        let game = self.storage.game_contract.read();
+        assert((caller == game) | (caller == owner), "Only game contract or owner can commit");
 
         // FieldNote has Packable::N = 1 (single Field), so the second type param is 1.
         // Use a filter to match notes whose `value` is in our token_ids array.
@@ -673,6 +677,21 @@ pub contract TripleTriadNFT {
     #[view]
     fn has_claimed_starter(owner: AztecAddress) -> bool {
         self.storage.starter_claimed.at(owner.to_field()).read()
+    }
+
+    // --- Blinding Factor Utility ---
+
+    /// Compute the blinding factor for the calling player.
+    /// This is the same value used in commit_five_nfts:
+    ///   blinding_factor = poseidon2_hash([nhk_app_secret, contract_address])
+    /// Call via .simulate({ from: playerAddr }) to retrieve without a transaction.
+    #[external("private")]
+    fn compute_blinding_factor() -> Field {
+        let owner = self.msg_sender();
+        let owner_npk_m = get_public_keys(owner).npk_m;
+        let owner_npk_m_hash = owner_npk_m.hash();
+        let seed = self.context.request_nhk_app(owner_npk_m_hash);
+        poseidon2_hash([seed, self.address.to_field()])
     }
 
     // --- Utility Functions ---

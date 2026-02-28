@@ -1,4 +1,7 @@
+import { useState } from 'react';
 import type { GameState, Player } from '../types';
+import type { ProofStatusInfo, SettleTxStatus } from './GameScreen3D';
+import { SettlementCardPicker } from './SettlementCardPicker';
 import '../components/GameScreen.css';
 
 interface GameHUDProps {
@@ -13,6 +16,33 @@ interface GameHUDProps {
   myScore: number;
   opponentScore: number;
   onBackToLobby: () => void;
+  aztecStatus?: string;
+  proofStatus?: ProofStatusInfo;
+  canSettle?: boolean;
+  onSettle?: (selectedCardId: number) => void;
+  settleTxStatus?: SettleTxStatus;
+}
+
+function getProofStatusLabel(status: string): string {
+  switch (status) {
+    case 'idle': return '';
+    case 'generating': return 'Generating proof...';
+    case 'ready': return 'Proof ready';
+    case 'error': return 'Proof error';
+    default: return '';
+  }
+}
+
+function getSettleTxLabel(status: SettleTxStatus): string {
+  switch (status) {
+    case 'idle': return '';
+    case 'preparing': return 'Preparing settlement...';
+    case 'proving': return 'Proving on-chain...';
+    case 'sending': return 'Sending transaction...';
+    case 'confirmed': return 'Settlement confirmed!';
+    case 'error': return 'Settlement failed';
+    default: return '';
+  }
 }
 
 export function GameHUD({
@@ -27,7 +57,14 @@ export function GameHUD({
   myScore,
   opponentScore,
   onBackToLobby,
+  aztecStatus,
+  proofStatus,
+  canSettle,
+  onSettle,
+  settleTxStatus = 'idle',
 }: GameHUDProps) {
+  const [showCardPicker, setShowCardPicker] = useState(false);
+
   const getWinnerText = () => {
     if (!gameOver) return '';
     if (gameOver.winner === 'draw') return 'Draw!';
@@ -41,6 +78,23 @@ export function GameHUD({
     if (gameOver.winner === myPlayer) return 'game-screen__result--win';
     return 'game-screen__result--lose';
   };
+
+  const handleSettleClick = () => {
+    setShowCardPicker(true);
+  };
+
+  const handleCardPicked = (cardId: number) => {
+    setShowCardPicker(false);
+    onSettle?.(cardId);
+  };
+
+  const opponentHand = playerNumber === 1 ? gameState.player2Hand : gameState.player1Hand;
+
+  // Proof status display
+  const handLabel = proofStatus ? getProofStatusLabel(proofStatus.hand) : '';
+  const moveLabel = proofStatus ? getProofStatusLabel(proofStatus.move) : '';
+  const settleLabel = getSettleTxLabel(settleTxStatus);
+  const showProofStatus = handLabel || moveLabel || settleLabel;
 
   return (
     <div className="game-hud-overlay" style={{ pointerEvents: 'none' }}>
@@ -63,17 +117,65 @@ export function GameHUD({
         </div>
       )}
 
+      {/* Proof status indicator */}
+      {showProofStatus && (
+        <div style={{
+          position: 'fixed', top: 44, left: 12, zIndex: 10,
+          background: 'rgba(0,0,0,0.7)', borderRadius: 6, padding: '4px 10px',
+          fontSize: 11, color: '#aaf', fontFamily: 'monospace',
+        }}>
+          {handLabel && <div>{handLabel}</div>}
+          {moveLabel && <div>{moveLabel}</div>}
+          {settleLabel && <div>{settleLabel}</div>}
+        </div>
+      )}
+
+      {/* Aztec connection indicator */}
+      {aztecStatus && aztecStatus !== 'unsupported' && (
+        <div style={{
+          position: 'fixed', top: 6, left: 12, zIndex: 10,
+          fontSize: 10, color: aztecStatus === 'connected' ? '#4f4' : '#ff4',
+          fontFamily: 'monospace',
+        }}>
+          Aztec: {aztecStatus}
+        </div>
+      )}
+
       {/* Game Over Overlay */}
-      {gameOver && (
+      {gameOver && !showCardPicker && (
         <div className={`game-screen__result ${getWinnerClass()}`} style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 20, pointerEvents: 'auto' }}>
           <div className="game-screen__result-text">{getWinnerText()}</div>
           <div className="game-screen__result-score">
             {myScore} - {opponentScore}
           </div>
+          {canSettle && onSettle && settleTxStatus === 'idle' && (
+            <button
+              className="btn btn--ghost"
+              onClick={handleSettleClick}
+              style={{ marginTop: 12 }}
+            >
+              Settle on Chain
+            </button>
+          )}
+          {settleTxStatus === 'confirmed' && (
+            <div style={{ marginTop: 12, color: '#4f4', fontSize: 13 }}>
+              Game settled on-chain!
+            </div>
+          )}
           <button className="btn btn--ghost" onClick={onBackToLobby} style={{ marginTop: 16 }}>
             Back to Lobby
           </button>
         </div>
+      )}
+
+      {/* Settlement card picker modal */}
+      {showCardPicker && (
+        <SettlementCardPicker
+          opponentCards={opponentHand}
+          onSelect={handleCardPicked}
+          onCancel={() => setShowCardPicker(false)}
+          settleTxStatus={settleTxStatus}
+        />
       )}
 
       {/* Scores */}

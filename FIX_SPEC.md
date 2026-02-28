@@ -201,13 +201,13 @@ Document which approach is used and why in BLOCKERS.md if there are issues.
 
 1. **Add Aztec SDK dependencies** to frontend package.json:
    ```
-   @aztec/aztec.js, @aztec/accounts, @aztec/test-wallet, @aztec/stdlib,
+   @aztec/aztec.js, @aztec/accounts, @aztec/wallets, @aztec/stdlib,
    @aztec/constants, @aztec/noir-contracts.js, @aztec/wallet-sdk
    ```
 
 2. **Create `useAztec` hook** (`packages/frontend/src/hooks/useAztec.ts`):
    - Connect to Aztec node via `createAztecNodeClient`
-   - Create embedded PXE wallet via `TestWallet.create(node)`
+   - Create embedded PXE wallet via `EmbeddedWallet.create(node, { ephemeral: true })`
    - Store account secrets in localStorage for persistence
    - Expose: wallet, account address, connection status, contract instances
 

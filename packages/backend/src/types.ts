@@ -9,10 +9,6 @@ export interface SerializedProof {
 // Hand proof metadata
 export interface HandProofData extends SerializedProof {
   cardCommit: string;
-  playerAddress: string;
-  gameId: string;
-  grumpkinPublicKeyX: string;
-  grumpkinPublicKeyY: string;
 }
 
 // Move proof metadata
@@ -23,11 +19,10 @@ export interface MoveProofData extends SerializedProof {
   endStateHash: string;
   gameEnded: boolean;
   winnerId: number;
-  encryptedCardNullifier: string;
 }
 
 // On-chain transaction status
-export type TxStatus = 'pending' | 'confirmed' | 'failed';
+export type TxStatus = 'idle' | 'sending' | 'mining' | 'confirmed' | 'failed';
 
 export interface OnChainGameStatus {
   player1Tx: TxStatus;

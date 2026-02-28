@@ -1,5 +1,5 @@
 import type { GameState, Player, Card } from '@aztec-triple-triad/game-logic';
-import { placeCard, createGame, getCardsByIds } from '@aztec-triple-triad/game-logic';
+import { placeCard, createGame } from '@aztec-triple-triad/game-logic';
 import type {
   PlayerSession,
   HandProof,
@@ -45,11 +45,8 @@ export class GameSession {
    */
   async initializeHand(): Promise<HandProof> {
     this.myHandProof = await this.proofService.proveHand(
-      this.playerSession.playerSecret,
-      this.playerSession.playerAddress,
-      this.gameId,
       this.playerSession.cardIds,
-      this.playerSession.cardNullifierSecrets,
+      this.playerSession.blindingFactor,
       this.playerSession.cardCommit,
     );
     return this.myHandProof;
@@ -113,12 +110,6 @@ export class GameSession {
       winner_id: winnerToField(stateAfter.winner),
       current_player: playerToField(this.myPlayer),
       card_id: String(card.id),
-      card_ranks: [
-        String(card.ranks.top),
-        String(card.ranks.right),
-        String(card.ranks.bottom),
-        String(card.ranks.left),
-      ],
       row: String(row),
       col: String(col),
       board_before: boardToCircuitFormat(stateBefore.board),
@@ -126,8 +117,8 @@ export class GameSession {
       scores_before: scoresToCircuitFormat(stateBefore),
       scores_after: scoresToCircuitFormat(stateAfter),
       current_turn_before: playerToField(stateBefore.currentTurn),
-      player1_hand_count_after: String(stateAfter.player1Hand.length),
-      player2_hand_count_after: String(stateAfter.player2Hand.length),
+      player_card_ids: this.playerSession.cardIds.map(String),
+      blinding_factor: this.playerSession.blindingFactor,
     };
 
     // Generate proof

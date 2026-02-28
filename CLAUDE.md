@@ -46,7 +46,7 @@ Format:
 - Milestone completion status
 - Fix specification (what needs to be done)
 - Project structure and conventions
-- Aztec version: v4.0.0-devnet.2-patch.0
+- Aztec version: v4.0.0-devnet.2-patch.1
 
 ## Workflow Rules
 
@@ -62,7 +62,12 @@ You are building a fully functional, visually appealing Triple Triad card game (
 
 **Repository**: git@github.com:zac-williamson/aztec-triple-triad.git
 **Push regularly** - commit and push after completing each major milestone.
-**Aztec version**: v4.0.0-devnet.2-patch.0
+**Aztec version**: v4.0.0-devnet.2-patch.1
+
+**CRITICAL RULES:**
+- **NEVER** use `@aztec/test-wallet` or `TestWallet` — this package is FORBIDDEN
+- **ALWAYS** use `@aztec/wallets` with `EmbeddedWallet` from `@aztec/wallets/embedded`
+- **ALL** Aztec dependencies MUST be version `4.0.0-devnet.2-patch.1` — version `patch.0` is FORBIDDEN
 
 ## Critical Resources
 
@@ -308,7 +313,7 @@ Commit and push when full integration works.
 
 ### Aztec Development Setup
 - Install Aztec sandbox: follow https://docs.aztec.network/developers/getting_started
-- Use version v4.0.0-devnet.2-patch.0 specifically
+- Use version v4.0.0-devnet.2-patch.1 specifically (patch.0 is FORBIDDEN)
 - The sandbox includes PXE, sequencer, and prover
 
 ### Environment Variables
@@ -388,14 +393,15 @@ Frontend pattern (from aztec-chess-app):
 
 The aztec-chess-app is the closest reference for how to build this project's frontend and backend. Study it carefully.
 
-### Aztec SDK Import Paths (for v4.0.0-devnet)
+### Aztec SDK Import Paths (for v4.0.0-devnet.2-patch.1)
 ```typescript
 import { createAztecNodeClient } from "@aztec/aztec.js/node";
 import { Fr } from "@aztec/aztec.js/fields";
 import { AztecAddress } from "@aztec/aztec.js/addresses";
 import { SponsoredFeePaymentMethod } from "@aztec/aztec.js/fee";
-import { TestWallet } from "@aztec/test-wallet/client/lazy";  // browser
-import { TestWallet } from "@aztec/test-wallet/server";        // Node.js scripts
+import { EmbeddedWallet } from "@aztec/wallets/embedded";       // wallet (browser + Node.js)
+import { AccountManager } from "@aztec/aztec.js/wallet";        // account manager
+import { GrumpkinScalar } from "@aztec/foundation/curves/grumpkin"; // signing keys
 import { deriveSigningKey } from "@aztec/stdlib/keys";
 import { SPONSORED_FPC_SALT } from "@aztec/constants";
 import { getContractInstanceFromInstantiationParams } from "@aztec/stdlib/contract";
@@ -403,7 +409,29 @@ import { SponsoredFPCContractArtifact } from "@aztec/noir-contracts.js/Sponsored
 import { getDecodedPublicEvents } from "@aztec/aztec.js/events";
 ```
 
-### Aztec SDK Packages (use versions matching v4.0.0-devnet.2-patch.0)
+### Wallet Pattern (CRITICAL — NEVER use TestWallet)
+```typescript
+// Create wallet
+const node = createAztecNodeClient('http://localhost:8080');
+const wallet = await EmbeddedWallet.create(node, { ephemeral: true });
+
+// Create accounts (one per player)
+const account = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
+
+// Deploy account
+await (await account.getDeployMethod()).send({
+  from: AztecAddress.ZERO,
+  fee: { paymentMethod: new SponsoredFeePaymentMethod() },
+}).wait();
+
+// Register for note discovery
+await wallet.registerSender(account.address, 'player1');
+
+// Use wallet for contract interactions, from: to specify sender
+contract.methods.foo().send({ from: account.address, fee: { paymentMethod } }).wait();
+```
+
+### Aztec SDK Packages (use versions matching v4.0.0-devnet.2-patch.1)
 ```
 @aztec/accounts         - Account management (Schnorr accounts)
 @aztec/aztec.js         - Core SDK (node client, fee payment, fields, addresses, events, wallet)
@@ -412,8 +440,9 @@ import { getDecodedPublicEvents } from "@aztec/aztec.js/events";
 @aztec/noir-contracts.js - Pre-built contract artifacts (SponsoredFPC)
 @aztec/pxe              - Private execution environment
 @aztec/stdlib           - Standard library (keys, contract utilities)
-@aztec/test-wallet      - Client-side embedded wallet (PXE)
+@aztec/wallets          - EmbeddedWallet (REQUIRED — replaces deprecated test-wallet)
 @aztec/wallet-sdk       - Wallet SDK
+@aztec/foundation       - Foundation utilities (GrumpkinScalar, logging, etc.)
 ```
 
 ### Webpack Configuration (CRITICAL for Aztec in browser)
@@ -431,7 +460,7 @@ When bundling Aztec SDK for the browser, you MUST:
 
 ### Frontend Architecture Pattern
 1. Hook-based architecture: Separate hooks for wallet (`useAztec`), game logic, relay (`useRelay`)
-2. Embedded PXE wallet: Each browser tab runs its own PXE via `TestWallet.create(node)` -- no external wallet extension needed
+2. Embedded PXE wallet: Each browser tab runs its own PXE via `EmbeddedWallet.create(node, { ephemeral: true })` -- no external wallet extension needed
 3. LocalStorage for persistence: Account secrets, deployment status, saved games
 4. Contract artifacts: Compiled Noir contract JSON artifacts + generated TypeScript wrappers
 5. Config-driven: Network URLs, contract addresses, relay URLs all in JSON config files

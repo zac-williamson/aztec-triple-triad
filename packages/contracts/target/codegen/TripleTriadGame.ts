@@ -71,14 +71,14 @@ export class TripleTriadGameContract extends ContractBase {
   /**
    * Creates a tx to deploy a new instance of this contract.
    */
-  public static deploy(wallet: Wallet, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, aggregate_vk_hash: FieldLike) {
+  public static deploy(wallet: Wallet, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike) {
     return new DeployMethod<TripleTriadGameContract>(PublicKeys.default(), wallet, TripleTriadGameContractArtifact, (instance, wallet) => TripleTriadGameContract.at(instance.address, wallet), Array.from(arguments).slice(1));
   }
 
   /**
    * Creates a tx to deploy a new instance of this contract using the specified public keys hash to derive the address.
    */
-  public static deployWithPublicKeys(publicKeys: PublicKeys, wallet: Wallet, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, aggregate_vk_hash: FieldLike) {
+  public static deployWithPublicKeys(publicKeys: PublicKeys, wallet: Wallet, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike) {
     return new DeployMethod<TripleTriadGameContract>(publicKeys, wallet, TripleTriadGameContractArtifact, (instance, wallet) => TripleTriadGameContract.at(instance.address, wallet), Array.from(arguments).slice(2));
   }
 
@@ -116,7 +116,7 @@ export class TripleTriadGameContract extends ContractBase {
   }
   
 
-  public static get storage(): ContractStorageLayout<'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'aggregate_vk_hash' | 'game_settled' | 'game_id_counter' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2'> {
+  public static get storage(): ContractStorageLayout<'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_id_counter' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2'> {
       return {
         nft_contract: {
       slot: new Fr(1n),
@@ -127,72 +127,69 @@ hand_vk_hash: {
 move_vk_hash: {
       slot: new Fr(5n),
     },
-aggregate_vk_hash: {
+game_settled: {
       slot: new Fr(7n),
     },
-game_settled: {
-      slot: new Fr(9n),
-    },
 game_id_counter: {
-      slot: new Fr(10n),
+      slot: new Fr(8n),
     },
 game_status: {
-      slot: new Fr(11n),
+      slot: new Fr(9n),
     },
 game_player1: {
-      slot: new Fr(12n),
+      slot: new Fr(10n),
     },
 game_player2: {
-      slot: new Fr(13n),
+      slot: new Fr(11n),
     },
 game_card_commit_1: {
-      slot: new Fr(14n),
+      slot: new Fr(12n),
     },
 game_card_commit_2: {
-      slot: new Fr(15n),
+      slot: new Fr(13n),
     }
-      } as ContractStorageLayout<'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'aggregate_vk_hash' | 'game_settled' | 'game_id_counter' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2'>;
+      } as ContractStorageLayout<'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_id_counter' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2'>;
     }
     
 
   /** Type-safe wrappers for the public methods exposed by the contract. */
   public declare methods: {
     
-    /** __aztec_nr_internals__cancel_game(game_id: field, card_ids: array) */
-    __aztec_nr_internals__cancel_game: ((game_id: FieldLike, card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** cancel_game(game_id: field, card_ids: array) */
+    cancel_game: ((game_id: FieldLike, card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__constructor(nft_address: struct, hand_vk_hash: field, move_vk_hash: field, aggregate_vk_hash: field) */
-    __aztec_nr_internals__constructor: ((nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, aggregate_vk_hash: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** constructor(nft_address: struct, hand_vk_hash: field, move_vk_hash: field) */
+    constructor: ((nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__create_game(card_ids: array) */
-    __aztec_nr_internals__create_game: ((card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** create_game(card_ids: array) */
+    create_game: ((card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_game_card_commit_1(game_id: field) */
-    __aztec_nr_internals__get_game_card_commit_1: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_game_card_commit_1(game_id: field) */
+    get_game_card_commit_1: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_game_card_commit_2(game_id: field) */
-    __aztec_nr_internals__get_game_card_commit_2: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_game_card_commit_2(game_id: field) */
+    get_game_card_commit_2: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_game_id_counter() */
-    __aztec_nr_internals__get_game_id_counter: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_game_id_counter() */
+    get_game_id_counter: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_game_player1(game_id: field) */
-    __aztec_nr_internals__get_game_player1: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_game_player1(game_id: field) */
+    get_game_player1: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_game_player2(game_id: field) */
-    __aztec_nr_internals__get_game_player2: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_game_player2(game_id: field) */
+    get_game_player2: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__get_game_status(game_id: field) */
-    __aztec_nr_internals__get_game_status: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_game_status(game_id: field) */
+    get_game_status: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__is_game_settled(game_id: field) */
-    __aztec_nr_internals__is_game_settled: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** is_game_settled(game_id: field) */
+    is_game_settled: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__join_game(game_id: field, card_ids: array) */
-    __aztec_nr_internals__join_game: ((game_id: FieldLike, card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** join_game(game_id: field, card_ids: array) */
+    join_game: ((game_id: FieldLike, card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** __aztec_nr_internals__process_game(game_id: field, aggregate_vk: array, aggregate_proof: array, aggregate_inputs: array, opponent: struct, card_to_transfer: field, caller_card_ids: array, opponent_card_ids: array) */
-    __aztec_nr_internals__process_game: ((game_id: FieldLike, aggregate_vk: FieldLike[], aggregate_proof: FieldLike[], aggregate_inputs: FieldLike[], opponent: AztecAddressLike, card_to_transfer: FieldLike, caller_card_ids: FieldLike[], opponent_card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** process_game(game_id: field, hand_vk: array, move_vk: array, hand_proof_1: array, hand_proof_1_inputs: array, hand_proof_2: array, hand_proof_2_inputs: array, move_proof_1: array, move_inputs_1: array, move_proof_2: array, move_inputs_2: array, move_proof_3: array, move_inputs_3: array, move_proof_4: array, move_inputs_4: array, move_proof_5: array, move_inputs_5: array, move_proof_6: array, move_inputs_6: array, move_proof_7: array, move_inputs_7: array, move_proof_8: array, move_inputs_8: array, move_proof_9: array, move_inputs_9: array, opponent: struct, card_to_transfer: field, caller_card_ids: array, opponent_card_ids: array) */
+    process_game: ((game_id: FieldLike, hand_vk: FieldLike[], move_vk: FieldLike[], hand_proof_1: FieldLike[], hand_proof_1_inputs: FieldLike[], hand_proof_2: FieldLike[], hand_proof_2_inputs: FieldLike[], move_proof_1: FieldLike[], move_inputs_1: FieldLike[], move_proof_2: FieldLike[], move_inputs_2: FieldLike[], move_proof_3: FieldLike[], move_inputs_3: FieldLike[], move_proof_4: FieldLike[], move_inputs_4: FieldLike[], move_proof_5: FieldLike[], move_inputs_5: FieldLike[], move_proof_6: FieldLike[], move_inputs_6: FieldLike[], move_proof_7: FieldLike[], move_inputs_7: FieldLike[], move_proof_8: FieldLike[], move_inputs_8: FieldLike[], move_proof_9: FieldLike[], move_inputs_9: FieldLike[], opponent: AztecAddressLike, card_to_transfer: FieldLike, caller_card_ids: FieldLike[], opponent_card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** process_message(message_ciphertext: struct, message_context: struct) */
     process_message: ((message_ciphertext: FieldLike[], message_context: { tx_hash: FieldLike, unique_note_hashes_in_tx: FieldLike[], first_nullifier_in_tx: FieldLike, recipient: AztecAddressLike }) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;

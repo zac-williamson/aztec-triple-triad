@@ -191,6 +191,8 @@ describe('buildGameMoveInput', () => {
       '0xdef',
       '0x111',
       '0x222',
+      [1, 2, 3, 4, 5],
+      '0xblinding',
     );
 
     // Check public inputs
@@ -204,39 +206,27 @@ describe('buildGameMoveInput', () => {
     // Check private inputs
     expect(input.current_player).toBe('1');
     expect(input.card_id).toBe(String(card.id));
-    expect(input.card_ranks).toEqual([
-      String(card.ranks.top),
-      String(card.ranks.right),
-      String(card.ranks.bottom),
-      String(card.ranks.left),
-    ]);
     expect(input.row).toBe('0');
     expect(input.col).toBe('0');
     expect(input.board_before).toHaveLength(18);
     expect(input.board_after).toHaveLength(18);
     expect(input.scores_before).toEqual(['5', '5']);
     expect(input.current_turn_before).toBe('1');
-    expect(input.player1_hand_count_after).toBe('4');
-    expect(input.player2_hand_count_after).toBe('5');
+    expect(input.player_card_ids).toEqual(['1', '2', '3', '4', '5']);
+    expect(input.blinding_factor).toBe('0xblinding');
   });
 });
 
 describe('buildProveHandInput', () => {
   it('builds correct circuit input', () => {
     const input = buildProveHandInput(
-      '12345',
-      '0xabcdef',
-      '1',
       [1, 2, 3, 4, 5],
-      ['100', '200', '300', '400', '500'],
+      '0xblinding',
       '0xcommit',
     );
 
-    expect(input.card_commit).toBe('0xcommit');
-    expect(input.player_address).toBe('0xabcdef');
-    expect(input.game_id).toBe('1');
-    expect(input.player_secret).toBe('12345');
+    expect(input.card_commit_hash).toBe('0xcommit');
     expect(input.card_ids).toEqual(['1', '2', '3', '4', '5']);
-    expect(input.card_nullifier_secrets).toEqual(['100', '200', '300', '400', '500']);
+    expect(input.blinding_factor).toBe('0xblinding');
   });
 });

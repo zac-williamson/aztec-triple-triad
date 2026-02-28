@@ -122,15 +122,15 @@
       "verify_command": "cd packages/backend && npx tsc --noEmit 2>&1 | tail -20"
     },
     "7": {
-      "name": "Fix test-wallet Version Mismatch",
+      "name": "Fix wallet: EmbeddedWallet migration",
       "status": "completed",
       "milestones": [
         {
-          "name": "test-wallet version updated to ^4.0.0-devnet.2-patch.0",
+          "name": "Replaced test-wallet with @aztec/wallets EmbeddedWallet at patch.1",
           "status": "completed"
         }
       ],
-      "verify_command": "cd packages/frontend && grep test-wallet package.json"
+      "verify_command": "cd packages/frontend && grep wallets package.json"
     },
     "8": {
       "name": "Circuit Cleanup & Additional Tests",

@@ -26,16 +26,12 @@ export function deserializeProof(serialized: SerializedProof): Proof {
 export function createHandProof(
   proof: Proof,
   cardCommit: string,
-  playerAddress: string,
-  gameId: string,
 ): HandProof {
   const serialized = serializeProof(proof);
   return {
     type: 'hand',
     ...serialized,
     cardCommit,
-    playerAddress,
-    gameId,
   };
 }
 

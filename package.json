@@ -11,6 +11,15 @@
     "copy-contracts": "mkdir -p packages/frontend/public/contracts && cp packages/contracts/target/triple_triad_nft-TripleTriadNFT.json packages/contracts/target/triple_triad_game-TripleTriadGame.json packages/frontend/public/contracts/",
     "build": "npm run copy-circuits && npm run copy-contracts && npm run build --workspaces"
   },
+  "dependencies": {
+    "@aztec/aztec.js": "4.0.0-devnet.2-patch.1",
+    "@aztec/wallets": "4.0.0-devnet.2-patch.1",
+    "@aztec/foundation": "4.0.0-devnet.2-patch.1",
+    "@aztec/constants": "4.0.0-devnet.2-patch.1",
+    "@aztec/noir-contracts.js": "4.0.0-devnet.2-patch.1",
+    "@aztec/stdlib": "4.0.0-devnet.2-patch.1",
+    "@aztec/bb.js": "4.0.0-devnet.2-patch.1"
+  },
   "devDependencies": {
     "openai": "^6.25.0",
     "sharp": "^0.34.5"

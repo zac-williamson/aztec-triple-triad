@@ -3,6 +3,11 @@ import { renderHook, act } from '@testing-library/react';
 import { useGameFlow } from './useGameFlow';
 import type { GameState, HandProofData, MoveProofData } from '../types';
 
+// Mock blinding factor derivation — returns a deterministic value
+vi.mock('./deriveBlindingFactor', () => ({
+  deriveBlindingFactor: vi.fn().mockResolvedValue('0xmock_blinding_factor'),
+}));
+
 // Mock proof generation
 const mockGenerateHandProof = vi.fn();
 const mockGenerateMoveProof = vi.fn();
@@ -19,6 +24,11 @@ vi.mock('./useProofGeneration', () => ({
     generateMoveProof: mockGenerateMoveProof,
     reset: mockProofReset,
   }),
+}));
+
+// Mock computeCardCommitPoseidon2
+vi.mock('../aztec/proofWorker', () => ({
+  computeCardCommitPoseidon2: vi.fn().mockResolvedValue('0xmock_commit_hash'),
 }));
 
 function makeBoard(): GameState['board'] {
@@ -53,15 +63,16 @@ function makeGameState(overrides?: Partial<GameState>): GameState {
   };
 }
 
+const MOCK_WALLET = { fake: 'wallet' };
+const MOCK_ACCOUNT = '0x1234567890abcdef';
+
 describe('useGameFlow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGenerateHandProof.mockResolvedValue({
       proof: 'hand_proof',
-      publicInputs: ['commit', 'addr', 'gid'],
+      publicInputs: ['commit'],
       cardCommit: 'commit_hash',
-      playerAddress: 'test_addr',
-      gameId: 'game_1',
     } satisfies HandProofData);
     mockGenerateMoveProof.mockResolvedValue({
       proof: 'move_proof',
@@ -81,6 +92,8 @@ describe('useGameFlow', () => {
       playerNumber: null,
       cardIds: [1, 2, 3, 4, 5],
       gameState: null,
+      wallet: MOCK_WALLET,
+      accountAddress: MOCK_ACCOUNT,
     }));
 
     expect(result.current.myHandProof).toBeNull();
@@ -95,6 +108,8 @@ describe('useGameFlow', () => {
       playerNumber: 1,
       cardIds: [1, 2, 3, 4, 5],
       gameState: makeGameState(),
+      wallet: MOCK_WALLET,
+      accountAddress: MOCK_ACCOUNT,
     }));
 
     // The hand proof should be generated automatically when gameId and gameState are set
@@ -105,12 +120,8 @@ describe('useGameFlow', () => {
     expect(mockGenerateHandProof).toHaveBeenCalledTimes(1);
     expect(mockGenerateHandProof).toHaveBeenCalledWith(
       [1, 2, 3, 4, 5],
-      expect.any(Array), // card ranks
-      expect.any(String), // player address
-      'game_1',
-      expect.any(String), // player secret
-      expect.any(Array), // nullifier secrets
-      expect.any(String), // grumpkin private key
+      expect.any(String), // blinding factor
+      '0xmock_commit_hash', // card commit hash from mocked computeCardCommitPoseidon2
     );
   });
 
@@ -120,6 +131,8 @@ describe('useGameFlow', () => {
       playerNumber: 1,
       cardIds: [1, 2, 3, 4, 5],
       gameState: makeGameState(),
+      wallet: MOCK_WALLET,
+      accountAddress: MOCK_ACCOUNT,
     }));
 
     const moveProof: MoveProofData = {
@@ -147,14 +160,14 @@ describe('useGameFlow', () => {
       playerNumber: 1,
       cardIds: [1, 2, 3, 4, 5],
       gameState: makeGameState(),
+      wallet: MOCK_WALLET,
+      accountAddress: MOCK_ACCOUNT,
     }));
 
     const handProof: HandProofData = {
       proof: 'opp_hand',
-      publicInputs: ['commit', 'addr', 'gid'],
+      publicInputs: ['commit'],
       cardCommit: 'opp_commit',
-      playerAddress: 'opp_addr',
-      gameId: 'game_1',
     };
 
     act(() => {
@@ -174,6 +187,8 @@ describe('useGameFlow', () => {
         playerNumber: 1,
         cardIds: [1, 2, 3, 4, 5],
         gameState: props.gameState,
+        wallet: MOCK_WALLET,
+        accountAddress: MOCK_ACCOUNT,
       }),
       { initialProps: { gameState: playingState } },
     );
@@ -194,7 +209,7 @@ describe('useGameFlow', () => {
     rerender({ gameState: finishedState });
 
     const oppHandProof: HandProofData = {
-      proof: 'opp', publicInputs: [], cardCommit: 'c', playerAddress: 'a', gameId: 'g'
+      proof: 'opp', publicInputs: [], cardCommit: 'c',
     };
 
     act(() => {
@@ -222,6 +237,8 @@ describe('useGameFlow', () => {
         playerNumber: 1,
         cardIds: [1, 2, 3, 4, 5],
         gameState: props.gameState,
+        wallet: MOCK_WALLET,
+        accountAddress: MOCK_ACCOUNT,
       }),
       { initialProps: { gameState: playingState } },
     );
@@ -237,7 +254,7 @@ describe('useGameFlow', () => {
     rerender({ gameState: finishedState });
 
     const oppHandProof: HandProofData = {
-      proof: 'opp', publicInputs: [], cardCommit: 'c', playerAddress: 'a', gameId: 'g'
+      proof: 'opp', publicInputs: [], cardCommit: 'c',
     };
 
     act(() => {
@@ -262,6 +279,8 @@ describe('useGameFlow', () => {
       playerNumber: 1,
       cardIds: [1, 2, 3, 4, 5],
       gameState: makeGameState(),
+      wallet: MOCK_WALLET,
+      accountAddress: MOCK_ACCOUNT,
     }));
 
     await act(async () => {
@@ -297,21 +316,19 @@ describe('useGameFlow', () => {
       playerNumber: 1,
       cardIds: [1, 2, 3, 4, 5],
       gameState: makeGameState(),
+      wallet: MOCK_WALLET,
+      accountAddress: MOCK_ACCOUNT,
     }));
 
     await act(async () => {
       await new Promise(r => setTimeout(r, 50));
     });
 
-    // Provide opponent hand proof with valid Grumpkin keys
+    // Provide opponent hand proof
     const oppProof: HandProofData = {
       proof: 'opp',
-      publicInputs: ['0xabc', '0xdef', '0x123'],
+      publicInputs: ['0xabc'],
       cardCommit: '0xabc',
-      playerAddress: '0xdef',
-      gameId: '0x123',
-      grumpkinPublicKeyX: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
-      grumpkinPublicKeyY: '0xfedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321',
     };
 
     act(() => {
@@ -331,6 +348,8 @@ describe('useGameFlow', () => {
       playerNumber: 1,
       cardIds: [1, 2, 3, 4, 5],
       gameState: makeGameState(),
+      wallet: MOCK_WALLET,
+      accountAddress: MOCK_ACCOUNT,
     }));
 
     const moveProof: MoveProofData = {
@@ -342,7 +361,6 @@ describe('useGameFlow', () => {
       endStateHash: 'same_end',
       gameEnded: false,
       winnerId: 0,
-      encryptedCardNullifier: '0x123',
     };
 
     act(() => {
@@ -361,6 +379,8 @@ describe('useGameFlow', () => {
       playerNumber: 1,
       cardIds: [1, 2, 3, 4, 5],
       gameState: makeGameState(),
+      wallet: MOCK_WALLET,
+      accountAddress: MOCK_ACCOUNT,
     }));
 
     act(() => {
@@ -387,6 +407,8 @@ describe('useGameFlow', () => {
       playerNumber: 1,
       cardIds: [1, 2, 3, 4, 5],
       gameState: makeGameState(),
+      wallet: MOCK_WALLET,
+      accountAddress: MOCK_ACCOUNT,
     }));
 
     act(() => {
@@ -413,6 +435,8 @@ describe('useGameFlow', () => {
         playerNumber: 1,
         cardIds: [1, 2, 3, 4, 5],
         gameState: props.gameState,
+        wallet: MOCK_WALLET,
+        accountAddress: MOCK_ACCOUNT,
       }),
       { initialProps: { gameState: playingState } },
     );
@@ -431,7 +455,7 @@ describe('useGameFlow', () => {
     rerender({ gameState: drawState });
 
     const oppHandProof: HandProofData = {
-      proof: 'opp', publicInputs: [], cardCommit: 'c', playerAddress: 'a', gameId: 'g'
+      proof: 'opp', publicInputs: [], cardCommit: 'c',
     };
 
     act(() => {
@@ -454,6 +478,8 @@ describe('useGameFlow', () => {
       playerNumber: 1,
       cardIds: [1, 2, 3, 4, 5],
       gameState: makeGameState(),
+      wallet: MOCK_WALLET,
+      accountAddress: MOCK_ACCOUNT,
     }));
 
     const moveProof: MoveProofData = {

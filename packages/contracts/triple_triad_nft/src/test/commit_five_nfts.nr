@@ -34,7 +34,7 @@ unconstrained fn commit_five_nfts_removes_notes() {
     // Commit (pop) the 5 notes
     env.call_private(
         player,
-        TripleTriadNFT::at(contract_address).commit_five_nfts([1, 2, 3, 4, 5]),
+        TripleTriadNFT::at(contract_address).commit_five_nfts(player, [1, 2, 3, 4, 5]),
     );
 
     assert(count_private_cards(env, contract_address, player) == 0, "Expected 0 cards after commit");
@@ -63,7 +63,7 @@ unconstrained fn commit_five_nfts_with_duplicate_leaves_one() {
     // Commit 5 notes with ids [1, 2, 3, 4, 5] -should consume one of the two id=1 notes
     env.call_private(
         player,
-        TripleTriadNFT::at(contract_address).commit_five_nfts([1, 2, 3, 4, 5]),
+        TripleTriadNFT::at(contract_address).commit_five_nfts(player, [1, 2, 3, 4, 5]),
     );
 
     // Should have exactly 1 note remaining (the second id=1 note)
@@ -101,6 +101,6 @@ unconstrained fn commit_five_nfts_fails_with_only_four() {
     // This should fail -requesting 5 but only 4 exist
     env.call_private(
         player,
-        TripleTriadNFT::at(contract_address).commit_five_nfts([1, 2, 3, 4, 5]),
+        TripleTriadNFT::at(contract_address).commit_five_nfts(player, [1, 2, 3, 4, 5]),
     );
 }

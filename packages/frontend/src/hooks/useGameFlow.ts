@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useProofGeneration } from './useProofGeneration';
 import type { PlayerHandData } from './useProofGeneration';
-import { getCardById } from '../cards';
 import type { GameState, Player, HandProofData, MoveProofData } from '../types';
+import { deriveBlindingFactor } from './deriveBlindingFactor';
 
 /**
  * Configuration for the game flow hook
@@ -12,8 +12,10 @@ export interface GameFlowConfig {
   playerNumber: 1 | 2 | null;
   cardIds: number[];
   gameState: GameState | null;
-  /** Aztec account address (hex string) - used for proof generation */
-  accountAddress?: string | null;
+  /** Aztec wallet instance (from useAztec) */
+  wallet: unknown | null;
+  /** Player's Aztec account address (hex string) */
+  accountAddress: string | null;
 }
 
 /**
@@ -32,8 +34,8 @@ export interface UseGameFlowReturn {
   myCardCommit: string | null;
   /** Opponent's card commitment string */
   opponentCardCommit: string | null;
-  /** Player secret used for proof generation */
-  playerSecret: string;
+  /** Blinding factor used for proof generation */
+  blindingFactor: string;
   /** Current proof generation status */
   handProofStatus: string;
   moveProofStatus: string;
@@ -58,94 +60,6 @@ export interface UseGameFlowReturn {
 }
 
 /**
- * Generate a deterministic player secret from game context.
- * In production, this would use a real random secret stored in localStorage.
- */
-function getOrCreatePlayerSecret(gameId: string, playerNumber: number): string {
-  const key = `tt_secret_${gameId}_${playerNumber}`;
-  let secret = localStorage.getItem(key);
-  if (!secret) {
-    const bytes = new Uint8Array(32);
-    crypto.getRandomValues(bytes);
-    secret = '0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-    localStorage.setItem(key, secret);
-  }
-  // Ensure 0x prefix for stored values from older sessions
-  if (!secret.startsWith('0x')) {
-    secret = '0x' + secret;
-    localStorage.setItem(key, secret);
-  }
-  return secret;
-}
-
-// Grumpkin scalar field order
-const GRUMPKIN_ORDER = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
-
-/**
- * Generate or retrieve a Grumpkin private key for ECDH.
- * Validates the key is within [1, GRUMPKIN_ORDER).
- */
-function getOrCreateGrumpkinKey(gameId: string, playerNumber: number): string {
-  const key = `tt_grumpkin_${gameId}_${playerNumber}`;
-  let stored = localStorage.getItem(key);
-  if (!stored) {
-    stored = generateValidGrumpkinKey();
-    localStorage.setItem(key, stored);
-  }
-  // Validate existing key is within scalar field range
-  const keyBigInt = BigInt(stored);
-  if (keyBigInt === 0n || keyBigInt >= GRUMPKIN_ORDER) {
-    stored = generateValidGrumpkinKey();
-    localStorage.setItem(key, stored);
-  }
-  return stored;
-}
-
-function generateValidGrumpkinKey(): string {
-  let keyBigInt = 0n;
-  // Generate until we get a valid key (almost always first try)
-  while (keyBigInt === 0n || keyBigInt >= GRUMPKIN_ORDER) {
-    const bytes = new Uint8Array(32);
-    crypto.getRandomValues(bytes);
-    keyBigInt = BigInt('0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(''));
-    if (keyBigInt >= GRUMPKIN_ORDER) {
-      keyBigInt = keyBigInt % GRUMPKIN_ORDER;
-    }
-  }
-  return '0x' + keyBigInt.toString(16).padStart(64, '0');
-}
-
-/**
- * Generate nullifier secrets for each card.
- * All secrets are 0x-prefixed hex strings.
- */
-function getOrCreateNullifierSecrets(gameId: string, playerNumber: number, count: number): string[] {
-  const key = `tt_nullifiers_${gameId}_${playerNumber}`;
-  let stored = localStorage.getItem(key);
-  if (stored) {
-    try {
-      const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed) && parsed.length === count) {
-        // Ensure all have 0x prefix (fix for older sessions)
-        const fixed = parsed.map((s: string) => s.startsWith('0x') ? s : '0x' + s);
-        if (fixed.some((s: string, i: number) => s !== parsed[i])) {
-          localStorage.setItem(key, JSON.stringify(fixed));
-        }
-        return fixed;
-      }
-    } catch { /* regenerate */ }
-  }
-  const secrets: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const bytes = new Uint8Array(32);
-    crypto.getRandomValues(bytes);
-    secrets.push('0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(''));
-  }
-  localStorage.setItem(key, JSON.stringify(secrets));
-  return secrets;
-}
-
-/**
  * Hook that orchestrates the full game flow with ZK proof generation.
  *
  * Handles:
@@ -155,71 +69,55 @@ function getOrCreateNullifierSecrets(gameId: string, playerNumber: number, count
  * - Determining when the winner can settle the game
  */
 export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
-  const { gameId, playerNumber, cardIds, gameState, accountAddress } = config;
+  const { gameId, playerNumber, cardIds, gameState, wallet, accountAddress } = config;
   const proofs = useProofGeneration();
 
   const [myHandProof, setMyHandProof] = useState<HandProofData | null>(null);
   const [opponentHandProof, setOpponentHandProof] = useState<HandProofData | null>(null);
   const [collectedMoveProofs, setCollectedMoveProofs] = useState<MoveProofData[]>([]);
+  const [blindingFactor, setBlindingFactor] = useState<string>('');
   const handProofGenerated = useRef(false);
+  const blindingDerivationStarted = useRef(false);
 
-  // Compute player secret and nullifier secrets (stable across renders)
-  const playerSecret = useMemo(() => {
-    if (!gameId || !playerNumber) return '';
-    return getOrCreatePlayerSecret(gameId, playerNumber);
-  }, [gameId, playerNumber]);
+  // Derive blinding factor from NFT contract when wallet + game are ready
+  useEffect(() => {
+    if (!gameId || !playerNumber || !wallet || !accountAddress) return;
+    if (blindingDerivationStarted.current) return;
+    blindingDerivationStarted.current = true;
 
-  // Depend on serialized cardIds so that different cards with the same count
-  // will regenerate nullifier secrets (not just when count changes).
-  const cardIdsKey = JSON.stringify(cardIds);
-  const nullifierSecrets = useMemo(() => {
-    if (!gameId || !playerNumber) return [];
-    const ids: number[] = JSON.parse(cardIdsKey);
-    return getOrCreateNullifierSecrets(gameId, playerNumber, ids.length);
-  }, [gameId, playerNumber, cardIdsKey]);
-
-  const grumpkinPrivateKey = useMemo(() => {
-    if (!gameId || !playerNumber) return '';
-    return getOrCreateGrumpkinKey(gameId, playerNumber);
-  }, [gameId, playerNumber]);
-
-  // Get card ranks from the database
-  const cardRanks = useMemo(() => {
-    return cardIds.map(id => {
-      const card = getCardById(id);
-      return card ? card.ranks : { top: 1, right: 1, bottom: 1, left: 1 };
-    });
-  }, [cardIds]);
+    deriveBlindingFactor(wallet, accountAddress, gameId, playerNumber)
+      .then(bf => {
+        console.log('[useGameFlow] Blinding factor derived:', bf);
+        setBlindingFactor(bf);
+      })
+      .catch(err => {
+        console.error('[useGameFlow] Failed to derive blinding factor:', err);
+        blindingDerivationStarted.current = false;
+      });
+  }, [gameId, playerNumber, wallet, accountAddress]);
 
   // Card commits
   const myCardCommit = myHandProof?.cardCommit ?? null;
   const opponentCardCommit = opponentHandProof?.cardCommit ?? null;
 
-  // Auto-generate hand proof when game starts
+  // Auto-generate hand proof when game starts and blinding factor is derived
   useEffect(() => {
     if (!gameId || !playerNumber || !gameState || handProofGenerated.current) return;
     if (gameState.status !== 'playing') return;
     if (cardIds.length !== 5) return;
+    if (!blindingFactor) return;
 
     handProofGenerated.current = true;
 
-    // When no wallet is connected, use playerSecret as a deterministic address.
-    // This is a valid Field element (random 32 bytes) that's unique per player+game.
-    const address = accountAddress || playerSecret;
-    proofs.generateHandProof(
-      cardIds,
-      cardRanks,
-      address,
-      gameId,
-      playerSecret,
-      nullifierSecrets,
-      grumpkinPrivateKey || undefined,
-    ).then(proof => {
+    // Compute card commitment, then generate proof
+    import('../aztec/proofWorker').then(async ({ computeCardCommitPoseidon2 }) => {
+      const cardCommitHash = await computeCardCommitPoseidon2(cardIds, blindingFactor);
+      const proof = await proofs.generateHandProof(cardIds, blindingFactor, cardCommitHash);
       if (proof) {
         setMyHandProof(proof);
       }
     });
-  }, [gameId, playerNumber, gameState, cardIds, cardRanks, accountAddress, playerSecret, nullifierSecrets, grumpkinPrivateKey, proofs]);
+  }, [gameId, playerNumber, gameState, cardIds, blindingFactor, proofs]);
 
   // Determine if the winner can settle
   const myPlayer: Player = playerNumber === 1 ? 'player1' : 'player2';
@@ -246,22 +144,12 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
   // Build PlayerHandData for passing to move proof generation
   const playerHandData: PlayerHandData | null = useMemo(() => {
     if (!gameId || !playerNumber || cardIds.length !== 5) return null;
-    // When no wallet is connected, use playerSecret as a deterministic address.
-    const address = accountAddress || playerSecret;
+    if (!blindingFactor) return null;
     return {
-      playerSecret,
-      playerAddress: address,
-      gameId,
       cardIds,
-      cardRanks,
-      nullifierSecrets,
+      blindingFactor,
     };
-  }, [gameId, playerNumber, cardIds, cardRanks, accountAddress, playerSecret, nullifierSecrets]);
-
-  // Extract opponent's Grumpkin public keys from their hand proof.
-  // These are only valid when opponentHandProof is set (guarded above).
-  const opponentPubkeyX = opponentHandProof?.grumpkinPublicKeyX ?? '0x0';
-  const opponentPubkeyY = opponentHandProof?.grumpkinPublicKeyY ?? '0x0';
+  }, [gameId, playerNumber, cardIds, blindingFactor]);
 
   const generateMoveProofForPlacement = useCallback(
     async (
@@ -275,10 +163,9 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
       gameEnded: boolean,
       winnerId: number,
     ): Promise<MoveProofData | null> => {
-      if (!playerNumber || !playerHandData || !grumpkinPrivateKey) return null;
+      if (!playerNumber || !playerHandData) return null;
 
       // Guard: Do NOT generate move proofs until both hand proofs are exchanged.
-      // Without hand proofs, we don't have valid card commits or opponent Grumpkin keys.
       if (!myHandProof || !opponentHandProof) {
         console.warn('[useGameFlow] Cannot generate move proof: hand proofs not yet exchanged');
         return null;
@@ -300,9 +187,6 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
         commit1, commit2,
         gameEnded, winnerId,
         playerHandData,
-        grumpkinPrivateKey,
-        opponentPubkeyX,
-        opponentPubkeyY,
       );
 
       if (proof) {
@@ -310,14 +194,16 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
       }
       return proof;
     },
-    [playerNumber, myHandProof, opponentHandProof, myCardCommit, opponentCardCommit, playerHandData, grumpkinPrivateKey, opponentPubkeyX, opponentPubkeyY, proofs, addMoveProof],
+    [playerNumber, myHandProof, opponentHandProof, myCardCommit, opponentCardCommit, playerHandData, proofs, addMoveProof],
   );
 
   const reset = useCallback(() => {
     setMyHandProof(null);
     setOpponentHandProof(null);
     setCollectedMoveProofs([]);
+    setBlindingFactor('');
     handProofGenerated.current = false;
+    blindingDerivationStarted.current = false;
     proofs.reset();
   }, [proofs]);
 
@@ -328,7 +214,7 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
     canSettle,
     myCardCommit,
     opponentCardCommit,
-    playerSecret,
+    blindingFactor,
     handProofStatus: proofs.handProofStatus,
     moveProofStatus: proofs.moveProofStatus,
     setOpponentHandProof,
