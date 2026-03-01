@@ -45,10 +45,16 @@ describe('Random hand generation', () => {
     expect(getRandomHand(3)).toHaveLength(3);
   });
 
-  it('should return card IDs', () => {
-    const ids = getRandomHandIds();
+  it('should return card IDs from available pool', () => {
+    const available = [1, 2, 3, 4, 5, 6, 7];
+    const ids = getRandomHandIds(available, 5);
     expect(ids).toHaveLength(5);
-    ids.forEach(id => expect(typeof id).toBe('number'));
+    ids.forEach(id => expect(available).toContain(id));
+  });
+
+  it('should return all cards if fewer than count available', () => {
+    const ids = getRandomHandIds([1, 2, 3]);
+    expect(ids).toHaveLength(3);
   });
 });
 

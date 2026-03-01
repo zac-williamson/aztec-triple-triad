@@ -17,7 +17,10 @@ export type Player = 'player1' | 'player2';
 
 export interface BoardCell {
   card: Card | null;
+  /** Who currently controls this card (changes on capture) */
   owner: Player | null;
+  /** Who originally placed this card (never changes) */
+  originalOwner: Player | null;
 }
 
 export type Board = BoardCell[][];

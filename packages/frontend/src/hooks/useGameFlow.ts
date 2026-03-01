@@ -127,6 +127,20 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
     opponentHandProof !== null &&
     collectedMoveProofs.length >= 9;
 
+  // Debug: log settlement readiness when game finishes
+  if (gameState?.status === 'finished') {
+    console.log('[useGameFlow] Game finished — settlement status:', {
+      isWinner,
+      myPlayer,
+      winner: gameState.winner,
+      myHandProof: myHandProof !== null,
+      opponentHandProof: opponentHandProof !== null,
+      collectedMoveProofs: collectedMoveProofs.length,
+      canSettle,
+      blindingFactor: blindingFactor ? 'derived' : 'MISSING',
+    });
+  }
+
   const addMoveProof = useCallback((proof: MoveProofData) => {
     setCollectedMoveProofs(prev => {
       // Deduplicate: don't add if a proof with the same state hashes already exists

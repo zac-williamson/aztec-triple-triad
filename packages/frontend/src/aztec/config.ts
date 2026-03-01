@@ -16,6 +16,7 @@ export const AZTEC_CONFIG = {
     accountAddress: 'aztec_tt_account_address',
     accountSalt: 'aztec_tt_account_salt',
     deploymentStatus: 'aztec_tt_deployed',
+    cardsMintedPrefix: 'aztec_tt_cards_minted_',
   },
 
   /** Whether Aztec integration is enabled (can be disabled for WebSocket-only mode) */

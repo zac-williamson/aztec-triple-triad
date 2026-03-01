@@ -7,12 +7,13 @@ interface LobbyProps {
   connected: boolean;
   gameList: GameListEntry[];
   error: string | null;
+  ownedCardIds: number[];
   onCreateGame: (cardIds: number[]) => void;
   onJoinGame: (gameId: string, cardIds: number[]) => void;
   onRefreshList: () => void;
 }
 
-export function Lobby({ connected, gameList, error, onCreateGame, onJoinGame, onRefreshList }: LobbyProps) {
+export function Lobby({ connected, gameList, error, ownedCardIds, onCreateGame, onJoinGame, onRefreshList }: LobbyProps) {
   const [joinGameId, setJoinGameId] = useState('');
 
   useEffect(() => {
@@ -23,13 +24,15 @@ export function Lobby({ connected, gameList, error, onCreateGame, onJoinGame, on
     }
   }, [connected, onRefreshList]);
 
+  const hasCards = ownedCardIds.length >= 5;
+
   const handleCreate = () => {
-    const cardIds = getRandomHandIds(5);
+    const cardIds = getRandomHandIds(ownedCardIds, 5);
     onCreateGame(cardIds);
   };
 
   const handleJoin = (gameId: string) => {
-    const cardIds = getRandomHandIds(5);
+    const cardIds = getRandomHandIds(ownedCardIds, 5);
     onJoinGame(gameId, cardIds);
   };
 
@@ -48,9 +51,12 @@ export function Lobby({ connected, gameList, error, onCreateGame, onJoinGame, on
       {error && <div className="lobby__error">{error}</div>}
 
       <div className="lobby__actions">
-        <button className="btn btn--primary" onClick={handleCreate} disabled={!connected}>
+        <button className="btn btn--primary" onClick={handleCreate} disabled={!connected || !hasCards}>
           Create Game
         </button>
+        {!hasCards && connected && (
+          <p className="lobby__card-status">Loading your cards from Aztec...</p>
+        )}
       </div>
 
       <div className="lobby__games">
@@ -69,7 +75,7 @@ export function Lobby({ connected, gameList, error, onCreateGame, onJoinGame, on
               <div key={game.id} className="lobby__game-item">
                 <div className="lobby__game-id">{game.id.slice(0, 8)}...</div>
                 <div className="lobby__game-status">Waiting for opponent</div>
-                <button className="btn btn--secondary" onClick={() => handleJoin(game.id)}>
+                <button className="btn btn--secondary" onClick={() => handleJoin(game.id)} disabled={!hasCards}>
                   Join
                 </button>
               </div>
@@ -91,7 +97,7 @@ export function Lobby({ connected, gameList, error, onCreateGame, onJoinGame, on
           <button
             className="btn btn--secondary"
             onClick={() => handleJoin(joinGameId)}
-            disabled={!connected || !joinGameId}
+            disabled={!connected || !joinGameId || !hasCards}
           >
             Join
           </button>

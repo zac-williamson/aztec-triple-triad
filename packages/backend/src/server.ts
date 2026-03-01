@@ -15,6 +15,7 @@ const VALID_MESSAGE_TYPES = new Set([
   'CREATE_GAME', 'JOIN_GAME', 'PLACE_CARD', 'LIST_GAMES', 'GET_GAME',
   'SUBMIT_HAND_PROOF', 'SUBMIT_MOVE_PROOF',
   'TX_CONFIRMED', 'TX_FAILED', 'CANCEL_GAME',
+  'SHARE_AZTEC_INFO',
 ]);
 
 export interface ServerOptions {
@@ -198,6 +199,10 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
       case 'CANCEL_GAME':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
         break;
+      case 'SHARE_AZTEC_INFO':
+        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
+        if (!msg.aztecAddress || typeof msg.aztecAddress !== 'string') return 'aztecAddress is required';
+        break;
     }
     return null; // Valid
   }
@@ -303,11 +308,14 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
 
           // Check if game is over (finished games reveal all hands)
           if (result.newState.status === 'finished') {
+            const room = gameManager.getGame(msg.gameId);
             const overMsg: ServerMessage = {
               type: 'GAME_OVER',
               gameId: msg.gameId,
               gameState: result.newState,
               winner: result.newState.winner!,
+              player1CardIds: room?.player1CardIds ?? [],
+              player2CardIds: room?.player2CardIds ?? [],
             };
             send(ws, overMsg);
             if (opponentId) sendToPlayer(opponentId, overMsg);
@@ -373,42 +381,26 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
 
       case 'SUBMIT_MOVE_PROOF': {
         try {
-          // First apply the move on the server (same as PLACE_CARD)
-          const result = gameManager.placeCard(msg.gameId, playerId, msg.handIndex, msg.row, msg.col, msg.moveNumber);
+          // The move was already applied by PLACE_CARD. This message
+          // only relays the proof to the opponent for settlement collection.
+          const room = gameManager.getGame(msg.gameId);
+          if (!room || !room.state) {
+            send(ws, { type: 'ERROR', message: 'Game not found' });
+            break;
+          }
 
-          // Send sanitized state update to the current player
-          send(ws, {
-            type: 'GAME_STATE',
-            gameId: msg.gameId,
-            gameState: sanitizeGameStateForPlayer(result.newState, playerId, msg.gameId),
-            captures: result.captures,
-          });
-
-          // Send sanitized move proof + state to the opponent
           const opponentId = getOpponentId(msg.gameId, playerId);
           if (opponentId) {
             sendToPlayer(opponentId, {
               type: 'MOVE_PROVEN',
               gameId: msg.gameId,
-              gameState: sanitizeGameStateForPlayer(result.newState, opponentId, msg.gameId),
-              captures: result.captures,
+              gameState: sanitizeGameStateForPlayer(room.state, opponentId, msg.gameId),
+              captures: [],
               moveProof: msg.moveProof,
               handIndex: msg.handIndex,
               row: msg.row,
               col: msg.col,
             });
-          }
-
-          // Check if game is over (finished games reveal all hands)
-          if (result.newState.status === 'finished') {
-            const overMsg: ServerMessage = {
-              type: 'GAME_OVER',
-              gameId: msg.gameId,
-              gameState: result.newState,
-              winner: result.newState.winner!,
-            };
-            send(ws, overMsg);
-            if (opponentId) sendToPlayer(opponentId, overMsg);
           }
         } catch (err: any) {
           send(ws, { type: 'ERROR', message: err.message });
@@ -453,6 +445,19 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
           send(ws, { type: 'GAME_CANCELLED', gameId: msg.gameId, reason: 'Cancelled by creator' });
         } catch (err: any) {
           send(ws, { type: 'ERROR', message: err.message });
+        }
+        break;
+      }
+
+      case 'SHARE_AZTEC_INFO': {
+        const opponentId = getOpponentId(msg.gameId, playerId);
+        if (opponentId) {
+          sendToPlayer(opponentId, {
+            type: 'OPPONENT_AZTEC_INFO',
+            gameId: msg.gameId,
+            aztecAddress: msg.aztecAddress,
+            onChainGameId: msg.onChainGameId,
+          });
         }
         break;
       }

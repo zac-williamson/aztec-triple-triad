@@ -2,13 +2,17 @@ import type { Card, Board, BoardCell, GameState, Player, PlaceCardResult } from 
 
 function createEmptyBoard(): Board {
   return Array.from({ length: 3 }, () =>
-    Array.from({ length: 3 }, (): BoardCell => ({ card: null, owner: null }))
+    Array.from({ length: 3 }, (): BoardCell => ({ card: null, owner: null, originalOwner: null }))
   );
 }
 
 function cloneBoard(board: Board): Board {
   return board.map(row =>
-    row.map(cell => ({ card: cell.card ? { ...cell.card, ranks: { ...cell.card.ranks } } : null, owner: cell.owner }))
+    row.map(cell => ({
+      card: cell.card ? { ...cell.card, ranks: { ...cell.card.ranks } } : null,
+      owner: cell.owner,
+      originalOwner: cell.originalOwner,
+    }))
   );
 }
 
@@ -147,7 +151,7 @@ export function placeCard(
   const card = newHand.splice(handIndex, 1)[0];
 
   // Place the card
-  newBoard[row][col] = { card, owner: player };
+  newBoard[row][col] = { card, owner: player, originalOwner: player };
 
   // Resolve captures (includes chain captures — flips are applied inside)
   const captures = resolveCaptures(newBoard, row, col, player);

@@ -182,14 +182,6 @@ fn main(
     }
     assert(card_found, "Placed card not in committed hand");
 
-    // ===== NEW: Verify card has not already been placed (C2 fix) =====
-    for i in 0..9 {
-        if board_before[i * 2 + 1] != 0 {
-            // Cell is occupied -- verify it's not the same card
-            assert(board_before[i * 2] != card_id, "Card already placed on board");
-        }
-    }
-
     // ===== 5. Verify the cell was empty before the move =====
     let cell_idx = r * 3 + c;
     assert(board_before[cell_idx * 2] == 0, "Cell not empty");

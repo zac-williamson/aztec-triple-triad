@@ -57,7 +57,7 @@ export class GameManager {
       lastActivity: Date.now(),
       expectedMoveNumber: 0,
       processing: false,
-      onChainStatus: { player1Tx: 'pending', player2Tx: 'pending', canSettle: false },
+      onChainStatus: { player1Tx: 'idle', player2Tx: 'idle', canSettle: false },
     };
 
     this.games.set(gameId, room);

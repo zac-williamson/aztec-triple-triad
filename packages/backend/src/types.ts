@@ -43,7 +43,9 @@ export type ClientMessage =
   // On-chain lifecycle messages
   | { type: 'TX_CONFIRMED'; gameId: string; txType: 'create_game' | 'join_game'; txHash: string }
   | { type: 'TX_FAILED'; gameId: string; txType: 'create_game' | 'join_game'; error: string }
-  | { type: 'CANCEL_GAME'; gameId: string };
+  | { type: 'CANCEL_GAME'; gameId: string }
+  // Aztec info exchange
+  | { type: 'SHARE_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string };
 
 // Server -> Client messages
 export type ServerMessage =
@@ -51,7 +53,7 @@ export type ServerMessage =
   | { type: 'GAME_JOINED'; gameId: string; playerNumber: 2; gameState: GameState }
   | { type: 'GAME_START'; gameId: string; gameState: GameState }
   | { type: 'GAME_STATE'; gameId: string; gameState: GameState; captures: { row: number; col: number }[] }
-  | { type: 'GAME_OVER'; gameId: string; gameState: GameState; winner: 'player1' | 'player2' | 'draw' }
+  | { type: 'GAME_OVER'; gameId: string; gameState: GameState; winner: 'player1' | 'player2' | 'draw'; player1CardIds: number[]; player2CardIds: number[] }
   | { type: 'GAME_LIST'; games: GameListEntry[] }
   | { type: 'GAME_INFO'; game: GameListEntry | null }
   | { type: 'OPPONENT_DISCONNECTED'; gameId: string }
@@ -61,7 +63,9 @@ export type ServerMessage =
   | { type: 'MOVE_PROVEN'; gameId: string; gameState: GameState; captures: { row: number; col: number }[]; moveProof: MoveProofData; handIndex: number; row: number; col: number }
   // On-chain lifecycle messages
   | { type: 'ON_CHAIN_STATUS'; gameId: string; status: OnChainGameStatus }
-  | { type: 'GAME_CANCELLED'; gameId: string; reason: string };
+  | { type: 'GAME_CANCELLED'; gameId: string; reason: string }
+  // Aztec info exchange
+  | { type: 'OPPONENT_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string };
 
 export interface GameListEntry {
   id: string;

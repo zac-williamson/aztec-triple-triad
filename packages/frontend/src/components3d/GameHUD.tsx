@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { GameState, Player } from '../types';
+import type { GameState, Player, Card } from '../types';
 import type { ProofStatusInfo, SettleTxStatus } from './GameScreen3D';
 import { SettlementCardPicker } from './SettlementCardPicker';
 import '../components/GameScreen.css';
@@ -65,6 +65,8 @@ export function GameHUD({
 }: GameHUDProps) {
   const [showCardPicker, setShowCardPicker] = useState(false);
 
+  const opponentPlayer: Player = myPlayer === 'player1' ? 'player2' : 'player1';
+
   const getWinnerText = () => {
     if (!gameOver) return '';
     if (gameOver.winner === 'draw') return 'Draw!';
@@ -88,8 +90,17 @@ export function GameHUD({
     onSettle?.(cardId);
   };
 
-  const opponentHand = playerNumber === 1 ? gameState.player2Hand : gameState.player1Hand;
-
+  // Collect opponent's cards from the board using originalOwner (never changes on capture).
+  const opponentCardsForPicker: Card[] = [];
+  for (const row of gameState.board) {
+    for (const cell of row) {
+      console.log('cell = ', JSON.stringify(cell));
+      if (cell.card && cell.originalOwner === opponentPlayer) {
+        opponentCardsForPicker.push(cell.card);
+      }
+    }
+  }
+  console.log('opponentCardsForPicker = ', opponentCardsForPicker);
   // Proof status display
   const handLabel = proofStatus ? getProofStatusLabel(proofStatus.hand) : '';
   const moveLabel = proofStatus ? getProofStatusLabel(proofStatus.move) : '';
@@ -171,7 +182,7 @@ export function GameHUD({
       {/* Settlement card picker modal */}
       {showCardPicker && (
         <SettlementCardPicker
-          opponentCards={opponentHand}
+          opponentCards={opponentCardsForPicker}
           onSelect={handleCardPicked}
           onCancel={() => setShowCardPicker(false)}
           settleTxStatus={settleTxStatus}

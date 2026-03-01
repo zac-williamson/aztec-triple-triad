@@ -1,17 +1,31 @@
-import { defineConfig } from 'vite';
+import { defineConfig, searchForWorkspaceRoot } from 'vite';
 import react from '@vitejs/plugin-react';
-import { nodePolyfills } from 'vite-plugin-node-polyfills';
+import { nodePolyfills, type PolyfillOptions } from 'vite-plugin-node-polyfills';
+
+const nodeModulesPath = `${searchForWorkspaceRoot(process.cwd())}/node_modules`;
+
+// Fix for vite-plugin-node-polyfills resolveId issue in workspaces
+// See: https://github.com/davidmyersdev/vite-plugin-node-polyfills/issues/81
+const nodePolyfillsFix = (options?: PolyfillOptions | undefined) => {
+  return {
+    ...nodePolyfills(options),
+    resolveId(source: string) {
+      const m =
+        /^vite-plugin-node-polyfills\/shims\/(buffer|global|process)$/.exec(
+          source,
+        );
+      if (m) {
+        return `${nodeModulesPath}/vite-plugin-node-polyfills/shims/${m[1]}/dist/index.cjs`;
+      }
+    },
+  };
+};
 
 export default defineConfig({
   plugins: [
     react(),
-    nodePolyfills({
-      include: ['buffer', 'process', 'stream', 'util', 'assert', 'crypto', 'events', 'path', 'string_decoder'],
-      globals: {
-        Buffer: true,
-        global: true,
-        process: true,
-      },
+    nodePolyfillsFix({
+      include: ['buffer', 'path', 'process', 'net', 'tty'],
     }),
   ],
   server: {
@@ -31,21 +45,14 @@ export default defineConfig({
   build: {
     target: 'esnext',
   },
-  resolve: {
-    alias: {
-      // Handle node: prefixed imports used by Aztec SDK
-      'node:crypto': 'crypto-browserify',
-      'node:fs': 'rollup-plugin-node-polyfills/polyfills/empty',
-      'node:path': 'path-browserify',
-      'node:os': 'rollup-plugin-node-polyfills/polyfills/empty',
-      'node:stream': 'stream-browserify',
-    },
-  },
   optimizeDeps: {
     esbuildOptions: {
       target: 'esnext',
     },
-    exclude: ['@aztec/bb.js', '@noir-lang/noir_js'],
+    // Force pre-bundle CJS packages so they work as ESM imports
+    include: ['pino', 'pino/browser'],
+    // Only exclude WASM-containing packages that esbuild corrupts
+    exclude: ['@aztec/noir-noirc_abi', '@aztec/noir-acvm_js', '@aztec/bb.js', '@noir-lang/noir_js'],
   },
   worker: {
     format: 'es',

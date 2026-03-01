@@ -85,9 +85,10 @@ export function getRandomHand(count = 5): Card[] {
   return shuffled.slice(0, count).map(c => ({ ...c }));
 }
 
-export function getRandomHandIds(count = 5): number[] {
-  const shuffled = [...CARD_DATABASE].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, count).map(c => c.id);
+export function getRandomHandIds(availableIds: number[], count = 5): number[] {
+  if (availableIds.length <= count) return [...availableIds];
+  const shuffled = [...availableIds].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, count);
 }
 
 export function formatRank(rank: number): string {

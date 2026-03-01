@@ -64,7 +64,7 @@ export function GameScreen({
     for (let r = 0; r < 3; r++) {
       for (let c = 0; c < 3; c++) {
         const cell = gameState.board[r][c];
-        if (cell.card && cell.owner !== myPlayer) {
+        if (cell.card && cell.originalOwner !== myPlayer) {
           cards.push(cell.card);
         }
       }

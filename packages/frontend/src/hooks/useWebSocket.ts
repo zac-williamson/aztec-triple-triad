@@ -15,11 +15,15 @@ export interface UseWebSocketReturn {
   opponentDisconnected: boolean;
   opponentHandProof: HandProofData | null;
   lastMoveProof: { moveProof: MoveProofData; handIndex: number; row: number; col: number } | null;
+  opponentAztecAddress: string | null;
+  opponentOnChainGameId: string | null;
+  opponentCardIds: number[];
   createGame: (cardIds: number[]) => void;
   joinGame: (gameId: string, cardIds: number[]) => void;
   placeCard: (handIndex: number, row: number, col: number) => void;
   submitHandProof: (gameId: string, handProof: HandProofData) => void;
   submitMoveProof: (gameId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData) => void;
+  shareAztecInfo: (gameId: string, aztecAddress: string, onChainGameId?: string) => void;
   refreshGameList: () => void;
   disconnect: () => void;
 }
@@ -27,6 +31,7 @@ export interface UseWebSocketReturn {
 export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const url = wsUrl ?? DEFAULT_WS_URL;
   const wsRef = useRef<WebSocket | null>(null);
+  const playerNumberRef = useRef<1 | 2 | null>(null);
   const [connected, setConnected] = useState(false);
   const [gameId, setGameId] = useState<string | null>(null);
   const [playerNumber, setPlayerNumber] = useState<1 | 2 | null>(null);
@@ -38,6 +43,9 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const [opponentDisconnected, setOpponentDisconnected] = useState(false);
   const [opponentHandProof, setOpponentHandProof] = useState<HandProofData | null>(null);
   const [lastMoveProof, setLastMoveProof] = useState<{ moveProof: MoveProofData; handIndex: number; row: number; col: number } | null>(null);
+  const [opponentAztecAddress, setOpponentAztecAddress] = useState<string | null>(null);
+  const [opponentOnChainGameId, setOpponentOnChainGameId] = useState<string | null>(null);
+  const [opponentCardIds, setOpponentCardIds] = useState<number[]>([]);
 
   const send = useCallback((msg: ClientMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -86,11 +94,13 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
           case 'GAME_CREATED':
             setGameId(msg.gameId);
             setPlayerNumber(msg.playerNumber);
+            playerNumberRef.current = msg.playerNumber;
             setError(null);
             break;
           case 'GAME_JOINED':
             setGameId(msg.gameId);
             setPlayerNumber(msg.playerNumber);
+            playerNumberRef.current = msg.playerNumber;
             setGameState(msg.gameState);
             setError(null);
             break;
@@ -104,6 +114,11 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
           case 'GAME_OVER':
             setGameState(msg.gameState);
             setGameOver({ winner: msg.winner });
+            // Extract opponent card IDs from GAME_OVER message
+            if (playerNumberRef.current) {
+              const oppIds = playerNumberRef.current === 1 ? msg.player2CardIds : msg.player1CardIds;
+              if (oppIds && oppIds.length > 0) setOpponentCardIds(oppIds);
+            }
             break;
           case 'GAME_LIST':
             setGameList(msg.games);
@@ -123,6 +138,10 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
               row: msg.row,
               col: msg.col,
             });
+            break;
+          case 'OPPONENT_AZTEC_INFO':
+            setOpponentAztecAddress(msg.aztecAddress);
+            if (msg.onChainGameId) setOpponentOnChainGameId(msg.onChainGameId);
             break;
           case 'ERROR':
             setError(msg.message);
@@ -185,6 +204,10 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     send({ type: 'SUBMIT_HAND_PROOF', gameId: gId, handProof });
   }, [send]);
 
+  const shareAztecInfo = useCallback((gId: string, aztecAddress: string, onChainGameId?: string) => {
+    send({ type: 'SHARE_AZTEC_INFO', gameId: gId, aztecAddress, onChainGameId });
+  }, [send]);
+
   const submitMoveProof = useCallback((gId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData) => {
     if (!gId) return;
     setError(null);
@@ -210,6 +233,10 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     setOpponentDisconnected(false);
     setOpponentHandProof(null);
     setLastMoveProof(null);
+    setOpponentAztecAddress(null);
+    setOpponentOnChainGameId(null);
+    setOpponentCardIds([]);
+    playerNumberRef.current = null;
   }, []);
 
   return {
@@ -224,11 +251,15 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     opponentDisconnected,
     opponentHandProof,
     lastMoveProof,
+    opponentAztecAddress,
+    opponentOnChainGameId,
+    opponentCardIds,
     createGame,
     joinGame,
     placeCard,
     submitHandProof,
     submitMoveProof,
+    shareAztecInfo,
     refreshGameList,
     disconnect,
   };
