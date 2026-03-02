@@ -18,6 +18,9 @@ export interface UseWebSocketReturn {
   opponentAztecAddress: string | null;
   opponentOnChainGameId: string | null;
   opponentCardIds: number[];
+  // Matchmaking
+  matchmakingStatus: 'idle' | 'queued' | 'matched';
+  queuePosition: number | null;
   createGame: (cardIds: number[]) => void;
   joinGame: (gameId: string, cardIds: number[]) => void;
   placeCard: (handIndex: number, row: number, col: number) => void;
@@ -25,7 +28,12 @@ export interface UseWebSocketReturn {
   submitMoveProof: (gameId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData) => void;
   shareAztecInfo: (gameId: string, aztecAddress: string, onChainGameId?: string) => void;
   refreshGameList: () => void;
+  leaveGame: () => void;
   disconnect: () => void;
+  // Matchmaking actions
+  queueMatchmaking: (cardIds: number[]) => void;
+  cancelMatchmaking: () => void;
+  ping: () => void;
 }
 
 export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
@@ -46,6 +54,8 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const [opponentAztecAddress, setOpponentAztecAddress] = useState<string | null>(null);
   const [opponentOnChainGameId, setOpponentOnChainGameId] = useState<string | null>(null);
   const [opponentCardIds, setOpponentCardIds] = useState<number[]>([]);
+  const [matchmakingStatus, setMatchmakingStatus] = useState<'idle' | 'queued' | 'matched'>('idle');
+  const [queuePosition, setQueuePosition] = useState<number | null>(null);
 
   const send = useCallback((msg: ClientMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -143,6 +153,26 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
             setOpponentAztecAddress(msg.aztecAddress);
             if (msg.onChainGameId) setOpponentOnChainGameId(msg.onChainGameId);
             break;
+          case 'MATCHMAKING_QUEUED':
+            setMatchmakingStatus('queued');
+            setQueuePosition(msg.position);
+            break;
+          case 'MATCH_FOUND':
+            setMatchmakingStatus('matched');
+            setQueuePosition(null);
+            setGameId(msg.gameId);
+            setPlayerNumber(msg.playerNumber);
+            playerNumberRef.current = msg.playerNumber;
+            setGameState(msg.gameState);
+            setError(null);
+            break;
+          case 'MATCHMAKING_CANCELLED':
+            setMatchmakingStatus('idle');
+            setQueuePosition(null);
+            break;
+          case 'PONG':
+            // Keep-alive acknowledged
+            break;
           case 'ERROR':
             setError(msg.message);
             break;
@@ -224,8 +254,26 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     send({ type: 'SUBMIT_MOVE_PROOF', gameId: gId, handIndex, row, col, moveNumber, moveProof });
   }, [send, gameState]);
 
-  const disconnect = useCallback(() => {
-    wsRef.current?.close();
+  const queueMatchmaking = useCallback((cardIds: number[]) => {
+    setError(null);
+    setGameOver(null);
+    setOpponentDisconnected(false);
+    setMatchmakingStatus('idle');
+    send({ type: 'QUEUE_MATCHMAKING', cardIds });
+  }, [send]);
+
+  const cancelMatchmaking = useCallback(() => {
+    send({ type: 'CANCEL_MATCHMAKING' });
+    setMatchmakingStatus('idle');
+    setQueuePosition(null);
+  }, [send]);
+
+  const ping = useCallback(() => {
+    send({ type: 'PING' });
+  }, [send]);
+
+  /** Reset all game-related state but keep the WebSocket connection open. */
+  const leaveGame = useCallback(() => {
     setGameId(null);
     setPlayerNumber(null);
     setGameState(null);
@@ -236,8 +284,15 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     setOpponentAztecAddress(null);
     setOpponentOnChainGameId(null);
     setOpponentCardIds([]);
+    setMatchmakingStatus('idle');
+    setQueuePosition(null);
     playerNumberRef.current = null;
   }, []);
+
+  const disconnect = useCallback(() => {
+    wsRef.current?.close();
+    leaveGame();
+  }, [leaveGame]);
 
   return {
     connected,
@@ -254,6 +309,8 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     opponentAztecAddress,
     opponentOnChainGameId,
     opponentCardIds,
+    matchmakingStatus,
+    queuePosition,
     createGame,
     joinGame,
     placeCard,
@@ -261,6 +318,10 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     submitMoveProof,
     shareAztecInfo,
     refreshGameList,
+    leaveGame,
     disconnect,
+    queueMatchmaking,
+    cancelMatchmaking,
+    ping,
   };
 }

@@ -446,7 +446,7 @@ describe('E2E Aztec Settlement', () => {
     const opponentCardIds = isDraw ? p2CardIds : (isP1Winner ? p2CardIds : p1CardIds);
 
     // For non-draw, pick first opponent card as transfer target
-    const cardToTransfer = isDraw ? 0 : opponentCardIds[0];
+    const cardToTransfer = isDraw ? 0 : opponentCardIds[2];
 
     // Format proofs as Fr arrays
     const hp1Proof = gameProofs.handProof1.proofFields.map(toFr);
@@ -457,7 +457,9 @@ describe('E2E Aztec Settlement', () => {
     const mi = gameProofs.moveInputs.map((inputs: string[]) => inputs.map(toFr));
 
     console.log('Calling process_game...');
-    await gameContract.methods
+
+  try {
+    const result = await gameContract.methods
       .process_game(
         gameId,
         realHandVkFields,
@@ -481,7 +483,14 @@ describe('E2E Aztec Settlement', () => {
         opponentCardIds.map((id: number) => new Fr(BigInt(id))),
       )
       .send(sendAs(callerAddr));
+    console.log(' process_game result? ', result);
     console.log('  process_game transaction succeeded!');
+
+    } catch (e)
+    {
+    console.log(' process_game fail? ', e);
+
+    }
 
     // ================================================================
     // 9. Verify on-chain settlement

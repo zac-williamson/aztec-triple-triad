@@ -135,7 +135,7 @@ export async function computeVkHash(
 ): Promise<{ hash: string; fields: string[] }> {
   const { UltraHonkBackend } = await import('@aztec/bb.js');
   const backend = new UltraHonkBackend(circuitBytecode, api);
-  const vkBytes = await backend.getVerificationKey({ verifierTarget: 'noir-recursive' });
+  const vkBytes = await backend.getVerificationKey();
   const vkFields = bytesToFields(vkBytes);
 
   if (typeof (api as any).poseidon2Hash !== 'function') {
@@ -261,11 +261,11 @@ export async function generateFullGameProofs(
   // Moves: always play hand index 0, fill board row by row
   const moves: [Player, number, number, number][] = [
     ['player1', 0, 0, 0],
-    ['player2', 0, 0, 1],
-    ['player1', 0, 0, 2],
+    ['player2', 0, 0, 2],
+    ['player1', 0, 0, 1],
     ['player2', 0, 1, 0],
-    ['player1', 0, 1, 1],
-    ['player2', 0, 1, 2],
+    ['player1', 0, 1, 2],
+    ['player2', 0, 1, 1],
     ['player1', 0, 2, 0],
     ['player2', 0, 2, 1],
     ['player1', 0, 2, 2],

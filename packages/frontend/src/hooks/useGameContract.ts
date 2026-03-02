@@ -247,7 +247,9 @@ export function useGameContract(
       const handVkFields = vkToFrArray(handVk);
       const moveVkFields = vkToFrArray(moveVk);
 
+      console.log('[useGameContract] VK raw bytes: hand=', handVk.length, 'move=', moveVk.length);
       console.log('[useGameContract] VK fields: hand=', handVkFields.length, 'move=', moveVkFields.length);
+      console.log('[useGameContract] VK first field: hand=', handVkFields[0]?.toString(), 'move=', moveVkFields[0]?.toString());
 
       // 3. Convert proofs
       const hp1Proof = base64ToFrArray(handProof1.proof);
@@ -255,17 +257,87 @@ export function useGameContract(
       const hp2Proof = base64ToFrArray(handProof2.proof);
       const hp2Inputs = handProof2.publicInputs.map(toFr);
 
-      // 9 move proofs — each proof + 6 public inputs
+      console.log('[useGameContract] === DIAGNOSTIC: Hand proofs ===');
+      console.log('  hp1 proof fields:', hp1Proof.length, '| hp1 inputs:', hp1Inputs.length);
+      console.log('  hp2 proof fields:', hp2Proof.length, '| hp2 inputs:', hp2Inputs.length);
+      console.log('  hp1 publicInputs (raw):', handProof1.publicInputs);
+      console.log('  hp2 publicInputs (raw):', handProof2.publicInputs);
+      console.log('  hp1 cardCommit:', handProof1.cardCommit);
+      console.log('  hp2 cardCommit:', handProof2.cardCommit);
+
+      // 9 move proofs — sort into a chain by start/end state hashes
+      // Public inputs: [0] card_commit_1, [1] card_commit_2,
+      //   [2] start_state_hash, [3] end_state_hash, [4] game_ended, [5] winner_id
+      // Chain rule: proof[i].endStateHash == proof[i+1].startStateHash
+
+      // Compute canonical initial state hash to find the first proof
+      const { computeBoardStateHash } = await import('../aztec/proofWorker');
+      const emptyBoard = Array(18).fill('0');
+      const canonicalInitial = await computeBoardStateHash(emptyBoard, [5, 5], 1);
+
+      // Build a map from startStateHash → proof for O(1) lookup
+      const byStart = new Map<string, typeof moveProofs[0]>();
+      for (const p of moveProofs) {
+        byStart.set(p.startStateHash, p);
+      }
+
+      // Walk the chain starting from the canonical initial state
+      const sorted: typeof moveProofs = [];
+      let nextHash = canonicalInitial;
+      for (let i = 0; i < 9; i++) {
+        const p = byStart.get(nextHash);
+        if (!p) {
+          console.error(`[useGameContract] Proof chain broken at step ${i}. Looking for startStateHash:`, nextHash);
+          console.error('[useGameContract] Available startStateHashes:', [...byStart.keys()]);
+          throw new Error(`Proof chain broken at step ${i}: no proof with startStateHash matching previous endStateHash`);
+        }
+        sorted.push(p);
+        nextHash = p.endStateHash;
+      }
+
+      console.log('[useGameContract] Move proofs sorted into chain successfully');
+      console.log('[useGameContract] === DIAGNOSTIC: Move proof chain ===');
+      for (let i = 0; i < 9; i++) {
+        const m = sorted[i];
+        console.log(`  move[${i}]: start=${m.startStateHash.slice(0, 18)}... end=${m.endStateHash.slice(0, 18)}... gameEnded=${m.gameEnded} winnerId=${m.winnerId}`);
+        console.log(`    publicInputs[0..1] (card_commits): ${m.publicInputs[0]?.slice(0, 18)}..., ${m.publicInputs[1]?.slice(0, 18)}...`);
+      }
+      // Verify chain
+      for (let i = 0; i < 8; i++) {
+        const ok = sorted[i].endStateHash === sorted[i + 1].startStateHash;
+        if (!ok) console.error(`  CHAIN BREAK at ${i} -> ${i+1}: end=${sorted[i].endStateHash} != start=${sorted[i+1].startStateHash}`);
+      }
+      // Verify card commits are consistent across all move proofs
+      const allCC1 = sorted.map(m => m.publicInputs[0]);
+      const allCC2 = sorted.map(m => m.publicInputs[1]);
+      const cc1Consistent = allCC1.every(c => c === allCC1[0]);
+      const cc2Consistent = allCC2.every(c => c === allCC2[0]);
+      console.log(`[useGameContract] card_commit_1 consistent across moves: ${cc1Consistent} (${allCC1[0]?.slice(0, 18)}...)`);
+      console.log(`[useGameContract] card_commit_2 consistent across moves: ${cc2Consistent} (${allCC2[0]?.slice(0, 18)}...)`);
+      // Verify hand proof commits match move proof commits
+      console.log(`[useGameContract] hand_proof_1 commit matches move card_commit_1: ${handProof1.publicInputs[0] === allCC1[0]}`);
+      console.log(`[useGameContract] hand_proof_2 commit matches move card_commit_2: ${handProof2.publicInputs[0] === allCC2[0]}`);
+      if (handProof1.publicInputs[0] !== allCC1[0]) {
+        console.error('  MISMATCH hp1:', handProof1.publicInputs[0], '!= move cc1:', allCC1[0]);
+      }
+      if (handProof2.publicInputs[0] !== allCC2[0]) {
+        console.error('  MISMATCH hp2:', handProof2.publicInputs[0], '!= move cc2:', allCC2[0]);
+      }
+
       const mp: InstanceType<typeof Fr>[][] = [];
       const mi: InstanceType<typeof Fr>[][] = [];
       for (let i = 0; i < 9; i++) {
-        const m = moveProofs[i];
+        const m = sorted[i];
         mp.push(base64ToFrArray(m.proof));
         mi.push(m.publicInputs.map(toFr));
       }
 
-      console.log('[useGameContract] Proof conversion complete. hp1 proof fields:', hp1Proof.length,
-        'hp1 inputs:', hp1Inputs.length, 'mp[0] proof fields:', mp[0].length, 'mi[0] inputs:', mi[0].length);
+      console.log('[useGameContract] === DIAGNOSTIC: Final sizes ===');
+      console.log('  hp1 proof fields:', hp1Proof.length, '| hp2 proof fields:', hp2Proof.length);
+      console.log('  mp[0] proof fields:', mp[0].length, '| mi[0] inputs:', mi[0].length);
+      for (let i = 0; i < 9; i++) {
+        console.log(`  mp[${i}] fields: ${mp[i].length} | mi[${i}] inputs: ${mi[i].length}`);
+      }
 
       setTxStatus('sending');
 
@@ -281,6 +353,55 @@ export function useGameContract(
       const opponent = AztecAddress.fromString(opponentAddress);
       const fee = await getSponsoredFee();
 
+      // === PRE-FLIGHT: Query on-chain state to diagnose settle_game assertions ===
+      console.log('[useGameContract] === PRE-FLIGHT: On-chain state check ===');
+      console.log('  game_id:', gameId);
+      console.log('  caller (senderAddr):', senderAddr.toString());
+      console.log('  opponent:', opponent.toString());
+      console.log('  cardToTransfer:', cardToTransfer);
+      console.log('  callerCardIds:', callerCardIds);
+      console.log('  opponentCardIds:', opponentCardIds);
+      try {
+        const [onChainStatus, onChainSettled, onChainCC1, onChainCC2, onChainP1, onChainP2] = await Promise.all([
+          contract.methods.get_game_status(new Fr(BigInt(gameId))).simulate({ from: senderAddr }),
+          contract.methods.is_game_settled(new Fr(BigInt(gameId))).simulate({ from: senderAddr }),
+          contract.methods.get_game_card_commit_1(new Fr(BigInt(gameId))).simulate({ from: senderAddr }),
+          contract.methods.get_game_card_commit_2(new Fr(BigInt(gameId))).simulate({ from: senderAddr }),
+          contract.methods.get_game_player1(new Fr(BigInt(gameId))).simulate({ from: senderAddr }),
+          contract.methods.get_game_player2(new Fr(BigInt(gameId))).simulate({ from: senderAddr }),
+        ]);
+        console.log('  on-chain game_status:', String(onChainStatus));
+        console.log('  on-chain is_settled:', onChainSettled);
+        console.log('  on-chain card_commit_1:', String(onChainCC1));
+        console.log('  on-chain card_commit_2:', String(onChainCC2));
+        console.log('  on-chain player1:', String(onChainP1));
+        console.log('  on-chain player2:', String(onChainP2));
+
+        // Compare proof card commits against on-chain values
+        const proofCC1 = hp1Inputs[0]?.toString();
+        const proofCC2 = hp2Inputs[0]?.toString();
+        console.log('  proof card_commit_1:', proofCC1);
+        console.log('  proof card_commit_2:', proofCC2);
+        console.log('  cc1 MATCH:', proofCC1 === String(onChainCC1));
+        console.log('  cc2 MATCH:', proofCC2 === String(onChainCC2));
+
+        // Check winner/loser mapping
+        const lastMoveInputs = mi[8];
+        const winnerId = lastMoveInputs[5]?.toString();
+        console.log('  winner_id from final move proof:', winnerId);
+        console.log('  caller is player1:', senderAddr.toString() === String(onChainP1));
+        console.log('  caller is player2:', senderAddr.toString() === String(onChainP2));
+        if (winnerId === '1' || winnerId === '0x1') {
+          console.log('  => winner should be player1. caller IS player1:', senderAddr.toString() === String(onChainP1));
+        } else if (winnerId === '2' || winnerId === '0x2') {
+          console.log('  => winner should be player2. caller IS player2:', senderAddr.toString() === String(onChainP2));
+        } else {
+          console.log('  => draw or unknown winner_id');
+        }
+      } catch (prefErr) {
+        console.warn('[useGameContract] Pre-flight check failed (non-fatal):', prefErr);
+      }
+
       // Pad card ID arrays to exactly 5 elements
       const padTo5 = (ids: number[]): InstanceType<typeof Fr>[] => {
         const padded = [...ids];
@@ -294,7 +415,7 @@ export function useGameContract(
       // hand_proof_2, hand_proof_2_inputs,
       // move_proof_1, move_inputs_1, ... move_proof_9, move_inputs_9,
       // opponent, card_to_transfer, caller_card_ids, opponent_card_ids
-      const receipt = await contract.methods
+      const processGameCall = contract.methods
         .process_game(
           new Fr(BigInt(gameId)),
           handVkFields,
@@ -308,7 +429,21 @@ export function useGameContract(
           new Fr(BigInt(cardToTransfer)),
           padTo5(callerCardIds),
           padTo5(opponentCardIds),
-        )
+        );
+
+      // Try simulate first to get detailed error before sending
+      try {
+        console.log('[useGameContract] Running simulate() to pre-check...');
+        await processGameCall.simulate({ from: senderAddr });
+        console.log('[useGameContract] simulate() succeeded — sending tx...');
+      } catch (simErr) {
+        console.error('[useGameContract] simulate() FAILED — this is the actual error:', simErr);
+        // Re-throw with simulation error details
+        const simMsg = simErr instanceof Error ? simErr.message : String(simErr);
+        throw new Error(`Simulation failed (tx would revert): ${simMsg}`);
+      }
+
+      const receipt = await processGameCall
         .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: 600 } });
 
       const hash = receipt.txHash?.toString() || 'confirmed';

@@ -1,0 +1,202 @@
+.card-selector {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  display: flex;
+  background: rgba(10, 18, 10, 0.85);
+  backdrop-filter: blur(4px);
+}
+
+.card-selector__back {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border: 1px solid rgba(232, 228, 216, 0.2);
+  border-radius: 8px;
+  background: rgba(26, 46, 26, 0.8);
+  color: rgba(232, 228, 216, 0.7);
+  font-family: 'Nunito', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.card-selector__back:hover {
+  border-color: rgba(232, 228, 216, 0.4);
+  color: rgba(232, 228, 216, 0.9);
+}
+
+.card-selector__collection {
+  flex: 0 0 60%;
+  padding: 72px 24px 24px;
+  overflow-y: auto;
+}
+
+.card-selector__collection-title {
+  font-family: 'Cinzel', serif;
+  font-size: 18px;
+  font-weight: 700;
+  color: rgba(232, 228, 216, 0.7);
+  margin: 0 0 16px;
+  letter-spacing: 1px;
+}
+
+.card-selector__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 12px;
+  padding-bottom: 24px;
+}
+
+.card-selector__grid-item {
+  position: relative;
+  cursor: pointer;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+  transform-origin: center center;
+}
+
+.card-selector__grid-item:hover {
+  transform: scale(2.2);
+  z-index: 10;
+}
+
+/* Edge-aware scaling origins */
+.card-selector__grid-item--left-edge:hover {
+  transform-origin: left center;
+}
+
+.card-selector__grid-item--right-edge:hover {
+  transform-origin: right center;
+}
+
+.card-selector__grid-item--top-edge:hover {
+  transform-origin: center top;
+}
+
+.card-selector__grid-item--bottom-edge:hover {
+  transform-origin: center bottom;
+}
+
+.card-selector__grid-item--selected {
+  opacity: 0.65;
+}
+
+.card-selector__grid-item--all-selected {
+  opacity: 0.35;
+}
+
+.card-selector__grid-item--all-selected::after {
+  content: '\2713';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 28px;
+  color: #7bc67e;
+  text-shadow: 0 0 8px rgba(123, 198, 126, 0.5);
+  pointer-events: none;
+}
+
+.card-selector__count-badge {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(26, 46, 26, 0.9);
+  border: 1px solid rgba(232, 228, 216, 0.25);
+  color: rgba(232, 228, 216, 0.85);
+  font-family: 'Nunito', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.card-selector__hand {
+  flex: 0 0 40%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  border-left: 1px solid rgba(232, 228, 216, 0.08);
+}
+
+.card-selector__hand-title {
+  font-family: 'Cinzel', serif;
+  font-size: 16px;
+  font-weight: 700;
+  color: rgba(232, 228, 216, 0.7);
+  margin: 0 0 24px;
+  letter-spacing: 1px;
+}
+
+.card-selector__slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+  margin-bottom: 32px;
+}
+
+.card-selector__slot {
+  width: 100px;
+  height: 140px;
+  border: 2px dashed rgba(232, 228, 216, 0.15);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(232, 228, 216, 0.2);
+  font-family: 'Nunito', sans-serif;
+  font-size: 24px;
+  transition: border-color 0.2s ease;
+}
+
+.card-selector__slot--filled {
+  border: none;
+  cursor: pointer;
+}
+
+.card-selector__slot--filled:hover {
+  opacity: 0.7;
+}
+
+.card-selector__play-btn {
+  padding: 14px 48px;
+  border: 1px solid rgba(123, 198, 126, 0.4);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(123, 198, 126, 0.25), rgba(26, 46, 26, 0.9));
+  color: rgba(232, 228, 216, 0.9);
+  font-family: 'Cinzel', serif;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+.card-selector__play-btn:hover:not(:disabled) {
+  border-color: rgba(123, 198, 126, 0.7);
+  box-shadow: 0 0 24px rgba(123, 198, 126, 0.2);
+  transform: translateY(-2px);
+}
+
+.card-selector__play-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.card-selector__count {
+  font-family: 'Nunito', sans-serif;
+  font-size: 13px;
+  color: rgba(232, 228, 216, 0.4);
+  margin-top: 12px;
+}

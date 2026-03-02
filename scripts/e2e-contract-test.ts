@@ -426,46 +426,124 @@ async function main() {
   console.log(`  On-chain card_commit_1: ${onChainCC1}`);
   console.log(`  On-chain card_commit_2: ${onChainCC2}`);
 
-  // Generate proofs
-  // NOTE: The card commits used in proofs must match the on-chain values.
-  // The on-chain card_commit is computed by commit_five_nfts using:
-  //   poseidon2_hash([card_ids..., poseidon2_hash([nhk_app_secret, contract_address])])
-  // We need to use the same blinding factors. For the test, we read the commits
-  // from on-chain and pass them to the proof generator.
-  console.log('  Generating ZK proofs for full game...');
-
-  const p1CommitStr = onChainCC1.toString();
-  const p2CommitStr = onChainCC2.toString();
-
-  // For proof generation, we need the actual blinding factors.
-  // In the real contract, blinding_factor = poseidon2_hash([nhk_app_secret, nft_contract_address]).
-  // Since we don't have direct access to nhk_app_secret in this test, we compute it
-  // by requesting it from the wallet's PXE context.
-  //
-  // IMPORTANT: If the contract's commit_five_nfts uses a different blinding computation
-  // than what we generate proofs with, verify_honk_proof will fail because the
-  // card_commit in the proof won't match the on-chain value.
-  //
-  // For this test, we generate proofs with the on-chain card_commits as public inputs.
-  // The circuit will verify that the commitment matches, so we need matching private inputs.
-  //
-  // TODO: Extract blinding factors from PXE or compute them matching the contract logic.
-  // For now, we test the lifecycle (create/join/settle) and document that process_game
-  // proof verification requires matching blinding factors.
-
-  console.log('  [NOTE] Full process_game proof generation requires matching blinding factors.');
-  console.log('  Testing contract lifecycle assertions instead...');
-
   // Verify game is active but not yet settled
+  const gameStatus2Pre = await gameContract.methods
+    .__aztec_nr_internals__get_game_status(gameId2)
+    .simulate();
+  assert(BigInt(gameStatus2Pre) === 2n, 'Game is active (status=2) after create + join');
+
+  const isSettled2Pre = await gameContract.methods
+    .__aztec_nr_internals__is_game_settled(gameId2)
+    .simulate();
+  assert(!isSettled2Pre, 'Game is NOT settled before process_game');
+
+  // 4a. Derive blinding factors via NFT contract simulate
+  console.log('  Deriving blinding factors via compute_blinding_factor...');
+  const t5P1Blinding = await nftContract.methods
+    .__aztec_nr_internals__compute_blinding_factor()
+    .simulate({ from: p1Addr });
+  const t5P2Blinding = await nftContract.methods
+    .__aztec_nr_internals__compute_blinding_factor()
+    .simulate({ from: p2Addr });
+  console.log(`    P1 blinding factor: ${t5P1Blinding}`);
+  console.log(`    P2 blinding factor: ${t5P2Blinding}`);
+
+  // 4b. Verify blinding factors produce matching card commits
+  console.log('  Verifying card commitments match on-chain values...');
+  const computedT5CC1 = await computeCardCommit(api, t5P1Cards, BigInt(t5P1Blinding));
+  const computedT5CC2 = await computeCardCommit(api, t5P2Cards, BigInt(t5P2Blinding));
+  console.log(`    Computed card_commit_1: ${computedT5CC1}`);
+  console.log(`    Computed card_commit_2: ${computedT5CC2}`);
+  assert(BigInt(computedT5CC1) === BigInt(onChainCC1), 'Computed card_commit_1 matches on-chain');
+  assert(BigInt(computedT5CC2) === BigInt(onChainCC2), 'Computed card_commit_2 matches on-chain');
+
+  // 5. Generate all 11 ZK proofs (2 hand + 9 move)
+  console.log('  Generating ZK proofs (2 hand + 9 move)...');
+  console.log('  ⚠  This is CPU-intensive (~30-60s per proof).');
+  const t5ProofStart = Date.now();
+
+  const p1CommitStr = '0x' + BigInt(onChainCC1).toString(16).padStart(64, '0');
+  const p2CommitStr = '0x' + BigInt(onChainCC2).toString(16).padStart(64, '0');
+  const t5P1BlindingStr = '0x' + BigInt(t5P1Blinding).toString(16).padStart(64, '0');
+  const t5P2BlindingStr = '0x' + BigInt(t5P2Blinding).toString(16).padStart(64, '0');
+
+  const t5Proofs = await generateFullGameProofs(
+    api,
+    proveHandArtifact,
+    gameMoveArtifact,
+    t5P1Cards,
+    t5P2Cards,
+    t5P1BlindingStr,
+    t5P2BlindingStr,
+    p1CommitStr,
+    p2CommitStr,
+  );
+
+  const t5Elapsed = ((Date.now() - t5ProofStart) / 1000).toFixed(1);
+  console.log(`  All proofs generated in ${t5Elapsed}s`);
+  console.log(`  Winner: ${t5Proofs.winner}`);
+
+  assert(t5Proofs.moveProofs.length === 9, 'Generated exactly 9 move proofs');
+
+  // 6. Verify proof chain integrity
+  console.log('  Verifying proof chain...');
+  for (let i = 0; i < 8; i++) {
+    assert(
+      t5Proofs.moveInputs[i][3] === t5Proofs.moveInputs[i + 1][2],
+      `Proof chain valid: end_state[${i}] == start_state[${i + 1}]`,
+    );
+  }
+
+  // 7. Determine winner and call process_game
+  const t5Winner = t5Proofs.winner;
+  console.log(`  Game result: ${t5Winner}`);
+
+  const t5IsP1Winner = t5Winner === 'player1';
+  const t5IsDraw = t5Winner === 'draw';
+  const t5CallerAddr = t5IsDraw ? p1Addr : (t5IsP1Winner ? p1Addr : p2Addr);
+  const t5OpponentAddr = t5IsDraw ? p2Addr : (t5IsP1Winner ? p2Addr : p1Addr);
+  const t5CallerCardIds = t5IsDraw ? t5P1Cards : (t5IsP1Winner ? t5P1Cards : t5P2Cards);
+  const t5OpponentCardIds = t5IsDraw ? t5P2Cards : (t5IsP1Winner ? t5P2Cards : t5P1Cards);
+  const t5CardToTransfer = t5IsDraw ? 0 : t5OpponentCardIds[0];
+
+  // Format proofs as Fr arrays for the contract call
+  const t5Hp1Proof = t5Proofs.handProof1.proofFields.map(toFr);
+  const t5Hp1Inputs = t5Proofs.handProof1.publicInputs.map(toFr);
+  const t5Hp2Proof = t5Proofs.handProof2.proofFields.map(toFr);
+  const t5Hp2Inputs = t5Proofs.handProof2.publicInputs.map(toFr);
+  const t5Mp = t5Proofs.moveProofs.map((p: any) => p.proofFields.map(toFr));
+  const t5Mi = t5Proofs.moveInputs.map((inputs: string[]) => inputs.map(toFr));
+
+  console.log('  Calling process_game...');
+  await gameContract.methods
+    .__aztec_nr_internals__process_game(
+      gameId2,
+      realHandVkFields,
+      realMoveVkFields,
+      t5Hp1Proof, t5Hp1Inputs,
+      t5Hp2Proof, t5Hp2Inputs,
+      t5Mp[0], t5Mi[0], t5Mp[1], t5Mi[1], t5Mp[2], t5Mi[2],
+      t5Mp[3], t5Mi[3], t5Mp[4], t5Mi[4], t5Mp[5], t5Mi[5],
+      t5Mp[6], t5Mi[6], t5Mp[7], t5Mi[7], t5Mp[8], t5Mi[8],
+      t5OpponentAddr,
+      new Fr(BigInt(t5CardToTransfer)),
+      t5CallerCardIds.map((id: number) => new Fr(BigInt(id))),
+      t5OpponentCardIds.map((id: number) => new Fr(BigInt(id))),
+    )
+    .send(sendAs(t5CallerAddr)).wait();
+  console.log('  process_game transaction succeeded!');
+
+  // 8. Verify on-chain settlement
   const gameStatus2 = await gameContract.methods
     .__aztec_nr_internals__get_game_status(gameId2)
     .simulate();
-  assert(BigInt(gameStatus2) === 2n, 'Game is active (status=2) after create + join');
+  assert(BigInt(gameStatus2) === 3n, 'Game status is 3 (settled) after process_game');
 
   const isSettled2 = await gameContract.methods
     .__aztec_nr_internals__is_game_settled(gameId2)
     .simulate();
-  assert(!isSettled2, 'Game is NOT settled before process_game');
+  assert(isSettled2 === true, 'Game is settled after process_game');
+  console.log('  === Test 5 PASSED: Full game settled on-chain ===');
 
   // ========================================================================
   // TEST 6: FAIL — process_game With Tampered Proofs
@@ -860,11 +938,11 @@ async function main() {
     .simulate();
   assert(!game0Settled, 'Game 0 is not settled (process_game never called)');
 
-  // Game 2 was created + joined but not settled
+  // Game 2 was settled in Test 5 via process_game
   const game2Settled = await gameContract.methods
     .__aztec_nr_internals__is_game_settled(gameId2)
     .simulate();
-  assert(!game2Settled, 'Game 2 is not settled (no valid process_game call)');
+  assert(game2Settled === true, 'Game 2 is settled (process_game succeeded in Test 5)');
 
   // ========================================================================
   // Cleanup
@@ -895,6 +973,13 @@ async function main() {
 ║    ✓ cancel_game cancels game (status=4)                ║
 ║    ✓ Card commits stored correctly on-chain             ║
 ║                                                         ║
+║  Full Settlement (KEY TEST):                            ║
+║    ✓ process_game with REAL proofs succeeds             ║
+║      - Derives blinding factors via compute_blinding    ║
+║      - Verifies card commits match on-chain             ║
+║      - 11 genuine ZK proofs (2 hand + 9 move)          ║
+║      - Game status → 3 (settled) after process_game     ║
+║                                                         ║
 ║  Failure Cases:                                         ║
 ║    ✓ Join non-existent game → reverts                   ║
 ║    ✓ Join own game → reverts                            ║
@@ -903,10 +988,8 @@ async function main() {
 ║    ✓ process_game with mismatched card_commits → reverts║
 ║    ✓ Card on occupied cell → circuit rejects            ║
 ║                                                         ║
-║  Real-Proof Failure Case (KEY TEST):                    ║
+║  Real-Proof Failure Case:                               ║
 ║    ✓ Same-player double move with REAL proofs           ║
-║      - 11 genuine ZK proofs (2 hand + 9 move)          ║
-║      - Each individually passes verify_honk_proof       ║
 ║      - Swapped move order breaks proof chain            ║
 ║      - Contract rejects via chaining assertion          ║
 ╚══════════════════════════════════════════════════════════╝`);

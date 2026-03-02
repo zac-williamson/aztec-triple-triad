@@ -4,17 +4,12 @@ export type Rarity = 'common' | 'rare' | 'epic' | 'legendary';
 
 /**
  * Get the rarity tier for a card by ID.
- * Matches the axolotl card database rarity ranges:
- *   1-180: common, 181-230: rare, 231-250: epic, 251-258: legendary
- * Legacy 50-card DB uses rank-sum heuristic.
+ * Matches contract pool ranges: 1-20 common, 21-30 rare, 31-40 epic, 41-50 legendary
  */
 export function getCardRarity(cardId: number): Rarity {
-  // Axolotl card database ranges
-  if (cardId >= 251) return 'legendary';
-  if (cardId >= 231) return 'epic';
-  if (cardId >= 181) return 'rare';
-  if (cardId >= 1 && cardId <= 180) return 'common';
-  // Fallback for unknown IDs
+  if (cardId >= 41) return 'legendary';
+  if (cardId >= 31) return 'epic';
+  if (cardId >= 21) return 'rare';
   return 'common';
 }
 

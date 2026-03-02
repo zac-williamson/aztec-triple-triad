@@ -1,0 +1,159 @@
+.pack-opening {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 18, 10, 0.95);
+}
+
+/* Phase A: Pack display */
+.pack-opening__pack {
+  width: 180px;
+  height: 240px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #2a3a2a, #1a2e1a);
+  border: 2px solid rgba(196, 162, 101, 0.5);
+  box-shadow:
+    0 0 30px rgba(196, 162, 101, 0.2),
+    inset 0 0 20px rgba(196, 162, 101, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 48px;
+}
+
+.pack-opening__pack--idle {
+  animation: pack-idle 2s ease-in-out infinite;
+}
+
+.pack-opening__pack--shudder {
+  animation: pack-shudder 2s ease-in-out forwards;
+}
+
+.pack-opening__pack--explode {
+  animation: pack-explode 0.3s ease-out forwards;
+}
+
+@keyframes pack-idle {
+  0%, 100% { transform: scale(1) rotate(0deg); }
+  50% { transform: scale(1.02) rotate(0.5deg); }
+}
+
+@keyframes pack-shudder {
+  0% { transform: translate(0, 0) scale(1); filter: brightness(1); }
+  10% { transform: translate(-2px, 0) scale(1.01); }
+  20% { transform: translate(3px, 0) scale(1.02); }
+  30% { transform: translate(-4px, 1px) scale(1.03); filter: brightness(1.1); }
+  40% { transform: translate(5px, -1px) scale(1.05); }
+  50% { transform: translate(-6px, 0) scale(1.06); filter: brightness(1.2); }
+  60% { transform: translate(7px, 1px) scale(1.08); }
+  70% { transform: translate(-8px, -1px) scale(1.1); filter: brightness(1.4); }
+  80% { transform: translate(8px, 0) scale(1.12); filter: brightness(1.6); }
+  90% { transform: translate(-5px, 0) scale(1.15); filter: brightness(2); }
+  100% { transform: translate(0, 0) scale(1.2); filter: brightness(3); opacity: 0; }
+}
+
+@keyframes pack-explode {
+  from { opacity: 1; transform: scale(1.2); }
+  to { opacity: 0; transform: scale(2); filter: brightness(4); }
+}
+
+/* Phase C: Explosion canvas */
+.pack-opening__explosion {
+  position: absolute;
+  width: 400px;
+  height: 400px;
+  pointer-events: none;
+}
+
+/* Phase D: Card reveal */
+.pack-opening__cards {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+  max-width: 700px;
+  padding: 24px;
+}
+
+.pack-opening__card-wrapper {
+  perspective: 600px;
+  cursor: pointer;
+}
+
+.pack-opening__card-flipper {
+  position: relative;
+  width: 100%;
+  transition: transform 0.6s ease;
+  transform-style: preserve-3d;
+}
+
+.pack-opening__card-flipper--flipped {
+  transform: rotateY(180deg);
+}
+
+.pack-opening__card-front,
+.pack-opening__card-back {
+  backface-visibility: hidden;
+}
+
+.pack-opening__card-front {
+  transform: rotateY(180deg);
+}
+
+.pack-opening__card-back-inner {
+  width: 100%;
+  aspect-ratio: 5/7;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #2a3a2a, #1a2e1a);
+  border: 1px solid rgba(196, 162, 101, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  color: rgba(196, 162, 101, 0.4);
+  animation: card-wobble 2s ease-in-out infinite;
+  animation-delay: var(--wobble-delay, 0s);
+}
+
+@keyframes card-wobble {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(1deg); }
+  75% { transform: rotate(-1deg); }
+}
+
+.pack-opening__card-glow {
+  animation: card-glow-pulse 0.5s ease-out;
+}
+
+@keyframes card-glow-pulse {
+  0% { box-shadow: 0 0 20px rgba(196, 162, 101, 0.6); }
+  100% { box-shadow: 0 0 0 rgba(196, 162, 101, 0); }
+}
+
+/* Dissolve animation */
+.pack-opening__card-wrapper--dissolving {
+  animation: card-dissolve 0.6s ease-in forwards;
+  animation-delay: var(--dissolve-delay, 0s);
+}
+
+@keyframes card-dissolve {
+  from { transform: scale(1); opacity: 1; filter: blur(0); }
+  to { transform: scale(0.6); opacity: 0; filter: blur(4px); }
+}
+
+.pack-opening__continue {
+  margin-top: 24px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 14px;
+  color: rgba(232, 228, 216, 0.4);
+  animation: pulse-text 2s ease-in-out infinite;
+  cursor: pointer;
+}
+
+@keyframes pulse-text {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}

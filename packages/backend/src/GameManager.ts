@@ -20,10 +20,19 @@ export function generateGameId(): string {
 }
 
 const GAME_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const QUEUE_STALE_MS = 30 * 1000; // 30 seconds without ping
+
+interface QueueEntry {
+  playerId: string;
+  cardIds: number[];
+  queuedAt: number;
+  lastPing: number;
+}
 
 export class GameManager {
   private games = new Map<string, GameRoom>();
   private playerToGame = new Map<string, string>();
+  private matchmakingQueue: QueueEntry[] = [];
 
   private validateCardIds(cardIds: number[]): void {
     if (cardIds.length !== 5) {
@@ -267,6 +276,62 @@ export class GameManager {
   getOnChainStatus(gameId: string): OnChainGameStatus | null {
     const room = this.games.get(gameId);
     return room?.onChainStatus ?? null;
+  }
+
+  // --- Matchmaking Queue ---
+
+  queuePlayer(playerId: string, cardIds: number[]): number {
+    this.validateCardIds(cardIds);
+
+    // Check player isn't already in a game or queue
+    if (this.playerToGame.has(playerId)) {
+      throw new Error('You are already in an active game');
+    }
+    if (this.matchmakingQueue.some(e => e.playerId === playerId)) {
+      throw new Error('You are already in the matchmaking queue');
+    }
+
+    const now = Date.now();
+    this.matchmakingQueue.push({ playerId, cardIds, queuedAt: now, lastPing: now });
+    return this.matchmakingQueue.length;
+  }
+
+  dequeuePlayer(playerId: string): boolean {
+    const idx = this.matchmakingQueue.findIndex(e => e.playerId === playerId);
+    if (idx === -1) return false;
+    this.matchmakingQueue.splice(idx, 1);
+    return true;
+  }
+
+  tryMatch(): { entry1: QueueEntry; entry2: QueueEntry; room: GameRoom } | null {
+    if (this.matchmakingQueue.length < 2) return null;
+
+    const entry1 = this.matchmakingQueue.shift()!;
+    const entry2 = this.matchmakingQueue.shift()!;
+
+    // Create a game room using existing createGame + joinGame flow
+    const room = this.createGame(entry1.playerId, entry1.cardIds);
+    this.joinGame(room.id, entry2.playerId, entry2.cardIds);
+
+    // Re-fetch to get updated state
+    const updatedRoom = this.games.get(room.id)!;
+    return { entry1, entry2, room: updatedRoom };
+  }
+
+  updatePing(playerId: string): boolean {
+    const entry = this.matchmakingQueue.find(e => e.playerId === playerId);
+    if (!entry) return false;
+    entry.lastPing = Date.now();
+    return true;
+  }
+
+  cleanupStaleQueue(): number {
+    const now = Date.now();
+    const stale = this.matchmakingQueue.filter(e => now - e.lastPing > QUEUE_STALE_MS);
+    for (const entry of stale) {
+      this.dequeuePlayer(entry.playerId);
+    }
+    return stale.length;
   }
 
   get gameCount(): number {

@@ -106,7 +106,7 @@ function FloorModel({ modelPath, texturePath, position, rotation = [0, 0, 0], sc
 // ---------- Rectangular arena ground ----------
 // Uses the dedicated mud path texture (tileable).
 
-function ArenaSurface() {
+export function ArenaSurface() {
   const [texture, setTexture] = useState<Texture | null>(null);
 
   useEffect(() => {
@@ -139,7 +139,7 @@ function ArenaSurface() {
 // ---------- Wooden border frame ----------
 // Uses mud path texture tinted darker for a wooden-plank look.
 
-function BorderFrame() {
+export function BorderFrame() {
   const [texture, setTexture] = useState<Texture | null>(null);
 
   useEffect(() => {

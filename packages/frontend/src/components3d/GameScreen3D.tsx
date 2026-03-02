@@ -26,6 +26,7 @@ interface GameScreenProps {
   canSettle?: boolean;
   onSettle?: (selectedCardId: number) => void;
   settleTxStatus?: SettleTxStatus;
+  settleProgress?: { myHand: boolean; oppHand: boolean; moves: number };
 }
 
 export function GameScreen3D({
@@ -42,6 +43,7 @@ export function GameScreen3D({
   canSettle,
   onSettle,
   settleTxStatus,
+  settleProgress,
 }: GameScreenProps) {
   const [selectedCardIndex, setSelectedCardIndex] = useState<number | null>(null);
   const { flyingCard, startFlyAnimation, completeFlyAnimation, isAnimatingCell } = useCardAnimation();

@@ -130,7 +130,7 @@ The function must:
    - `card_nullifier_secrets`: `[Field; 5]` — 5 nullifier secrets
    - `grumpkin_private_key`: Field — player's Grumpkin private key
 6. Execute: `const { witness } = await noir.execute(inputs)`
-7. Generate proof: `const proofData = await backend.generateProof(witness, { verifierTarget: 'noir-recursive' })`
+7. Generate proof: `const proofData = await backend.generateProof(witness)`
 8. Extract public inputs from `proofData.publicInputs` (5 fields):
    - `[0]` = card_commit
    - `[1]` = player_address
@@ -177,7 +177,7 @@ export async function generateProveHandProof(
     };
 
     const { witness } = await noir.execute(inputs);
-    const proofData = await backend.generateProof(witness, { verifierTarget: 'noir-recursive' });
+    const proofData = await backend.generateProof(witness);
 
     // Base64-encode the proof bytes
     const proofBase64 = btoa(String.fromCharCode(...proofData.proof));
@@ -256,7 +256,7 @@ The function must:
    - `encrypted_card_nullifier`: pub Field — ECDH-encrypted nullifier
    - Private inputs: `current_player`, `card_id`, `row`, `col`, `board_before` (18 fields), `board_after` (18 fields), `scores_before` (2 fields), `scores_after` (2 fields), `current_turn_before`, various player data, ECDH keys
 5. Execute witness: `const { witness } = await noir.execute(inputs)`
-6. Generate proof: `const proofData = await backend.generateProof(witness, { verifierTarget: 'noir-recursive' })`
+6. Generate proof: `const proofData = await backend.generateProof(witness)`
 7. Extract 7 public inputs and serialize
 
 ### Step 3.2: Implement Pedersen state hash computation
@@ -449,7 +449,7 @@ To compute VK hashes, compile each circuit and use bb.js:
 ```typescript
 const backend = new UltraHonkBackend(circuit.bytecode, api);
 const dummyWitness = await noir.execute(dummyInputs);
-const dummyProof = await backend.generateProof(dummyWitness, { verifierTarget: 'noir-recursive' });
+const dummyProof = await backend.generateProof(dummyWitness);
 const artifacts = await backend.generateRecursiveProofArtifacts(dummyProof.proof, dummyProof.publicInputs.length);
 const vkHash = artifacts.vkHash;
 ```

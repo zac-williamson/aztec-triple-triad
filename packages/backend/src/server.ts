@@ -16,6 +16,7 @@ const VALID_MESSAGE_TYPES = new Set([
   'SUBMIT_HAND_PROOF', 'SUBMIT_MOVE_PROOF',
   'TX_CONFIRMED', 'TX_FAILED', 'CANCEL_GAME',
   'SHARE_AZTEC_INFO',
+  'QUEUE_MATCHMAKING', 'CANCEL_MATCHMAKING', 'PING',
 ]);
 
 export interface ServerOptions {
@@ -202,6 +203,15 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
       case 'SHARE_AZTEC_INFO':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
         if (!msg.aztecAddress || typeof msg.aztecAddress !== 'string') return 'aztecAddress is required';
+        break;
+      case 'QUEUE_MATCHMAKING':
+        if (!Array.isArray(msg.cardIds)) return 'cardIds must be an array of numbers';
+        if (!msg.cardIds.every((id: any) => typeof id === 'number' && Number.isInteger(id) && id >= 1 && id <= 50)) {
+          return 'cardIds must contain integers between 1 and 50';
+        }
+        break;
+      case 'CANCEL_MATCHMAKING':
+      case 'PING':
         break;
     }
     return null; // Valid
@@ -461,10 +471,53 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
         }
         break;
       }
+
+      case 'QUEUE_MATCHMAKING': {
+        try {
+          const position = gameManager.queuePlayer(playerId, msg.cardIds);
+          send(ws, { type: 'MATCHMAKING_QUEUED', position });
+
+          // Try to match immediately
+          const match = gameManager.tryMatch();
+          if (match) {
+            const { entry1, entry2, room } = match;
+            sendToPlayer(entry1.playerId, {
+              type: 'MATCH_FOUND',
+              gameId: room.id,
+              playerNumber: 1,
+              gameState: sanitizeGameStateForPlayer(room.state, entry1.playerId, room.id),
+            });
+            sendToPlayer(entry2.playerId, {
+              type: 'MATCH_FOUND',
+              gameId: room.id,
+              playerNumber: 2,
+              gameState: sanitizeGameStateForPlayer(room.state, entry2.playerId, room.id),
+            });
+          }
+        } catch (err: any) {
+          send(ws, { type: 'ERROR', message: err.message });
+        }
+        break;
+      }
+
+      case 'CANCEL_MATCHMAKING': {
+        gameManager.dequeuePlayer(playerId);
+        send(ws, { type: 'MATCHMAKING_CANCELLED' });
+        break;
+      }
+
+      case 'PING': {
+        gameManager.updatePing(playerId);
+        send(ws, { type: 'PONG' });
+        break;
+      }
     }
   }
 
   function handleDisconnect(playerId: string): void {
+    // Remove from matchmaking queue if present
+    gameManager.dequeuePlayer(playerId);
+
     // Fix 4.3: Check if player is in a game and handle cleanup with timeout
     const gameId = gameManager.getPlayerGame(playerId);
     if (gameId) {
@@ -489,9 +542,10 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
     gameManager.removePlayer(playerId);
   }
 
-  // Periodic cleanup of stale games
+  // Periodic cleanup of stale games and queue entries
   const cleanupInterval = setInterval(() => {
     gameManager.cleanupStaleGames();
+    gameManager.cleanupStaleQueue();
   }, CLEANUP_INTERVAL_MS);
 
   function close(): Promise<void> {

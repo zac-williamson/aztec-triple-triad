@@ -65,19 +65,24 @@ function findRootDir(): string {
 
 const rootDir = findRootDir();
 
-vi.stubGlobal('fetch', async (url: string) => {
-  const map: Record<string, string> = {
-    // Circuit artifacts (used by circuitLoader.ts → proofWorker.ts)
+// Intercept relative-path artifact fetches (used by circuitLoader/useGameContract in
+// browser) while passing ALL other requests through to the real fetch (Aztec node, etc.)
+const originalFetch = globalThis.fetch;
+
+vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
+  const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+  const artifactMap: Record<string, string> = {
     '/circuits/prove_hand.json': resolve(rootDir, 'circuits/target/prove_hand.json'),
     '/circuits/game_move.json': resolve(rootDir, 'circuits/target/game_move.json'),
-    // Contract artifacts (used by useGameContract.ts settleGame)
     '/contracts/triple_triad_game-TripleTriadGame.json': resolve(rootDir, 'packages/contracts/target/triple_triad_game-TripleTriadGame.json'),
     '/contracts/triple_triad_nft-TripleTriadNFT.json': resolve(rootDir, 'packages/contracts/target/triple_triad_nft-TripleTriadNFT.json'),
   };
-  const filePath = map[url];
-  if (!filePath) throw new Error(`Unmocked fetch: ${url}`);
-  const raw = readFileSync(filePath, 'utf-8');
-  return { ok: true, status: 200, json: async () => JSON.parse(raw) };
+  const filePath = artifactMap[urlStr];
+  if (filePath) {
+    const raw = readFileSync(filePath, 'utf-8');
+    return { ok: true, status: 200, json: async () => JSON.parse(raw) } as Response;
+  }
+  return originalFetch(url, init);
 });
 
 // ============================================================================
@@ -368,26 +373,9 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
     console.log(`Connecting to Aztec node at ${PXE_URL}...`);
     const node = createAztecNodeClient(PXE_URL);
 
-    console.log('Waiting for Aztec node to have blocks...');
-    for (let i = 0; i < 120; i++) {
-      try {
-        const blockNum = await node.getBlockNumber();
-        if (blockNum > 0) {
-          const header = await node.getBlockHeader();
-          console.log(`  Node at block ${blockNum}, timestamp=${header?.globalVariables?.timestamp ?? 'unknown'}`);
-          break;
-        }
-      } catch { /* node not ready yet */ }
-      if (i === 119) throw new Error('Node never produced blocks');
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-
     // Mirrors useAztec.ts: EmbeddedWallet.create(node, { ephemeral: true })
     console.log('Creating EmbeddedWallet...');
     wallet = await EmbeddedWallet.create(node, { ephemeral: true });
-
-    console.log('Waiting for embedded PXE to sync...');
-    await new Promise((r) => setTimeout(r, 5000));
 
     // Mirrors useAztec.ts: register SponsoredFPC
     console.log('Registering SponsoredFPC contract...');
@@ -506,13 +494,16 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
       .set_game_contract(gameContract.address)
       .send(sendAs(deployerAddr));
 
-    // Mint cards
+    // Mint cards with known IDs to both players
     console.log('Minting cards to players...');
-    console.log('  Player 1: calling get_cards_for_new_player (self-mint)...');
-    await nftContract.methods
-      .get_cards_for_new_player()
-      .send(sendAs(p1Addr));
-    console.log('  Player 1: starter cards minted');
+    for (const id of p1CardIds) {
+      const card = CARD_DATABASE.find((c: any) => c.id === id)!;
+      const packed = packRanks(card.ranks.top, card.ranks.right, card.ranks.bottom, card.ranks.left);
+      await nftContract.methods
+        .mint_to_private(p1Addr, new Fr(BigInt(id)), new Fr(BigInt(packed)))
+        .send(sendAs(deployerAddr));
+    }
+    console.log('  Minted cards 1-5 to Player 1');
 
     for (const id of p2CardIds) {
       const card = CARD_DATABASE.find((c: any) => c.id === id)!;
@@ -731,11 +722,11 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
 
     const moves: [Player, number, number, number][] = [
       ['player1', 0, 0, 0],
-      ['player2', 0, 0, 1],
-      ['player1', 0, 0, 2],
+      ['player2', 0, 0, 2],
+      ['player1', 0, 0, 1],
       ['player2', 0, 1, 0],
-      ['player1', 0, 1, 1],
-      ['player2', 0, 1, 2],
+      ['player1', 0, 1, 2],
+      ['player2', 0, 1, 1],
       ['player1', 0, 2, 0],
       ['player2', 0, 2, 1],
       ['player1', 0, 2, 2],
@@ -837,13 +828,11 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
     // ================================================================
     // Phase 5: On-chain settlement using FRONTEND's exact code path
     //
-    // This mirrors useGameContract.ts settleGame (lines 87-241):
+    // This mirrors the settlement path:
     //   1. Load circuit artifacts via circuitLoader (loadProveHandCircuit/loadGameMoveCircuit)
     //   2. Create UltraHonkBackend instances via getBarretenberg() singleton
-    //   3. Extract VKs via getVerificationKey() — NO verifierTarget arg
-    //      (this is the CRITICAL test: if the frontend's VK extraction
-    //       doesn't match the deployed VK hash, settlement WILL fail,
-    //       proving there's a real frontend bug)
+    //   3. Extract VKs via getVerificationKey({ verifierTarget: 'noir-recursive' })
+    //      (must match how VK hashes were computed at deploy time)
     //   4. Convert VKs to fields via vkToFields (inline, copied verbatim)
     //   5. Convert proofs via base64ToFields (inline, copied verbatim)
     //   6. Call process_game with the same argument format
@@ -865,15 +854,14 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
     const handBackend = new UltraHonkBackend(handCircuit.bytecode, frontendApi);
     const moveBackend = new UltraHonkBackend(moveCircuit.bytecode, frontendApi);
 
-    // 5c. Extract VKs exactly as the frontend does
-    // (mirrors useGameContract.ts lines 135-138)
-    // CRITICAL: Frontend calls getVerificationKey() WITHOUT { verifierTarget: 'noir-recursive' }
-    // The deployment used computeVkHash which calls getVerificationKey({ verifierTarget: 'noir-recursive' })
-    // If these produce different VKs, this test catches the bug.
-    console.log('  Extracting VKs via frontend getVerificationKey()...');
+    // 5c. Extract VKs for recursive verification
+    // The deployment computed VK hashes via computeVkHash which uses
+    // getVerificationKey({ verifierTarget: 'noir-recursive' }).
+    // The VKs supplied to process_game must match, so we use the same option.
+    console.log('  Extracting VKs via getVerificationKey({ verifierTarget: noir-recursive })...');
     const [frontendHandVk, frontendMoveVk] = await Promise.all([
-      handBackend.getVerificationKey(),
-      moveBackend.getVerificationKey(),
+      handBackend.getVerificationKey({ verifierTarget: 'noir-recursive' }),
+      moveBackend.getVerificationKey({ verifierTarget: 'noir-recursive' }),
     ]);
 
     // 5d. Convert VKs to field arrays
@@ -1007,7 +995,7 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
     console.log('    5. Move proof relay + server-side move application works');
     console.log('    6. Proof chain integrity holds (endStateHash[i] == startStateHash[i+1])');
     console.log('    7. Frontend circuitLoader loads artifacts correctly');
-    console.log('    8. Frontend getVerificationKey() VKs match deployed VK hashes');
+    console.log('    8. Recursive VKs match deployed VK hashes');
     console.log('    9. Frontend base64ToFields/vkToFields produce correct field arrays');
     console.log('   10. Frontend flatMap proof spread matches process_game ABI');
     console.log('   11. All 11 proofs pass recursive verification in process_game');

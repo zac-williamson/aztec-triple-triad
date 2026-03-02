@@ -188,6 +188,9 @@ location_unlocked: {
     /** get_cards_from_river(counter: field) */
     get_cards_from_river: ((counter: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
+    /** get_player_cooldown(owner: struct, location_id: field) */
+    get_player_cooldown: ((owner: AztecAddressLike, location_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
     /** get_player_counter(owner: struct) */
     get_player_counter: ((owner: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 

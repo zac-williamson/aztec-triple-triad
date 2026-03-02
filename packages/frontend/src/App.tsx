@@ -3,7 +3,12 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useAztec } from './hooks/useAztec';
 import { useGameFlow } from './hooks/useGameFlow';
 import { useGameContract } from './hooks/useGameContract';
-import { Lobby } from './components/Lobby';
+import { MenuScene } from './components3d/MenuScene';
+import { MainMenu } from './components/MainMenu';
+import { CardSelector } from './components/CardSelector';
+import { FindingOpponent } from './components/FindingOpponent';
+import { CardPacks } from './components/CardPacks';
+import { PackOpening } from './components/PackOpening';
 import { GameScreen3D as GameScreen } from './components3d/GameScreen3D';
 import type { Screen, GameState } from './types';
 import './App.css';
@@ -22,8 +27,10 @@ export function mapWinnerId(winner: 'player1' | 'player2' | 'draw' | null): numb
 }
 
 export function App() {
-  const [screen, setScreen] = useState<Screen>('lobby');
+  const [screen, setScreen] = useState<Screen>('main-menu');
   const [cardIds, setCardIds] = useState<number[]>([]);
+  const [selectedHandIds, setSelectedHandIds] = useState<number[]>([]);
+  const [packResult, setPackResult] = useState<{ location: string; cardIds: number[] } | null>(null);
   const ws = useWebSocket(WS_URL);
 
   // Aztec hooks — auto-connect on mount
@@ -152,9 +159,9 @@ export function App() {
     gameContract.joinGameOnChain(ws.opponentOnChainGameId, cardIds);
   }, [ws.playerNumber, ws.opponentOnChainGameId, gameContract.onChainGameId, gameContract.isAvailable, cardIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Reset proof state on game start
+  // Reset proof state on returning to menu
   useEffect(() => {
-    if (screen === 'lobby') {
+    if (screen === 'main-menu') {
       handProofSubmittedRef.current = false;
       pendingMovesRef.current = [];
       aztecInfoSharedRef.current = false;
@@ -163,17 +170,52 @@ export function App() {
     }
   }, [screen]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleCreateGame = useCallback((ids: number[]) => {
+  // Matchmaking: transition to game when match found
+  useEffect(() => {
+    if (ws.matchmakingStatus === 'matched' && screen === 'finding-opponent') {
+      setScreen('game');
+    }
+  }, [ws.matchmakingStatus, screen]);
+
+  // Matchmaking ping interval
+  useEffect(() => {
+    if (screen !== 'finding-opponent') return;
+    const interval = setInterval(() => ws.ping(), 10000);
+    return () => clearInterval(interval);
+  }, [screen, ws]);
+
+  const handlePlay = useCallback(() => {
+    aztec.refreshOwnedCards();
+    setScreen('card-selector');
+  }, [aztec]);
+
+  const handleTutorial = useCallback(() => {
+    // Coming soon
+  }, []);
+
+  const handleCardPacks = useCallback(() => {
+    setScreen('card-packs');
+  }, []);
+
+  const handleHandSelected = useCallback((ids: number[]) => {
+    setSelectedHandIds(ids);
     setCardIds(ids);
-    ws.createGame(ids);
-    setScreen('game');
+    ws.queueMatchmaking(ids);
+    setScreen('finding-opponent');
   }, [ws]);
 
-  const handleJoinGame = useCallback((gameId: string, ids: number[]) => {
-    setCardIds(ids);
-    ws.joinGame(gameId, ids);
-    setScreen('game');
+  const handleCancelMatchmaking = useCallback(() => {
+    ws.cancelMatchmaking();
+    setSelectedHandIds([]);
+    setCardIds([]);
+    setScreen('main-menu');
   }, [ws]);
+
+  const handlePackOpenComplete = useCallback(() => {
+    setPackResult(null);
+    aztec.refreshOwnedCards();
+    setScreen('card-packs');
+  }, [aztec]);
 
   const handlePlaceCard = useCallback(async (handIndex: number, row: number, col: number) => {
     if (!ws.gameState || !ws.playerNumber || !ws.gameId) return;
@@ -278,30 +320,72 @@ export function App() {
     });
   }, [ws.gameId, ws.playerNumber, ws.opponentAztecAddress, ws.opponentOnChainGameId, ws.opponentCardIds, gameFlow, gameContract, cardIds]);
 
-  const handleBackToLobby = useCallback(() => {
-    ws.disconnect();
+  const handleBackToMenu = useCallback(() => {
+    ws.leaveGame();
     gameFlow.reset();
     gameContract.resetTx();
     gameContract.resetLifecycle();
     setCardIds([]);
-    setScreen('lobby');
+    setSelectedHandIds([]);
+    setScreen('main-menu');
   }, [ws, gameFlow, gameContract]);
+
+  const showMenuScene = screen === 'main-menu' || screen === 'card-selector'
+    || screen === 'finding-opponent' || screen === 'card-packs' || screen === 'pack-opening';
 
   return (
     <div className="app">
       <div className="app__bg" />
 
-      {screen === 'lobby' && (
-        <Lobby
+      {/* Shared 3D swamp backdrop for all pre-game screens */}
+      {showMenuScene && <MenuScene />}
+
+      {screen === 'main-menu' && (
+        <MainMenu
           connected={ws.connected}
-          gameList={ws.gameList}
-          error={ws.error}
-          ownedCardIds={aztec.ownedCardIds}
-          onCreateGame={handleCreateGame}
-          onJoinGame={handleJoinGame}
-          onRefreshList={ws.refreshGameList}
+          hasCards={aztec.ownedCardIds.length >= 5}
+          onPlay={handlePlay}
+          onTutorial={handleTutorial}
+          onCardPacks={handleCardPacks}
         />
       )}
+
+      {screen === 'card-selector' && (
+        <CardSelector
+          ownedCardIds={aztec.ownedCardIds}
+          onConfirm={handleHandSelected}
+          onBack={() => setScreen('main-menu')}
+        />
+      )}
+
+      {screen === 'finding-opponent' && (
+        <FindingOpponent
+          queuePosition={ws.queuePosition}
+          onCancel={handleCancelMatchmaking}
+        />
+      )}
+
+      {screen === 'card-packs' && (
+        <CardPacks
+          wallet={aztec.wallet}
+          accountAddress={aztec.accountAddress}
+          ownedCardIds={aztec.ownedCardIds}
+          onPackOpened={(location: string, newCardIds: number[]) => {
+            setPackResult({ location, cardIds: newCardIds });
+            setScreen('pack-opening');
+          }}
+          onBack={() => setScreen('main-menu')}
+        />
+      )}
+
+      {screen === 'pack-opening' && packResult && (
+        <PackOpening
+          location={packResult.location}
+          cardIds={packResult.cardIds}
+          onComplete={handlePackOpenComplete}
+        />
+      )}
+
       {screen === 'game' && ws.gameState && ws.playerNumber && ws.gameId && (
         <GameScreen
           gameState={ws.gameState}
@@ -311,7 +395,7 @@ export function App() {
           gameOver={ws.gameOver}
           opponentDisconnected={ws.opponentDisconnected}
           onPlaceCard={handlePlaceCard}
-          onBackToLobby={handleBackToLobby}
+          onBackToLobby={handleBackToMenu}
           aztecStatus={aztec.status}
           proofStatus={{
             hand: gameFlow.handProofStatus,
@@ -325,14 +409,8 @@ export function App() {
       {screen === 'game' && !ws.gameState && (
         <div className="app__waiting">
           <div className="app__waiting-spinner" />
-          <p>Waiting for opponent to join...</p>
-          {ws.gameId && (
-            <div className="app__game-id-display">
-              <span>Share this Game ID:</span>
-              <code>{ws.gameId}</code>
-            </div>
-          )}
-          <button className="btn btn--ghost" onClick={handleBackToLobby}>
+          <p>Finding opponent...</p>
+          <button className="btn btn--ghost" onClick={handleBackToMenu}>
             Cancel
           </button>
         </div>

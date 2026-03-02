@@ -192,9 +192,7 @@ export async function generateProveHandProof(
   console.log('[proofWorker] Witness generated, creating proof...');
 
   const backend = await getOrCreateBackend('prove_hand', artifact.bytecode);
-  const proofData = await backend.generateProof(witness, {
-    verifierTarget: 'noir-recursive',
-  });
+  const proofData = await backend.generateProof(witness);
 
   const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
   console.log(`[proofWorker] prove_hand proof generated in ${elapsed}s`);
@@ -286,9 +284,7 @@ export async function generateGameMoveProof(
   console.log('[proofWorker] game_move witness generated, creating proof...');
 
   const backend = await getOrCreateBackend('game_move', artifact.bytecode);
-  const proofData = await backend.generateProof(witness, {
-    verifierTarget: 'noir-recursive',
-  });
+  const proofData = await backend.generateProof(witness);
 
   const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
   console.log(`[proofWorker] game_move proof generated in ${elapsed}s`);

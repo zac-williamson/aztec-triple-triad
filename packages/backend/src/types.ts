@@ -45,7 +45,11 @@ export type ClientMessage =
   | { type: 'TX_FAILED'; gameId: string; txType: 'create_game' | 'join_game'; error: string }
   | { type: 'CANCEL_GAME'; gameId: string }
   // Aztec info exchange
-  | { type: 'SHARE_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string };
+  | { type: 'SHARE_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string }
+  // Matchmaking
+  | { type: 'QUEUE_MATCHMAKING'; cardIds: number[] }
+  | { type: 'CANCEL_MATCHMAKING' }
+  | { type: 'PING' };
 
 // Server -> Client messages
 export type ServerMessage =
@@ -65,7 +69,12 @@ export type ServerMessage =
   | { type: 'ON_CHAIN_STATUS'; gameId: string; status: OnChainGameStatus }
   | { type: 'GAME_CANCELLED'; gameId: string; reason: string }
   // Aztec info exchange
-  | { type: 'OPPONENT_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string };
+  | { type: 'OPPONENT_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string }
+  // Matchmaking
+  | { type: 'MATCHMAKING_QUEUED'; position: number }
+  | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState }
+  | { type: 'MATCHMAKING_CANCELLED' }
+  | { type: 'PONG' };
 
 export interface GameListEntry {
   id: string;

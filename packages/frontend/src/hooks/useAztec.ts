@@ -28,6 +28,8 @@ export interface UseAztecReturn {
   connect: () => Promise<void>;
   /** Disconnect from Aztec network */
   disconnect: () => void;
+  /** Re-fetch owned cards from the NFT contract */
+  refreshOwnedCards: () => Promise<void>;
 }
 
 /**
@@ -269,6 +271,47 @@ export function useAztec(): UseAztecReturn {
     setOwnedCardIds([]);
   }, []);
 
+  const refreshOwnedCards = useCallback(async () => {
+    const w = walletRef.current;
+    if (!w || !accountAddress || !AZTEC_CONFIG.nftContractAddress) return;
+
+    try {
+      const [{ AztecAddress }, { Contract }, { loadContractArtifact }] = await Promise.all([
+        import('@aztec/aztec.js/addresses'),
+        import('@aztec/aztec.js/contracts'),
+        import('@aztec/aztec.js/abi'),
+      ]);
+
+      const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
+      const resp = await fetch('/contracts/triple_triad_nft-TripleTriadNFT.json');
+      const rawArtifact = await resp.json();
+      const artifact = loadContractArtifact(rawArtifact);
+      const nftContract = await Contract.at(nftAddr, artifact, w as never);
+
+      const addr = AztecAddress.fromString(accountAddress);
+      const cardIds: number[] = [];
+      let pageIndex = 0;
+      let hasMore = true;
+      while (hasMore) {
+        const result = await nftContract.methods
+          .get_private_cards(addr, pageIndex)
+          .simulate({ from: addr });
+        const page = result[0] ?? result;
+        hasMore = result[1] === true;
+        for (const val of page) {
+          const id = Number(BigInt(val));
+          if (id !== 0) cardIds.push(id);
+        }
+        pageIndex++;
+      }
+
+      setOwnedCardIds(cardIds);
+      console.log('[useAztec] Refreshed owned cards:', cardIds);
+    } catch (e) {
+      console.warn('[useAztec] Failed to refresh owned cards:', e);
+    }
+  }, [accountAddress]);
+
   return {
     status,
     accountAddress,
@@ -279,5 +322,6 @@ export function useAztec(): UseAztecReturn {
     ownedCardIds,
     connect,
     disconnect,
+    refreshOwnedCards,
   };
 }

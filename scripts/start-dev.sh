@@ -29,13 +29,31 @@ else
   exit 1
 fi
 
-# ─── Step 1: Copy circuit + contract artifacts to frontend ───
+# ─── Step 1: Compile contracts & circuits ───
+echo ""
+echo -e "${YELLOW}Compiling contracts...${NC}"
+cd "$ROOT_DIR/packages/contracts"
+aztec compile
+echo -e "${GREEN}  ✓ Contracts compiled${NC}"
+echo -e "${YELLOW}Generating contract TypeScript wrappers...${NC}"
+aztec codegen target/ -o target/codegen
+echo -e "${GREEN}  ✓ Contract codegen complete${NC}"
+cd "$ROOT_DIR"
+
+echo ""
+echo -e "${YELLOW}Compiling circuits...${NC}"
+cd "$ROOT_DIR/circuits"
+nargo compile
+echo -e "${GREEN}  ✓ Circuits compiled${NC}"
+cd "$ROOT_DIR"
+
+# ─── Step 2: Copy circuit + contract artifacts to frontend ───
 echo ""
 echo -e "${YELLOW}Copying artifacts to frontend/public...${NC}"
 npm run copy-circuits 2>/dev/null && echo -e "${GREEN}  ✓ Circuits copied${NC}"
 npm run copy-contracts 2>/dev/null && echo -e "${GREEN}  ✓ Contracts copied${NC}"
 
-# ─── Step 2: Deploy contracts (if needed) ───
+# ─── Step 3: Deploy contracts (if needed) ───
 echo ""
 if [ -f packages/frontend/.env ] && grep -q "VITE_GAME_CONTRACT_ADDRESS" packages/frontend/.env; then
   echo -e "${YELLOW}Existing .env found with contract addresses:${NC}"
@@ -55,7 +73,7 @@ else
   echo -e "${GREEN}  ✓ Contracts deployed${NC}"
 fi
 
-# ─── Step 3: Start backend WebSocket server ───
+# ─── Step 4: Start backend WebSocket server ───
 echo ""
 echo -e "${YELLOW}Starting backend WebSocket server...${NC}"
 cd "$ROOT_DIR/packages/backend"
@@ -64,7 +82,7 @@ BACKEND_PID=$!
 cd "$ROOT_DIR"
 echo -e "${GREEN}  ✓ Backend started (PID: $BACKEND_PID) on ws://localhost:5174${NC}"
 
-# ─── Step 4: Start frontend Vite dev server ───
+# ─── Step 5: Start frontend Vite dev server ───
 echo ""
 echo -e "${YELLOW}Starting frontend Vite dev server...${NC}"
 cd "$ROOT_DIR/packages/frontend"
@@ -83,9 +101,10 @@ echo -e "  Frontend:       ${GREEN}http://localhost:5173${NC}  (check Vite outpu
 echo ""
 echo -e "${YELLOW}To play:${NC}"
 echo "  1. Open http://localhost:5173 in two browser tabs"
-echo "  2. Tab 1: Select 5 cards → Create Game"
-echo "  3. Tab 2: Select 5 cards → Enter Game ID → Join Game"
-echo "  4. Play! Take turns placing cards on the 3×3 board"
+echo "  2. Open Card Packs to hunt for cards (need at least 5)"
+echo "  3. Click Play → Select 5 cards → Play!"
+echo "  4. Do the same in the second tab — matchmaking pairs you automatically"
+echo "  5. Take turns placing cards on the 3×3 board"
 echo ""
 echo -e "Press ${RED}Ctrl+C${NC} to stop all services."
 

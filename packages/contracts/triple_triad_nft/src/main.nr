@@ -4,8 +4,8 @@ mod test;
 use aztec::macros::aztec;
 
 /// Card pool sizes per rarity: [common, rare, epic, legendary]
-/// Must match the TypeScript CARDS_PER_POOL in axolotlCards.ts
-global CARDS_PER_POOL: [u32; 4] = [180, 50, 20, 8];
+/// Common maps to frontend IDs 1-20, rare 21-30, epic 31-40, legendary 41-50
+global CARDS_PER_POOL: [u32; 4] = [20, 10, 10, 10];
 
 /// Separator for cooldown hash
 global COOLDOWN_SEPARATOR: u32 = 0xCA4D0002;
@@ -399,9 +399,13 @@ pub contract TripleTriadNFT {
         let notes = self.storage.private_nfts.at(owner).pop_notes(options);
         assert(notes.len() == 5, "Could not find all 5 cards");
 
+        // Use token_ids (caller-specified order) for the hash, NOT notes.get(i).value.
+        // pop_notes may return notes in arbitrary order (PXE database order),
+        // but the frontend/circuit use the caller's card ID order. Using token_ids
+        // ensures the on-chain commitment matches the frontend's computation.
         let mut to_hash: [Field; 6] = [0; 6];
         for i in 0.. 5 {
-            to_hash[i] = notes.get(i).value;
+            to_hash[i] = token_ids[i];
         }
 
         let owner_npk_m = get_public_keys(owner).npk_m;
@@ -671,6 +675,16 @@ pub contract TripleTriadNFT {
     #[view]
     fn get_player_counter(owner: AztecAddress) -> Field {
         self.storage.player_counter.at(owner.to_field()).read()
+    }
+
+    #[external("public")]
+    #[view]
+    fn get_player_cooldown(owner: AztecAddress, location_id: Field) -> u64 {
+        let cooldown_key = poseidon2_hash_with_separator(
+            [owner.to_field(), location_id],
+            COOLDOWN_SEPARATOR,
+        );
+        self.storage.player_cooldown.at(cooldown_key).read()
     }
 
     #[external("public")]

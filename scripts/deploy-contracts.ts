@@ -82,7 +82,7 @@ async function computeVkHash(
   circuitBytecode: string,
 ): Promise<string> {
   const backend = new UltraHonkBackend(circuitBytecode, api);
-  const vkBytes = await backend.getVerificationKey({ verifierTarget: 'noir-recursive' });
+  const vkBytes = await backend.getVerificationKey();
 
   // Parse VK bytes into 32-byte field elements (big-endian)
   const numFields = Math.floor(vkBytes.length / 32);

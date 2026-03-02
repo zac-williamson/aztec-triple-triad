@@ -94,13 +94,11 @@ export function GameHUD({
   const opponentCardsForPicker: Card[] = [];
   for (const row of gameState.board) {
     for (const cell of row) {
-      console.log('cell = ', JSON.stringify(cell));
       if (cell.card && cell.originalOwner === opponentPlayer) {
         opponentCardsForPicker.push(cell.card);
       }
     }
   }
-  console.log('opponentCardsForPicker = ', opponentCardsForPicker);
   // Proof status display
   const handLabel = proofStatus ? getProofStatusLabel(proofStatus.hand) : '';
   const moveLabel = proofStatus ? getProofStatusLabel(proofStatus.move) : '';
