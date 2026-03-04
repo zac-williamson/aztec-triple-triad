@@ -166,6 +166,7 @@ export function App() {
       pendingMovesRef.current = [];
       aztecInfoSharedRef.current = false;
       onChainCreationStartedRef.current = false;
+      noteImportProcessedRef.current = null;
       gameFlow.reset();
     }
   }, [screen]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -183,6 +184,153 @@ export function App() {
     const interval = setInterval(() => ws.ping(), 10000);
     return () => clearInterval(interval);
   }, [screen, ws]);
+
+  // 7. Import notes helper — used by both winner (self-import) and loser (via WebSocket relay).
+  //    Notes created by create_and_push_note skip delivery/tagging, so PXE sync won't find
+  //    them automatically. Both players must explicitly call import_note to discover their notes.
+  const importNotesForTx = useCallback(async (
+    txHashStr: string,
+    notes: { tokenId: number; randomness: string }[],
+    label: string,
+  ) => {
+    if (!aztec.wallet || !aztec.accountAddress) return;
+    try {
+      const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+      const { Fr } = await import('@aztec/aztec.js/fields');
+      const { Contract } = await import('@aztec/aztec.js/contracts');
+      const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
+      const { AZTEC_CONFIG } = await import('./aztec/config');
+
+      const myAddr = AztecAddress.fromString(aztec.accountAddress!);
+      const node = aztec.nodeClient as any;
+
+      // Get TxEffect for note hash data
+      const { TxHash } = await import('@aztec/stdlib/tx');
+      const hash = TxHash.fromString(txHashStr);
+
+      // Retry fetching TxEffect (the tx may have just been mined)
+      let txEffect: any = null;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const txResult = await node.getTxEffect(hash);
+        if (txResult?.data) {
+          txEffect = txResult.data;
+          break;
+        }
+        console.log(`[App] TxEffect not available yet (attempt ${attempt + 1}/5), waiting...`);
+        await new Promise(r => setTimeout(r, 3000));
+      }
+      if (!txEffect) {
+        console.error(`[App] Could not fetch TxEffect for ${txHashStr} after retries`);
+        return;
+      }
+
+      // Extract unique note hashes and first nullifier from TxEffect
+      const rawNoteHashes: any[] = txEffect.noteHashes ?? [];
+      // Filter out zero-valued hashes to get only real note hashes
+      const uniqueNoteHashes: string[] = rawNoteHashes
+        .map((h: any) => h.toString())
+        .filter((h: string) => h !== '0' && h !== '0x0' && !/^0x0+$/.test(h));
+      const firstNullifier: string = txEffect.nullifiers?.[0]?.toString() ?? '0';
+
+      console.log(`[App] ${label}: TxEffect has ${uniqueNoteHashes.length} non-zero note hashes, firstNullifier=${firstNullifier.slice(0, 18)}...`);
+      for (let i = 0; i < Math.min(uniqueNoteHashes.length, 12); i++) {
+        console.log(`[App] ${label}:   noteHash[${i}] = ${uniqueNoteHashes[i].slice(0, 24)}...`);
+      }
+
+      // === DIAGNOSTIC: Compute expected note hashes in TypeScript and compare ===
+      const { poseidon2HashWithSeparator } = await import('@aztec/foundation/crypto/poseidon');
+      const { siloNoteHash, computeUniqueNoteHash, computeNoteHashNonce } = await import('@aztec/stdlib/hash');
+      const { DomainSeparator } = await import('@aztec/constants');
+
+      const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress!);
+      const STORAGE_SLOT = new Fr(9n); // private_nfts slot from storage_layout()
+
+      const firstNullFr = Fr.fromHexString(firstNullifier);
+      let totalMatches = 0;
+
+      for (const note of notes) {
+        const valueFr = new Fr(BigInt(note.tokenId));
+        const randomnessFr = Fr.fromHexString(note.randomness);
+
+        // Step 1: Compute raw note hash (same as create_and_push_note in Noir)
+        const rawNoteHash = await poseidon2HashWithSeparator(
+          [valueFr, myAddr.toField(), STORAGE_SLOT, randomnessFr],
+          DomainSeparator.NOTE_HASH,
+        );
+
+        // Step 2: Silo by contract address
+        const siloedHash = await siloNoteHash(nftAddr, rawNoteHash);
+
+        // Step 3: Try each index to find the matching unique note hash
+        let found = false;
+        for (let i = 0; i < uniqueNoteHashes.length; i++) {
+          const nonce = await computeNoteHashNonce(firstNullFr, i);
+          const uniqueHash = await computeUniqueNoteHash(nonce, siloedHash);
+          if (uniqueHash.toString() === uniqueNoteHashes[i]) {
+            console.log(`[App] ${label}: MATCH tokenId=${note.tokenId} at index ${i}`);
+            found = true;
+            totalMatches++;
+            break;
+          }
+        }
+        if (!found) {
+          console.error(`[App] ${label}: NO MATCH for tokenId=${note.tokenId}`);
+          console.error(`  rawNoteHash = ${rawNoteHash.toString().slice(0, 24)}...`);
+          console.error(`  siloedHash  = ${siloedHash.toString().slice(0, 24)}...`);
+          console.error(`  owner       = ${myAddr.toString()}`);
+          console.error(`  randomness  = ${note.randomness.slice(0, 24)}...`);
+        }
+      }
+      console.log(`[App] ${label}: ${totalMatches}/${notes.length} notes matched TxEffect hashes`);
+      // === END DIAGNOSTIC ===
+
+      // Load NFT contract
+      const resp = await fetch('/contracts/triple_triad_nft-TripleTriadNFT.json');
+      if (!resp.ok) throw new Error('Failed to load NFT contract artifact');
+      const artifact = loadContractArtifact(await resp.json());
+      const nftContract = await Contract.at(nftAddr, artifact, aztec.wallet as never);
+
+      // Import each note via import_note utility function
+      for (const note of notes) {
+        // Pad unique_note_hashes to 64-element array
+        const paddedHashes = new Array(64).fill(new Fr(0n));
+        for (let i = 0; i < uniqueNoteHashes.length && i < 64; i++) {
+          paddedHashes[i] = Fr.fromHexString(uniqueNoteHashes[i]);
+        }
+
+        console.log(`[App] ${label}: importing note tokenId=${note.tokenId} randomness=${note.randomness.slice(0, 18)}...`);
+        await nftContract.methods
+          .import_note(
+            myAddr,
+            new Fr(BigInt(note.tokenId)),
+            Fr.fromHexString(note.randomness),
+            Fr.fromHexString(txHashStr),
+            paddedHashes,
+            uniqueNoteHashes.length,
+            Fr.fromHexString(firstNullifier),
+            myAddr,
+          )
+          .simulate({ from: myAddr });
+      }
+
+      console.log(`[App] ${label}: Imported ${notes.length} notes successfully`);
+      aztec.refreshOwnedCards();
+    } catch (err) {
+      console.error(`[App] ${label}: Failed to import notes:`, err);
+    }
+  }, [aztec.wallet, aztec.accountAddress]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 7a. Import notes received from opponent via WebSocket (loser/draw flow)
+  const noteImportProcessedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ws.incomingNoteData || !aztec.wallet || !aztec.accountAddress) return;
+    const { txHash, notes } = ws.incomingNoteData;
+    console.log('[App] Incoming websocket note data:', JSON.stringify(ws.incomingNoteData));
+    // Avoid re-processing the same relay
+    if (noteImportProcessedRef.current === txHash) return;
+    noteImportProcessedRef.current = txHash;
+    importNotesForTx(txHash, notes, 'Loser import');
+  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, importNotesForTx]);
 
   const handlePlay = useCallback(() => {
     aztec.refreshOwnedCards();
@@ -267,7 +415,10 @@ export function App() {
   }, [ws, aztec.isAvailable, gameFlow]);
 
   const handleSettle = useCallback(async (selectedCardId: number) => {
-    if (!ws.gameId || !gameFlow.myHandProof || !gameFlow.opponentHandProof) {
+    // Capture all values from current state before any awaits — settlement must
+    // survive navigation back to lobby (closures keep these values alive).
+    const currentGameId = ws.gameId;
+    if (!currentGameId || !gameFlow.myHandProof || !gameFlow.opponentHandProof) {
       console.error('[App] Cannot settle: missing proofs');
       return;
     }
@@ -308,7 +459,7 @@ export function App() {
       moveProofCount: gameFlow.collectedMoveProofs.length,
     });
 
-    await gameContract.settleGame({
+    const result = await gameContract.settleGame({
       onChainGameId: chainGameId,
       handProof1,
       handProof2,
@@ -318,7 +469,18 @@ export function App() {
       callerCardIds: cardIds,
       opponentCardIds: oppCardIds,
     });
-  }, [ws.gameId, ws.playerNumber, ws.opponentAztecAddress, ws.opponentOnChainGameId, ws.opponentCardIds, gameFlow, gameContract, cardIds]);
+
+    if (result) {
+      // 1. Relay note data to opponent so they can import their notes.
+      //    Uses captured currentGameId — safe even if user navigated away.
+      ws.relayNoteData(currentGameId, result.txHash, result.opponentNotes);
+      console.log('[App] Relayed', result.opponentNotes.length, 'opponent note(s)');
+
+      // 2. Import winner's own notes — PXE sync won't find them without delivery/tagging
+      console.log('[App] Importing', result.callerNotes.length, 'winner note(s)...');
+      await importNotesForTx(result.txHash, result.callerNotes, 'Winner import');
+    }
+  }, [ws.gameId, ws.playerNumber, ws.opponentAztecAddress, ws.opponentOnChainGameId, ws.opponentCardIds, gameFlow, gameContract, cardIds, ws, importNotesForTx]);
 
   const handleBackToMenu = useCallback(() => {
     ws.leaveGame();
@@ -343,7 +505,9 @@ export function App() {
       {screen === 'main-menu' && (
         <MainMenu
           connected={ws.connected}
-          hasCards={aztec.ownedCardIds.length >= 5}
+          aztecConnecting={aztec.isConnecting}
+          aztecReady={aztec.hasConnected}
+          cardCount={aztec.ownedCardIds.length}
           onPlay={handlePlay}
           onTutorial={handleTutorial}
           onCardPacks={handleCardPacks}

@@ -206,6 +206,18 @@ export class GameManager {
     return { gameId, room };
   }
 
+  /** Release players from active-game tracking without removing the room.
+   *  The room stays for post-game message relay and is cleaned up by stale timer. */
+  releasePlayersFromGame(gameId: string): void {
+    const room = this.games.get(gameId);
+    if (room) {
+      this.playerToGame.delete(room.player1Id);
+      if (room.player2Id) {
+        this.playerToGame.delete(room.player2Id);
+      }
+    }
+  }
+
   removeGame(gameId: string): void {
     const room = this.games.get(gameId);
     if (room) {

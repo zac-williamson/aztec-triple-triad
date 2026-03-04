@@ -16,6 +16,7 @@ const VALID_MESSAGE_TYPES = new Set([
   'SUBMIT_HAND_PROOF', 'SUBMIT_MOVE_PROOF',
   'TX_CONFIRMED', 'TX_FAILED', 'CANCEL_GAME',
   'SHARE_AZTEC_INFO',
+  'RELAY_NOTE_DATA',
   'QUEUE_MATCHMAKING', 'CANCEL_MATCHMAKING', 'PING',
 ]);
 
@@ -96,15 +97,29 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
 
   const wss = new WebSocketServer({ server: httpServer });
 
-  function send(ws: WebSocket, msg: ServerMessage): void {
+  // Message types to exclude from logging (too noisy)
+  const QUIET_TYPES = new Set(['PING', 'PONG']);
+
+  function logMsg(direction: 'IN' | 'OUT', playerId: string, msg: { type: string; [k: string]: any }): void {
+    if (QUIET_TYPES.has(msg.type)) return;
+    const summary: Record<string, any> = { type: msg.type };
+    if (msg.gameId) summary.gameId = (msg.gameId as string).slice(0, 12) + '...';
+    if (msg.playerNumber != null) summary.playerNumber = msg.playerNumber;
+    if (msg.winner != null) summary.winner = msg.winner;
+    if (msg.message) summary.message = msg.message;
+    console.log(`[WS ${direction}] player=${playerId.slice(0, 8)}  ${JSON.stringify(summary)}`);
+  }
+
+  function send(ws: WebSocket, msg: ServerMessage, playerId?: string): void {
     if (ws.readyState === WebSocket.OPEN) {
+      if (playerId) logMsg('OUT', playerId, msg);
       ws.send(JSON.stringify(msg));
     }
   }
 
   function sendToPlayer(playerId: string, msg: ServerMessage): void {
     const ws = clients.get(playerId);
-    if (ws) send(ws, msg);
+    if (ws) send(ws, msg, playerId);
   }
 
   function getOpponentId(gameId: string, playerId: string): string | null {
@@ -204,6 +219,11 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
         if (!msg.aztecAddress || typeof msg.aztecAddress !== 'string') return 'aztecAddress is required';
         break;
+      case 'RELAY_NOTE_DATA':
+        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
+        if (!msg.txHash || typeof msg.txHash !== 'string') return 'txHash is required';
+        if (!Array.isArray(msg.notes)) return 'notes must be an array';
+        break;
       case 'QUEUE_MATCHMAKING':
         if (!Array.isArray(msg.cardIds)) return 'cardIds must be an array of numbers';
         if (!msg.cardIds.every((id: any) => typeof id === 'number' && Number.isInteger(id) && id >= 1 && id <= 50)) {
@@ -223,12 +243,13 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
   wss.on('connection', (ws: WebSocket) => {
     const playerId = uuidv4();
     clients.set(playerId, ws);
+    console.log(`[WS] player=${playerId.slice(0, 8)} connected`);
 
     ws.on('message', (data: Buffer | string) => {
       // Fix 4.4: Reject oversized messages
       const rawData = data.toString();
       if (rawData.length > MAX_MESSAGE_SIZE) {
-        send(ws, { type: 'ERROR', message: 'Message too large (max 1MB)' });
+        send(ws, { type: 'ERROR', message: 'Message too large (max 1MB)' }, playerId);
         return;
       }
 
@@ -236,17 +257,18 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
       try {
         msg = JSON.parse(rawData);
       } catch {
-        send(ws, { type: 'ERROR', message: 'Invalid message format' });
+        send(ws, { type: 'ERROR', message: 'Invalid message format' }, playerId);
         return;
       }
 
       // Fix 4.4: Validate message structure
       const validationError = validateMessage(msg);
       if (validationError) {
-        send(ws, { type: 'ERROR', message: validationError });
+        send(ws, { type: 'ERROR', message: validationError }, playerId);
         return;
       }
 
+      logMsg('IN', playerId, msg);
       handleMessage(playerId, ws, msg as ClientMessage);
     });
 
@@ -266,9 +288,9 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
       case 'CREATE_GAME': {
         try {
           const room = gameManager.createGame(playerId, msg.cardIds);
-          send(ws, { type: 'GAME_CREATED', gameId: room.id, playerNumber: 1 });
+          send(ws, { type: 'GAME_CREATED', gameId: room.id, playerNumber: 1 }, playerId);
         } catch (err: any) {
-          send(ws, { type: 'ERROR', message: err.message });
+          send(ws, { type: 'ERROR', message: err.message }, playerId);
         }
         break;
       }
@@ -281,7 +303,7 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
             gameId: room.id,
             playerNumber: 2,
             gameState: sanitizeGameStateForPlayer(room.state, playerId, room.id),
-          });
+          }, playerId);
           // Notify player 1 that the game has started
           sendToPlayer(room.player1Id, {
             type: 'GAME_START',
@@ -289,7 +311,7 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
             gameState: sanitizeGameStateForPlayer(room.state, room.player1Id, room.id),
           });
         } catch (err: any) {
-          send(ws, { type: 'ERROR', message: err.message });
+          send(ws, { type: 'ERROR', message: err.message }, playerId);
         }
         break;
       }
@@ -304,7 +326,7 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
             gameId: msg.gameId,
             gameState: sanitizeGameStateForPlayer(result.newState, playerId, msg.gameId),
             captures: result.captures,
-          });
+          }, playerId);
           // Send sanitized state to opponent
           const opponentId = getOpponentId(msg.gameId, playerId);
           if (opponentId) {
@@ -327,17 +349,21 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
               player1CardIds: room?.player1CardIds ?? [],
               player2CardIds: room?.player2CardIds ?? [],
             };
-            send(ws, overMsg);
+            send(ws, overMsg, playerId);
             if (opponentId) sendToPlayer(opponentId, overMsg);
+            // Release players from active-game tracking so they can re-queue.
+            // The room stays alive for post-game relay (RELAY_NOTE_DATA, etc.)
+            // and will be cleaned up by the stale game timer.
+            gameManager.releasePlayersFromGame(msg.gameId);
           }
         } catch (err: any) {
-          send(ws, { type: 'ERROR', message: err.message });
+          send(ws, { type: 'ERROR', message: err.message }, playerId);
         }
         break;
       }
 
       case 'LIST_GAMES': {
-        send(ws, { type: 'GAME_LIST', games: gameManager.listGames() });
+        send(ws, { type: 'GAME_LIST', games: gameManager.listGames() }, playerId);
         break;
       }
 
@@ -354,9 +380,9 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
               currentTurn: room.state?.currentTurn,
               winner: room.state?.winner,
             },
-          });
+          }, playerId);
         } else {
-          send(ws, { type: 'GAME_INFO', game: null });
+          send(ws, { type: 'GAME_INFO', game: null }, playerId);
         }
         break;
       }
@@ -365,12 +391,12 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
         try {
           const room = gameManager.getGame(msg.gameId);
           if (!room) {
-            send(ws, { type: 'ERROR', message: 'Game not found' });
+            send(ws, { type: 'ERROR', message: 'Game not found' }, playerId);
             break;
           }
           const playerRole = gameManager.getPlayerRole(msg.gameId, playerId);
           if (!playerRole) {
-            send(ws, { type: 'ERROR', message: 'Not in this game' });
+            send(ws, { type: 'ERROR', message: 'Not in this game' }, playerId);
             break;
           }
           const fromPlayer = playerRole === 'player1' ? 1 : 2;
@@ -384,7 +410,7 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
             });
           }
         } catch (err: any) {
-          send(ws, { type: 'ERROR', message: err.message });
+          send(ws, { type: 'ERROR', message: err.message }, playerId);
         }
         break;
       }
@@ -395,7 +421,7 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
           // only relays the proof to the opponent for settlement collection.
           const room = gameManager.getGame(msg.gameId);
           if (!room || !room.state) {
-            send(ws, { type: 'ERROR', message: 'Game not found' });
+            send(ws, { type: 'ERROR', message: 'Game not found' }, playerId);
             break;
           }
 
@@ -413,7 +439,7 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
             });
           }
         } catch (err: any) {
-          send(ws, { type: 'ERROR', message: err.message });
+          send(ws, { type: 'ERROR', message: err.message }, playerId);
         }
         break;
       }
@@ -429,7 +455,7 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
             if (room.player2Id) sendToPlayer(room.player2Id, statusMsg);
           }
         } else {
-          send(ws, { type: 'ERROR', message: 'Game not found or player not in game' });
+          send(ws, { type: 'ERROR', message: 'Game not found or player not in game' }, playerId);
         }
         break;
       }
@@ -444,7 +470,7 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
             if (room.player2Id) sendToPlayer(room.player2Id, statusMsg);
           }
         } else {
-          send(ws, { type: 'ERROR', message: 'Game not found or player not in game' });
+          send(ws, { type: 'ERROR', message: 'Game not found or player not in game' }, playerId);
         }
         break;
       }
@@ -452,9 +478,9 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
       case 'CANCEL_GAME': {
         try {
           gameManager.cancelGame(msg.gameId, playerId);
-          send(ws, { type: 'GAME_CANCELLED', gameId: msg.gameId, reason: 'Cancelled by creator' });
+          send(ws, { type: 'GAME_CANCELLED', gameId: msg.gameId, reason: 'Cancelled by creator' }, playerId);
         } catch (err: any) {
-          send(ws, { type: 'ERROR', message: err.message });
+          send(ws, { type: 'ERROR', message: err.message }, playerId);
         }
         break;
       }
@@ -472,10 +498,23 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
         break;
       }
 
+      case 'RELAY_NOTE_DATA': {
+        const opponentId = getOpponentId(msg.gameId, playerId);
+        if (opponentId) {
+          sendToPlayer(opponentId, {
+            type: 'NOTE_DATA',
+            gameId: msg.gameId,
+            txHash: msg.txHash,
+            notes: msg.notes,
+          });
+        }
+        break;
+      }
+
       case 'QUEUE_MATCHMAKING': {
         try {
           const position = gameManager.queuePlayer(playerId, msg.cardIds);
-          send(ws, { type: 'MATCHMAKING_QUEUED', position });
+          send(ws, { type: 'MATCHMAKING_QUEUED', position }, playerId);
 
           // Try to match immediately
           const match = gameManager.tryMatch();
@@ -495,26 +534,27 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
             });
           }
         } catch (err: any) {
-          send(ws, { type: 'ERROR', message: err.message });
+          send(ws, { type: 'ERROR', message: err.message }, playerId);
         }
         break;
       }
 
       case 'CANCEL_MATCHMAKING': {
         gameManager.dequeuePlayer(playerId);
-        send(ws, { type: 'MATCHMAKING_CANCELLED' });
+        send(ws, { type: 'MATCHMAKING_CANCELLED' }, playerId);
         break;
       }
 
       case 'PING': {
         gameManager.updatePing(playerId);
-        send(ws, { type: 'PONG' });
+        send(ws, { type: 'PONG' }, playerId);
         break;
       }
     }
   }
 
   function handleDisconnect(playerId: string): void {
+    console.log(`[WS] player=${playerId.slice(0, 8)} disconnected`);
     // Remove from matchmaking queue if present
     gameManager.dequeuePlayer(playerId);
 

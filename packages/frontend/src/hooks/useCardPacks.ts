@@ -141,11 +141,35 @@ export function useCardPacks(
       const methodFn = (nftContract.methods as any)[location.methodName];
       if (!methodFn) throw new Error(`Method ${location.methodName} not found on contract`);
 
-      await methodFn(counter).send({
-        from: addr,
-        fee: { paymentMethod },
-        wait: { timeout: 300 },
-      });
+      // Retry logic for PXE tagging index conflicts.
+      // The PXE's sender tagging store can hit "Cannot store index" errors when
+      // pending entries from prior transactions haven't been finalized yet.
+      // Each retry creates a fresh txRequest with a new nonce, avoiding the stale entry.
+      const MAX_RETRIES = 3;
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        try {
+          await methodFn(counter).send({
+            from: addr,
+            fee: { paymentMethod },
+            wait: { timeout: 300 },
+          });
+          break;
+        } catch (retryErr: any) {
+          const isTaggingConflict = retryErr.message?.includes('Cannot store index');
+          if (isTaggingConflict && attempt < MAX_RETRIES - 1) {
+            console.warn(
+              `[useCardPacks] PXE tagging index conflict (attempt ${attempt + 1}/${MAX_RETRIES}), retrying...`,
+            );
+            // Force PXE block sync before retry so stale pending entries can be finalized/dropped
+            try {
+              await (wallet as any).pxe?.debug?.sync?.();
+            } catch { /* sync is best-effort */ }
+            await new Promise(r => setTimeout(r, 3000));
+            continue;
+          }
+          throw retryErr;
+        }
+      }
 
       setTxStatus('done');
 

@@ -213,6 +213,9 @@ pub contract TripleTriadNFT {
         self.storage.minter.initialize(minter);
         // River is always unlocked
         self.storage.location_unlocked.at(LOCATION_RIVER).write(true);
+        self.storage.location_unlocked.at(LOCATION_FOREST).write(true);
+        self.storage.location_unlocked.at(LOCATION_BEACH).write(true);
+
     }
 
     // --- Admin ---

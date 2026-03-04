@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import type { GameState, Player, Card } from '../types';
 import type { ProofStatusInfo, SettleTxStatus } from './GameScreen3D';
 import { SettlementCardPicker } from './SettlementCardPicker';
@@ -63,8 +62,6 @@ export function GameHUD({
   onSettle,
   settleTxStatus = 'idle',
 }: GameHUDProps) {
-  const [showCardPicker, setShowCardPicker] = useState(false);
-
   const opponentPlayer: Player = myPlayer === 'player1' ? 'player2' : 'player1';
 
   const getWinnerText = () => {
@@ -81,12 +78,7 @@ export function GameHUD({
     return 'game-screen__result--lose';
   };
 
-  const handleSettleClick = () => {
-    setShowCardPicker(true);
-  };
-
   const handleCardPicked = (cardId: number) => {
-    setShowCardPicker(false);
     onSettle?.(cardId);
   };
 
@@ -150,41 +142,29 @@ export function GameHUD({
         </div>
       )}
 
-      {/* Game Over Overlay */}
-      {gameOver && !showCardPicker && (
+      {/* Game Over: Winner sees card picker immediately, loser/draw sees result banner */}
+      {gameOver && gameOver.winner === myPlayer && onSettle && (
+        <SettlementCardPicker
+          opponentCards={opponentCardsForPicker}
+          onSelect={handleCardPicked}
+          onCancel={onBackToLobby}
+          settleTxStatus={settleTxStatus}
+          resultText={getWinnerText()}
+          resultScore={`${myScore} - ${opponentScore}`}
+          onBackToLobby={onBackToLobby}
+        />
+      )}
+
+      {gameOver && gameOver.winner !== myPlayer && (
         <div className={`game-screen__result ${getWinnerClass()}`} style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 20, pointerEvents: 'auto' }}>
           <div className="game-screen__result-text">{getWinnerText()}</div>
           <div className="game-screen__result-score">
             {myScore} - {opponentScore}
           </div>
-          {canSettle && onSettle && settleTxStatus === 'idle' && (
-            <button
-              className="btn btn--ghost"
-              onClick={handleSettleClick}
-              style={{ marginTop: 12 }}
-            >
-              Settle on Chain
-            </button>
-          )}
-          {settleTxStatus === 'confirmed' && (
-            <div style={{ marginTop: 12, color: '#4f4', fontSize: 13 }}>
-              Game settled on-chain!
-            </div>
-          )}
           <button className="btn btn--ghost" onClick={onBackToLobby} style={{ marginTop: 16 }}>
             Back to Lobby
           </button>
         </div>
-      )}
-
-      {/* Settlement card picker modal */}
-      {showCardPicker && (
-        <SettlementCardPicker
-          opponentCards={opponentCardsForPicker}
-          onSelect={handleCardPicked}
-          onCancel={() => setShowCardPicker(false)}
-          settleTxStatus={settleTxStatus}
-        />
       )}
 
       {/* Scores */}
