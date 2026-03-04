@@ -11,20 +11,15 @@ export function FindingOpponent({ queuePosition, onCancel }: FindingOpponentProp
     <div className="finding-opponent">
       <h2 className="finding-opponent__header">Finding Opponent...</h2>
 
-      <div className="finding-opponent__animation">
-        {/* Placeholder axolotl silhouette */}
-        <div className="finding-opponent__axolotl">
-          <div className="finding-opponent__tail" />
-        </div>
-
-        {/* Bug target */}
-        <div className="finding-opponent__bug" />
-
-        {/* Orbiting dots */}
-        <div className="finding-opponent__dots">
-          <div className="finding-opponent__dot" />
-          <div className="finding-opponent__dot" />
-          <div className="finding-opponent__dot" />
+      <div className="finding-opponent__scene">
+        <div className="finding-opponent__pixel-art" />
+        {/* Animated fireflies overlay */}
+        <div className="finding-opponent__fireflies">
+          <div className="finding-opponent__firefly" />
+          <div className="finding-opponent__firefly" />
+          <div className="finding-opponent__firefly" />
+          <div className="finding-opponent__firefly" />
+          <div className="finding-opponent__firefly" />
         </div>
       </div>
 

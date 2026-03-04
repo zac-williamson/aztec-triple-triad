@@ -68,7 +68,12 @@ export function PackOpening({ location, cardIds, onComplete }: PackOpeningProps)
     return (
       <div className="pack-opening">
         <div className={`pack-opening__pack ${packClass}`}>
-          &#127183;
+          <img
+            className="pack-opening__pack-img"
+            src="/ui-elements/card-pack.png"
+            alt="Card Pack"
+            draggable={false}
+          />
         </div>
       </div>
     );
@@ -106,12 +111,13 @@ export function PackOpening({ location, cardIds, onComplete }: PackOpeningProps)
             >
               <div className={`pack-opening__card-flipper ${isFlipped ? 'pack-opening__card-flipper--flipped' : ''}`}>
                 <div className="pack-opening__card-back">
-                  <div
-                    className="pack-opening__card-back-inner"
+                  <img
+                    className="pack-opening__card-back-img"
+                    src="/cards/card_back.png"
+                    alt="Card back"
+                    draggable={false}
                     style={{ '--wobble-delay': `${idx * 0.15}s` } as React.CSSProperties}
-                  >
-                    ?
-                  </div>
+                  />
                 </div>
                 <div className={`pack-opening__card-front ${isFlipped ? 'pack-opening__card-glow' : ''}`}>
                   {card ? (

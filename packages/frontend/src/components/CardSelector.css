@@ -15,21 +15,24 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 16px;
-  border: 1px solid rgba(232, 228, 216, 0.2);
-  border-radius: 8px;
-  background: rgba(26, 46, 26, 0.8);
-  color: rgba(232, 228, 216, 0.7);
+  padding: 8px 20px;
+  border: none;
+  border-radius: 0;
+  background: url('/ui-elements/button.png') center / 100% 100% no-repeat;
+  color: rgba(232, 228, 216, 0.8);
   font-family: 'Nunito', sans-serif;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.4));
 }
 
 .card-selector__back:hover {
-  border-color: rgba(232, 228, 216, 0.4);
-  color: rgba(232, 228, 216, 0.9);
+  background-image: url('/ui-elements/button-hover.png');
+  color: rgba(232, 228, 216, 1);
+  filter: drop-shadow(0 4px 10px rgba(196, 162, 101, 0.25));
 }
 
 .card-selector__collection {
@@ -170,23 +173,25 @@
 }
 
 .card-selector__play-btn {
-  padding: 14px 48px;
-  border: 1px solid rgba(123, 198, 126, 0.4);
-  border-radius: 12px;
-  background: linear-gradient(135deg, rgba(123, 198, 126, 0.25), rgba(26, 46, 26, 0.9));
-  color: rgba(232, 228, 216, 0.9);
+  padding: 14px 56px;
+  border: none;
+  border-radius: 0;
+  background: url('/ui-elements/button.png') center / 100% 100% no-repeat;
+  color: #d4f0d6;
   font-family: 'Cinzel', serif;
   font-size: 20px;
   font-weight: 700;
   letter-spacing: 2px;
   cursor: pointer;
   transition: all 0.25s ease;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6), 0 0 16px rgba(123, 198, 126, 0.3);
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
 }
 
 .card-selector__play-btn:hover:not(:disabled) {
-  border-color: rgba(123, 198, 126, 0.7);
-  box-shadow: 0 0 24px rgba(123, 198, 126, 0.2);
+  background-image: url('/ui-elements/button-hover.png');
   transform: translateY(-2px);
+  filter: drop-shadow(0 6px 20px rgba(123, 198, 126, 0.25));
 }
 
 .card-selector__play-btn:disabled {
