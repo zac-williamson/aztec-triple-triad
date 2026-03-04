@@ -24,20 +24,35 @@ body {
   min-height: 100vh;
 }
 
-/* Buttons */
+/* Buttons — image-backed fantasy UI */
 .btn {
   font-family: 'Cinzel', serif;
   font-size: 13px;
   font-weight: 600;
-  padding: 10px 24px;
+  padding: 12px 28px;
   border: none;
-  border-radius: 6px;
+  border-radius: 0;
   cursor: pointer;
   text-transform: uppercase;
   letter-spacing: 1px;
   transition: all 0.2s ease;
   position: relative;
   overflow: hidden;
+  background: url('/ui-elements/button.png') center / 100% 100% no-repeat;
+  color: rgba(232, 228, 216, 0.9);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.4));
+}
+
+.btn:hover:not(:disabled) {
+  background-image: url('/ui-elements/button-hover.png');
+  transform: translateY(-1px);
+  filter: drop-shadow(0 4px 12px rgba(196, 162, 101, 0.3));
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+  filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.4));
 }
 
 .btn:disabled {
@@ -46,36 +61,29 @@ body {
 }
 
 .btn--primary {
-  background: linear-gradient(135deg, #7bc67e, #5aa55d);
-  color: #1a2e1a;
-  box-shadow: 0 4px 16px rgba(123, 198, 126, 0.2);
-}
-
-.btn--primary:hover:not(:disabled) {
-  box-shadow: 0 6px 24px rgba(123, 198, 126, 0.35);
-  transform: translateY(-1px);
+  color: #d4f0d6;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6), 0 0 12px rgba(123, 198, 126, 0.3);
 }
 
 .btn--secondary {
-  background: rgba(196, 162, 101, 0.15);
   color: #c4a265;
-  border: 1px solid rgba(196, 162, 101, 0.3);
-}
-
-.btn--secondary:hover:not(:disabled) {
-  background: rgba(196, 162, 101, 0.25);
-  border-color: rgba(196, 162, 101, 0.5);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6), 0 0 8px rgba(196, 162, 101, 0.2);
 }
 
 .btn--ghost {
+  background-image: none;
   background: transparent;
   color: rgba(232, 228, 216, 0.5);
   border: 1px solid rgba(232, 228, 216, 0.1);
+  border-radius: 6px;
+  filter: none;
 }
 
 .btn--ghost:hover:not(:disabled) {
+  background-image: none;
   background: rgba(232, 228, 216, 0.05);
   color: rgba(232, 228, 216, 0.7);
+  filter: none;
 }
 
 .btn--small {

@@ -41,7 +41,7 @@ export function Card({ card, owner, selected, faceDown, captured, onClick, size 
 
   const cardLevel = Math.ceil(card.id / 10);
   const totalRanks = card.ranks.top + card.ranks.right + card.ranks.bottom + card.ranks.left;
-  const imgSrc = `/cards/card-${card.id}.png`;
+  const imgSrc = `/cards/final/card-${card.id}.png`;
 
   return (
     <div

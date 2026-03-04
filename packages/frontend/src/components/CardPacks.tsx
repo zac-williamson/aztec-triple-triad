@@ -10,6 +10,14 @@ const LOCATION_ICONS: Record<string, string> = {
   Dockyard: '\u2693',        // ⚓
 };
 
+const LOCATION_HUNT_IMAGES: Record<string, { src: string; frames: number }> = {
+  River: { src: '/ui-elements/swamp.png', frames: 4 },
+  Forest: { src: '/ui-elements/forest.png', frames: 4 },
+  Beach: { src: '/ui-elements/beach.png', frames: 4 },
+  City: { src: '/ui-elements/city.png', frames: 5 },
+  Dockyard: { src: '/ui-elements/docks.png', frames: 4 },
+};
+
 interface CardPacksProps {
   wallet: unknown | null;
   accountAddress: string | null;
@@ -74,7 +82,25 @@ export function CardPacks({ wallet, accountAddress, ownedCardIds, onPackOpened, 
               </span>
 
               {isHunting ? (
-                <div className="card-packs__spinner" />
+                <div className="card-packs__hunting">
+                  {(() => {
+                    const hunt = LOCATION_HUNT_IMAGES[loc.name] || { src: '/ui-elements/swamp.png', frames: 4 };
+                    return (
+                      <div
+                        className="card-packs__hunting-sprite"
+                        style={{
+                          backgroundImage: `url('${hunt.src}')`,
+                          backgroundSize: `${hunt.frames * 100}% 100%`,
+                          animationTimingFunction: `steps(${hunt.frames})`,
+                        } as React.CSSProperties}
+                      />
+                    );
+                  })()}
+                  <div className="card-packs__hunting-overlay">
+                    <div className="card-packs__hunting-text">Hunting...</div>
+                    <div className="card-packs__spinner" />
+                  </div>
+                </div>
               ) : isOnCooldown ? (
                 <span className="card-packs__timer">{formatCountdown(remainingMs)}</span>
               ) : (
@@ -93,6 +119,39 @@ export function CardPacks({ wallet, accountAddress, ownedCardIds, onPackOpened, 
 
       {packs.error && (
         <div className="card-packs__error">{packs.error}</div>
+      )}
+
+      {/* Full-screen hunting overlay */}
+      {packs.activeLocation && (
+        <div className="card-packs__hunt-overlay">
+          <div className="card-packs__hunt-overlay-scene">
+            {(() => {
+              const hunt = LOCATION_HUNT_IMAGES[packs.activeLocation] || { src: '/ui-elements/swamp.png', frames: 4 };
+              return (
+                <div
+                  className="card-packs__hunt-overlay-sprite"
+                  style={{
+                    backgroundImage: `url('${hunt.src}')`,
+                    backgroundSize: `${hunt.frames * 100}% 100%`,
+                    animationTimingFunction: `steps(${hunt.frames})`,
+                  } as React.CSSProperties}
+                />
+              );
+            })()}
+            <div className="card-packs__hunt-overlay-fireflies">
+              <div className="card-packs__hunt-firefly" />
+              <div className="card-packs__hunt-firefly" />
+              <div className="card-packs__hunt-firefly" />
+            </div>
+          </div>
+          <h2 className="card-packs__hunt-overlay-title">
+            Hunting in {packs.activeLocation}...
+          </h2>
+          <p className="card-packs__hunt-overlay-status">
+            {packs.txStatus === 'sending' ? 'Sending transaction to Aztec...' : 'Waiting for confirmation...'}
+          </p>
+          <div className="card-packs__spinner card-packs__spinner--large" />
+        </div>
       )}
     </div>
   );

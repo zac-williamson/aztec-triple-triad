@@ -16,22 +16,25 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 16px;
-  border: 1px solid rgba(232, 228, 216, 0.2);
-  border-radius: 8px;
-  background: rgba(26, 46, 26, 0.8);
-  color: rgba(232, 228, 216, 0.7);
+  padding: 8px 20px;
+  border: none;
+  border-radius: 0;
+  background: url('/ui-elements/button.png') center / 100% 100% no-repeat;
+  color: rgba(232, 228, 216, 0.8);
   font-family: 'Nunito', sans-serif;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
   pointer-events: auto;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.4));
 }
 
 .card-packs__back:hover {
-  border-color: rgba(232, 228, 216, 0.4);
-  color: rgba(232, 228, 216, 0.9);
+  background-image: url('/ui-elements/button-hover.png');
+  color: rgba(232, 228, 216, 1);
+  filter: drop-shadow(0 4px 10px rgba(196, 162, 101, 0.25));
 }
 
 .card-packs__title {
@@ -117,21 +120,23 @@
 .card-packs__hunt-btn {
   width: 100%;
   padding: 10px 16px;
-  border: 1px solid rgba(196, 162, 101, 0.4);
-  border-radius: 8px;
-  background: linear-gradient(135deg, rgba(196, 162, 101, 0.15), rgba(26, 46, 26, 0.8));
-  color: rgba(232, 228, 216, 0.85);
+  border: none;
+  border-radius: 0;
+  background: url('/ui-elements/button.png') center / 100% 100% no-repeat;
+  color: rgba(232, 228, 216, 0.9);
   font-family: 'Cinzel', serif;
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 1px;
   cursor: pointer;
   transition: all 0.2s ease;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
 }
 
 .card-packs__hunt-btn:hover:not(:disabled) {
-  border-color: rgba(196, 162, 101, 0.6);
-  box-shadow: 0 0 16px rgba(196, 162, 101, 0.15);
+  background-image: url('/ui-elements/button-hover.png');
+  filter: drop-shadow(0 3px 8px rgba(196, 162, 101, 0.2));
 }
 
 .card-packs__hunt-btn:disabled {
@@ -147,9 +152,53 @@
   letter-spacing: 1px;
 }
 
+/* Hunting animation */
+.card-packs__hunting {
+  width: 100%;
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+
+.card-packs__hunting-sprite {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background-position: left top;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  animation: sprite-play-packs 1.8s infinite;
+}
+
+@keyframes sprite-play-packs {
+  from { background-position: 0% 0; }
+  to { background-position: 100% 0; }
+}
+
+.card-packs__hunting-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding-bottom: 8px;
+  background: linear-gradient(to top, rgba(10, 18, 10, 0.7) 0%, transparent 50%);
+}
+
+.card-packs__hunting-text {
+  font-family: 'Cinzel', serif;
+  font-size: 11px;
+  font-weight: 700;
+  color: #c4a265;
+  letter-spacing: 1px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  margin-bottom: 4px;
+}
+
 .card-packs__spinner {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   border: 2px solid rgba(232, 228, 216, 0.1);
   border-top-color: #c4a265;
   border-radius: 50%;
@@ -160,6 +209,11 @@
   to { transform: rotate(360deg); }
 }
 
+@keyframes hunting-pulse {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.1); }
+}
+
 .card-packs__error {
   font-family: 'Nunito', sans-serif;
   font-size: 13px;
@@ -168,4 +222,107 @@
   max-width: 600px;
   margin-top: 16px;
   pointer-events: auto;
+}
+
+/* Full-screen hunting overlay */
+.card-packs__hunt-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  background: rgba(10, 18, 10, 0.95);
+  animation: hunt-overlay-enter 0.5s ease-out;
+}
+
+@keyframes hunt-overlay-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.card-packs__hunt-overlay-scene {
+  position: relative;
+  width: 500px;
+  max-width: 90vw;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6), 0 0 60px rgba(123, 198, 126, 0.1);
+  image-rendering: pixelated;
+}
+
+.card-packs__hunt-overlay-sprite {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background-position: left top;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  animation: sprite-play-packs 1.8s infinite;
+}
+
+.card-packs__hunt-overlay-fireflies {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.card-packs__hunt-firefly {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: #c4a265;
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(196, 162, 101, 0.7), 0 0 12px rgba(196, 162, 101, 0.4);
+}
+
+.card-packs__hunt-firefly:nth-child(1) {
+  animation: hunt-fly-1 4s ease-in-out infinite;
+}
+.card-packs__hunt-firefly:nth-child(2) {
+  animation: hunt-fly-2 5s ease-in-out infinite;
+}
+.card-packs__hunt-firefly:nth-child(3) {
+  animation: hunt-fly-3 3.5s ease-in-out infinite;
+}
+
+@keyframes hunt-fly-1 {
+  0% { top: 40%; left: 60%; opacity: 0; }
+  20% { opacity: 1; }
+  50% { top: 25%; left: 75%; opacity: 0.5; }
+  80% { opacity: 1; }
+  100% { top: 40%; left: 60%; opacity: 0; }
+}
+
+@keyframes hunt-fly-2 {
+  0% { top: 55%; left: 30%; opacity: 0.8; }
+  50% { top: 35%; left: 45%; opacity: 0.3; }
+  100% { top: 55%; left: 30%; opacity: 0.8; }
+}
+
+@keyframes hunt-fly-3 {
+  0% { top: 20%; left: 80%; opacity: 0.4; }
+  40% { top: 40%; left: 70%; opacity: 1; }
+  100% { top: 20%; left: 80%; opacity: 0.4; }
+}
+
+.card-packs__hunt-overlay-title {
+  font-family: 'Cinzel', serif;
+  font-size: 24px;
+  font-weight: 700;
+  color: rgba(232, 228, 216, 0.8);
+  letter-spacing: 2px;
+}
+
+.card-packs__hunt-overlay-status {
+  font-family: 'Nunito', sans-serif;
+  font-size: 14px;
+  color: rgba(232, 228, 216, 0.4);
+}
+
+.card-packs__spinner--large {
+  width: 28px;
+  height: 28px;
+  border-width: 3px;
 }

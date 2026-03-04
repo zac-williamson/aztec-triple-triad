@@ -18,139 +18,102 @@
   letter-spacing: 2px;
 }
 
-.finding-opponent__animation {
+/* Pixel art scene */
+.finding-opponent__scene {
   position: relative;
-  width: 200px;
-  height: 120px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  width: 400px;
+  max-width: 90vw;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  image-rendering: pixelated;
+  animation: scene-breathe 4s ease-in-out infinite;
 }
 
-/* Axolotl silhouette placeholder */
-.finding-opponent__axolotl {
-  width: 80px;
-  height: 50px;
-  background: rgba(123, 198, 126, 0.3);
-  border-radius: 40px 40px 20px 20px;
-  position: relative;
-  animation: axolotl-bob 2s ease-in-out infinite;
+.finding-opponent__pixel-art {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: url('/ui-elements/swamp.png') left top / 400% 100% no-repeat;
+  image-rendering: pixelated;
+  animation: sprite-play-4 1.6s steps(4) infinite;
 }
 
-.finding-opponent__axolotl::before {
-  content: '';
-  position: absolute;
-  top: -8px;
-  left: 10px;
-  width: 12px;
-  height: 16px;
-  background: rgba(123, 198, 126, 0.4);
-  border-radius: 50% 50% 0 0;
+@keyframes sprite-play-4 {
+  from { background-position: 0% 0; }
+  to { background-position: 100% 0; }
 }
 
-.finding-opponent__axolotl::after {
-  content: '';
-  position: absolute;
-  top: -8px;
-  right: 10px;
-  width: 12px;
-  height: 16px;
-  background: rgba(123, 198, 126, 0.4);
-  border-radius: 50% 50% 0 0;
-}
-
-/* Tail */
-.finding-opponent__tail {
-  position: absolute;
-  right: -20px;
-  top: 50%;
-  width: 24px;
-  height: 8px;
-  background: rgba(123, 198, 126, 0.25);
-  border-radius: 0 8px 8px 0;
-  transform-origin: left center;
-  animation: tail-wag 1s ease-in-out infinite;
-}
-
-/* Bug / insect dot */
-.finding-opponent__bug {
-  position: absolute;
-  width: 8px;
-  height: 8px;
-  background: #c4a265;
-  border-radius: 50%;
-  box-shadow: 0 0 8px rgba(196, 162, 101, 0.5);
-  animation: bug-zigzag 3s ease-in-out infinite;
-}
-
-/* Orbiting dots */
-.finding-opponent__dots {
+/* Animated firefly overlay */
+.finding-opponent__fireflies {
   position: absolute;
   inset: 0;
+  pointer-events: none;
 }
 
-.finding-opponent__dot {
+.finding-opponent__firefly {
   position: absolute;
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
+  background: #c4a265;
   border-radius: 50%;
-  background: rgba(123, 198, 126, 0.5);
+  box-shadow: 0 0 6px rgba(196, 162, 101, 0.7), 0 0 12px rgba(196, 162, 101, 0.4);
 }
 
-.finding-opponent__dot:nth-child(1) {
-  animation: orbit-1 3s linear infinite;
+.finding-opponent__firefly:nth-child(1) {
+  animation: firefly-drift-1 4s ease-in-out infinite;
+}
+.finding-opponent__firefly:nth-child(2) {
+  animation: firefly-drift-2 5s ease-in-out infinite;
+}
+.finding-opponent__firefly:nth-child(3) {
+  animation: firefly-drift-3 3.5s ease-in-out infinite;
+}
+.finding-opponent__firefly:nth-child(4) {
+  animation: firefly-drift-4 6s ease-in-out infinite;
+}
+.finding-opponent__firefly:nth-child(5) {
+  animation: firefly-drift-5 4.5s ease-in-out infinite;
 }
 
-.finding-opponent__dot:nth-child(2) {
-  animation: orbit-2 3s linear infinite;
+@keyframes scene-breathe {
+  0%, 100% { box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5); }
+  50% { box-shadow: 0 4px 32px rgba(123, 198, 126, 0.15), 0 4px 24px rgba(0, 0, 0, 0.5); }
 }
 
-.finding-opponent__dot:nth-child(3) {
-  animation: orbit-3 3s linear infinite;
+@keyframes firefly-drift-1 {
+  0% { top: 30%; left: 60%; opacity: 0; }
+  20% { opacity: 1; }
+  50% { top: 20%; left: 75%; opacity: 0.6; }
+  80% { opacity: 1; }
+  100% { top: 30%; left: 60%; opacity: 0; }
 }
 
-@keyframes axolotl-bob {
-  0%, 100% { transform: translateX(-20px) translateY(0); }
-  25% { transform: translateX(-10px) translateY(-4px); }
-  50% { transform: translateX(0) translateY(0); }
-  75% { transform: translateX(10px) translateY(-3px); }
+@keyframes firefly-drift-2 {
+  0% { top: 50%; left: 80%; opacity: 0.8; }
+  33% { top: 35%; left: 85%; opacity: 0.3; }
+  66% { top: 55%; left: 70%; opacity: 0.9; }
+  100% { top: 50%; left: 80%; opacity: 0.8; }
 }
 
-@keyframes tail-wag {
-  0%, 100% { transform: rotate(0deg); }
-  50% { transform: rotate(-15deg); }
+@keyframes firefly-drift-3 {
+  0% { top: 15%; left: 40%; opacity: 0; }
+  25% { opacity: 1; }
+  50% { top: 25%; left: 50%; opacity: 0.5; }
+  75% { opacity: 1; }
+  100% { top: 15%; left: 40%; opacity: 0; }
 }
 
-@keyframes bug-zigzag {
-  0% { top: 20%; left: 75%; }
-  25% { top: 10%; left: 85%; }
-  50% { top: 30%; left: 90%; }
-  75% { top: 15%; left: 80%; }
-  100% { top: 20%; left: 75%; }
+@keyframes firefly-drift-4 {
+  0% { top: 65%; left: 30%; opacity: 0.5; }
+  50% { top: 45%; left: 45%; opacity: 0.2; }
+  100% { top: 65%; left: 30%; opacity: 0.5; }
 }
 
-@keyframes orbit-1 {
-  0% { top: 50%; left: 0%; }
-  25% { top: 0%; left: 50%; }
-  50% { top: 50%; left: 100%; }
-  75% { top: 100%; left: 50%; }
-  100% { top: 50%; left: 0%; }
-}
-
-@keyframes orbit-2 {
-  0% { top: 0%; left: 50%; }
-  25% { top: 50%; left: 100%; }
-  50% { top: 100%; left: 50%; }
-  75% { top: 50%; left: 0%; }
-  100% { top: 0%; left: 50%; }
-}
-
-@keyframes orbit-3 {
-  0% { top: 100%; left: 50%; }
-  25% { top: 50%; left: 0%; }
-  50% { top: 0%; left: 50%; }
-  75% { top: 50%; left: 100%; }
-  100% { top: 100%; left: 50%; }
+@keyframes firefly-drift-5 {
+  0% { top: 40%; left: 90%; opacity: 0.3; }
+  40% { top: 25%; left: 80%; opacity: 1; }
+  80% { top: 50%; left: 85%; opacity: 0.5; }
+  100% { top: 40%; left: 90%; opacity: 0.3; }
 }
 
 .finding-opponent__queue {
@@ -160,10 +123,10 @@
 }
 
 .finding-opponent__cancel {
-  padding: 10px 28px;
-  border: 1px solid rgba(232, 168, 124, 0.3);
-  border-radius: 8px;
-  background: rgba(232, 168, 124, 0.08);
+  padding: 10px 32px;
+  border: none;
+  border-radius: 0;
+  background: url('/ui-elements/button.png') center / 100% 100% no-repeat;
   color: #e8a87c;
   font-family: 'Nunito', sans-serif;
   font-size: 14px;
@@ -171,9 +134,11 @@
   cursor: pointer;
   transition: all 0.2s ease;
   pointer-events: auto;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.4));
 }
 
 .finding-opponent__cancel:hover {
-  border-color: rgba(232, 168, 124, 0.5);
-  background: rgba(232, 168, 124, 0.15);
+  background-image: url('/ui-elements/button-hover.png');
+  filter: drop-shadow(0 4px 10px rgba(232, 168, 124, 0.2));
 }
