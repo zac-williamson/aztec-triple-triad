@@ -191,29 +191,36 @@ export function App() {
     if (!gameContract.isAvailable) return;
     onChainCreationStartedRef.current = true;
 
-    if (ws.playerNumber === 1) {
-      gameContract.createGameOnChain(cardIds).then((result) => {
+    // Wait for PXE to sync before committing cards — ensures stale notes from
+    // previous games are marked as nullified so pop_notes won't select them.
+    const startGame = async () => {
+      await waitForPxeSync();
+
+      if (ws.playerNumber === 1) {
+        const result = await gameContract.createGameOnChain(cardIds);
         if (result && ws.gameId && aztec.accountAddress) {
           ws.shareAztecInfo(ws.gameId, aztec.accountAddress, result.gameId, result.randomness);
           console.log('[App] On-chain game created, shared ID:', result.gameId);
+          // Remove committed cards from owned list (they've been nullified on-chain)
+          aztec.updateOwnedCards(prev => prev.filter(id => !cardIds.includes(id)));
         } else {
           console.error('[App] createGameOnChain returned null — on-chain game creation failed');
         }
-      }).catch((err) => {
-        console.error('[App] createGameOnChain threw:', err);
-      });
-    } else if (ws.playerNumber === 2 && ws.opponentOnChainGameId) {
-      gameContract.joinGameOnChain(ws.opponentOnChainGameId, cardIds).then((result) => {
+      } else if (ws.playerNumber === 2 && ws.opponentOnChainGameId) {
+        const result = await gameContract.joinGameOnChain(ws.opponentOnChainGameId, cardIds);
         if (result && ws.gameId && aztec.accountAddress) {
           ws.shareAztecInfo(ws.gameId, aztec.accountAddress, ws.opponentOnChainGameId!, result.randomness);
           console.log('[App] Joined on-chain game, shared randomness');
+          // Remove committed cards from owned list (they've been nullified on-chain)
+          aztec.updateOwnedCards(prev => prev.filter(id => !cardIds.includes(id)));
         } else {
           console.error('[App] joinGameOnChain returned null — on-chain join failed');
         }
-      }).catch((err) => {
-        console.error('[App] joinGameOnChain threw:', err);
-      });
-    }
+      }
+    };
+    startGame().catch((err) => {
+      console.error('[App] On-chain game creation/join threw:', err);
+    });
   }, [ws.gameId, ws.gameState, ws.playerNumber, ws.opponentOnChainGameId, gameContract.isAvailable, cardIds, aztec.accountAddress, ws]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 6b. Player 2: join on-chain game when we receive opponent's on-chain game ID later
@@ -221,14 +228,17 @@ export function App() {
     if (ws.playerNumber !== 2 || !ws.opponentOnChainGameId) return;
     if (gameContract.onChainGameId) return; // already joined
     if (!gameContract.isAvailable) return;
-    gameContract.joinGameOnChain(ws.opponentOnChainGameId, cardIds).then((result) => {
+    (async () => {
+      await waitForPxeSync();
+      const result = await gameContract.joinGameOnChain(ws.opponentOnChainGameId!, cardIds);
       if (result && ws.gameId && aztec.accountAddress) {
         ws.shareAztecInfo(ws.gameId, aztec.accountAddress, ws.opponentOnChainGameId!, result.randomness);
         console.log('[App] Joined on-chain game (late), shared randomness');
+        aztec.updateOwnedCards(prev => prev.filter(id => !cardIds.includes(id)));
       } else {
         console.error('[App] joinGameOnChain (late) returned null');
       }
-    }).catch((err) => {
+    })().catch((err) => {
       console.error('[App] joinGameOnChain (late) threw:', err);
     });
   }, [ws.playerNumber, ws.opponentOnChainGameId, gameContract.onChainGameId, gameContract.isAvailable, cardIds]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -258,6 +268,30 @@ export function App() {
     const interval = setInterval(() => ws.ping(), 10000);
     return () => clearInterval(interval);
   }, [screen, ws]);
+
+  // Wait for PXE block sync to catch up to the node's latest block.
+  // This ensures nullifiers from recent txs are processed so pop_notes won't select stale notes.
+  const waitForPxeSync = useCallback(async () => {
+    const w = aztec.wallet as any;
+    const node = aztec.nodeClient as any;
+    if (!w || !node) return;
+    try {
+      const targetBlock = await node.getBlockNumber();
+      console.log(`[App] Waiting for PXE sync to block ${targetBlock}...`);
+      for (let i = 0; i < 30; i++) {
+        const header = await w.getSyncedBlockHeader();
+        const syncedBlock = Number(header.globalVariables?.blockNumber ?? 0);
+        if (syncedBlock >= targetBlock) {
+          console.log(`[App] PXE synced to block ${syncedBlock}`);
+          return;
+        }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      console.warn('[App] PXE sync timeout — proceeding anyway');
+    } catch (err) {
+      console.warn('[App] PXE sync check failed:', err);
+    }
+  }, [aztec.wallet, aztec.nodeClient]);
 
   // 7. Import notes helper — used by both winner (self-import) and loser (via WebSocket relay).
   //    Notes created by create_and_push_note skip delivery/tagging, so PXE sync won't find
@@ -349,7 +383,15 @@ export function App() {
       }
 
       console.log(`[App] ${label}: Imported ${notes.length} notes successfully`);
-      aztec.refreshOwnedCards();
+      // Directly add imported card IDs to the owned cards list.
+      // We do NOT call refreshOwnedCards() here because PXE's view_notes
+      // returns stale (already-nullified) notes alongside new ones after settlement.
+      const importedIds = notes.map(n => n.tokenId);
+      aztec.updateOwnedCards(prev => {
+        const combined = [...prev, ...importedIds];
+        console.log(`[App] ${label}: Updated owned cards:`, combined);
+        return combined;
+      });
     } catch (err) {
       console.error(`[App] ${label}: Failed to import notes:`, err);
     }
@@ -364,8 +406,9 @@ export function App() {
     // Avoid re-processing the same relay
     if (noteImportProcessedRef.current === txHash) return;
     noteImportProcessedRef.current = txHash;
-    importNotesForTx(txHash, notes, 'Loser import');
-  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, importNotesForTx]);
+    // Import notes then wait for PXE sync (so nullifiers from create_game are processed)
+    importNotesForTx(txHash, notes, 'Loser import').then(() => waitForPxeSync());
+  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, importNotesForTx, waitForPxeSync]);
 
   const handlePlay = useCallback(() => {
     // If there is a saved game, try to resume it
@@ -392,9 +435,11 @@ export function App() {
       setScreen('finding-opponent');
       return;
     }
-    aztec.refreshOwnedCards();
+    // Note: we no longer call refreshOwnedCards() here because PXE's view_notes
+    // returns stale (already-nullified) notes after settlement. The ownedCardIds
+    // state is maintained directly via updateOwnedCards throughout the game lifecycle.
     setScreen('card-selector');
-  }, [aztec, gameStorage, gameFlow, ws]);
+  }, [gameStorage, gameFlow, ws]);
 
   const handleTutorial = useCallback(() => {
     // Coming soon
@@ -421,10 +466,14 @@ export function App() {
   }, [ws, gameStorage]);
 
   const handlePackOpenComplete = useCallback(() => {
+    // Add newly opened pack cards directly to owned list
+    // (notes already imported by useCardPacks; avoid refreshOwnedCards which returns stale notes)
+    if (packResult) {
+      aztec.updateOwnedCards(prev => [...prev, ...packResult.cardIds]);
+    }
     setPackResult(null);
-    aztec.refreshOwnedCards();
     setScreen('card-packs');
-  }, [aztec]);
+  }, [aztec, packResult]);
 
   const handlePlaceCard = useCallback(async (handIndex: number, row: number, col: number) => {
     if (!ws.gameState || !ws.playerNumber || !ws.gameId) return;
@@ -570,8 +619,13 @@ export function App() {
       // 2. Import winner's own notes — PXE sync won't find them without delivery/tagging
       console.log('[App] Importing', result.callerNotes.length, 'winner note(s)...');
       await importNotesForTx(result.txHash, result.callerNotes, 'Winner import');
+
+      // 3. Wait for PXE to sync past the settlement block so it processes nullifiers.
+      //    Without this, stale notes remain "ACTIVE" in the PXE and pop_notes may
+      //    select them in the next game, causing "Existing nullifier" errors.
+      await waitForPxeSync();
     }
-  }, [ws.gameId, ws.playerNumber, ws.opponentAztecAddress, ws.opponentOnChainGameId, ws.opponentCardIds, ws.opponentGameRandomness, gameFlow, gameContract, cardIds, ws, importNotesForTx]);
+  }, [ws.gameId, ws.playerNumber, ws.opponentAztecAddress, ws.opponentOnChainGameId, ws.opponentCardIds, ws.opponentGameRandomness, gameFlow, gameContract, cardIds, ws, importNotesForTx, waitForPxeSync]);
 
   const handleBackToMenu = useCallback(() => {
     ws.leaveGame();

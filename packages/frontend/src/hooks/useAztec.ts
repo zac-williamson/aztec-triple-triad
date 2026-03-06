@@ -34,6 +34,8 @@ export interface UseAztecReturn {
   disconnect: () => void;
   /** Re-fetch owned cards from the NFT contract */
   refreshOwnedCards: () => Promise<void>;
+  /** Directly update the owned card IDs (bypasses view_notes which may return stale notes) */
+  updateOwnedCards: (updater: (prev: number[]) => number[]) => void;
 }
 
 /**
@@ -405,5 +407,6 @@ export function useAztec(): UseAztecReturn {
     connect,
     disconnect,
     refreshOwnedCards,
+    updateOwnedCards: setOwnedCardIds,
   };
 }
