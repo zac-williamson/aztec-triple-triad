@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import type { GameState, Player, Card } from '../types';
-import type { TxStatus } from '../hooks/useGameContract';
+import type { TxStatus } from '../hooks/useGameSession';
 import { Board } from './Board';
 import { Hand } from './Hand';
 import './GameScreen.css';

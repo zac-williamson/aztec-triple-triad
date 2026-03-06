@@ -73,10 +73,7 @@ export interface UseGameFlowReturn {
  */
 export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
   const { gameId, playerNumber, cardIds, gameState, wallet, accountAddress, opponentGameRandomness, derivedBlindingFactor } = config;
-  const proofs = useProofGeneration();
-  // Extract stable function references to avoid re-creating callbacks every render
-  // (useProofGeneration returns a new object each render, but individual callbacks are stable)
-  const { generateHandProof, generateMoveProof, reset: resetProofs } = proofs;
+  const { generateHandProof, generateMoveProof, reset: resetProofs } = useProofGeneration();
 
   const [myHandProof, setMyHandProof] = useState<HandProofData | null>(null);
   const [opponentHandProof, setOpponentHandProof] = useState<HandProofData | null>(null);
@@ -233,8 +230,8 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
     myCardCommit,
     opponentCardCommit,
     blindingFactor,
-    handProofStatus: proofs.handProofStatus,
-    moveProofStatus: proofs.moveProofStatus,
+    handProofStatus: myHandProof ? 'ready' as const : 'idle' as const,
+    moveProofStatus: collectedMoveProofs.length > 0 ? 'ready' as const : 'idle' as const,
     setOpponentHandProof,
     addMoveProof,
     generateMoveProofForPlacement,

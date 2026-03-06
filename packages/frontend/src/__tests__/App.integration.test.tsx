@@ -5,7 +5,7 @@
  * without requiring actual network connections or Noir circuit execution.
  */
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
-import { render, screen, act, waitFor } from '@testing-library/react';
+import { render } from '@testing-library/react';
 import { App } from '../App';
 
 // Polyfill ResizeObserver for jsdom (required by React Three Fiber / react-use-measure)
@@ -19,10 +19,12 @@ beforeAll(() => {
   }
 });
 
-// Mock all Aztec-related hooks
+// Mock useAztec (consumed by AztecProvider)
 vi.mock('../hooks/useAztec', () => ({
   useAztec: () => ({
     status: 'unsupported' as const,
+    isConnecting: false,
+    hasConnected: false,
     accountAddress: null,
     isAvailable: false,
     error: null,
@@ -32,49 +34,11 @@ vi.mock('../hooks/useAztec', () => ({
     connect: vi.fn(),
     disconnect: vi.fn(),
     refreshOwnedCards: vi.fn(),
+    updateOwnedCards: vi.fn(),
   }),
 }));
 
-vi.mock('../hooks/useGameFlow', () => ({
-  useGameFlow: (config: any) => ({
-    myHandProof: null,
-    opponentHandProof: null,
-    collectedMoveProofs: [],
-    canSettle: false,
-    myCardCommit: null,
-    opponentCardCommit: null,
-    blindingFactor: '',
-    handProofStatus: 'idle',
-    moveProofStatus: 'idle',
-    setOpponentHandProof: vi.fn(),
-    addMoveProof: vi.fn(),
-    generateMoveProofForPlacement: vi.fn().mockResolvedValue(null),
-    reset: vi.fn(),
-  }),
-}));
-
-vi.mock('../hooks/useGameContract', () => ({
-  useGameContract: () => ({
-    txStatus: 'idle' as const,
-    txHash: null,
-    error: null,
-    ownedCards: [],
-    isAvailable: false,
-    onChainGameId: null,
-    settleGame: vi.fn(),
-    queryOwnedCards: vi.fn().mockResolvedValue([]),
-    resetTx: vi.fn(),
-    lifecycleTxStatus: 'idle' as const,
-    onChainStatus: null,
-    canSettleOnChain: false,
-    createGameOnChain: vi.fn(),
-    joinGameOnChain: vi.fn(),
-    handleOnChainStatus: vi.fn(),
-    resetLifecycle: vi.fn(),
-  }),
-}));
-
-// Mock WebSocket to prevent actual connection attempts
+// Mock useWebSocket (consumed by useGameOrchestrator)
 vi.mock('../hooks/useWebSocket', () => ({
   useWebSocket: () => ({
     connected: true,
@@ -92,6 +56,7 @@ vi.mock('../hooks/useWebSocket', () => ({
     opponentOnChainGameId: null,
     opponentCardIds: [],
     incomingNoteData: null,
+    opponentGameRandomness: null,
     matchmakingStatus: 'idle' as const,
     queuePosition: null,
     createGame: vi.fn(),
@@ -110,6 +75,36 @@ vi.mock('../hooks/useWebSocket', () => ({
   }),
 }));
 
+// Mock useGameSession (consumed by useGameOrchestrator)
+vi.mock('../hooks/useGameSession', () => ({
+  useGameSession: () => ({
+    onChainGameId: null,
+    gameRandomness: null,
+    blindingFactor: null,
+    isContractAvailable: false,
+    settleTxStatus: 'idle' as const,
+    settleTxHash: null,
+    settleError: null,
+    myHandProof: null,
+    opponentHandProof: null,
+    collectedMoveProofs: [],
+    canSettle: false,
+    myCardCommit: null,
+    opponentCardCommit: null,
+    handProofStatus: 'idle' as const,
+    moveProofStatus: 'idle' as const,
+    createGameOnChain: vi.fn(),
+    joinGameOnChain: vi.fn(),
+    settleGame: vi.fn(),
+    setOpponentHandProof: vi.fn(),
+    addMoveProof: vi.fn(),
+    generateHandProofFromState: vi.fn(),
+    generateMoveProofForPlacement: vi.fn().mockResolvedValue(null),
+    restoreState: vi.fn(),
+    reset: vi.fn(),
+  }),
+}));
+
 describe('App Integration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -117,18 +112,15 @@ describe('App Integration', () => {
 
   it('renders the lobby screen by default', () => {
     render(<App />);
-    // Lobby should be visible
     expect(document.querySelector('.app')).toBeTruthy();
   });
 
   it('uses all required hooks without crashing', () => {
-    // This test verifies that useAztec, useGameFlow, and useGameContract
-    // are all called during render without errors
     expect(() => render(<App />)).not.toThrow();
   });
 
   it('passes mapWinnerId correctly', async () => {
-    const { mapWinnerId } = await import('../App');
+    const { mapWinnerId } = await import('../hooks/useGameOrchestrator');
     expect(mapWinnerId(null)).toBe(0);
     expect(mapWinnerId('player1')).toBe(1);
     expect(mapWinnerId('player2')).toBe(2);

@@ -1,12 +1,9 @@
-import { useState, useCallback, useRef } from 'react';
+import { useCallback, useRef } from 'react';
 import type { HandProofData, MoveProofData, GameState } from '../types';
 import type { PlayerHandData } from '../aztec/proofWorker';
 
 export type { PlayerHandData };
 
-/**
- * Proof generation status
- */
 export type ProofStatus = 'idle' | 'generating' | 'ready' | 'error';
 
 /**
@@ -28,18 +25,13 @@ export function encodeBoardState(board: GameState['board']): string[] {
 }
 
 export interface UseProofGenerationReturn {
-  handProofStatus: ProofStatus;
-  moveProofStatus: ProofStatus;
-  handProof: HandProofData | null;
-  moveProofs: MoveProofData[];
-  error: string | null;
   generateHandProof: (
     cardIds: number[],
     blindingFactor: string,
     cardCommitHash: string,
     opponentRandomness: string[],
     opponentPlayerStateHash: string,
-  ) => Promise<HandProofData | null>;
+  ) => Promise<HandProofData>;
   generateMoveProof: (
     cardId: number,
     row: number,
@@ -54,19 +46,16 @@ export interface UseProofGenerationReturn {
     gameEnded: boolean,
     winnerId: number,
     playerHandData: PlayerHandData,
-  ) => Promise<MoveProofData | null>;
+  ) => Promise<MoveProofData>;
   reset: () => void;
 }
 
 /**
- * Hook for generating ZK proofs for game moves and hand ownership.
+ * Stateless proof generation hook.
+ * Provides sequential move proof queuing (to avoid concurrent WASM usage)
+ * but does NOT track proof state — callers own their proof collections.
  */
 export function useProofGeneration(): UseProofGenerationReturn {
-  const [handProofStatus, setHandProofStatus] = useState<ProofStatus>('idle');
-  const [moveProofStatus, setMoveProofStatus] = useState<ProofStatus>('idle');
-  const [handProof, setHandProof] = useState<HandProofData | null>(null);
-  const [moveProofs, setMoveProofs] = useState<MoveProofData[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const proofQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const generateHandProof = useCallback(
@@ -76,35 +65,12 @@ export function useProofGeneration(): UseProofGenerationReturn {
       cardCommitHash: string,
       opponentRandomness: string[],
       opponentPlayerStateHash: string,
-    ): Promise<HandProofData | null> => {
-      setHandProofStatus('generating');
-      setError(null);
-
-      try {
-        const { generateProveHandProof } = await import('../aztec/proofWorker');
-        const proofData = await generateProveHandProof(
-          cardIds, blindingFactor, cardCommitHash,
-          opponentRandomness, opponentPlayerStateHash,
-        );
-
-        setHandProof(proofData);
-        setHandProofStatus('ready');
-        return proofData;
-      } catch (err) {
-        const rawMsg = err instanceof Error ? err.message : String(err);
-        let message: string;
-        if (rawMsg.includes('witness')) {
-          message = 'Circuit witness generation failed. This usually means input values are invalid.';
-        } else if (rawMsg.includes('memory') || rawMsg.includes('OOM')) {
-          message = 'Out of memory. Try closing other browser tabs.';
-        } else {
-          message = `Hand proof generation failed: ${rawMsg}`;
-        }
-        console.error('[useProofGeneration] Hand proof error:', rawMsg);
-        setError(message);
-        setHandProofStatus('error');
-        return null;
-      }
+    ): Promise<HandProofData> => {
+      const { generateProveHandProof } = await import('../aztec/proofWorker');
+      return generateProveHandProof(
+        cardIds, blindingFactor, cardCommitHash,
+        opponentRandomness, opponentPlayerStateHash,
+      );
     },
     [],
   );
@@ -124,12 +90,9 @@ export function useProofGeneration(): UseProofGenerationReturn {
       gameEnded: boolean,
       winnerId: number,
       playerHandData: PlayerHandData,
-    ): Promise<MoveProofData | null> => {
-      const proofPromise = new Promise<MoveProofData | null>((resolve) => {
+    ): Promise<MoveProofData> => {
+      return new Promise<MoveProofData>((resolve, reject) => {
         proofQueueRef.current = proofQueueRef.current.then(async () => {
-          setMoveProofStatus('generating');
-          setError(null);
-
           try {
             const boardBeforeEncoded = encodeBoardState(boardBefore);
             const boardAfterEncoded = encodeBoardState(boardAfter);
@@ -143,51 +106,19 @@ export function useProofGeneration(): UseProofGenerationReturn {
               gameEnded, winnerId,
               playerHandData,
             );
-
-            setMoveProofs((prev) => [...prev, proofData]);
-            setMoveProofStatus('ready');
             resolve(proofData);
           } catch (err) {
-            const rawMsg = err instanceof Error ? err.message : String(err);
-            let message: string;
-            if (rawMsg.includes('witness')) {
-              message = 'Circuit witness generation failed. This usually means input values are invalid.';
-            } else if (rawMsg.includes('memory') || rawMsg.includes('OOM')) {
-              message = 'Out of memory. Try closing other browser tabs.';
-            } else {
-              message = `Move proof generation failed: ${rawMsg}`;
-            }
-            console.error('[useProofGeneration] Move proof error:', rawMsg);
-            setError(message);
-            setMoveProofStatus('error');
-            resolve(null);
+            reject(err);
           }
         });
       });
-
-      return proofPromise;
     },
     [],
   );
 
   const reset = useCallback(() => {
-    setHandProofStatus('idle');
-    setMoveProofStatus('idle');
-    setHandProof(null);
-    setMoveProofs([]);
-    setError(null);
-    // Reset the proof queue so a stale chain from a previous game can't block new proofs
     proofQueueRef.current = Promise.resolve();
   }, []);
 
-  return {
-    handProofStatus,
-    moveProofStatus,
-    handProof,
-    moveProofs,
-    error,
-    generateHandProof,
-    generateMoveProof,
-    reset,
-  };
+  return { generateHandProof, generateMoveProof, reset };
 }
