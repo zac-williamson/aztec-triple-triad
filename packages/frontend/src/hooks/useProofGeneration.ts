@@ -176,6 +176,8 @@ export function useProofGeneration(): UseProofGenerationReturn {
     setHandProof(null);
     setMoveProofs([]);
     setError(null);
+    // Reset the proof queue so a stale chain from a previous game can't block new proofs
+    proofQueueRef.current = Promise.resolve();
   }, []);
 
   return {

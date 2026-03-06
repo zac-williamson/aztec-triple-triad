@@ -243,7 +243,7 @@ export function App() {
       noteImportProcessedRef.current = null;
       gameFlow.reset();
     }
-  }, [screen]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [screen, gameFlow.reset]);
 
   // Matchmaking: transition to game when match found
   useEffect(() => {

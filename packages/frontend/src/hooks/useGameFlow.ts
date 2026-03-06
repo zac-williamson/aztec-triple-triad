@@ -74,6 +74,9 @@ export interface UseGameFlowReturn {
 export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
   const { gameId, playerNumber, cardIds, gameState, wallet, accountAddress, opponentGameRandomness, derivedBlindingFactor } = config;
   const proofs = useProofGeneration();
+  // Extract stable function references to avoid re-creating callbacks every render
+  // (useProofGeneration returns a new object each render, but individual callbacks are stable)
+  const { generateHandProof, generateMoveProof, reset: resetProofs } = proofs;
 
   const [myHandProof, setMyHandProof] = useState<HandProofData | null>(null);
   const [opponentHandProof, setOpponentHandProof] = useState<HandProofData | null>(null);
@@ -107,15 +110,19 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
     import('../aztec/proofWorker').then(async ({ computeCardCommitPoseidon2, computePlayerStateHash }) => {
       const cardCommitHash = await computeCardCommitPoseidon2(cardIds, blindingFactor);
       const opponentPlayerStateHash = await computePlayerStateHash(opponentGameRandomness);
-      const proof = await proofs.generateHandProof(
+      const proof = await generateHandProof(
         cardIds, blindingFactor, cardCommitHash,
         opponentGameRandomness, opponentPlayerStateHash,
       );
       if (proof) {
         setMyHandProof(proof);
       }
+    }).catch((err) => {
+      console.error('[useGameFlow] Hand proof auto-generation failed:', err);
+      // Allow retry on next render cycle
+      handProofGenerated.current = false;
     });
-  }, [gameId, playerNumber, gameState, cardIds, blindingFactor, opponentGameRandomness, proofs]);
+  }, [gameId, playerNumber, gameState, cardIds, blindingFactor, opponentGameRandomness, generateHandProof]);
 
   // Determine if the winner can settle
   const myPlayer: Player = playerNumber === 1 ? 'player1' : 'player2';
@@ -192,7 +199,7 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
       const commit1 = playerNumber === 1 ? myCardCommit : opponentCardCommit;
       const commit2 = playerNumber === 2 ? myCardCommit : opponentCardCommit;
 
-      const proof = await proofs.generateMoveProof(
+      const proof = await generateMoveProof(
         cardId, row, col, playerNumber,
         boardBefore, boardAfter,
         scoresBefore, scoresAfter,
@@ -206,7 +213,7 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
       }
       return proof;
     },
-    [playerNumber, myHandProof, opponentHandProof, myCardCommit, opponentCardCommit, playerHandData, proofs, addMoveProof],
+    [playerNumber, myHandProof, opponentHandProof, myCardCommit, opponentCardCommit, playerHandData, generateMoveProof, addMoveProof],
   );
 
   const reset = useCallback(() => {
@@ -215,8 +222,8 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
     setCollectedMoveProofs([]);
     setBlindingFactor('');
     handProofGenerated.current = false;
-    proofs.reset();
-  }, [proofs]);
+    resetProofs();
+  }, [resetProofs]);
 
   return {
     myHandProof,
