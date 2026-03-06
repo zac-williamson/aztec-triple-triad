@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { AZTEC_CONFIG } from '../aztec/config';
+import { importNotesFromTx, getNftArtifact } from '../aztec/noteImporter';
+import { toFr } from '../aztec/fieldUtils';
+import { AZTEC_TX_TIMEOUT, PXE_INITIAL_SYNC_DELAY, STARTER_CARD_IDS, STARTER_CARD_COUNT } from '../aztec/gameConstants';
 
 /**
  * Aztec wallet connection status
@@ -124,7 +127,7 @@ export function useAztec(): UseAztecReturn {
       const wallet = await EmbeddedWallet.create(node, { ephemeral: true });
 
       // Wait for PXE to sync so tx expiration timestamps are valid
-      await new Promise(r => setTimeout(r, 5000));
+      await new Promise(r => setTimeout(r, PXE_INITIAL_SYNC_DELAY));
 
       // Register SponsoredFPC for fee payments
       const [{ getContractInstanceFromInstantiationParams }, { SponsoredFPCContractArtifact }, { SPONSORED_FPC_SALT }, { SponsoredFeePaymentMethod }, { AztecAddress }] = await Promise.all([
@@ -156,7 +159,7 @@ export function useAztec(): UseAztecReturn {
         fee: { paymentMethod },
         skipClassPublication: true,
         skipInstancePublication: true,
-        wait: { timeout: 300 },
+        wait: { timeout: AZTEC_TX_TIMEOUT },
       });
 
       // Register this account as a sender for note discovery
@@ -172,9 +175,7 @@ export function useAztec(): UseAztecReturn {
         try {
           const nftInstance = await node.getContract(nftAddress);
           if (nftInstance) {
-            const resp = await fetch('/contracts/triple_triad_nft-TripleTriadNFT.json');
-            const rawArtifact = await resp.json();
-            nftArtifact = loadContractArtifact(rawArtifact);
+            nftArtifact = await getNftArtifact();
             await wallet.registerContract(nftInstance, nftArtifact);
             console.log('[useAztec] NFT contract registered with PXE');
           }
@@ -211,81 +212,22 @@ export function useAztec(): UseAztecReturn {
           console.log('[useAztec] Minting starter cards via get_cards_for_new_player...');
           const receipt = await nftContract.methods
             .get_cards_for_new_player()
-            .send({ from: accountManager.address, fee: { paymentMethod }, wait: { timeout: 300 } });
+            .send({ from: accountManager.address, fee: { paymentMethod }, wait: { timeout: AZTEC_TX_TIMEOUT } });
           localStorage.setItem(mintKey, 'true');
           const txHashStr = (receipt as any).txHash?.toString() || '';
           console.log('[useAztec] Starter cards tx mined, txHash:', txHashStr);
 
-          // Import the 5 starter card notes (create_and_push_note skips tagging)
+          // Import the starter card notes (create_and_push_note skips tagging)
           if (txHashStr) {
             try {
-              // Get deterministic randomness values from the contract
               const randomnessResult = await nftContract.methods
-                .compute_note_randomness(0, 5)
+                .compute_note_randomness(0, STARTER_CARD_COUNT)
                 .simulate({ from: accountManager.address });
-              // Convert simulate results to Fr values. The result may be Fr objects,
-              // BigInts, or decimal/hex strings — use toFr() helper to handle all cases.
-              const toFr = (v: any): typeof Fr.prototype => {
-                if (v instanceof Fr) return v;
-                const s = v.toString();
-                // If it starts with 0x, it's hex — use fromHexString
-                if (s.startsWith('0x') || s.startsWith('0X')) return Fr.fromHexString(s);
-                // Otherwise it's decimal — convert via BigInt
-                return new Fr(BigInt(s));
-              };
-              const randomnessFrs: (typeof Fr.prototype)[] = [];
-              for (let i = 0; i < 5; i++) {
-                randomnessFrs.push(toFr(randomnessResult[i]));
-              }
-              console.log('[useAztec] Derived note randomness for starter cards:', randomnessFrs.map(r => r.toString().slice(0, 18) + '...'));
-
-              // Get TxEffect for note hash data
-              const { TxHash } = await import('@aztec/stdlib/tx');
-              const hash = TxHash.fromString(txHashStr);
-              let txEffect: any = null;
-              for (let attempt = 0; attempt < 5; attempt++) {
-                const txResult = await node.getTxEffect(hash);
-                if (txResult?.data) { txEffect = txResult.data; break; }
-                console.log(`[useAztec] TxEffect not ready (attempt ${attempt + 1}/5), waiting...`);
-                await new Promise(r => setTimeout(r, 3000));
-              }
-
-              if (txEffect) {
-                const rawNoteHashes: any[] = txEffect.noteHashes ?? [];
-                const uniqueNoteHashes: string[] = rawNoteHashes
-                  .map((h: any) => h.toString())
-                  .filter((h: string) => h !== '0' && h !== '0x0' && !/^0x0+$/.test(h));
-                const firstNullifier: string = txEffect.nullifiers?.[0]?.toString() ?? '0';
-
-                console.log(`[useAztec] TxEffect: ${uniqueNoteHashes.length} note hashes, importing 5 starter cards...`);
-
-                const STARTER_CARD_IDS = [1, 2, 3, 4, 5];
-                const paddedHashes = new Array(64).fill(new Fr(0n));
-                for (let i = 0; i < uniqueNoteHashes.length && i < 64; i++) {
-                  paddedHashes[i] = Fr.fromHexString(uniqueNoteHashes[i]);
-                }
-
-                const txHashFr = toFr(txHashStr);
-                const firstNullFr = toFr(firstNullifier);
-                for (let i = 0; i < 5; i++) {
-                  console.log(`[useAztec] Importing starter card ${STARTER_CARD_IDS[i]}...`);
-                  await nftContract.methods
-                    .import_note(
-                      accountManager.address,
-                      new Fr(BigInt(STARTER_CARD_IDS[i])),
-                      randomnessFrs[i],
-                      txHashFr,
-                      paddedHashes,
-                      uniqueNoteHashes.length,
-                      firstNullFr,
-                      accountManager.address,
-                    )
-                    .simulate({ from: accountManager.address });
-                }
-                console.log('[useAztec] All 5 starter card notes imported successfully');
-              } else {
-                console.warn('[useAztec] Could not fetch TxEffect for starter card note import');
-              }
+              const notes = STARTER_CARD_IDS.map((id, i) => ({
+                tokenId: id,
+                randomness: toFr(Fr, randomnessResult[i]).toString(),
+              }));
+              await importNotesFromTx(wallet, node, address, txHashStr, notes, 'Starter cards');
             } catch (importErr) {
               console.warn('[useAztec] Failed to import starter card notes:', importErr);
             }
@@ -353,21 +295,21 @@ export function useAztec(): UseAztecReturn {
     setOwnedCardIds([]);
   }, []);
 
+  /**
+   * Re-fetch owned cards from the PXE's note store.
+   * WARNING: Only reliable for initial load (before any settlement). After settlement,
+   * the PXE's view_notes may return stale notes. Use updateOwnedCards for post-game updates.
+   */
   const refreshOwnedCards = useCallback(async () => {
     const w = walletRef.current;
     if (!w || !accountAddress || !AZTEC_CONFIG.nftContractAddress) return;
 
     try {
-      const [{ AztecAddress }, { Contract }, { loadContractArtifact }] = await Promise.all([
-        import('@aztec/aztec.js/addresses'),
-        import('@aztec/aztec.js/contracts'),
-        import('@aztec/aztec.js/abi'),
-      ]);
+      const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+      const { Contract } = await import('@aztec/aztec.js/contracts');
 
       const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
-      const resp = await fetch('/contracts/triple_triad_nft-TripleTriadNFT.json');
-      const rawArtifact = await resp.json();
-      const artifact = loadContractArtifact(rawArtifact);
+      const artifact = await getNftArtifact();
       const nftContract = await Contract.at(nftAddr, artifact, w as never);
 
       const addr = AztecAddress.fromString(accountAddress);

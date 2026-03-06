@@ -5,6 +5,8 @@ import { useGameFlow } from './hooks/useGameFlow';
 import { useGameContract } from './hooks/useGameContract';
 import { useGameStorage } from './hooks/useGameStorage';
 import type { PersistedGameState } from './hooks/useGameStorage';
+import { importNotesFromTx } from './aztec/noteImporter';
+import { PXE_SYNC_MAX_POLLS, PXE_SYNC_POLL_INTERVAL, MOVE_PROOF_WAIT_TIMEOUT, MOVE_PROOF_POLL_INTERVAL, TOTAL_MOVES } from './aztec/gameConstants';
 import { MenuScene } from './components3d/MenuScene';
 import { MainMenu } from './components/MainMenu';
 import { CardSelector } from './components/CardSelector';
@@ -31,7 +33,6 @@ export function mapWinnerId(winner: 'player1' | 'player2' | 'draw' | null): numb
 export function App() {
   const [screen, setScreen] = useState<Screen>('main-menu');
   const [cardIds, setCardIds] = useState<number[]>([]);
-  const [selectedHandIds, setSelectedHandIds] = useState<number[]>([]);
   const [packResult, setPackResult] = useState<{ location: string; cardIds: number[] } | null>(null);
   const ws = useWebSocket(WS_URL);
 
@@ -278,14 +279,14 @@ export function App() {
     try {
       const targetBlock = await node.getBlockNumber();
       console.log(`[App] Waiting for PXE sync to block ${targetBlock}...`);
-      for (let i = 0; i < 30; i++) {
+      for (let i = 0; i < PXE_SYNC_MAX_POLLS; i++) {
         const header = await w.getSyncedBlockHeader();
         const syncedBlock = Number(header.globalVariables?.blockNumber ?? 0);
         if (syncedBlock >= targetBlock) {
           console.log(`[App] PXE synced to block ${syncedBlock}`);
           return;
         }
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, PXE_SYNC_POLL_INTERVAL));
       }
       console.warn('[App] PXE sync timeout — proceeding anyway');
     } catch (err) {
@@ -296,106 +297,27 @@ export function App() {
   // 7. Import notes helper — used by both winner (self-import) and loser (via WebSocket relay).
   //    Notes created by create_and_push_note skip delivery/tagging, so PXE sync won't find
   //    them automatically. Both players must explicitly call import_note to discover their notes.
-  const importNotesForTx = useCallback(async (
+  const importNotes = useCallback(async (
     txHashStr: string,
     notes: { tokenId: number; randomness: string }[],
     label: string,
   ) => {
-    if (!aztec.wallet || !aztec.accountAddress) return;
+    if (!aztec.wallet || !aztec.accountAddress || !aztec.nodeClient) return;
     try {
-      const { AztecAddress } = await import('@aztec/aztec.js/addresses');
-      const { Fr } = await import('@aztec/aztec.js/fields');
-      const { Contract } = await import('@aztec/aztec.js/contracts');
-      const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
-      const { AZTEC_CONFIG } = await import('./aztec/config');
-
-      const myAddr = AztecAddress.fromString(aztec.accountAddress!);
-      const node = aztec.nodeClient as any;
-
-      // Safe Fr conversion — handles hex strings, decimal strings, and Fr objects
-      const toFr = (v: any): InstanceType<typeof Fr> => {
-        if (v instanceof Fr) return v;
-        const s = v.toString();
-        if (s.startsWith('0x') || s.startsWith('0X')) return Fr.fromHexString(s);
-        return new Fr(BigInt(s));
-      };
-
-      // Get TxEffect for note hash data
-      const { TxHash } = await import('@aztec/stdlib/tx');
-      const hash = TxHash.fromString(txHashStr);
-
-      // Retry fetching TxEffect (the tx may have just been mined)
-      let txEffect: any = null;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const txResult = await node.getTxEffect(hash);
-        if (txResult?.data) {
-          txEffect = txResult.data;
-          break;
-        }
-        console.log(`[App] TxEffect not available yet (attempt ${attempt + 1}/5), waiting...`);
-        await new Promise(r => setTimeout(r, 3000));
-      }
-      if (!txEffect) {
-        console.error(`[App] Could not fetch TxEffect for ${txHashStr} after retries`);
-        return;
-      }
-
-      // Extract unique note hashes and first nullifier from TxEffect
-      const rawNoteHashes: any[] = txEffect.noteHashes ?? [];
-      const uniqueNoteHashes: string[] = rawNoteHashes
-        .map((h: any) => h.toString())
-        .filter((h: string) => h !== '0' && h !== '0x0' && !/^0x0+$/.test(h));
-      const firstNullifier: string = txEffect.nullifiers?.[0]?.toString() ?? '0';
-
-      console.log(`[App] ${label}: TxEffect has ${uniqueNoteHashes.length} non-zero note hashes, firstNullifier=${firstNullifier.slice(0, 18)}...`);
-
-      const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress!);
-
-      // Load NFT contract
-      const resp = await fetch('/contracts/triple_triad_nft-TripleTriadNFT.json');
-      if (!resp.ok) throw new Error('Failed to load NFT contract artifact');
-      const artifact = loadContractArtifact(await resp.json());
-      const nftContract = await Contract.at(nftAddr, artifact, aztec.wallet as never);
-
-      // Build padded note hashes array once
-      const paddedHashes = new Array(64).fill(new Fr(0n));
-      for (let i = 0; i < uniqueNoteHashes.length && i < 64; i++) {
-        paddedHashes[i] = toFr(uniqueNoteHashes[i]);
-      }
-      const txHashFr = toFr(txHashStr);
-      const firstNullFr = toFr(firstNullifier);
-
-      // Import each note via import_note utility function
-      for (const note of notes) {
-        console.log(`[App] ${label}: importing note tokenId=${note.tokenId} randomness=${note.randomness.slice(0, 18)}...`);
-        await nftContract.methods
-          .import_note(
-            myAddr,
-            new Fr(BigInt(note.tokenId)),
-            toFr(note.randomness),
-            txHashFr,
-            paddedHashes,
-            uniqueNoteHashes.length,
-            firstNullFr,
-            myAddr,
-          )
-          .simulate({ from: myAddr });
-      }
-
-      console.log(`[App] ${label}: Imported ${notes.length} notes successfully`);
+      const importedIds = await importNotesFromTx(
+        aztec.wallet, aztec.nodeClient, aztec.accountAddress,
+        txHashStr, notes, label,
+      );
       // Directly add imported card IDs to the owned cards list.
       // We do NOT call refreshOwnedCards() here because PXE's view_notes
       // returns stale (already-nullified) notes alongside new ones after settlement.
-      const importedIds = notes.map(n => n.tokenId);
-      aztec.updateOwnedCards(prev => {
-        const combined = [...prev, ...importedIds];
-        console.log(`[App] ${label}: Updated owned cards:`, combined);
-        return combined;
-      });
+      if (importedIds.length > 0) {
+        aztec.updateOwnedCards(prev => [...prev, ...importedIds]);
+      }
     } catch (err) {
       console.error(`[App] ${label}: Failed to import notes:`, err);
     }
-  }, [aztec.wallet, aztec.accountAddress]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [aztec.wallet, aztec.accountAddress, aztec.nodeClient]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 7a. Import notes received from opponent via WebSocket (loser/draw flow)
   const noteImportProcessedRef = useRef<string | null>(null);
@@ -407,8 +329,8 @@ export function App() {
     if (noteImportProcessedRef.current === txHash) return;
     noteImportProcessedRef.current = txHash;
     // Import notes then wait for PXE sync (so nullifiers from create_game are processed)
-    importNotesForTx(txHash, notes, 'Loser import').then(() => waitForPxeSync());
-  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, importNotesForTx, waitForPxeSync]);
+    importNotes(txHash, notes, 'Loser import').then(() => waitForPxeSync());
+  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, importNotes, waitForPxeSync]);
 
   const handlePlay = useCallback(() => {
     // If there is a saved game, try to resume it
@@ -416,7 +338,6 @@ export function App() {
     if (saved) {
       console.log('[App] Resuming saved game:', saved.gameId);
       setCardIds(saved.selectedCardIds);
-      setSelectedHandIds(saved.selectedCardIds);
       // Restore proofs that were persisted
       if (saved.opponentHandProof) {
         gameFlow.setOpponentHandProof(saved.opponentHandProof);
@@ -450,7 +371,6 @@ export function App() {
   }, []);
 
   const handleHandSelected = useCallback((ids: number[]) => {
-    setSelectedHandIds(ids);
     setCardIds(ids);
     ws.queueMatchmaking(ids);
     setScreen('finding-opponent');
@@ -458,7 +378,6 @@ export function App() {
 
   const handleCancelMatchmaking = useCallback(() => {
     ws.cancelMatchmaking();
-    setSelectedHandIds([]);
     setCardIds([]);
     gameStorage.clearGame();
     setHasGameInProgress(false);
@@ -468,12 +387,14 @@ export function App() {
   const handlePackOpenComplete = useCallback(() => {
     // Add newly opened pack cards directly to owned list
     // (notes already imported by useCardPacks; avoid refreshOwnedCards which returns stale notes)
-    if (packResult) {
-      aztec.updateOwnedCards(prev => [...prev, ...packResult.cardIds]);
-    }
-    setPackResult(null);
+    setPackResult(prev => {
+      if (prev) {
+        aztec.updateOwnedCards(cards => [...cards, ...prev.cardIds]);
+      }
+      return null;
+    });
     setScreen('card-packs');
-  }, [aztec, packResult]);
+  }, [aztec]);
 
   const handlePlaceCard = useCallback(async (handIndex: number, row: number, col: number) => {
     if (!ws.gameState || !ws.playerNumber || !ws.gameId) return;
@@ -557,17 +478,17 @@ export function App() {
     // Wait for all 9 move proofs if the last one is still generating.
     // The 9th proof (final move) may still be in flight when the user clicks settle.
     // Use moveProofsRef to read the latest value (avoids stale closure).
-    if (moveProofsRef.current.length < 9) {
-      console.log(`[App] Waiting for move proofs (${moveProofsRef.current.length}/9)...`);
-      const deadline = Date.now() + 30_000; // 30s timeout
-      while (moveProofsRef.current.length < 9 && Date.now() < deadline) {
-        await new Promise(r => setTimeout(r, 500));
+    if (moveProofsRef.current.length < TOTAL_MOVES) {
+      console.log(`[App] Waiting for move proofs (${moveProofsRef.current.length}/${TOTAL_MOVES})...`);
+      const deadline = Date.now() + MOVE_PROOF_WAIT_TIMEOUT;
+      while (moveProofsRef.current.length < TOTAL_MOVES && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, MOVE_PROOF_POLL_INTERVAL));
       }
-      if (moveProofsRef.current.length < 9) {
-        console.error(`[App] Timed out waiting for move proofs (have ${moveProofsRef.current.length}/9)`);
+      if (moveProofsRef.current.length < TOTAL_MOVES) {
+        console.error(`[App] Timed out waiting for move proofs (have ${moveProofsRef.current.length}/${TOTAL_MOVES})`);
         return;
       }
-      console.log('[App] All 9 move proofs collected');
+      console.log(`[App] All ${TOTAL_MOVES} move proofs collected`);
     }
 
     // Order proofs: handProof1 is always player 1's, handProof2 is always player 2's
@@ -618,14 +539,14 @@ export function App() {
 
       // 2. Import winner's own notes — PXE sync won't find them without delivery/tagging
       console.log('[App] Importing', result.callerNotes.length, 'winner note(s)...');
-      await importNotesForTx(result.txHash, result.callerNotes, 'Winner import');
+      await importNotes(result.txHash, result.callerNotes, 'Winner import');
 
       // 3. Wait for PXE to sync past the settlement block so it processes nullifiers.
       //    Without this, stale notes remain "ACTIVE" in the PXE and pop_notes may
       //    select them in the next game, causing "Existing nullifier" errors.
       await waitForPxeSync();
     }
-  }, [ws.gameId, ws.playerNumber, ws.opponentAztecAddress, ws.opponentOnChainGameId, ws.opponentCardIds, ws.opponentGameRandomness, gameFlow, gameContract, cardIds, ws, importNotesForTx, waitForPxeSync]);
+  }, [ws.gameId, ws.playerNumber, ws.opponentAztecAddress, ws.opponentOnChainGameId, ws.opponentCardIds, ws.opponentGameRandomness, gameFlow, gameContract, cardIds, ws, importNotes, waitForPxeSync]);
 
   const handleBackToMenu = useCallback(() => {
     ws.leaveGame();
@@ -633,7 +554,6 @@ export function App() {
     gameContract.resetTx();
     gameContract.resetLifecycle();
     setCardIds([]);
-    setSelectedHandIds([]);
     gameStorage.clearGame();
     setHasGameInProgress(false);
     setScreen('main-menu');
@@ -680,6 +600,7 @@ export function App() {
       {screen === 'card-packs' && (
         <CardPacks
           wallet={aztec.wallet}
+          nodeClient={aztec.nodeClient}
           accountAddress={aztec.accountAddress}
           ownedCardIds={aztec.ownedCardIds}
           onPackOpened={(location: string, result) => {

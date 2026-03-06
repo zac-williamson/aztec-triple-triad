@@ -1,4 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { toFr as toFrUtil } from '../aztec/fieldUtils';
+import { importNotesFromTx, getNftArtifact } from '../aztec/noteImporter';
+import { AZTEC_TX_TIMEOUT, CARDS_PER_PACK } from '../aztec/gameConstants';
 
 export interface LocationInfo {
   id: number;
@@ -32,18 +35,9 @@ export interface UseCardPacksReturn {
   refreshCooldowns: () => Promise<void>;
 }
 
-async function loadNftContract(wallet: any, AztecAddress: any, configAddress: string) {
-  const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
-  const { Contract } = await import('@aztec/aztec.js/contracts');
-  const nftAddr = AztecAddress.fromString(configAddress);
-  const resp = await fetch('/contracts/triple_triad_nft-TripleTriadNFT.json');
-  const rawArtifact = await resp.json();
-  const artifact = loadContractArtifact(rawArtifact);
-  return Contract.at(nftAddr, artifact, wallet);
-}
-
 export function useCardPacks(
   wallet: unknown | null,
+  nodeClient: unknown | null,
   accountAddress: string | null,
 ): UseCardPacksReturn {
   const [cooldowns, setCooldowns] = useState<Record<number, number>>({});
@@ -77,14 +71,21 @@ export function useCardPacks(
     return sdkCacheRef.current;
   }, []);
 
+  const getNftContract = useCallback(async () => {
+    const { AztecAddress } = await getSDK();
+    const { Contract } = await import('@aztec/aztec.js/contracts');
+    const { AZTEC_CONFIG } = await import('../aztec/config');
+    if (!AZTEC_CONFIG.nftContractAddress) throw new Error('NFT contract not configured');
+    const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
+    const artifact = await getNftArtifact();
+    return Contract.at(nftAddr, artifact, wallet as never);
+  }, [wallet, getSDK]);
+
   const refreshCooldowns = useCallback(async () => {
     if (!wallet || !accountAddress) return;
     try {
       const { AztecAddress } = await getSDK();
-      const { AZTEC_CONFIG } = await import('../aztec/config');
-      if (!AZTEC_CONFIG.nftContractAddress) return;
-
-      const nftContract = await loadNftContract(wallet, AztecAddress, AZTEC_CONFIG.nftContractAddress);
+      const nftContract = await getNftContract();
       const addr = AztecAddress.fromString(accountAddress);
       const newCooldowns: Record<number, number> = {};
 
@@ -109,7 +110,7 @@ export function useCardPacks(
     } catch (err) {
       console.warn('[useCardPacks] Failed to refresh cooldowns:', err);
     }
-  }, [wallet, accountAddress, getSDK]);
+  }, [wallet, accountAddress, getSDK, getNftContract]);
 
   // Auto-refresh cooldowns on mount and when wallet changes
   const refreshedRef = useRef(false);
@@ -129,10 +130,7 @@ export function useCardPacks(
 
     try {
       const { AztecAddress, paymentMethod, Fr } = await getSDK();
-      const { AZTEC_CONFIG } = await import('../aztec/config');
-      if (!AZTEC_CONFIG.nftContractAddress) throw new Error('NFT contract not configured');
-
-      const nftContract = await loadNftContract(wallet, AztecAddress, AZTEC_CONFIG.nftContractAddress);
+      const nftContract = await getNftContract();
       const addr = AztecAddress.fromString(accountAddress);
 
       // Get current note nonce (deterministic counter for card generation)
@@ -144,7 +142,7 @@ export function useCardPacks(
       const previewResult = await nftContract.methods
         .preview_card_ids(nonceValue)
         .simulate({ from: addr });
-      const cardIds: number[] = Array.from({ length: 10 }, (_, i) => Number(previewResult[i]));
+      const cardIds: number[] = Array.from({ length: CARDS_PER_PACK }, (_, i) => Number(previewResult[i]));
 
       setTxStatus('confirming');
 
@@ -155,72 +153,22 @@ export function useCardPacks(
       const receipt = await methodFn().send({
         from: addr,
         fee: { paymentMethod },
-        wait: { timeout: 300 },
+        wait: { timeout: AZTEC_TX_TIMEOUT },
       });
 
       const txHash = receipt?.txHash?.toString() ?? null;
 
-      // Import the 10 card notes (create_and_push_note skips tagging)
-      if (txHash) {
+      // Import the card notes (create_and_push_note skips tagging)
+      if (txHash && nodeClient) {
         try {
           const randomnessResult = await nftContract.methods
-            .compute_note_randomness(nonceValue, 10)
+            .compute_note_randomness(nonceValue, CARDS_PER_PACK)
             .simulate({ from: addr });
-          // Convert simulate results to Fr — may be Fr objects, BigInts, or decimal strings
-          const toFr = (v: any) => {
-            if (v instanceof Fr) return v;
-            const s = v.toString();
-            if (s.startsWith('0x') || s.startsWith('0X')) return Fr.fromHexString(s);
-            return new Fr(BigInt(s));
-          };
-          const randomnessFrs: any[] = [];
-          for (let i = 0; i < 10; i++) {
-            randomnessFrs.push(toFr(randomnessResult[i]));
-          }
-
-          const { TxHash } = await import('@aztec/stdlib/tx');
-          const hash = TxHash.fromString(txHash);
-          let txEffect: any = null;
-          for (let attempt = 0; attempt < 5; attempt++) {
-            const nodeModule = await import('@aztec/aztec.js/node');
-            const { AZTEC_CONFIG: cfg } = await import('../aztec/config');
-            const nodeClient = nodeModule.createAztecNodeClient(cfg.pxeUrl);
-            const txResult = await nodeClient.getTxEffect(hash);
-            if (txResult?.data) { txEffect = txResult.data; break; }
-            await new Promise(r => setTimeout(r, 3000));
-          }
-
-          if (txEffect) {
-            const rawNoteHashes: any[] = txEffect.noteHashes ?? [];
-            const uniqueNoteHashes: string[] = rawNoteHashes
-              .map((h: any) => h.toString())
-              .filter((h: string) => h !== '0' && h !== '0x0' && !/^0x0+$/.test(h));
-            const firstNullifier: string = txEffect.nullifiers?.[0]?.toString() ?? '0';
-
-            const paddedHashes = new Array(64).fill(new Fr(0n));
-            for (let i = 0; i < uniqueNoteHashes.length && i < 64; i++) {
-              paddedHashes[i] = toFr(uniqueNoteHashes[i]);
-            }
-
-            const txHashFr = toFr(txHash);
-            const firstNullFr = toFr(firstNullifier);
-            console.log(`[useCardPacks] Importing ${cardIds.length} card notes...`);
-            for (let i = 0; i < 10; i++) {
-              await nftContract.methods
-                .import_note(
-                  addr,
-                  new Fr(BigInt(cardIds[i])),
-                  randomnessFrs[i],
-                  txHashFr,
-                  paddedHashes,
-                  uniqueNoteHashes.length,
-                  firstNullFr,
-                  addr,
-                )
-                .simulate({ from: addr });
-            }
-            console.log('[useCardPacks] All card notes imported successfully');
-          }
+          const notes = cardIds.map((id, i) => ({
+            tokenId: id,
+            randomness: toFrUtil(Fr, randomnessResult[i]).toString(),
+          }));
+          await importNotesFromTx(wallet, nodeClient, accountAddress, txHash, notes, 'Card pack');
         } catch (importErr) {
           console.warn('[useCardPacks] Failed to import card notes:', importErr);
         }
@@ -240,7 +188,7 @@ export function useCardPacks(
     } finally {
       setActiveLocation(null);
     }
-  }, [wallet, accountAddress, getSDK, refreshCooldowns]);
+  }, [wallet, nodeClient, accountAddress, getSDK, getNftContract, refreshCooldowns]);
 
   return {
     cooldowns,

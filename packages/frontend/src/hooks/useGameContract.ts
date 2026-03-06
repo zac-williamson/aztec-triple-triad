@@ -1,5 +1,8 @@
 import { useState, useCallback, useRef } from 'react';
 import { AZTEC_CONFIG } from '../aztec/config';
+import { toFr as toFrUtil, toHexString } from '../aztec/fieldUtils';
+import { getNftArtifact } from '../aztec/noteImporter';
+import { AZTEC_TX_TIMEOUT, AZTEC_SETTLE_TX_TIMEOUT, CARDS_PER_HAND, TOTAL_MOVES } from '../aztec/gameConstants';
 import type { MoveProofData, HandProofData, PlaintextNoteData } from '../types';
 
 /**
@@ -161,9 +164,7 @@ async function ensureContracts(wallet: unknown) {
   // Cache NFT contract (retry on IDB errors)
   if (!contractCache.nftContract && AZTEC_CONFIG.nftContractAddress) {
     const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
-    const nftResp = await fetch('/contracts/triple_triad_nft-TripleTriadNFT.json');
-    if (!nftResp.ok) throw new Error('Failed to load NFT contract artifact');
-    const nftArtifact = loadContractArtifact(await nftResp.json());
+    const nftArtifact = await getNftArtifact();
     contractCache.nftContract = await withRetry(
       () => Contract.at(nftAddr, nftArtifact, wallet as never),
       3, 'Contract.at(nft)',
@@ -220,51 +221,35 @@ export function useGameContract(
         () => nftContract.methods.get_note_nonce(senderAddr).simulate({ from: senderAddr }),
         3, 'get_note_nonce',
       );
-      const nonceValue = String(nonceResult);
-      const nonceFr = (nonceValue.startsWith('0x') || nonceValue.startsWith('0X'))
-        ? Fr.fromHexString(nonceValue)
-        : new Fr(BigInt(nonceValue));
-      console.log('[useGameContract] Current nonce:', nonceValue);
+      const nonceFr = toFrUtil(Fr, nonceResult);
+      console.log('[useGameContract] Current nonce:', String(nonceResult));
 
       // Preview game_id and randomness (derived in-circuit via simulate)
       const previewResult: any = await withRetry(
         () => nftContract.methods.preview_game_data(nonceFr).simulate({ from: senderAddr }),
         3, 'preview_game_data',
       );
-      // previewResult is [game_id, randomness[0..5]] (7 values)
       const gameId = String(previewResult[0]);
-      const randomnessHex = Array.from({ length: 6 }, (_, i) => {
-        const raw = String(previewResult[i + 1]);
-        return (raw.startsWith('0x') || raw.startsWith('0X')) ? raw : '0x' + BigInt(raw).toString(16);
-      });
+      const randomnessHex = Array.from({ length: 6 }, (_, i) => toHexString(previewResult[i + 1]));
       console.log('[useGameContract] Preview game_id:', gameId, 'randomness:', randomnessHex);
 
       // Derive blinding factor (sequentially, after preview — avoids concurrent IDB access)
-      const gameIdFrForBlinding = (gameId.startsWith('0x') || gameId.startsWith('0X'))
-        ? Fr.fromHexString(gameId)
-        : new Fr(BigInt(gameId));
       const blindingResult = await withRetry(
-        () => nftContract.methods.compute_blinding_factor(gameIdFrForBlinding).simulate({ from: senderAddr }),
+        () => nftContract.methods.compute_blinding_factor(toFrUtil(Fr, gameId)).simulate({ from: senderAddr }),
         3, 'compute_blinding_factor (create)',
       );
-      const blindingRaw = String(blindingResult);
-      const blindingHex = (blindingRaw.startsWith('0x') || blindingRaw.startsWith('0X'))
-        ? blindingRaw
-        : '0x' + BigInt(blindingRaw).toString(16);
+      const blindingHex = toHexString(blindingResult);
       console.log('[useGameContract] Blinding factor derived:', blindingHex);
 
       // Send create_game tx (no game_id or randomness args -- derived in-circuit)
       await withRetry(
         () => gameContract.methods
           .create_game(cardIds.map((id: number) => new Fr(BigInt(id))))
-          .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: 300 } }),
+          .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_TX_TIMEOUT } }),
         3, 'create_game',
       );
 
-      // Normalize gameId to hex
-      const gameIdHex = (gameId.startsWith('0x') || gameId.startsWith('0X'))
-        ? gameId
-        : '0x' + BigInt(gameId).toString(16);
+      const gameIdHex = toHexString(gameId);
 
       setOnChainGameId(gameIdHex);
       setGameRandomness(randomnessHex);
@@ -299,44 +284,29 @@ export function useGameContract(
         () => nftContract.methods.get_note_nonce(senderAddr).simulate({ from: senderAddr }),
         3, 'get_note_nonce (join)',
       );
-      const nonceValue = String(nonceResult);
-      const nonceFr = (nonceValue.startsWith('0x') || nonceValue.startsWith('0X'))
-        ? Fr.fromHexString(nonceValue)
-        : new Fr(BigInt(nonceValue));
+      const nonceFr = toFrUtil(Fr, nonceResult);
 
       // Preview randomness (derived in-circuit via simulate)
       const previewResult: any = await withRetry(
         () => nftContract.methods.preview_game_data(nonceFr).simulate({ from: senderAddr }),
         3, 'preview_game_data (join)',
       );
-      const randomnessHex = Array.from({ length: 6 }, (_, i) => {
-        const raw = String(previewResult[i + 1]);
-        return (raw.startsWith('0x') || raw.startsWith('0X')) ? raw : '0x' + BigInt(raw).toString(16);
-      });
+      const randomnessHex = Array.from({ length: 6 }, (_, i) => toHexString(previewResult[i + 1]));
       console.log('[useGameContract] Preview randomness for join:', randomnessHex);
 
       // Derive blinding factor (sequentially, after preview — avoids concurrent IDB access)
-      const gameIdFrForBlinding = (chainGameId.startsWith('0x') || chainGameId.startsWith('0X'))
-        ? Fr.fromHexString(chainGameId)
-        : new Fr(BigInt(chainGameId));
       const blindingResult = await withRetry(
-        () => nftContract.methods.compute_blinding_factor(gameIdFrForBlinding).simulate({ from: senderAddr }),
+        () => nftContract.methods.compute_blinding_factor(toFrUtil(Fr, chainGameId)).simulate({ from: senderAddr }),
         3, 'compute_blinding_factor (join)',
       );
-      const blindingRaw = String(blindingResult);
-      const blindingHex = (blindingRaw.startsWith('0x') || blindingRaw.startsWith('0X'))
-        ? blindingRaw
-        : '0x' + BigInt(blindingRaw).toString(16);
+      const blindingHex = toHexString(blindingResult);
       console.log('[useGameContract] Blinding factor derived (join):', blindingHex);
 
       // Send join_game tx (no randomness arg -- derived in-circuit)
-      const gameIdFr = (chainGameId.startsWith('0x') || chainGameId.startsWith('0X'))
-        ? Fr.fromHexString(chainGameId)
-        : new Fr(BigInt(chainGameId));
       await withRetry(
         () => gameContract.methods
-          .join_game(gameIdFr, cardIds.map((id: number) => new Fr(BigInt(id))))
-          .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: 300 } }),
+          .join_game(toFrUtil(Fr, chainGameId), cardIds.map((id: number) => new Fr(BigInt(id))))
+          .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_TX_TIMEOUT } }),
         3, 'join_game',
       );
 
@@ -407,11 +377,8 @@ export function useGameContract(
         moveBackend.getVerificationKey(),
       ]);
 
-      // 2. Helper: convert base64 proof bytes to Fr[] (each 32 bytes = 1 field)
-      function base64ToFrArray(b64: string): InstanceType<typeof Fr>[] {
-        const binary = atob(b64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      // Helper: convert raw bytes (base64 or Uint8Array) to Fr[] (each 32 bytes = 1 field)
+      function bytesToFrArray(bytes: Uint8Array): InstanceType<typeof Fr>[] {
         const fields: InstanceType<typeof Fr>[] = [];
         for (let i = 0; i < bytes.length; i += 32) {
           const chunk = bytes.slice(i, i + 32);
@@ -421,190 +388,69 @@ export function useGameContract(
         return fields;
       }
 
-      // Helper: convert VK Uint8Array to Fr[] (each 32 bytes = 1 field)
-      function vkToFrArray(vk: Uint8Array): InstanceType<typeof Fr>[] {
-        const fields: InstanceType<typeof Fr>[] = [];
-        for (let i = 0; i < vk.length; i += 32) {
-          const chunk = vk.slice(i, i + 32);
-          const hex = '0x' + Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join('');
-          fields.push(Fr.fromHexString(hex));
-        }
-        return fields;
+      function base64ToFrArray(b64: string): InstanceType<typeof Fr>[] {
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return bytesToFrArray(bytes);
       }
 
-      // Helper: convert hex public input to Fr
-      function toFr(hex: string): InstanceType<typeof Fr> {
-        return Fr.fromHexString(hex.startsWith('0x') ? hex : '0x' + hex);
-      }
+      const hexToFr = (hex: string) => Fr.fromHexString(hex.startsWith('0x') ? hex : '0x' + hex);
 
-      const handVkFields = vkToFrArray(handVk);
-      const moveVkFields = vkToFrArray(moveVk);
-
-      console.log('[useGameContract] VK raw bytes: hand=', handVk.length, 'move=', moveVk.length);
-      console.log('[useGameContract] VK fields: hand=', handVkFields.length, 'move=', moveVkFields.length);
-      console.log('[useGameContract] VK first field: hand=', handVkFields[0]?.toString(), 'move=', moveVkFields[0]?.toString());
+      const handVkFields = bytesToFrArray(handVk);
+      const moveVkFields = bytesToFrArray(moveVk);
 
       // 3. Convert proofs
       const hp1Proof = base64ToFrArray(handProof1.proof);
-      const hp1Inputs = handProof1.publicInputs.map(toFr);
+      const hp1Inputs = handProof1.publicInputs.map(hexToFr);
       const hp2Proof = base64ToFrArray(handProof2.proof);
-      const hp2Inputs = handProof2.publicInputs.map(toFr);
+      const hp2Inputs = handProof2.publicInputs.map(hexToFr);
 
-      console.log('[useGameContract] === DIAGNOSTIC: Hand proofs ===');
-      console.log('  hp1 proof fields:', hp1Proof.length, '| hp1 inputs:', hp1Inputs.length);
-      console.log('  hp2 proof fields:', hp2Proof.length, '| hp2 inputs:', hp2Inputs.length);
-      console.log('  hp1 publicInputs (raw):', handProof1.publicInputs);
-      console.log('  hp2 publicInputs (raw):', handProof2.publicInputs);
-      console.log('  hp1 cardCommit:', handProof1.cardCommit);
-      console.log('  hp2 cardCommit:', handProof2.cardCommit);
-
-      // 9 move proofs — sort into a chain by start/end state hashes
-      // Public inputs: [0] card_commit_1, [1] card_commit_2,
-      //   [2] start_state_hash, [3] end_state_hash, [4] game_ended, [5] winner_id
-      // Chain rule: proof[i].endStateHash == proof[i+1].startStateHash
-
-      // Compute canonical initial state hash to find the first proof
+      // Sort move proofs into chain by start/end state hashes
       const { computeBoardStateHash } = await import('../aztec/proofWorker');
       const emptyBoard = Array(18).fill('0');
-      const canonicalInitial = await computeBoardStateHash(emptyBoard, [5, 5], 1);
+      const canonicalInitial = await computeBoardStateHash(emptyBoard, [CARDS_PER_HAND, CARDS_PER_HAND], 1);
 
-      // Build a map from startStateHash → proof for O(1) lookup
       const byStart = new Map<string, typeof moveProofs[0]>();
       for (const p of moveProofs) {
         byStart.set(p.startStateHash, p);
       }
 
-      // Walk the chain starting from the canonical initial state
       const sorted: typeof moveProofs = [];
       let nextHash = canonicalInitial;
-      for (let i = 0; i < 9; i++) {
+      for (let i = 0; i < TOTAL_MOVES; i++) {
         const p = byStart.get(nextHash);
         if (!p) {
-          console.error(`[useGameContract] Proof chain broken at step ${i}. Looking for startStateHash:`, nextHash);
-          console.error('[useGameContract] Available startStateHashes:', [...byStart.keys()]);
           throw new Error(`Proof chain broken at step ${i}: no proof with startStateHash matching previous endStateHash`);
         }
         sorted.push(p);
         nextHash = p.endStateHash;
       }
-
-      console.log('[useGameContract] Move proofs sorted into chain successfully');
-      console.log('[useGameContract] === DIAGNOSTIC: Move proof chain ===');
-      for (let i = 0; i < 9; i++) {
-        const m = sorted[i];
-        console.log(`  move[${i}]: start=${m.startStateHash.slice(0, 18)}... end=${m.endStateHash.slice(0, 18)}... gameEnded=${m.gameEnded} winnerId=${m.winnerId}`);
-        console.log(`    publicInputs[0..1] (card_commits): ${m.publicInputs[0]?.slice(0, 18)}..., ${m.publicInputs[1]?.slice(0, 18)}...`);
-      }
-      // Verify chain
-      for (let i = 0; i < 8; i++) {
-        const ok = sorted[i].endStateHash === sorted[i + 1].startStateHash;
-        if (!ok) console.error(`  CHAIN BREAK at ${i} -> ${i+1}: end=${sorted[i].endStateHash} != start=${sorted[i+1].startStateHash}`);
-      }
-      // Verify card commits are consistent across all move proofs
-      const allCC1 = sorted.map(m => m.publicInputs[0]);
-      const allCC2 = sorted.map(m => m.publicInputs[1]);
-      const cc1Consistent = allCC1.every(c => c === allCC1[0]);
-      const cc2Consistent = allCC2.every(c => c === allCC2[0]);
-      console.log(`[useGameContract] card_commit_1 consistent across moves: ${cc1Consistent} (${allCC1[0]?.slice(0, 18)}...)`);
-      console.log(`[useGameContract] card_commit_2 consistent across moves: ${cc2Consistent} (${allCC2[0]?.slice(0, 18)}...)`);
-      // Verify hand proof commits match move proof commits
-      console.log(`[useGameContract] hand_proof_1 commit matches move card_commit_1: ${handProof1.publicInputs[0] === allCC1[0]}`);
-      console.log(`[useGameContract] hand_proof_2 commit matches move card_commit_2: ${handProof2.publicInputs[0] === allCC2[0]}`);
-      if (handProof1.publicInputs[0] !== allCC1[0]) {
-        console.error('  MISMATCH hp1:', handProof1.publicInputs[0], '!= move cc1:', allCC1[0]);
-      }
-      if (handProof2.publicInputs[0] !== allCC2[0]) {
-        console.error('  MISMATCH hp2:', handProof2.publicInputs[0], '!= move cc2:', allCC2[0]);
-      }
+      console.log('[useGameContract] Move proofs sorted into chain');
 
       const mp: InstanceType<typeof Fr>[][] = [];
       const mi: InstanceType<typeof Fr>[][] = [];
-      for (let i = 0; i < 9; i++) {
-        const m = sorted[i];
+      for (const m of sorted) {
         mp.push(base64ToFrArray(m.proof));
-        mi.push(m.publicInputs.map(toFr));
-      }
-
-      console.log('[useGameContract] === DIAGNOSTIC: Final sizes ===');
-      console.log('  hp1 proof fields:', hp1Proof.length, '| hp2 proof fields:', hp2Proof.length);
-      console.log('  mp[0] proof fields:', mp[0].length, '| mi[0] inputs:', mi[0].length);
-      for (let i = 0; i < 9; i++) {
-        console.log(`  mp[${i}] fields: ${mp[i].length} | mi[${i}] inputs: ${mi[i].length}`);
+        mi.push(m.publicInputs.map(hexToFr));
       }
 
       setTxStatus('sending');
 
-      // 4. Use cached contract for process_game
       const contract = contractCache.gameContract;
       if (!contract) throw new Error('Game contract not initialized');
 
       const senderAddr = accountAddress ? AztecAddress.fromString(accountAddress) : AztecAddress.ZERO;
       const opponent = AztecAddress.fromString(opponentAddress);
 
-      // === PRE-FLIGHT: Query on-chain state to diagnose settle_game assertions ===
-      console.log('[useGameContract] === PRE-FLIGHT: On-chain state check ===');
-      console.log('  game_id:', gameId);
-      console.log('  caller (senderAddr):', senderAddr.toString());
-      console.log('  opponent:', opponent.toString());
-      console.log('  cardToTransfer:', cardToTransfer);
-      console.log('  callerCardIds:', callerCardIds);
-      console.log('  opponentCardIds:', opponentCardIds);
-      try {
-        const [onChainStatus, onChainSettled, onChainCC1, onChainCC2, onChainP1, onChainP2] = await Promise.all([
-          contract.methods.get_game_status(new Fr(BigInt(gameId))).simulate({ from: senderAddr }),
-          contract.methods.is_game_settled(new Fr(BigInt(gameId))).simulate({ from: senderAddr }),
-          contract.methods.get_game_card_commit_1(new Fr(BigInt(gameId))).simulate({ from: senderAddr }),
-          contract.methods.get_game_card_commit_2(new Fr(BigInt(gameId))).simulate({ from: senderAddr }),
-          contract.methods.get_game_player1(new Fr(BigInt(gameId))).simulate({ from: senderAddr }),
-          contract.methods.get_game_player2(new Fr(BigInt(gameId))).simulate({ from: senderAddr }),
-        ]);
-        console.log('  on-chain game_status:', String(onChainStatus));
-        console.log('  on-chain is_settled:', onChainSettled);
-        console.log('  on-chain card_commit_1:', String(onChainCC1));
-        console.log('  on-chain card_commit_2:', String(onChainCC2));
-        console.log('  on-chain player1:', String(onChainP1));
-        console.log('  on-chain player2:', String(onChainP2));
-
-        // Compare proof card commits against on-chain values
-        const proofCC1 = hp1Inputs[0]?.toString();
-        const proofCC2 = hp2Inputs[0]?.toString();
-        console.log('  proof card_commit_1:', proofCC1);
-        console.log('  proof card_commit_2:', proofCC2);
-        console.log('  cc1 MATCH:', proofCC1 === String(onChainCC1));
-        console.log('  cc2 MATCH:', proofCC2 === String(onChainCC2));
-
-        // Check winner/loser mapping
-        const lastMoveInputs = mi[8];
-        const winnerId = lastMoveInputs[5]?.toString();
-        console.log('  winner_id from final move proof:', winnerId);
-        console.log('  caller is player1:', senderAddr.toString() === String(onChainP1));
-        console.log('  caller is player2:', senderAddr.toString() === String(onChainP2));
-        if (String(winnerId) === '1' || String(winnerId) === '0x1') {
-          console.log('  => winner should be player1. caller IS player1:', senderAddr.toString() === String(onChainP1));
-        } else if (String(winnerId) === '2' || String(winnerId) === '0x2') {
-          console.log('  => winner should be player2. caller IS player2:', senderAddr.toString() === String(onChainP2));
-        } else {
-          console.log('  => draw or unknown winner_id');
-        }
-      } catch (prefErr) {
-        console.warn('[useGameContract] Pre-flight check failed (non-fatal):', prefErr);
-      }
-
-      // Pad card ID arrays to exactly 5 elements
       const padTo5 = (ids: number[]): InstanceType<typeof Fr>[] => {
         const padded = [...ids];
-        while (padded.length < 5) padded.push(0);
-        return padded.slice(0, 5).map(id => new Fr(BigInt(id)));
+        while (padded.length < CARDS_PER_HAND) padded.push(0);
+        return padded.slice(0, CARDS_PER_HAND).map(id => new Fr(BigInt(id)));
       };
 
-      // Use committed randomness values (validated against on-chain player_state_hash)
-      // Values may be decimal strings from Fr.toString() — handle both hex and decimal
-      const safeToFr = (v: string) => {
-        if (v.startsWith('0x') || v.startsWith('0X')) return Fr.fromHexString(v);
-        return new Fr(BigInt(v));
-      };
-      const callerRandomness = callerRandomnessHex.map(safeToFr);
-      const opponentRandomness = opponentRandomnessHex.map(safeToFr);
+      const callerRandomness = callerRandomnessHex.map(v => toFrUtil(Fr, v));
+      const opponentRandomness = opponentRandomnessHex.map(v => toFrUtil(Fr, v));
 
       // process_game signature (from contract):
       // game_id, hand_vk, move_vk,
@@ -644,7 +490,7 @@ export function useGameContract(
       }
 
       const receipt = await processGameCall
-        .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: 600 } });
+        .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_SETTLE_TX_TIMEOUT } });
 
       const hash = (receipt as any).txHash?.toString() || 'unknown';
       setTxHash(hash);

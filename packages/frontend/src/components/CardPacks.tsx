@@ -20,6 +20,7 @@ const LOCATION_HUNT_GIFS: Record<string, string> = {
 
 interface CardPacksProps {
   wallet: unknown | null;
+  nodeClient: unknown | null;
   accountAddress: string | null;
   ownedCardIds: number[];
   onPackOpened: (location: string, result: HuntResult) => void;
@@ -35,8 +36,8 @@ function formatCountdown(ms: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-export function CardPacks({ wallet, accountAddress, ownedCardIds, onPackOpened, onBack }: CardPacksProps) {
-  const packs = useCardPacks(wallet, accountAddress);
+export function CardPacks({ wallet, nodeClient, accountAddress, ownedCardIds, onPackOpened, onBack }: CardPacksProps) {
+  const packs = useCardPacks(wallet, nodeClient, accountAddress);
   const [now, setNow] = useState(Date.now());
 
   // Tick countdown every second
