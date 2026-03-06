@@ -1,25 +1,17 @@
 import { useState, useEffect } from 'react';
-import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import {
-  TextureLoader, MeshStandardMaterial, RepeatWrapping,
-  Group, Texture, Color,
+  MeshStandardMaterial, RepeatWrapping,
+  Group, Color,
 } from 'three';
 import { MODELS, TEXTURES } from '../assets/modelManifest';
-
-// Same atlas-material detection as SwampFloor — hides atlas-UV meshes
-// when a dedicated (non-atlas) texture is applied, preventing "green
-// rectangle" artifacts from incompatible UV layouts.
-const ATLAS_MAT_PREFIXES = ['Nature', 'Explorer_MAT', 'Nature_Base_Mat', 'lambert'];
-function isAtlasMaterial(name: string): boolean {
-  return ATLAS_MAT_PREFIXES.some(prefix => name.startsWith(prefix));
-}
+import { loadFBX, loadTexture } from './hooks/useFBXModel';
 
 interface EnvironmentModelProps {
   modelPath: string;
   texturePath: string;
   position: [number, number, number];
   rotation?: [number, number, number];
-  scale?: number; // multiplier on top of base 0.01
+  scale?: number;
   tint?: string;
   alphaTest?: number;
 }
@@ -29,53 +21,31 @@ function EnvironmentModel({ modelPath, texturePath, position, rotation = [0, 0, 
 
   useEffect(() => {
     let cancelled = false;
-    const loader = new FBXLoader();
-    const texLoader = new TextureLoader();
 
-    Promise.all([
-      new Promise<Group>((resolve, reject) => loader.load(modelPath, resolve, undefined, reject)),
-      new Promise<Texture>((resolve, reject) => texLoader.load(texturePath, resolve, undefined, reject)),
-    ]).then(([fbx, texture]) => {
+    Promise.all([loadFBX(modelPath), loadTexture(texturePath)]).then(([fbx, texture]) => {
       if (cancelled) return;
       texture.wrapS = RepeatWrapping;
       texture.wrapT = RepeatWrapping;
 
-      const isAtlasTexture = texturePath.includes('PolygonNatureBiomes');
-      let keptOne = false;
+      const clone = fbx.clone(true);
 
-      fbx.traverse((child: any) => {
+      clone.traverse((child: any) => {
         if (child.isMesh) {
-          const origMatName = child.material?.name || '';
-
-          if (isAtlasMaterial(origMatName) && !isAtlasTexture) {
-            child.visible = false;
-            return;
-          }
-
-          // Only keep the first compatible mesh — hide duplicate LODs
-          // to prevent z-fighting flicker from overlapping geometry.
-          if (keptOne) {
-            child.visible = false;
-            return;
-          }
-          keptOne = true;
-
           child.material = new MeshStandardMaterial({
             map: texture,
-            color: tint ? new Color(tint) : undefined,
+            ...(tint ? { color: new Color(tint) } : {}),
             roughness: 0.9,
             metalness: 0.05,
             transparent: true,
             alphaTest,
           });
-          child.castShadow = true;
+          child.castShadow = false;
           child.receiveShadow = true;
         }
       });
 
-      // Base scale 0.01 (cm → meters), then apply user multiplier
-      fbx.scale.setScalar(0.01 * scale);
-      setModel(fbx);
+      clone.scale.setScalar(0.01 * scale);
+      setModel(clone);
     });
 
     return () => { cancelled = true; };
@@ -90,9 +60,10 @@ function FogRing() {
 
   useEffect(() => {
     let cancelled = false;
-    new FBXLoader().load(MODELS.fogRing, (fbx) => {
+    loadFBX(MODELS.fogRing).then((fbx) => {
       if (cancelled) return;
-      fbx.traverse((child: any) => {
+      const clone = fbx.clone(true);
+      clone.traverse((child: any) => {
         if (child.isMesh) {
           child.material = new MeshStandardMaterial({
             color: '#2a4a2a',
@@ -104,9 +75,8 @@ function FogRing() {
           child.receiveShadow = false;
         }
       });
-      // Fog ring is ~7000 units wide → scale to ~4m radius
-      fbx.scale.setScalar(0.0006);
-      setModel(fbx);
+      clone.scale.setScalar(0.0006);
+      setModel(clone);
     });
     return () => { cancelled = true; };
   }, []);
@@ -115,16 +85,11 @@ function FogRing() {
   return <primitive object={model} position={[0, 0.05, 0]} />;
 }
 
-// EnvironmentModel scale multiplier reference:
-// Synty trees are ~800-2000cm tall
-// scale=0.08 → 0.0008 → 800cm tree = 0.64m (small background tree)
-// scale=0.10 → 0.001 → 800cm tree = 0.80m
-
 export function SwampEnvironment() {
-  const A = TEXTURES.swampAtlas; // atlas for UV-mapped tree models
-  const LP1 = TEXTURES.lillyPads1Tex; // dedicated lily pad texture
+  const A = TEXTURES.swampAtlas;
+  const LP1 = TEXTURES.lillyPads1Tex;
   const LP2 = TEXTURES.lillyPads2Tex;
-  const R = TEXTURES.reedsTex; // dedicated reeds texture
+  const R = TEXTURES.reedsTex;
 
   return (
     <group>

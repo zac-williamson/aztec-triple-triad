@@ -17,9 +17,11 @@
   align-items: center;
   gap: 8px;
   padding: 8px 20px;
-  border: none;
-  border-radius: 0;
-  background: url('/ui-elements/button.png') center / 100% 100% no-repeat;
+  border: 2px solid #6a5530;
+  border-radius: 4px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.06) 0%, transparent 40%, rgba(0,0,0,0.15) 100%),
+    linear-gradient(170deg, #3a4a2a 0%, #2a3a1e 40%, #1e2e16 100%);
   color: rgba(232, 228, 216, 0.8);
   font-family: 'Nunito', sans-serif;
   font-size: 14px;
@@ -28,13 +30,22 @@
   transition: all 0.2s ease;
   pointer-events: auto;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
-  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.4));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+    0 2px 6px rgba(0, 0, 0, 0.4);
 }
 
 .card-packs__back:hover {
-  background-image: url('/ui-elements/button-hover.png');
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.1) 0%, transparent 40%, rgba(0,0,0,0.1) 100%),
+    linear-gradient(170deg, #4a5a34 0%, #3a4a28 40%, #2a3a1e 100%);
+  border-color: #8a7040;
   color: rgba(232, 228, 216, 1);
-  filter: drop-shadow(0 4px 10px rgba(196, 162, 101, 0.25));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.15),
+    0 4px 10px rgba(196, 162, 101, 0.2);
 }
 
 .card-packs__title {
@@ -120,9 +131,11 @@
 .card-packs__hunt-btn {
   width: 100%;
   padding: 10px 16px;
-  border: none;
-  border-radius: 0;
-  background: url('/ui-elements/button.png') center / 100% 100% no-repeat;
+  border: 2px solid #6a5530;
+  border-radius: 4px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.06) 0%, transparent 40%, rgba(0,0,0,0.15) 100%),
+    linear-gradient(170deg, #3a4a2a 0%, #2a3a1e 40%, #1e2e16 100%);
   color: rgba(232, 228, 216, 0.9);
   font-family: 'Cinzel', serif;
   font-size: 13px;
@@ -131,12 +144,21 @@
   cursor: pointer;
   transition: all 0.2s ease;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+    0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
 .card-packs__hunt-btn:hover:not(:disabled) {
-  background-image: url('/ui-elements/button-hover.png');
-  filter: drop-shadow(0 3px 8px rgba(196, 162, 101, 0.2));
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.1) 0%, transparent 40%, rgba(0,0,0,0.1) 100%),
+    linear-gradient(170deg, #4a5a34 0%, #3a4a28 40%, #2a3a1e 100%);
+  border-color: #8a7040;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.15),
+    0 3px 8px rgba(196, 162, 101, 0.2);
 }
 
 .card-packs__hunt-btn:disabled {
@@ -164,15 +186,9 @@
 .card-packs__hunting-sprite {
   width: 100%;
   aspect-ratio: 16 / 9;
-  background-position: left top;
-  background-repeat: no-repeat;
+  object-fit: cover;
   image-rendering: pixelated;
-  animation: sprite-play-packs 1.8s infinite;
-}
-
-@keyframes sprite-play-packs {
-  from { background-position: 0% 0; }
-  to { background-position: 100% 0; }
+  display: block;
 }
 
 .card-packs__hunting-overlay {
@@ -230,11 +246,9 @@
   inset: 0;
   z-index: 20;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 24px;
-  background: rgba(10, 18, 10, 0.95);
+  pointer-events: none;
   animation: hunt-overlay-enter 0.5s ease-out;
 }
 
@@ -243,23 +257,33 @@
   to { opacity: 1; }
 }
 
+/* Uses shared .parchment-dialog class from App.css for background */
+.card-packs__hunt-dialog {
+  pointer-events: auto;
+  gap: 16px;
+}
+
 .card-packs__hunt-overlay-scene {
   position: relative;
-  width: 500px;
-  max-width: 90vw;
-  border-radius: 12px;
+  width: 100%;
+  border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6), 0 0 60px rgba(123, 198, 126, 0.1);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
   image-rendering: pixelated;
+  animation: scene-breathe 4s ease-in-out infinite;
+}
+
+@keyframes scene-breathe-hunt {
+  0%, 100% { box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5); }
+  50% { box-shadow: 0 4px 32px rgba(123, 198, 126, 0.15), 0 4px 24px rgba(0, 0, 0, 0.5); }
 }
 
 .card-packs__hunt-overlay-sprite {
   width: 100%;
   aspect-ratio: 16 / 9;
-  background-position: left top;
-  background-repeat: no-repeat;
+  object-fit: cover;
   image-rendering: pixelated;
-  animation: sprite-play-packs 1.8s infinite;
+  display: block;
 }
 
 .card-packs__hunt-overlay-fireflies {
@@ -311,18 +335,21 @@
   font-family: 'Cinzel', serif;
   font-size: 24px;
   font-weight: 700;
-  color: rgba(232, 228, 216, 0.8);
+  color: #3a2a14;
   letter-spacing: 2px;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
 .card-packs__hunt-overlay-status {
   font-family: 'Nunito', sans-serif;
   font-size: 14px;
-  color: rgba(232, 228, 216, 0.4);
+  color: rgba(58, 42, 20, 0.5);
 }
 
 .card-packs__spinner--large {
   width: 28px;
   height: 28px;
   border-width: 3px;
+  border-color: rgba(58, 42, 20, 0.15);
+  border-top-color: #a08050;
 }

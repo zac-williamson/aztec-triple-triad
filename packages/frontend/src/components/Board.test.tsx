@@ -5,7 +5,7 @@ import type { Board as BoardType, Card as CardType } from '../types';
 
 function createEmptyBoard(): BoardType {
   return Array.from({ length: 3 }, () =>
-    Array.from({ length: 3 }, () => ({ card: null, owner: null }))
+    Array.from({ length: 3 }, () => ({ card: null, owner: null, originalOwner: null }))
   );
 }
 
@@ -23,7 +23,7 @@ describe('Board component', () => {
 
   it('should render cards in cells', () => {
     const board = createEmptyBoard();
-    board[0][0] = { card: testCard, owner: 'player1' };
+    board[0][0] = { card: testCard, owner: 'player1', originalOwner: 'player1' };
     const { container } = render(<Board board={board} />);
     expect(container.querySelector('[data-testid="card-1"]')).toBeTruthy();
   });
@@ -61,7 +61,7 @@ describe('Board component', () => {
 
   it('should mark captured cells', () => {
     const board = createEmptyBoard();
-    board[1][1] = { card: testCard, owner: 'player1' };
+    board[1][1] = { card: testCard, owner: 'player1', originalOwner: 'player1' };
     const { container } = render(
       <Board board={board} capturedCells={[{ row: 1, col: 1 }]} />
     );

@@ -91,13 +91,20 @@ export function GameScreen3D({
     const placer: Player = gameState.currentTurn === 'player1' ? 'player2' : 'player1';
     const placerIsMe = placer === myPlayer;
 
-    const entries: CaptureAnimationEntry[] = lastCaptures.map(cap => ({
-      row: cap.row,
-      col: cap.col,
-      card: gameState.board[cap.row][cap.col].card!,
-      oldOwner: placerIsMe ? 'red' : 'blue',
-      newOwner: placerIsMe ? 'blue' : 'red',
-    }));
+    const entries: CaptureAnimationEntry[] = [];
+    for (const cap of lastCaptures) {
+      const card = gameState.board[cap.row]?.[cap.col]?.card;
+      if (!card) continue; // Skip stale captures that reference empty cells
+      entries.push({
+        row: cap.row,
+        col: cap.col,
+        card,
+        oldOwner: placerIsMe ? 'red' : 'blue',
+        newOwner: placerIsMe ? 'blue' : 'red',
+      });
+    }
+
+    if (entries.length === 0) return; // Nothing to animate
 
     if (flyingCard) {
       // Defer cascade until fly animation completes

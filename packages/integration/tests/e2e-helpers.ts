@@ -219,6 +219,8 @@ export async function generateFullGameProofs(
   p2BlindingFactor: string,
   p1CardCommit: string,
   p2CardCommit: string,
+  p1Randomness?: string[],
+  p2Randomness?: string[],
 ): Promise<GameProofs> {
   const { UltraHonkBackend } = await import('@aztec/bb.js');
   const { Noir } = await import('@noir-lang/noir_js');
@@ -228,12 +230,55 @@ export async function generateFullGameProofs(
   const noirHand = new Noir(proveHandArtifact);
   const noirMove = new Noir(gameMoveArtifact);
 
+  // Compute opponent player_state_hashes from randomness
+  // hand_proof_1 (player1) proves knowledge of player2's randomness
+  // hand_proof_2 (player2) proves knowledge of player1's randomness
+  const p1Rand = p1Randomness || ['0x1', '0x2', '0x3', '0x4', '0x5', '0x6'];
+  const p2Rand = p2Randomness || ['0x7', '0x8', '0x9', '0xa', '0xb', '0xc'];
+
+  // Compute opponent state hashes using poseidon2 via Barretenberg
+  const numToField = (n: number | bigint): Uint8Array => {
+    const buf = new Uint8Array(32);
+    let val = BigInt(n);
+    for (let i = 31; i >= 0; i--) {
+      buf[i] = Number(val & 0xffn);
+      val >>= 8n;
+    }
+    return buf;
+  };
+  const hexToField = (hex: string): Uint8Array => {
+    const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
+    const padded = clean.padStart(64, '0');
+    const buf = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) {
+      buf[i] = parseInt(padded.substring(i * 2, i * 2 + 2), 16);
+    }
+    return buf;
+  };
+  const safeToFieldBuf = (v: string): Uint8Array => {
+    if (v.startsWith('0x') || v.startsWith('0X')) return hexToField(v);
+    return numToField(BigInt(v));
+  };
+  const bufToHex = (buf: Uint8Array): string =>
+    '0x' + Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('');
+
+  const p2RandInputs = p2Rand.map(safeToFieldBuf);
+  const p2StateHash = await api.poseidon2Hash({ inputs: p2RandInputs });
+  const p2StateHashHex = bufToHex(p2StateHash.hash);
+
+  const p1RandInputs = p1Rand.map(safeToFieldBuf);
+  const p1StateHash = await api.poseidon2Hash({ inputs: p1RandInputs });
+  const p1StateHashHex = bufToHex(p1StateHash.hash);
+
   // --- Generate hand proofs ---
+  // hand_proof_1: player1 proves their hand + knowledge of player2's randomness
   console.log('    Generating hand proof 1...');
   const hp1Witness = await noirHand.execute({
     card_commit_hash: p1CardCommit,
+    opponent_player_state_hash: p2StateHashHex,
     card_ids: p1CardIds.map(String),
     blinding_factor: p1BlindingFactor,
+    opponent_randomness: p2Rand,
   } as any);
   const hp1Result = await handBackend.generateProof(hp1Witness.witness);
   const handProof1: GeneratedProof = {
@@ -241,11 +286,14 @@ export async function generateFullGameProofs(
     publicInputs: hp1Result.publicInputs.map(String),
   };
 
+  // hand_proof_2: player2 proves their hand + knowledge of player1's randomness
   console.log('    Generating hand proof 2...');
   const hp2Witness = await noirHand.execute({
     card_commit_hash: p2CardCommit,
+    opponent_player_state_hash: p1StateHashHex,
     card_ids: p2CardIds.map(String),
     blinding_factor: p2BlindingFactor,
+    opponent_randomness: p1Rand,
   } as any);
   const hp2Result = await handBackend.generateProof(hp2Witness.witness);
   const handProof2: GeneratedProof = {

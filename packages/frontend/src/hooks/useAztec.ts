@@ -12,6 +12,10 @@ export type AztecConnectionStatus = 'disconnected' | 'connecting' | 'connected' 
 export interface UseAztecReturn {
   /** Current connection status */
   status: AztecConnectionStatus;
+  /** True while connect() is in progress */
+  isConnecting: boolean;
+  /** True once connect() has completed successfully */
+  hasConnected: boolean;
   /** Account address (hex string) if connected */
   accountAddress: string | null;
   /** Whether Aztec features are available */
@@ -203,11 +207,87 @@ export function useAztec(): UseAztecReturn {
           const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
           const nftContract = await Contract.at(nftAddr, nftArtifact, wallet as never);
           console.log('[useAztec] Minting starter cards via get_cards_for_new_player...');
-          await nftContract.methods
+          const receipt = await nftContract.methods
             .get_cards_for_new_player()
             .send({ from: accountManager.address, fee: { paymentMethod }, wait: { timeout: 300 } });
           localStorage.setItem(mintKey, 'true');
-          console.log('[useAztec] Starter cards 1-5 minted for', address);
+          const txHashStr = (receipt as any).txHash?.toString() || '';
+          console.log('[useAztec] Starter cards tx mined, txHash:', txHashStr);
+
+          // Import the 5 starter card notes (create_and_push_note skips tagging)
+          if (txHashStr) {
+            try {
+              // Get deterministic randomness values from the contract
+              const randomnessResult = await nftContract.methods
+                .compute_note_randomness(0, 5)
+                .simulate({ from: accountManager.address });
+              // Convert simulate results to Fr values. The result may be Fr objects,
+              // BigInts, or decimal/hex strings — use toFr() helper to handle all cases.
+              const toFr = (v: any): typeof Fr.prototype => {
+                if (v instanceof Fr) return v;
+                const s = v.toString();
+                // If it starts with 0x, it's hex — use fromHexString
+                if (s.startsWith('0x') || s.startsWith('0X')) return Fr.fromHexString(s);
+                // Otherwise it's decimal — convert via BigInt
+                return new Fr(BigInt(s));
+              };
+              const randomnessFrs: (typeof Fr.prototype)[] = [];
+              for (let i = 0; i < 5; i++) {
+                randomnessFrs.push(toFr(randomnessResult[i]));
+              }
+              console.log('[useAztec] Derived note randomness for starter cards:', randomnessFrs.map(r => r.toString().slice(0, 18) + '...'));
+
+              // Get TxEffect for note hash data
+              const { TxHash } = await import('@aztec/stdlib/tx');
+              const hash = TxHash.fromString(txHashStr);
+              let txEffect: any = null;
+              for (let attempt = 0; attempt < 5; attempt++) {
+                const txResult = await node.getTxEffect(hash);
+                if (txResult?.data) { txEffect = txResult.data; break; }
+                console.log(`[useAztec] TxEffect not ready (attempt ${attempt + 1}/5), waiting...`);
+                await new Promise(r => setTimeout(r, 3000));
+              }
+
+              if (txEffect) {
+                const rawNoteHashes: any[] = txEffect.noteHashes ?? [];
+                const uniqueNoteHashes: string[] = rawNoteHashes
+                  .map((h: any) => h.toString())
+                  .filter((h: string) => h !== '0' && h !== '0x0' && !/^0x0+$/.test(h));
+                const firstNullifier: string = txEffect.nullifiers?.[0]?.toString() ?? '0';
+
+                console.log(`[useAztec] TxEffect: ${uniqueNoteHashes.length} note hashes, importing 5 starter cards...`);
+
+                const STARTER_CARD_IDS = [1, 2, 3, 4, 5];
+                const paddedHashes = new Array(64).fill(new Fr(0n));
+                for (let i = 0; i < uniqueNoteHashes.length && i < 64; i++) {
+                  paddedHashes[i] = Fr.fromHexString(uniqueNoteHashes[i]);
+                }
+
+                const txHashFr = toFr(txHashStr);
+                const firstNullFr = toFr(firstNullifier);
+                for (let i = 0; i < 5; i++) {
+                  console.log(`[useAztec] Importing starter card ${STARTER_CARD_IDS[i]}...`);
+                  await nftContract.methods
+                    .import_note(
+                      accountManager.address,
+                      new Fr(BigInt(STARTER_CARD_IDS[i])),
+                      randomnessFrs[i],
+                      txHashFr,
+                      paddedHashes,
+                      uniqueNoteHashes.length,
+                      firstNullFr,
+                      accountManager.address,
+                    )
+                    .simulate({ from: accountManager.address });
+                }
+                console.log('[useAztec] All 5 starter card notes imported successfully');
+              } else {
+                console.warn('[useAztec] Could not fetch TxEffect for starter card note import');
+              }
+            } catch (importErr) {
+              console.warn('[useAztec] Failed to import starter card notes:', importErr);
+            }
+          }
         } catch (e) {
           console.warn('[useAztec] Failed to mint starter cards:', e);
         }
@@ -314,6 +394,8 @@ export function useAztec(): UseAztecReturn {
 
   return {
     status,
+    isConnecting: status === 'connecting',
+    hasConnected: status === 'connected',
     accountAddress,
     isAvailable: status === 'connected',
     error,

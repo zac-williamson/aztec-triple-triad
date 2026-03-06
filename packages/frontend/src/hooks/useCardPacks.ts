@@ -18,12 +18,17 @@ export const LOCATIONS: LocationInfo[] = [
 
 export type PackTxStatus = 'idle' | 'sending' | 'confirming' | 'done' | 'error';
 
+export interface HuntResult {
+  cardIds: number[];
+  txHash: string | null;
+}
+
 export interface UseCardPacksReturn {
   cooldowns: Record<number, number>;
   txStatus: PackTxStatus;
   activeLocation: string | null;
   error: string | null;
-  hunt: (location: LocationInfo) => Promise<number[]>;
+  hunt: (location: LocationInfo) => Promise<HuntResult>;
   refreshCooldowns: () => Promise<void>;
 }
 
@@ -68,7 +73,7 @@ export function useCardPacks(
       salt: new Fr(SPONSORED_FPC_SALT),
     });
     const paymentMethod = new SponsoredFeePaymentMethod(sponsoredFPC.address);
-    sdkCacheRef.current = { AztecAddress, paymentMethod };
+    sdkCacheRef.current = { AztecAddress, paymentMethod, Fr };
     return sdkCacheRef.current;
   }, []);
 
@@ -115,7 +120,7 @@ export function useCardPacks(
     }
   }, [wallet, accountAddress, refreshCooldowns]);
 
-  const hunt = useCallback(async (location: LocationInfo): Promise<number[]> => {
+  const hunt = useCallback(async (location: LocationInfo): Promise<HuntResult> => {
     if (!wallet || !accountAddress) throw new Error('Wallet not connected');
 
     setTxStatus('sending');
@@ -123,51 +128,101 @@ export function useCardPacks(
     setError(null);
 
     try {
-      const { AztecAddress, paymentMethod } = await getSDK();
+      const { AztecAddress, paymentMethod, Fr } = await getSDK();
       const { AZTEC_CONFIG } = await import('../aztec/config');
       if (!AZTEC_CONFIG.nftContractAddress) throw new Error('NFT contract not configured');
 
       const nftContract = await loadNftContract(wallet, AztecAddress, AZTEC_CONFIG.nftContractAddress);
       const addr = AztecAddress.fromString(accountAddress);
 
-      // Get current counter
-      const counter = await nftContract.methods
-        .get_player_counter(addr)
+      // Get current note nonce (deterministic counter for card generation)
+      const nonceValue = await nftContract.methods
+        .get_note_nonce(addr)
         .simulate({ from: addr });
+
+      // Preview which card IDs will be generated (runs client-side via simulate)
+      const previewResult = await nftContract.methods
+        .preview_card_ids(nonceValue)
+        .simulate({ from: addr });
+      const cardIds: number[] = Array.from({ length: 10 }, (_, i) => Number(previewResult[i]));
 
       setTxStatus('confirming');
 
-      // Call the location-specific method
+      // Call the location-specific method (no args — derives randomness deterministically)
       const methodFn = (nftContract.methods as any)[location.methodName];
       if (!methodFn) throw new Error(`Method ${location.methodName} not found on contract`);
 
-      // Retry logic for PXE tagging index conflicts.
-      // The PXE's sender tagging store can hit "Cannot store index" errors when
-      // pending entries from prior transactions haven't been finalized yet.
-      // Each retry creates a fresh txRequest with a new nonce, avoiding the stale entry.
-      const MAX_RETRIES = 3;
-      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      const receipt = await methodFn().send({
+        from: addr,
+        fee: { paymentMethod },
+        wait: { timeout: 300 },
+      });
+
+      const txHash = receipt?.txHash?.toString() ?? null;
+
+      // Import the 10 card notes (create_and_push_note skips tagging)
+      if (txHash) {
         try {
-          await methodFn(counter).send({
-            from: addr,
-            fee: { paymentMethod },
-            wait: { timeout: 300 },
-          });
-          break;
-        } catch (retryErr: any) {
-          const isTaggingConflict = retryErr.message?.includes('Cannot store index');
-          if (isTaggingConflict && attempt < MAX_RETRIES - 1) {
-            console.warn(
-              `[useCardPacks] PXE tagging index conflict (attempt ${attempt + 1}/${MAX_RETRIES}), retrying...`,
-            );
-            // Force PXE block sync before retry so stale pending entries can be finalized/dropped
-            try {
-              await (wallet as any).pxe?.debug?.sync?.();
-            } catch { /* sync is best-effort */ }
-            await new Promise(r => setTimeout(r, 3000));
-            continue;
+          const randomnessResult = await nftContract.methods
+            .compute_note_randomness(nonceValue, 10)
+            .simulate({ from: addr });
+          // Convert simulate results to Fr — may be Fr objects, BigInts, or decimal strings
+          const toFr = (v: any) => {
+            if (v instanceof Fr) return v;
+            const s = v.toString();
+            if (s.startsWith('0x') || s.startsWith('0X')) return Fr.fromHexString(s);
+            return new Fr(BigInt(s));
+          };
+          const randomnessFrs: any[] = [];
+          for (let i = 0; i < 10; i++) {
+            randomnessFrs.push(toFr(randomnessResult[i]));
           }
-          throw retryErr;
+
+          const { TxHash } = await import('@aztec/stdlib/tx');
+          const hash = TxHash.fromString(txHash);
+          let txEffect: any = null;
+          for (let attempt = 0; attempt < 5; attempt++) {
+            const nodeModule = await import('@aztec/aztec.js/node');
+            const { AZTEC_CONFIG: cfg } = await import('../aztec/config');
+            const nodeClient = nodeModule.createAztecNodeClient(cfg.pxeUrl);
+            const txResult = await nodeClient.getTxEffect(hash);
+            if (txResult?.data) { txEffect = txResult.data; break; }
+            await new Promise(r => setTimeout(r, 3000));
+          }
+
+          if (txEffect) {
+            const rawNoteHashes: any[] = txEffect.noteHashes ?? [];
+            const uniqueNoteHashes: string[] = rawNoteHashes
+              .map((h: any) => h.toString())
+              .filter((h: string) => h !== '0' && h !== '0x0' && !/^0x0+$/.test(h));
+            const firstNullifier: string = txEffect.nullifiers?.[0]?.toString() ?? '0';
+
+            const paddedHashes = new Array(64).fill(new Fr(0n));
+            for (let i = 0; i < uniqueNoteHashes.length && i < 64; i++) {
+              paddedHashes[i] = toFr(uniqueNoteHashes[i]);
+            }
+
+            const txHashFr = toFr(txHash);
+            const firstNullFr = toFr(firstNullifier);
+            console.log(`[useCardPacks] Importing ${cardIds.length} card notes...`);
+            for (let i = 0; i < 10; i++) {
+              await nftContract.methods
+                .import_note(
+                  addr,
+                  new Fr(BigInt(cardIds[i])),
+                  randomnessFrs[i],
+                  txHashFr,
+                  paddedHashes,
+                  uniqueNoteHashes.length,
+                  firstNullFr,
+                  addr,
+                )
+                .simulate({ from: addr });
+            }
+            console.log('[useCardPacks] All card notes imported successfully');
+          }
+        } catch (importErr) {
+          console.warn('[useCardPacks] Failed to import card notes:', importErr);
         }
       }
 
@@ -176,10 +231,7 @@ export function useCardPacks(
       // Refresh cooldowns after successful hunt
       await refreshCooldowns();
 
-      // Return placeholder card IDs — the actual new card IDs
-      // will be discovered by the useAztec hook's note scanning
-      const cardIds = Array.from({ length: 10 }, (_, i) => Number(counter) + i + 1);
-      return cardIds;
+      return { cardIds, txHash };
     } catch (err: any) {
       console.error('[useCardPacks] Hunt failed:', err);
       setTxStatus('error');

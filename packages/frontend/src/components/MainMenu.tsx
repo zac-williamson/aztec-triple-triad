@@ -1,15 +1,38 @@
+import { useState } from 'react';
 import './MainMenu.css';
 
 interface MainMenuProps {
   connected: boolean;
-  hasCards: boolean;
+  aztecConnecting: boolean;
+  aztecReady: boolean;
+  cardCount: number;
+  hasGameInProgress: boolean;
   onPlay: () => void;
   onTutorial: () => void;
   onCardPacks: () => void;
 }
 
-export function MainMenu({ connected, hasCards, onPlay, onTutorial, onCardPacks }: MainMenuProps) {
-  const canPlay = connected && hasCards;
+export function MainMenu({
+  connected,
+  aztecConnecting,
+  aztecReady,
+  cardCount,
+  hasGameInProgress,
+  onPlay,
+  onTutorial,
+  onCardPacks,
+}: MainMenuProps) {
+  const [showNotEnoughCards, setShowNotEnoughCards] = useState(false);
+
+  const canPlay = connected && aztecReady;
+
+  const handlePlayClick = () => {
+    if (cardCount < 5) {
+      setShowNotEnoughCards(true);
+    } else {
+      onPlay();
+    }
+  };
 
   return (
     <div className="main-menu">
@@ -24,12 +47,12 @@ export function MainMenu({ connected, hasCards, onPlay, onTutorial, onCardPacks 
       <div className="main-menu__buttons">
         <button
           className="main-menu__btn main-menu__btn--play"
-          onClick={onPlay}
+          onClick={handlePlayClick}
           disabled={!canPlay}
-          title={!canPlay ? (connected ? 'You need at least 5 cards to play' : 'Connecting to server...') : undefined}
+          title={!canPlay ? 'Connecting to server...' : undefined}
         >
           <span className="main-menu__btn-icon">&#9876;</span>
-          Play
+          {hasGameInProgress ? 'Resume' : 'Play'}
         </button>
 
         <button
@@ -53,8 +76,28 @@ export function MainMenu({ connected, hasCards, onPlay, onTutorial, onCardPacks 
         </button>
       </div>
 
-      {connected && !hasCards && (
+      {aztecConnecting && (
         <p className="main-menu__card-status">Loading your cards from Aztec...</p>
+      )}
+
+      {showNotEnoughCards && (
+        <div className="main-menu__dialog-overlay" onClick={() => setShowNotEnoughCards(false)}>
+          <div className="main-menu__dialog" onClick={(e) => e.stopPropagation()}>
+            <h3 className="main-menu__dialog-title">Not Enough Cards</h3>
+            <p className="main-menu__dialog-text">
+              You need at least 5 cards to play. You currently have {cardCount}.
+            </p>
+            <p className="main-menu__dialog-text">
+              Visit <strong>Card Packs</strong> to get more cards.
+            </p>
+            <button
+              className="main-menu__btn main-menu__btn--play"
+              onClick={() => setShowNotEnoughCards(false)}
+            >
+              OK
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

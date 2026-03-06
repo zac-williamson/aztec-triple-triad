@@ -3,6 +3,8 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useAztec } from './hooks/useAztec';
 import { useGameFlow } from './hooks/useGameFlow';
 import { useGameContract } from './hooks/useGameContract';
+import { useGameStorage } from './hooks/useGameStorage';
+import type { PersistedGameState } from './hooks/useGameStorage';
 import { MenuScene } from './components3d/MenuScene';
 import { MainMenu } from './components/MainMenu';
 import { CardSelector } from './components/CardSelector';
@@ -42,6 +44,7 @@ export function App() {
       aztec.connect();
     }
   }, [aztec.status, aztec.connect]);
+  const gameContract = useGameContract(aztec.wallet, aztec.accountAddress);
   const gameFlow = useGameFlow({
     gameId: ws.gameId,
     playerNumber: ws.playerNumber,
@@ -49,11 +52,20 @@ export function App() {
     gameState: ws.gameState,
     wallet: aztec.wallet,
     accountAddress: aztec.accountAddress,
+    opponentGameRandomness: ws.opponentGameRandomness,
+    derivedBlindingFactor: gameContract.blindingFactor,
   });
-  const gameContract = useGameContract(aztec.wallet, aztec.accountAddress);
+  const gameStorage = useGameStorage();
+
+  // Whether there is a resumable game saved in localStorage
+  const [hasGameInProgress, setHasGameInProgress] = useState(() => gameStorage.hasGame());
 
   // Track previous gameState for board-before snapshots
   const prevGameStateRef = useRef<GameState | null>(null);
+
+  // Ref to always access latest move proofs (avoids stale closure in handleSettle)
+  const moveProofsRef = useRef(gameFlow.collectedMoveProofs);
+  moveProofsRef.current = gameFlow.collectedMoveProofs;
 
   // Opponent card IDs come from GAME_OVER message via ws.opponentCardIds
 
@@ -120,6 +132,46 @@ export function App() {
     prevGameStateRef.current = ws.gameState;
   }, [ws.gameState]);
 
+  // 4b. Persist game state to localStorage whenever key values change
+  useEffect(() => {
+    if (!ws.gameId || !ws.playerNumber || cardIds.length === 0) return;
+    // Only persist while in-game (not after returning to menu)
+    if (screen !== 'game' && screen !== 'finding-opponent') return;
+
+    const persisted: PersistedGameState = {
+      gameId: ws.gameId,
+      playerNumber: ws.playerNumber,
+      selectedCardIds: cardIds,
+      savedAt: Date.now(),
+    };
+    if (gameContract.onChainGameId) persisted.onChainGameId = gameContract.onChainGameId;
+    if (gameFlow.myHandProof) persisted.myHandProof = gameFlow.myHandProof;
+    if (gameFlow.opponentHandProof) persisted.opponentHandProof = gameFlow.opponentHandProof;
+    if (gameFlow.collectedMoveProofs.length > 0) persisted.collectedMoveProofs = gameFlow.collectedMoveProofs;
+    if (ws.opponentAztecAddress) persisted.opponentAztecAddress = ws.opponentAztecAddress;
+    if (ws.opponentOnChainGameId) persisted.opponentOnChainGameId = ws.opponentOnChainGameId;
+    if (gameContract.gameRandomness) persisted.gameRandomness = gameContract.gameRandomness;
+    if (gameContract.blindingFactor) persisted.blindingFactor = gameContract.blindingFactor;
+    if (ws.opponentGameRandomness) persisted.opponentGameRandomness = ws.opponentGameRandomness;
+
+    gameStorage.saveGame(persisted);
+    setHasGameInProgress(true);
+  }, [
+    ws.gameId, ws.playerNumber, cardIds, screen,
+    gameContract.onChainGameId, gameContract.gameRandomness, gameContract.blindingFactor,
+    gameFlow.myHandProof, gameFlow.opponentHandProof, gameFlow.collectedMoveProofs,
+    ws.opponentAztecAddress, ws.opponentOnChainGameId, ws.opponentGameRandomness,
+    gameStorage,
+  ]);
+
+  // 4c. Clear saved game when the game finishes (GAME_OVER received)
+  useEffect(() => {
+    if (ws.gameOver) {
+      gameStorage.clearGame();
+      setHasGameInProgress(false);
+    }
+  }, [ws.gameOver, gameStorage]);
+
   // 5. Share Aztec address with opponent when game starts and Aztec is connected
   const aztecInfoSharedRef = useRef(false);
   useEffect(() => {
@@ -140,14 +192,27 @@ export function App() {
     onChainCreationStartedRef.current = true;
 
     if (ws.playerNumber === 1) {
-      gameContract.createGameOnChain(cardIds).then((chainId) => {
-        if (chainId && ws.gameId && aztec.accountAddress) {
-          ws.shareAztecInfo(ws.gameId, aztec.accountAddress, chainId);
-          console.log('[App] On-chain game created, shared ID:', chainId);
+      gameContract.createGameOnChain(cardIds).then((result) => {
+        if (result && ws.gameId && aztec.accountAddress) {
+          ws.shareAztecInfo(ws.gameId, aztec.accountAddress, result.gameId, result.randomness);
+          console.log('[App] On-chain game created, shared ID:', result.gameId);
+        } else {
+          console.error('[App] createGameOnChain returned null — on-chain game creation failed');
         }
+      }).catch((err) => {
+        console.error('[App] createGameOnChain threw:', err);
       });
     } else if (ws.playerNumber === 2 && ws.opponentOnChainGameId) {
-      gameContract.joinGameOnChain(ws.opponentOnChainGameId, cardIds);
+      gameContract.joinGameOnChain(ws.opponentOnChainGameId, cardIds).then((result) => {
+        if (result && ws.gameId && aztec.accountAddress) {
+          ws.shareAztecInfo(ws.gameId, aztec.accountAddress, ws.opponentOnChainGameId!, result.randomness);
+          console.log('[App] Joined on-chain game, shared randomness');
+        } else {
+          console.error('[App] joinGameOnChain returned null — on-chain join failed');
+        }
+      }).catch((err) => {
+        console.error('[App] joinGameOnChain threw:', err);
+      });
     }
   }, [ws.gameId, ws.gameState, ws.playerNumber, ws.opponentOnChainGameId, gameContract.isAvailable, cardIds, aztec.accountAddress, ws]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -156,7 +221,16 @@ export function App() {
     if (ws.playerNumber !== 2 || !ws.opponentOnChainGameId) return;
     if (gameContract.onChainGameId) return; // already joined
     if (!gameContract.isAvailable) return;
-    gameContract.joinGameOnChain(ws.opponentOnChainGameId, cardIds);
+    gameContract.joinGameOnChain(ws.opponentOnChainGameId, cardIds).then((result) => {
+      if (result && ws.gameId && aztec.accountAddress) {
+        ws.shareAztecInfo(ws.gameId, aztec.accountAddress, ws.opponentOnChainGameId!, result.randomness);
+        console.log('[App] Joined on-chain game (late), shared randomness');
+      } else {
+        console.error('[App] joinGameOnChain (late) returned null');
+      }
+    }).catch((err) => {
+      console.error('[App] joinGameOnChain (late) threw:', err);
+    });
   }, [ws.playerNumber, ws.opponentOnChainGameId, gameContract.onChainGameId, gameContract.isAvailable, cardIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset proof state on returning to menu
@@ -204,6 +278,14 @@ export function App() {
       const myAddr = AztecAddress.fromString(aztec.accountAddress!);
       const node = aztec.nodeClient as any;
 
+      // Safe Fr conversion — handles hex strings, decimal strings, and Fr objects
+      const toFr = (v: any): InstanceType<typeof Fr> => {
+        if (v instanceof Fr) return v;
+        const s = v.toString();
+        if (s.startsWith('0x') || s.startsWith('0X')) return Fr.fromHexString(s);
+        return new Fr(BigInt(s));
+      };
+
       // Get TxEffect for note hash data
       const { TxHash } = await import('@aztec/stdlib/tx');
       const hash = TxHash.fromString(txHashStr);
@@ -226,63 +308,14 @@ export function App() {
 
       // Extract unique note hashes and first nullifier from TxEffect
       const rawNoteHashes: any[] = txEffect.noteHashes ?? [];
-      // Filter out zero-valued hashes to get only real note hashes
       const uniqueNoteHashes: string[] = rawNoteHashes
         .map((h: any) => h.toString())
         .filter((h: string) => h !== '0' && h !== '0x0' && !/^0x0+$/.test(h));
       const firstNullifier: string = txEffect.nullifiers?.[0]?.toString() ?? '0';
 
       console.log(`[App] ${label}: TxEffect has ${uniqueNoteHashes.length} non-zero note hashes, firstNullifier=${firstNullifier.slice(0, 18)}...`);
-      for (let i = 0; i < Math.min(uniqueNoteHashes.length, 12); i++) {
-        console.log(`[App] ${label}:   noteHash[${i}] = ${uniqueNoteHashes[i].slice(0, 24)}...`);
-      }
-
-      // === DIAGNOSTIC: Compute expected note hashes in TypeScript and compare ===
-      const { poseidon2HashWithSeparator } = await import('@aztec/foundation/crypto/poseidon');
-      const { siloNoteHash, computeUniqueNoteHash, computeNoteHashNonce } = await import('@aztec/stdlib/hash');
-      const { DomainSeparator } = await import('@aztec/constants');
 
       const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress!);
-      const STORAGE_SLOT = new Fr(9n); // private_nfts slot from storage_layout()
-
-      const firstNullFr = Fr.fromHexString(firstNullifier);
-      let totalMatches = 0;
-
-      for (const note of notes) {
-        const valueFr = new Fr(BigInt(note.tokenId));
-        const randomnessFr = Fr.fromHexString(note.randomness);
-
-        // Step 1: Compute raw note hash (same as create_and_push_note in Noir)
-        const rawNoteHash = await poseidon2HashWithSeparator(
-          [valueFr, myAddr.toField(), STORAGE_SLOT, randomnessFr],
-          DomainSeparator.NOTE_HASH,
-        );
-
-        // Step 2: Silo by contract address
-        const siloedHash = await siloNoteHash(nftAddr, rawNoteHash);
-
-        // Step 3: Try each index to find the matching unique note hash
-        let found = false;
-        for (let i = 0; i < uniqueNoteHashes.length; i++) {
-          const nonce = await computeNoteHashNonce(firstNullFr, i);
-          const uniqueHash = await computeUniqueNoteHash(nonce, siloedHash);
-          if (uniqueHash.toString() === uniqueNoteHashes[i]) {
-            console.log(`[App] ${label}: MATCH tokenId=${note.tokenId} at index ${i}`);
-            found = true;
-            totalMatches++;
-            break;
-          }
-        }
-        if (!found) {
-          console.error(`[App] ${label}: NO MATCH for tokenId=${note.tokenId}`);
-          console.error(`  rawNoteHash = ${rawNoteHash.toString().slice(0, 24)}...`);
-          console.error(`  siloedHash  = ${siloedHash.toString().slice(0, 24)}...`);
-          console.error(`  owner       = ${myAddr.toString()}`);
-          console.error(`  randomness  = ${note.randomness.slice(0, 24)}...`);
-        }
-      }
-      console.log(`[App] ${label}: ${totalMatches}/${notes.length} notes matched TxEffect hashes`);
-      // === END DIAGNOSTIC ===
 
       // Load NFT contract
       const resp = await fetch('/contracts/triple_triad_nft-TripleTriadNFT.json');
@@ -290,24 +323,26 @@ export function App() {
       const artifact = loadContractArtifact(await resp.json());
       const nftContract = await Contract.at(nftAddr, artifact, aztec.wallet as never);
 
+      // Build padded note hashes array once
+      const paddedHashes = new Array(64).fill(new Fr(0n));
+      for (let i = 0; i < uniqueNoteHashes.length && i < 64; i++) {
+        paddedHashes[i] = toFr(uniqueNoteHashes[i]);
+      }
+      const txHashFr = toFr(txHashStr);
+      const firstNullFr = toFr(firstNullifier);
+
       // Import each note via import_note utility function
       for (const note of notes) {
-        // Pad unique_note_hashes to 64-element array
-        const paddedHashes = new Array(64).fill(new Fr(0n));
-        for (let i = 0; i < uniqueNoteHashes.length && i < 64; i++) {
-          paddedHashes[i] = Fr.fromHexString(uniqueNoteHashes[i]);
-        }
-
         console.log(`[App] ${label}: importing note tokenId=${note.tokenId} randomness=${note.randomness.slice(0, 18)}...`);
         await nftContract.methods
           .import_note(
             myAddr,
             new Fr(BigInt(note.tokenId)),
-            Fr.fromHexString(note.randomness),
-            Fr.fromHexString(txHashStr),
+            toFr(note.randomness),
+            txHashFr,
             paddedHashes,
             uniqueNoteHashes.length,
-            Fr.fromHexString(firstNullifier),
+            firstNullFr,
             myAddr,
           )
           .simulate({ from: myAddr });
@@ -333,9 +368,33 @@ export function App() {
   }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, importNotesForTx]);
 
   const handlePlay = useCallback(() => {
+    // If there is a saved game, try to resume it
+    const saved = gameStorage.loadGame();
+    if (saved) {
+      console.log('[App] Resuming saved game:', saved.gameId);
+      setCardIds(saved.selectedCardIds);
+      setSelectedHandIds(saved.selectedCardIds);
+      // Restore proofs that were persisted
+      if (saved.opponentHandProof) {
+        gameFlow.setOpponentHandProof(saved.opponentHandProof);
+      }
+      if (saved.collectedMoveProofs) {
+        for (const mp of saved.collectedMoveProofs) {
+          gameFlow.addMoveProof(mp);
+        }
+      }
+      // Restore on-chain game state (randomness) if previously committed
+      if (saved.onChainGameId && saved.gameRandomness) {
+        gameContract.restoreState(saved.onChainGameId, saved.gameRandomness, saved.blindingFactor);
+      }
+      // Re-queue matchmaking so the WebSocket server can reconnect us to the game
+      ws.queueMatchmaking(saved.selectedCardIds);
+      setScreen('finding-opponent');
+      return;
+    }
     aztec.refreshOwnedCards();
     setScreen('card-selector');
-  }, [aztec]);
+  }, [aztec, gameStorage, gameFlow, ws]);
 
   const handleTutorial = useCallback(() => {
     // Coming soon
@@ -356,8 +415,10 @@ export function App() {
     ws.cancelMatchmaking();
     setSelectedHandIds([]);
     setCardIds([]);
+    gameStorage.clearGame();
+    setHasGameInProgress(false);
     setScreen('main-menu');
-  }, [ws]);
+  }, [ws, gameStorage]);
 
   const handlePackOpenComplete = useCallback(() => {
     setPackResult(null);
@@ -444,6 +505,22 @@ export function App() {
       return;
     }
 
+    // Wait for all 9 move proofs if the last one is still generating.
+    // The 9th proof (final move) may still be in flight when the user clicks settle.
+    // Use moveProofsRef to read the latest value (avoids stale closure).
+    if (moveProofsRef.current.length < 9) {
+      console.log(`[App] Waiting for move proofs (${moveProofsRef.current.length}/9)...`);
+      const deadline = Date.now() + 30_000; // 30s timeout
+      while (moveProofsRef.current.length < 9 && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+      if (moveProofsRef.current.length < 9) {
+        console.error(`[App] Timed out waiting for move proofs (have ${moveProofsRef.current.length}/9)`);
+        return;
+      }
+      console.log('[App] All 9 move proofs collected');
+    }
+
     // Order proofs: handProof1 is always player 1's, handProof2 is always player 2's
     const handProof1 = ws.playerNumber === 1 ? gameFlow.myHandProof : gameFlow.opponentHandProof;
     const handProof2 = ws.playerNumber === 2 ? gameFlow.myHandProof : gameFlow.opponentHandProof;
@@ -456,18 +533,32 @@ export function App() {
       oppCardIds,
       handProof1Commit: handProof1.cardCommit,
       handProof2Commit: handProof2.cardCommit,
-      moveProofCount: gameFlow.collectedMoveProofs.length,
+      moveProofCount: moveProofsRef.current.length,
     });
+
+    // Get committed randomness values
+    const myRandomness = gameContract.gameRandomness;
+    const oppRandomness = ws.opponentGameRandomness;
+    if (!myRandomness || myRandomness.length !== 6) {
+      console.error('[App] Cannot settle: no caller randomness');
+      return;
+    }
+    if (!oppRandomness || oppRandomness.length !== 6) {
+      console.error('[App] Cannot settle: no opponent randomness');
+      return;
+    }
 
     const result = await gameContract.settleGame({
       onChainGameId: chainGameId,
       handProof1,
       handProof2,
-      moveProofs: gameFlow.collectedMoveProofs,
+      moveProofs: moveProofsRef.current,
       opponentAddress: opponentAddr,
       cardToTransfer: selectedCardId,
       callerCardIds: cardIds,
       opponentCardIds: oppCardIds,
+      callerRandomness: myRandomness,
+      opponentRandomness: oppRandomness,
     });
 
     if (result) {
@@ -480,7 +571,7 @@ export function App() {
       console.log('[App] Importing', result.callerNotes.length, 'winner note(s)...');
       await importNotesForTx(result.txHash, result.callerNotes, 'Winner import');
     }
-  }, [ws.gameId, ws.playerNumber, ws.opponentAztecAddress, ws.opponentOnChainGameId, ws.opponentCardIds, gameFlow, gameContract, cardIds, ws, importNotesForTx]);
+  }, [ws.gameId, ws.playerNumber, ws.opponentAztecAddress, ws.opponentOnChainGameId, ws.opponentCardIds, ws.opponentGameRandomness, gameFlow, gameContract, cardIds, ws, importNotesForTx]);
 
   const handleBackToMenu = useCallback(() => {
     ws.leaveGame();
@@ -489,8 +580,10 @@ export function App() {
     gameContract.resetLifecycle();
     setCardIds([]);
     setSelectedHandIds([]);
+    gameStorage.clearGame();
+    setHasGameInProgress(false);
     setScreen('main-menu');
-  }, [ws, gameFlow, gameContract]);
+  }, [ws, gameFlow, gameContract, gameStorage]);
 
   const showMenuScene = screen === 'main-menu' || screen === 'card-selector'
     || screen === 'finding-opponent' || screen === 'card-packs' || screen === 'pack-opening';
@@ -508,6 +601,7 @@ export function App() {
           aztecConnecting={aztec.isConnecting}
           aztecReady={aztec.hasConnected}
           cardCount={aztec.ownedCardIds.length}
+          hasGameInProgress={hasGameInProgress}
           onPlay={handlePlay}
           onTutorial={handleTutorial}
           onCardPacks={handleCardPacks}
@@ -534,8 +628,8 @@ export function App() {
           wallet={aztec.wallet}
           accountAddress={aztec.accountAddress}
           ownedCardIds={aztec.ownedCardIds}
-          onPackOpened={(location: string, newCardIds: number[]) => {
-            setPackResult({ location, cardIds: newCardIds });
+          onPackOpened={(location: string, result) => {
+            setPackResult({ location, cardIds: result.cardIds });
             setScreen('pack-opening');
           }}
           onBack={() => setScreen('main-menu')}

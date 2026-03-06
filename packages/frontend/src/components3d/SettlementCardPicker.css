@@ -1,0 +1,105 @@
+.settle-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.settle-dialog {
+  pointer-events: auto;
+  text-align: center;
+}
+
+.settle-score {
+  font-family: 'Cinzel', serif;
+  font-size: 20px;
+  color: #5a4a34;
+}
+
+.settle-heading {
+  margin: 0;
+  font-family: 'Cinzel', serif;
+  font-size: 18px;
+  font-weight: 700;
+  color: #3a2a14;
+}
+
+.settle-subtext {
+  margin: 0;
+  font-family: 'Nunito', sans-serif;
+  font-size: 13px;
+  color: rgba(58, 42, 20, 0.55);
+}
+
+.settle-status {
+  font-family: 'Nunito', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settle-status--processing {
+  color: #5a4a34;
+}
+
+.settle-status--success {
+  color: #3a6a2a;
+  font-weight: 700;
+}
+
+.settle-status--error {
+  color: #8a3020;
+}
+
+.settle-card-grid {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.settle-card {
+  background: rgba(58, 42, 20, 0.08);
+  border: 2px solid rgba(160, 128, 80, 0.4);
+  border-radius: 8px;
+  padding: 12px 8px;
+  cursor: pointer;
+  min-width: 80px;
+  text-align: center;
+  transition: all 0.15s ease;
+}
+
+.settle-card:hover:not(:disabled) {
+  border-color: #a08050;
+  background: rgba(160, 128, 80, 0.15);
+  box-shadow: 0 2px 8px rgba(160, 128, 80, 0.2);
+}
+
+.settle-card:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.settle-card__id {
+  font-family: 'Nunito', sans-serif;
+  font-size: 11px;
+  color: rgba(58, 42, 20, 0.4);
+  margin-bottom: 4px;
+}
+
+.settle-card__name {
+  font-family: 'Cinzel', serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #3a2a14;
+  margin-bottom: 6px;
+}
+
+.settle-card__ranks {
+  font-family: 'Nunito', sans-serif;
+  font-size: 11px;
+  font-family: monospace;
+  color: #5a4a34;
+}

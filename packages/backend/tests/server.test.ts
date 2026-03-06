@@ -435,7 +435,24 @@ describe('Proof exchange', () => {
     await c2.wait((m) => m.type === 'GAME_JOINED');
     await c1.wait((m) => m.type === 'GAME_START');
 
-    // Player 1 submits move with proof
+    // Player 1 places a card (applies the move, produces GAME_STATE)
+    sendMessage(ws1, {
+      type: 'PLACE_CARD',
+      gameId,
+      handIndex: 0,
+      row: 0,
+      col: 0,
+      moveNumber: 0,
+    });
+
+    // Player 1 gets GAME_STATE (standard update from PLACE_CARD)
+    const stateMsg = await c1.wait((m) => m.type === 'GAME_STATE');
+    expect(stateMsg.type).toBe('GAME_STATE');
+
+    // Drain GAME_STATE for player 2 as well
+    await c2.wait((m) => m.type === 'GAME_STATE');
+
+    // Player 1 submits proof separately (relayed to opponent)
     sendMessage(ws1, {
       type: 'SUBMIT_MOVE_PROOF',
       gameId,
@@ -454,10 +471,6 @@ describe('Proof exchange', () => {
         winnerId: 0,
       },
     });
-
-    // Player 1 gets GAME_STATE (standard update)
-    const stateMsg = await c1.wait((m) => m.type === 'GAME_STATE');
-    expect(stateMsg.type).toBe('GAME_STATE');
 
     // Player 2 gets MOVE_PROVEN (with proof attached)
     const moveProvenMsg = await c2.wait((m) => m.type === 'MOVE_PROVEN');

@@ -1,9 +1,7 @@
 import { useState, useEffect, useCallback, Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { Card } from './Card';
 import { getCardById } from '../cards';
 import { SparkBurst } from '../components3d/SparkBurst';
-import type { Card as CardType } from '../types';
 import './PackOpening.css';
 
 type Phase = 'pack-idle' | 'pack-shudder' | 'explosion' | 'reveal' | 'dissolve';
@@ -60,7 +58,7 @@ export function PackOpening({ location, cardIds, onComplete }: PackOpeningProps)
     setTimeout(onComplete, 800);
   }, [allFlipped, onComplete]);
 
-  const cards: (CardType | undefined)[] = cardIds.map(id => getCardById(id));
+  const cards = cardIds.map(id => getCardById(id));
 
   // Pack display phases
   if (phase === 'pack-idle' || phase === 'pack-shudder') {
@@ -120,11 +118,12 @@ export function PackOpening({ location, cardIds, onComplete }: PackOpeningProps)
                   />
                 </div>
                 <div className={`pack-opening__card-front ${isFlipped ? 'pack-opening__card-glow' : ''}`}>
-                  {card ? (
-                    <Card card={card} size="small" />
-                  ) : (
-                    <div style={{ width: '100%', aspectRatio: '5/7', background: '#1a2e1a', borderRadius: 8 }} />
-                  )}
+                  <img
+                    className="pack-opening__card-front-img"
+                    src={card ? `/cards/final/card-${card.id}.png` : ''}
+                    alt={card?.name || 'Unknown card'}
+                    draggable={false}
+                  />
                 </div>
               </div>
             </div>

@@ -493,6 +493,7 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
             gameId: msg.gameId,
             aztecAddress: msg.aztecAddress,
             onChainGameId: msg.onChainGameId,
+            gameRandomness: msg.gameRandomness,
           });
         }
         break;

@@ -33,7 +33,7 @@ export function GameTips() {
       style={{
         fontFamily: "'Nunito', sans-serif",
         fontSize: '14px',
-        color: 'rgba(232, 228, 216, 0.5)',
+        color: 'rgba(58, 42, 20, 0.5)',
         fontStyle: 'italic',
         textAlign: 'center',
         maxWidth: '400px',

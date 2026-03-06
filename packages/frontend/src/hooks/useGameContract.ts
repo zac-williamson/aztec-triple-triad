@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import { AZTEC_CONFIG } from '../aztec/config';
-import type { MoveProofData, HandProofData } from '../types';
+import type { MoveProofData, HandProofData, PlaintextNoteData } from '../types';
 
 /**
  * Transaction status for on-chain operations
@@ -16,16 +16,22 @@ export interface UseGameContractReturn {
   error: string | null;
   /** Whether contract interaction is available */
   isAvailable: boolean;
-  /** On-chain game ID (numeric counter from contract) */
+  /** On-chain game ID (caller-derived poseidon2 hash) */
   onChainGameId: string | null;
+  /** Game randomness committed during create/join (6 Fr hex strings) */
+  gameRandomness: string[] | null;
+  /** Blinding factor derived during create/join (hex string) */
+  blindingFactor: string | null;
   /** Call create_game on the contract */
-  createGameOnChain: (cardIds: number[]) => Promise<string | null>;
+  createGameOnChain: (cardIds: number[]) => Promise<{ gameId: string; randomness: string[]; blindingFactor: string } | null>;
   /** Call join_game on the contract */
-  joinGameOnChain: (onChainGameId: string, cardIds: number[]) => Promise<void>;
-  /** Call process_game to settle the game on-chain */
-  settleGame: (params: SettleGameParams) => Promise<string | null>;
+  joinGameOnChain: (onChainGameId: string, cardIds: number[]) => Promise<{ randomness: string[]; blindingFactor: string } | null>;
+  /** Call process_game to settle the game on-chain. Returns txHash + opponent note data for relay. */
+  settleGame: (params: SettleGameParams) => Promise<SettleResult | null>;
   /** Reset transaction state */
   resetTx: () => void;
+  /** Restore state from persisted data (e.g., localStorage on resume) */
+  restoreState: (onChainGameId: string, randomness: string[], blindingFactor?: string) => void;
   /** Reset lifecycle state */
   resetLifecycle: () => void;
 }
@@ -39,6 +45,16 @@ export interface SettleGameParams {
   cardToTransfer: number;
   callerCardIds: number[];
   opponentCardIds: number[];
+  /** Caller's committed randomness (6 Fr hex strings) */
+  callerRandomness: string[];
+  /** Opponent's committed randomness (6 Fr hex strings) */
+  opponentRandomness: string[];
+}
+
+export interface SettleResult {
+  txHash: string;
+  callerNotes: PlaintextNoteData[];
+  opponentNotes: PlaintextNoteData[];
 }
 
 /**
@@ -59,6 +75,115 @@ async function getSponsoredFee() {
   return new SponsoredFeePaymentMethod(sponsoredFPC.address);
 }
 
+/**
+ * Retry wrapper for PXE operations that may fail with IndexedDB TransactionInactiveError.
+ * The EmbeddedWallet's PXE uses IndexedDB internally, and background sync can cause
+ * transient IDB transaction expiration. Retrying after a brief yield resolves this.
+ */
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, label = 'PXE op'): Promise<T> {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (msg.includes('TransactionInactiveError') && attempt < maxRetries - 1) {
+        console.warn(`[useGameContract] ${label} hit IDB error (attempt ${attempt + 1}/${maxRetries}), retrying...`);
+        await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('unreachable');
+}
+
+/**
+ * Cache for contract instances and fee method to avoid repeated Contract.at()
+ * and dynamic imports, which cause IndexedDB transaction timeouts.
+ */
+const contractCache: {
+  wallet: unknown | null;
+  gameContract: any;
+  nftContract: any;
+  fee: any;
+  Fr: any;
+  AztecAddress: any;
+  Contract: any;
+  loadContractArtifact: any;
+} = {
+  wallet: null,
+  gameContract: null,
+  nftContract: null,
+  fee: null,
+  Fr: null,
+  AztecAddress: null,
+  Contract: null,
+  loadContractArtifact: null,
+};
+
+async function ensureContracts(wallet: unknown) {
+  // If wallet changed, invalidate cache
+  if (contractCache.wallet !== wallet) {
+    contractCache.wallet = wallet;
+    contractCache.gameContract = null;
+    contractCache.nftContract = null;
+    contractCache.fee = null;
+  }
+
+  // Load SDK modules once
+  if (!contractCache.Fr) {
+    const [{ AztecAddress }, { Contract }, { loadContractArtifact }, { Fr }] = await Promise.all([
+      import('@aztec/aztec.js/addresses'),
+      import('@aztec/aztec.js/contracts'),
+      import('@aztec/aztec.js/abi'),
+      import('@aztec/aztec.js/fields'),
+    ]);
+    contractCache.Fr = Fr;
+    contractCache.AztecAddress = AztecAddress;
+    contractCache.Contract = Contract;
+    contractCache.loadContractArtifact = loadContractArtifact;
+  }
+
+  const { Fr, AztecAddress, Contract, loadContractArtifact } = contractCache;
+
+  // Cache game contract (retry on IDB errors)
+  if (!contractCache.gameContract && AZTEC_CONFIG.gameContractAddress) {
+    const gameAddr = AztecAddress.fromString(AZTEC_CONFIG.gameContractAddress);
+    const gameResp = await fetch('/contracts/triple_triad_game-TripleTriadGame.json');
+    if (!gameResp.ok) throw new Error('Failed to load game contract artifact');
+    const gameArtifact = loadContractArtifact(await gameResp.json());
+    contractCache.gameContract = await withRetry(
+      () => Contract.at(gameAddr, gameArtifact, wallet as never),
+      3, 'Contract.at(game)',
+    );
+  }
+
+  // Cache NFT contract (retry on IDB errors)
+  if (!contractCache.nftContract && AZTEC_CONFIG.nftContractAddress) {
+    const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
+    const nftResp = await fetch('/contracts/triple_triad_nft-TripleTriadNFT.json');
+    if (!nftResp.ok) throw new Error('Failed to load NFT contract artifact');
+    const nftArtifact = loadContractArtifact(await nftResp.json());
+    contractCache.nftContract = await withRetry(
+      () => Contract.at(nftAddr, nftArtifact, wallet as never),
+      3, 'Contract.at(nft)',
+    );
+  }
+
+  // Cache fee method
+  if (!contractCache.fee) {
+    contractCache.fee = await getSponsoredFee();
+  }
+
+  return {
+    gameContract: contractCache.gameContract,
+    nftContract: contractCache.nftContract,
+    fee: contractCache.fee,
+    Fr,
+    AztecAddress,
+  };
+}
+
 export function useGameContract(
   wallet: unknown | null,
   accountAddress: string | null,
@@ -67,15 +192,19 @@ export function useGameContract(
   const [txHash, setTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [onChainGameId, setOnChainGameId] = useState<string | null>(null);
+  const [gameRandomness, setGameRandomness] = useState<string[] | null>(null);
+  const [blindingFactor, setBlindingFactor] = useState<string | null>(null);
   const creatingRef = useRef(false);
 
   const isAvailable = wallet !== null && AZTEC_CONFIG.enabled && !!AZTEC_CONFIG.gameContractAddress;
 
   /**
    * Call create_game on the TripleTriadGame contract.
-   * Returns the on-chain game ID (from the game_id_counter before creation).
+   * game_id and randomness are derived IN-CIRCUIT by the NFT contract.
+   * We preview them via NFT.preview_game_data().simulate() before sending the tx.
+   * Returns { gameId, randomness } or null on failure.
    */
-  const createGameOnChain = useCallback(async (cardIds: number[]): Promise<string | null> => {
+  const createGameOnChain = useCallback(async (cardIds: number[]): Promise<{ gameId: string; randomness: string[]; blindingFactor: string } | null> => {
     if (!wallet || !AZTEC_CONFIG.gameContractAddress) return null;
     if (creatingRef.current) return null;
     creatingRef.current = true;
@@ -83,34 +212,65 @@ export function useGameContract(
     try {
       console.log('[useGameContract] Creating on-chain game...');
 
-      const [{ AztecAddress }, { Contract }, { loadContractArtifact }, { Fr }] = await Promise.all([
-        import('@aztec/aztec.js/addresses'),
-        import('@aztec/aztec.js/contracts'),
-        import('@aztec/aztec.js/abi'),
-        import('@aztec/aztec.js/fields'),
-      ]);
-
-      const gameAddr = AztecAddress.fromString(AZTEC_CONFIG.gameContractAddress);
-      const resp = await fetch('/contracts/triple_triad_game-TripleTriadGame.json');
-      if (!resp.ok) throw new Error('Failed to load game contract artifact');
-      const rawArtifact = await resp.json();
-      const artifact = loadContractArtifact(rawArtifact);
-      const contract = await Contract.at(gameAddr, artifact, wallet as never);
-
-      // Read the current game_id_counter BEFORE creation to know what ID will be assigned
+      const { gameContract, nftContract, fee, Fr, AztecAddress } = await ensureContracts(wallet);
       const senderAddr = accountAddress ? AztecAddress.fromString(accountAddress) : AztecAddress.ZERO;
-      const counter = await contract.methods.get_game_id_counter().simulate({ from: senderAddr });
-      const gameId = String(BigInt(counter));
-      console.log('[useGameContract] Next on-chain game ID will be:', gameId);
 
-      const fee = await getSponsoredFee();
-      await contract.methods
-        .create_game(cardIds.map(id => new Fr(BigInt(id))))
-        .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: 300 } });
+      // Get current note_nonce (retry on IDB errors)
+      const nonceResult = await withRetry(
+        () => nftContract.methods.get_note_nonce(senderAddr).simulate({ from: senderAddr }),
+        3, 'get_note_nonce',
+      );
+      const nonceValue = String(nonceResult);
+      const nonceFr = (nonceValue.startsWith('0x') || nonceValue.startsWith('0X'))
+        ? Fr.fromHexString(nonceValue)
+        : new Fr(BigInt(nonceValue));
+      console.log('[useGameContract] Current nonce:', nonceValue);
 
-      setOnChainGameId(gameId);
-      console.log('[useGameContract] On-chain game created, ID:', gameId);
-      return gameId;
+      // Preview game_id and randomness (derived in-circuit via simulate)
+      const previewResult: any = await withRetry(
+        () => nftContract.methods.preview_game_data(nonceFr).simulate({ from: senderAddr }),
+        3, 'preview_game_data',
+      );
+      // previewResult is [game_id, randomness[0..5]] (7 values)
+      const gameId = String(previewResult[0]);
+      const randomnessHex = Array.from({ length: 6 }, (_, i) => {
+        const raw = String(previewResult[i + 1]);
+        return (raw.startsWith('0x') || raw.startsWith('0X')) ? raw : '0x' + BigInt(raw).toString(16);
+      });
+      console.log('[useGameContract] Preview game_id:', gameId, 'randomness:', randomnessHex);
+
+      // Derive blinding factor (sequentially, after preview — avoids concurrent IDB access)
+      const gameIdFrForBlinding = (gameId.startsWith('0x') || gameId.startsWith('0X'))
+        ? Fr.fromHexString(gameId)
+        : new Fr(BigInt(gameId));
+      const blindingResult = await withRetry(
+        () => nftContract.methods.compute_blinding_factor(gameIdFrForBlinding).simulate({ from: senderAddr }),
+        3, 'compute_blinding_factor (create)',
+      );
+      const blindingRaw = String(blindingResult);
+      const blindingHex = (blindingRaw.startsWith('0x') || blindingRaw.startsWith('0X'))
+        ? blindingRaw
+        : '0x' + BigInt(blindingRaw).toString(16);
+      console.log('[useGameContract] Blinding factor derived:', blindingHex);
+
+      // Send create_game tx (no game_id or randomness args -- derived in-circuit)
+      await withRetry(
+        () => gameContract.methods
+          .create_game(cardIds.map((id: number) => new Fr(BigInt(id))))
+          .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: 300 } }),
+        3, 'create_game',
+      );
+
+      // Normalize gameId to hex
+      const gameIdHex = (gameId.startsWith('0x') || gameId.startsWith('0X'))
+        ? gameId
+        : '0x' + BigInt(gameId).toString(16);
+
+      setOnChainGameId(gameIdHex);
+      setGameRandomness(randomnessHex);
+      setBlindingFactor(blindingHex);
+      console.log('[useGameContract] On-chain game created, ID:', gameIdHex);
+      return { gameId: gameIdHex, randomness: randomnessHex, blindingFactor: blindingHex };
     } catch (err) {
       console.error('[useGameContract] createGameOnChain error:', err);
       return null;
@@ -121,37 +281,73 @@ export function useGameContract(
 
   /**
    * Call join_game on the TripleTriadGame contract.
+   * Randomness is derived IN-CIRCUIT by the NFT contract.
+   * We preview it via NFT.preview_game_data().simulate() before sending the tx.
+   * Returns { randomness } or null on failure.
    */
-  const joinGameOnChain = useCallback(async (chainGameId: string, cardIds: number[]): Promise<void> => {
-    if (!wallet || !AZTEC_CONFIG.gameContractAddress) return;
+  const joinGameOnChain = useCallback(async (chainGameId: string, cardIds: number[]): Promise<{ randomness: string[]; blindingFactor: string } | null> => {
+    if (!wallet || !AZTEC_CONFIG.gameContractAddress) return null;
 
     try {
       console.log('[useGameContract] Joining on-chain game:', chainGameId);
 
-      const [{ AztecAddress }, { Contract }, { loadContractArtifact }, { Fr }] = await Promise.all([
-        import('@aztec/aztec.js/addresses'),
-        import('@aztec/aztec.js/contracts'),
-        import('@aztec/aztec.js/abi'),
-        import('@aztec/aztec.js/fields'),
-      ]);
-
-      const gameAddr = AztecAddress.fromString(AZTEC_CONFIG.gameContractAddress);
-      const resp = await fetch('/contracts/triple_triad_game-TripleTriadGame.json');
-      if (!resp.ok) throw new Error('Failed to load game contract artifact');
-      const rawArtifact = await resp.json();
-      const artifact = loadContractArtifact(rawArtifact);
-      const contract = await Contract.at(gameAddr, artifact, wallet as never);
-
+      const { gameContract, nftContract, fee, Fr, AztecAddress } = await ensureContracts(wallet);
       const senderAddr = accountAddress ? AztecAddress.fromString(accountAddress) : AztecAddress.ZERO;
-      const fee = await getSponsoredFee();
-      await contract.methods
-        .join_game(new Fr(BigInt(chainGameId)), cardIds.map(id => new Fr(BigInt(id))))
-        .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: 300 } });
+
+      // Get current note_nonce to preview randomness
+      const nonceResult = await withRetry(
+        () => nftContract.methods.get_note_nonce(senderAddr).simulate({ from: senderAddr }),
+        3, 'get_note_nonce (join)',
+      );
+      const nonceValue = String(nonceResult);
+      const nonceFr = (nonceValue.startsWith('0x') || nonceValue.startsWith('0X'))
+        ? Fr.fromHexString(nonceValue)
+        : new Fr(BigInt(nonceValue));
+
+      // Preview randomness (derived in-circuit via simulate)
+      const previewResult: any = await withRetry(
+        () => nftContract.methods.preview_game_data(nonceFr).simulate({ from: senderAddr }),
+        3, 'preview_game_data (join)',
+      );
+      const randomnessHex = Array.from({ length: 6 }, (_, i) => {
+        const raw = String(previewResult[i + 1]);
+        return (raw.startsWith('0x') || raw.startsWith('0X')) ? raw : '0x' + BigInt(raw).toString(16);
+      });
+      console.log('[useGameContract] Preview randomness for join:', randomnessHex);
+
+      // Derive blinding factor (sequentially, after preview — avoids concurrent IDB access)
+      const gameIdFrForBlinding = (chainGameId.startsWith('0x') || chainGameId.startsWith('0X'))
+        ? Fr.fromHexString(chainGameId)
+        : new Fr(BigInt(chainGameId));
+      const blindingResult = await withRetry(
+        () => nftContract.methods.compute_blinding_factor(gameIdFrForBlinding).simulate({ from: senderAddr }),
+        3, 'compute_blinding_factor (join)',
+      );
+      const blindingRaw = String(blindingResult);
+      const blindingHex = (blindingRaw.startsWith('0x') || blindingRaw.startsWith('0X'))
+        ? blindingRaw
+        : '0x' + BigInt(blindingRaw).toString(16);
+      console.log('[useGameContract] Blinding factor derived (join):', blindingHex);
+
+      // Send join_game tx (no randomness arg -- derived in-circuit)
+      const gameIdFr = (chainGameId.startsWith('0x') || chainGameId.startsWith('0X'))
+        ? Fr.fromHexString(chainGameId)
+        : new Fr(BigInt(chainGameId));
+      await withRetry(
+        () => gameContract.methods
+          .join_game(gameIdFr, cardIds.map((id: number) => new Fr(BigInt(id))))
+          .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: 300 } }),
+        3, 'join_game',
+      );
 
       setOnChainGameId(chainGameId);
+      setGameRandomness(randomnessHex);
+      setBlindingFactor(blindingHex);
       console.log('[useGameContract] Joined on-chain game:', chainGameId);
+      return { randomness: randomnessHex, blindingFactor: blindingHex };
     } catch (err) {
       console.error('[useGameContract] joinGameOnChain error:', err);
+      return null;
     }
   }, [wallet, accountAddress]);
 
@@ -161,7 +357,7 @@ export function useGameContract(
    * This verifies all 11 proofs (2 hand + 9 move), validates the proof chain,
    * and transfers an NFT card from the loser to the winner.
    */
-  const settleGame = useCallback(async (params: SettleGameParams): Promise<string | null> => {
+  const settleGame = useCallback(async (params: SettleGameParams): Promise<SettleResult | null> => {
     const {
       onChainGameId: gameId,
       handProof1, handProof2,
@@ -170,6 +366,8 @@ export function useGameContract(
       cardToTransfer,
       callerCardIds,
       opponentCardIds,
+      callerRandomness: callerRandomnessHex,
+      opponentRandomness: opponentRandomnessHex,
     } = params;
 
     if (!wallet || !AZTEC_CONFIG.gameContractAddress) {
@@ -186,12 +384,7 @@ export function useGameContract(
     setTxHash(null);
 
     try {
-      const [{ AztecAddress }, { Contract }, { loadContractArtifact }, { Fr }] = await Promise.all([
-        import('@aztec/aztec.js/addresses'),
-        import('@aztec/aztec.js/contracts'),
-        import('@aztec/aztec.js/abi'),
-        import('@aztec/aztec.js/fields'),
-      ]);
+      const { fee, Fr, AztecAddress } = await ensureContracts(wallet);
 
       setTxStatus('proving');
 
@@ -341,17 +534,12 @@ export function useGameContract(
 
       setTxStatus('sending');
 
-      // 4. Load contract and call process_game
-      const gameContractAddr = AztecAddress.fromString(AZTEC_CONFIG.gameContractAddress);
-      const resp = await fetch('/contracts/triple_triad_game-TripleTriadGame.json');
-      if (!resp.ok) throw new Error('Failed to load game contract artifact');
-      const rawArtifact = await resp.json();
-      const artifact = loadContractArtifact(rawArtifact);
-      const contract = await Contract.at(gameContractAddr, artifact, wallet as never);
+      // 4. Use cached contract for process_game
+      const contract = contractCache.gameContract;
+      if (!contract) throw new Error('Game contract not initialized');
 
       const senderAddr = accountAddress ? AztecAddress.fromString(accountAddress) : AztecAddress.ZERO;
       const opponent = AztecAddress.fromString(opponentAddress);
-      const fee = await getSponsoredFee();
 
       // === PRE-FLIGHT: Query on-chain state to diagnose settle_game assertions ===
       console.log('[useGameContract] === PRE-FLIGHT: On-chain state check ===');
@@ -391,9 +579,9 @@ export function useGameContract(
         console.log('  winner_id from final move proof:', winnerId);
         console.log('  caller is player1:', senderAddr.toString() === String(onChainP1));
         console.log('  caller is player2:', senderAddr.toString() === String(onChainP2));
-        if (winnerId === '1' || winnerId === '0x1') {
+        if (String(winnerId) === '1' || String(winnerId) === '0x1') {
           console.log('  => winner should be player1. caller IS player1:', senderAddr.toString() === String(onChainP1));
-        } else if (winnerId === '2' || winnerId === '0x2') {
+        } else if (String(winnerId) === '2' || String(winnerId) === '0x2') {
           console.log('  => winner should be player2. caller IS player2:', senderAddr.toString() === String(onChainP2));
         } else {
           console.log('  => draw or unknown winner_id');
@@ -409,12 +597,22 @@ export function useGameContract(
         return padded.slice(0, 5).map(id => new Fr(BigInt(id)));
       };
 
+      // Use committed randomness values (validated against on-chain player_state_hash)
+      // Values may be decimal strings from Fr.toString() — handle both hex and decimal
+      const safeToFr = (v: string) => {
+        if (v.startsWith('0x') || v.startsWith('0X')) return Fr.fromHexString(v);
+        return new Fr(BigInt(v));
+      };
+      const callerRandomness = callerRandomnessHex.map(safeToFr);
+      const opponentRandomness = opponentRandomnessHex.map(safeToFr);
+
       // process_game signature (from contract):
       // game_id, hand_vk, move_vk,
       // hand_proof_1, hand_proof_1_inputs,
       // hand_proof_2, hand_proof_2_inputs,
       // move_proof_1, move_inputs_1, ... move_proof_9, move_inputs_9,
-      // opponent, card_to_transfer, caller_card_ids, opponent_card_ids
+      // opponent, card_to_transfer, caller_card_ids, opponent_card_ids,
+      // caller_randomness, opponent_randomness
       const processGameCall = contract.methods
         .process_game(
           new Fr(BigInt(gameId)),
@@ -429,6 +627,8 @@ export function useGameContract(
           new Fr(BigInt(cardToTransfer)),
           padTo5(callerCardIds),
           padTo5(opponentCardIds),
+          callerRandomness,
+          opponentRandomness,
         );
 
       // Try simulate first to get detailed error before sending
@@ -446,20 +646,15 @@ export function useGameContract(
       const receipt = await processGameCall
         .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: 600 } });
 
-      const hash = receipt.txHash?.toString() || 'confirmed';
+      const hash = (receipt as any).txHash?.toString() || 'unknown';
       setTxHash(hash);
       setTxStatus('confirmed');
       console.log('[useGameContract] Game settled on-chain, txHash:', hash);
 
       // Log private cards for both players after settlement to verify transfer
       try {
-        if (AZTEC_CONFIG.nftContractAddress) {
-          const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
-          const nftResp = await fetch('/contracts/triple_triad_nft-TripleTriadNFT.json');
-          if (nftResp.ok) {
-            const nftRaw = await nftResp.json();
-            const nftArtifact = loadContractArtifact(nftRaw);
-            const nftContract = await Contract.at(nftAddr, nftArtifact, wallet as never);
+        if (contractCache.nftContract) {
+            const nftContract = contractCache.nftContract;
 
             const fetchCards = async (addr: InstanceType<typeof AztecAddress>, label: string) => {
               const cardIds: number[] = [];
@@ -480,13 +675,48 @@ export function useGameContract(
 
             await fetchCards(senderAddr, 'Winner');
             await fetchCards(opponent, 'Loser');
-          }
         }
       } catch (logErr) {
         console.warn('[useGameContract] Failed to log post-settlement cards:', logErr);
       }
 
-      return hash;
+      // Build note data for both caller (winner) and opponent (loser).
+      // IMPORTANT: The randomness mapping must mirror the Noir contract's logic exactly.
+      // In the Noir contract, loser_rand[idx] = opponent_randomness[i] where i is the
+      // ORIGINAL index into opponent_card_ids (skipping the transferred card).
+      const isWinnerLoser = cardToTransfer !== 0;
+
+      // Caller (winner) notes: 5 own cards + 1 transferred card
+      const callerNotes: PlaintextNoteData[] = [];
+      if (isWinnerLoser) {
+        for (let i = 0; i < callerCardIds.length && i < 5; i++) {
+          callerNotes.push({ tokenId: callerCardIds[i], randomness: callerRandomness[i].toString() });
+        }
+        callerNotes.push({ tokenId: cardToTransfer, randomness: callerRandomness[5].toString() });
+      } else {
+        // Draw: caller gets their 5 cards back
+        for (let i = 0; i < callerCardIds.length && i < 5; i++) {
+          callerNotes.push({ tokenId: callerCardIds[i], randomness: callerRandomness[i].toString() });
+        }
+      }
+
+      // Opponent (loser) notes: mirror Noir's loop that skips the transferred card
+      const opponentNotes: PlaintextNoteData[] = [];
+      if (isWinnerLoser) {
+        // Noir: for i in 0..5 { if opponent_card_ids[i] != card_to_transfer { loser_rand[idx] = opponent_randomness[i]; } }
+        for (let i = 0; i < opponentCardIds.length && i < 5; i++) {
+          if (opponentCardIds[i] !== cardToTransfer) {
+            opponentNotes.push({ tokenId: opponentCardIds[i], randomness: opponentRandomness[i].toString() });
+          }
+        }
+      } else {
+        // Draw: opponent gets all 5 cards back
+        for (let i = 0; i < opponentCardIds.length && i < 5; i++) {
+          opponentNotes.push({ tokenId: opponentCardIds[i], randomness: opponentRandomness[i].toString() });
+        }
+      }
+
+      return { txHash: hash, callerNotes, opponentNotes };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Transaction failed';
       console.error('[useGameContract] settleGame error:', err);
@@ -502,8 +732,16 @@ export function useGameContract(
     setError(null);
   }, []);
 
+  const restoreState = useCallback((restoredGameId: string, restoredRandomness: string[], restoredBlinding?: string) => {
+    setOnChainGameId(restoredGameId);
+    setGameRandomness(restoredRandomness);
+    if (restoredBlinding) setBlindingFactor(restoredBlinding);
+  }, []);
+
   const resetLifecycle = useCallback(() => {
     setOnChainGameId(null);
+    setGameRandomness(null);
+    setBlindingFactor(null);
     creatingRef.current = false;
   }, []);
 
@@ -513,10 +751,13 @@ export function useGameContract(
     error,
     isAvailable,
     onChainGameId,
+    gameRandomness,
+    blindingFactor,
     createGameOnChain,
     joinGameOnChain,
     settleGame,
     resetTx,
+    restoreState,
     resetLifecycle,
   };
 }

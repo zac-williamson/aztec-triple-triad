@@ -18,7 +18,11 @@
   padding: 8px 20px;
   border: none;
   border-radius: 0;
-  background: url('/ui-elements/button.png') center / 100% 100% no-repeat;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.06) 0%, transparent 40%, rgba(0,0,0,0.15) 100%),
+    linear-gradient(170deg, #3a4a2a 0%, #2a3a1e 40%, #1e2e16 100%);
+  border: 2px solid #6a5530;
+  border-radius: 4px;
   color: rgba(232, 228, 216, 0.8);
   font-family: 'Nunito', sans-serif;
   font-size: 14px;
@@ -26,19 +30,29 @@
   cursor: pointer;
   transition: all 0.2s ease;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
-  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.4));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+    0 2px 6px rgba(0, 0, 0, 0.4);
 }
 
 .card-selector__back:hover {
-  background-image: url('/ui-elements/button-hover.png');
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.1) 0%, transparent 40%, rgba(0,0,0,0.1) 100%),
+    linear-gradient(170deg, #4a5a34 0%, #3a4a28 40%, #2a3a1e 100%);
+  border-color: #8a7040;
   color: rgba(232, 228, 216, 1);
-  filter: drop-shadow(0 4px 10px rgba(196, 162, 101, 0.25));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.15),
+    0 4px 10px rgba(196, 162, 101, 0.2);
 }
 
 .card-selector__collection {
   flex: 0 0 60%;
   padding: 72px 24px 24px;
   overflow-y: auto;
+  overflow-x: clip;
 }
 
 .card-selector__collection-title {
@@ -57,33 +71,63 @@
   padding-bottom: 24px;
 }
 
-.card-selector__grid-item {
-  position: relative;
-  cursor: pointer;
-  transition: transform 0.2s ease, opacity 0.2s ease;
+.card-selector__card-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 6px;
+  image-rendering: pixelated;
+  pointer-events: none;
+  transition: transform 0.2s ease;
   transform-origin: center center;
 }
 
+.card-selector__grid-item {
+  position: relative;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+}
+
 .card-selector__grid-item:hover {
-  transform: scale(2.2);
   z-index: 10;
 }
 
-/* Edge-aware scaling origins */
-.card-selector__grid-item--left-edge:hover {
+.card-selector__grid-item:hover .card-selector__card-img {
+  transform: scale(2.2);
+}
+
+/* Edge-aware scaling origins — applied to the image child */
+.card-selector__grid-item--left-edge .card-selector__card-img {
   transform-origin: left center;
 }
 
-.card-selector__grid-item--right-edge:hover {
+.card-selector__grid-item--right-edge .card-selector__card-img {
   transform-origin: right center;
 }
 
-.card-selector__grid-item--top-edge:hover {
+.card-selector__grid-item--top-edge .card-selector__card-img {
   transform-origin: center top;
 }
 
-.card-selector__grid-item--bottom-edge:hover {
+.card-selector__grid-item--bottom-edge .card-selector__card-img {
   transform-origin: center bottom;
+}
+
+/* Corner-aware origins (higher specificity overrides single-edge rules) */
+.card-selector__grid-item--left-edge.card-selector__grid-item--top-edge .card-selector__card-img {
+  transform-origin: left top;
+}
+
+.card-selector__grid-item--right-edge.card-selector__grid-item--top-edge .card-selector__card-img {
+  transform-origin: right top;
+}
+
+.card-selector__grid-item--left-edge.card-selector__grid-item--bottom-edge .card-selector__card-img {
+  transform-origin: left bottom;
+}
+
+.card-selector__grid-item--right-edge.card-selector__grid-item--bottom-edge .card-selector__card-img {
+  transform-origin: right bottom;
 }
 
 .card-selector__grid-item--selected {
@@ -174,9 +218,11 @@
 
 .card-selector__play-btn {
   padding: 14px 56px;
-  border: none;
-  border-radius: 0;
-  background: url('/ui-elements/button.png') center / 100% 100% no-repeat;
+  border: 2px solid #6a5530;
+  border-radius: 4px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.06) 0%, transparent 40%, rgba(0,0,0,0.15) 100%),
+    linear-gradient(170deg, #3a4a2a 0%, #2a3a1e 40%, #1e2e16 100%);
   color: #d4f0d6;
   font-family: 'Cinzel', serif;
   font-size: 20px;
@@ -185,13 +231,23 @@
   cursor: pointer;
   transition: all 0.25s ease;
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6), 0 0 16px rgba(123, 198, 126, 0.3);
-  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+    0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
 .card-selector__play-btn:hover:not(:disabled) {
-  background-image: url('/ui-elements/button-hover.png');
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.1) 0%, transparent 40%, rgba(0,0,0,0.1) 100%),
+    linear-gradient(170deg, #4a5a34 0%, #3a4a28 40%, #2a3a1e 100%);
+  border-color: #8a7040;
   transform: translateY(-2px);
-  filter: drop-shadow(0 6px 20px rgba(123, 198, 126, 0.25));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.15),
+    0 6px 20px rgba(123, 198, 126, 0.25),
+    0 0 12px rgba(123, 198, 126, 0.15);
 }
 
 .card-selector__play-btn:disabled {

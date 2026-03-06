@@ -1,0 +1,42 @@
+
+ RUN  v1.6.1 /Users/zac/aztec-triple-triad-ui/repo/packages/integration
+
+stdout | tests/e2e-debug-mint.test.ts > E2E Debug Mint + import_note
+Creating EmbeddedWallet...
+
+stdout | tests/e2e-debug-mint.test.ts > E2E Debug Mint + import_note
+Deploying player account...
+
+stdout | tests/e2e-debug-mint.test.ts > E2E Debug Mint + import_note
+  Player: 0x2df1661ebee59b00e788fcc13c718fe4a7ba8e96c6e6defc9ab67727b333192c
+Deploying TripleTriadNFT...
+
+stdout | tests/e2e-debug-mint.test.ts > E2E Debug Mint + import_note
+  NFT at: 0x07b3d00698c3cd40e4f610d5391988cbf11d7fc72978afd7fc42263b164f0b68
+
+stdout | tests/e2e-debug-mint.test.ts > E2E Debug Mint + import_note > debug_mint + import_note makes card visible via get_private_cards
+  0 cards before mint ✓
+  Calling debug_mint...
+
+stdout | tests/e2e-debug-mint.test.ts > E2E Debug Mint + import_note > debug_mint + import_note makes card visible via get_private_cards
+  Tx mined: 0x15e60ad2fe2ad78ab58f01b3dbdd37c26e14e5f80e63e47af38e8d02e65fbc1a
+  Fetching TxEffect...
+
+stdout | tests/e2e-debug-mint.test.ts > E2E Debug Mint + import_note > debug_mint + import_note makes card visible via get_private_cards
+  TxEffect: 1 non-zero note hashes, firstNullifier=0x12f5da10f93090f2...
+  Calling import_note.simulate()...
+  import_note functionType: utility
+  import_note name: import_note
+  import_note selector: undefined
+  Direct call - to: 0x07b3d00698c3cd40e4f610d5391988cbf11d7fc72978afd7fc42263b164f0b68, selector: 0xe98389b4, args length: 71
+  PXE type: PXE
+
+ ❯ tests/e2e-debug-mint.test.ts  (1 test | 1 failed) 17191ms
+   ❯ tests/e2e-debug-mint.test.ts > E2E Debug Mint + import_note > debug_mint + import_note makes card visible via get_private_cards
+     → pxe.executeUtility is not a function
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  20:31:26
+   Duration  17.95s (transform 39ms, setup 0ms, collect 590ms, tests 17.19s, environment 0ms, prepare 34ms)
+

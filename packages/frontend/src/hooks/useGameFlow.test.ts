@@ -3,11 +3,6 @@ import { renderHook, act } from '@testing-library/react';
 import { useGameFlow } from './useGameFlow';
 import type { GameState, HandProofData, MoveProofData } from '../types';
 
-// Mock blinding factor derivation — returns a deterministic value
-vi.mock('./deriveBlindingFactor', () => ({
-  deriveBlindingFactor: vi.fn().mockResolvedValue('0xmock_blinding_factor'),
-}));
-
 // Mock proof generation
 const mockGenerateHandProof = vi.fn();
 const mockGenerateMoveProof = vi.fn();
@@ -29,11 +24,12 @@ vi.mock('./useProofGeneration', () => ({
 // Mock computeCardCommitPoseidon2
 vi.mock('../aztec/proofWorker', () => ({
   computeCardCommitPoseidon2: vi.fn().mockResolvedValue('0xmock_commit_hash'),
+  computePlayerStateHash: vi.fn().mockResolvedValue('0xmock_player_state_hash'),
 }));
 
 function makeBoard(): GameState['board'] {
   return Array(3).fill(null).map(() =>
-    Array(3).fill(null).map(() => ({ card: null, owner: null }))
+    Array(3).fill(null).map(() => ({ card: null, owner: null, originalOwner: null }))
   );
 }
 
@@ -65,6 +61,7 @@ function makeGameState(overrides?: Partial<GameState>): GameState {
 
 const MOCK_WALLET = { fake: 'wallet' };
 const MOCK_ACCOUNT = '0x1234567890abcdef';
+const MOCK_OPP_RANDOMNESS = ['0xa1', '0xa2', '0xa3', '0xa4', '0xa5', '0xa6'];
 
 describe('useGameFlow', () => {
   beforeEach(() => {
@@ -94,6 +91,8 @@ describe('useGameFlow', () => {
       gameState: null,
       wallet: MOCK_WALLET,
       accountAddress: MOCK_ACCOUNT,
+      opponentGameRandomness: null,
+      derivedBlindingFactor: null,
     }));
 
     expect(result.current.myHandProof).toBeNull();
@@ -110,6 +109,8 @@ describe('useGameFlow', () => {
       gameState: makeGameState(),
       wallet: MOCK_WALLET,
       accountAddress: MOCK_ACCOUNT,
+      opponentGameRandomness: MOCK_OPP_RANDOMNESS,
+      derivedBlindingFactor: '0xmock_blinding_factor',
     }));
 
     // The hand proof should be generated automatically when gameId and gameState are set
@@ -122,6 +123,8 @@ describe('useGameFlow', () => {
       [1, 2, 3, 4, 5],
       expect.any(String), // blinding factor
       '0xmock_commit_hash', // card commit hash from mocked computeCardCommitPoseidon2
+      MOCK_OPP_RANDOMNESS,
+      '0xmock_player_state_hash',
     );
   });
 
@@ -133,6 +136,8 @@ describe('useGameFlow', () => {
       gameState: makeGameState(),
       wallet: MOCK_WALLET,
       accountAddress: MOCK_ACCOUNT,
+      opponentGameRandomness: null,
+      derivedBlindingFactor: null,
     }));
 
     const moveProof: MoveProofData = {
@@ -162,6 +167,8 @@ describe('useGameFlow', () => {
       gameState: makeGameState(),
       wallet: MOCK_WALLET,
       accountAddress: MOCK_ACCOUNT,
+      opponentGameRandomness: null,
+      derivedBlindingFactor: null,
     }));
 
     const handProof: HandProofData = {
@@ -189,6 +196,8 @@ describe('useGameFlow', () => {
         gameState: props.gameState,
         wallet: MOCK_WALLET,
         accountAddress: MOCK_ACCOUNT,
+        opponentGameRandomness: MOCK_OPP_RANDOMNESS,
+        derivedBlindingFactor: '0xmock_blinding_factor',
       }),
       { initialProps: { gameState: playingState } },
     );
@@ -239,6 +248,8 @@ describe('useGameFlow', () => {
         gameState: props.gameState,
         wallet: MOCK_WALLET,
         accountAddress: MOCK_ACCOUNT,
+      opponentGameRandomness: null,
+        derivedBlindingFactor: null,
       }),
       { initialProps: { gameState: playingState } },
     );
@@ -281,6 +292,8 @@ describe('useGameFlow', () => {
       gameState: makeGameState(),
       wallet: MOCK_WALLET,
       accountAddress: MOCK_ACCOUNT,
+      opponentGameRandomness: MOCK_OPP_RANDOMNESS,
+      derivedBlindingFactor: '0xmock_blinding_factor',
     }));
 
     await act(async () => {
@@ -318,6 +331,8 @@ describe('useGameFlow', () => {
       gameState: makeGameState(),
       wallet: MOCK_WALLET,
       accountAddress: MOCK_ACCOUNT,
+      opponentGameRandomness: MOCK_OPP_RANDOMNESS,
+      derivedBlindingFactor: '0xmock_blinding_factor',
     }));
 
     await act(async () => {
@@ -350,6 +365,8 @@ describe('useGameFlow', () => {
       gameState: makeGameState(),
       wallet: MOCK_WALLET,
       accountAddress: MOCK_ACCOUNT,
+      opponentGameRandomness: null,
+      derivedBlindingFactor: null,
     }));
 
     const moveProof: MoveProofData = {
@@ -381,6 +398,8 @@ describe('useGameFlow', () => {
       gameState: makeGameState(),
       wallet: MOCK_WALLET,
       accountAddress: MOCK_ACCOUNT,
+      opponentGameRandomness: null,
+      derivedBlindingFactor: null,
     }));
 
     act(() => {
@@ -409,6 +428,8 @@ describe('useGameFlow', () => {
       gameState: makeGameState(),
       wallet: MOCK_WALLET,
       accountAddress: MOCK_ACCOUNT,
+      opponentGameRandomness: null,
+      derivedBlindingFactor: null,
     }));
 
     act(() => {
@@ -437,6 +458,8 @@ describe('useGameFlow', () => {
         gameState: props.gameState,
         wallet: MOCK_WALLET,
         accountAddress: MOCK_ACCOUNT,
+      opponentGameRandomness: null,
+        derivedBlindingFactor: null,
       }),
       { initialProps: { gameState: playingState } },
     );
@@ -480,6 +503,8 @@ describe('useGameFlow', () => {
       gameState: makeGameState(),
       wallet: MOCK_WALLET,
       accountAddress: MOCK_ACCOUNT,
+      opponentGameRandomness: null,
+      derivedBlindingFactor: null,
     }));
 
     const moveProof: MoveProofData = {

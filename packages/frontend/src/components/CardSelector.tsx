@@ -1,5 +1,4 @@
 import { useState, useCallback, useRef } from 'react';
-import { Card } from './Card';
 import { getCardById } from '../cards';
 import type { Card as CardType } from '../types';
 import './CardSelector.css';
@@ -65,13 +64,19 @@ export function CardSelector({ ownedCardIds, onConfirm, onBack }: CardSelectorPr
 
   // Determine grid columns for edge-aware scaling
   const getEdgeClasses = (index: number, total: number) => {
-    const cols = 6;
+    // Compute actual column count from rendered grid
+    let cols = 6;
+    const gridEl = gridRef.current;
+    if (gridEl) {
+      const trackList = getComputedStyle(gridEl).getPropertyValue('grid-template-columns');
+      cols = trackList.split(' ').filter(Boolean).length || 6;
+    }
     const col = index % cols;
     const row = Math.floor(index / cols);
     const totalRows = Math.ceil(total / cols);
     const classes: string[] = [];
     if (col === 0) classes.push('card-selector__grid-item--left-edge');
-    if (col === cols - 1) classes.push('card-selector__grid-item--right-edge');
+    if (col === cols - 1 || index === total - 1) classes.push('card-selector__grid-item--right-edge');
     if (row === 0) classes.push('card-selector__grid-item--top-edge');
     if (row === totalRows - 1) classes.push('card-selector__grid-item--bottom-edge');
     return classes.join(' ');
@@ -106,7 +111,12 @@ export function CardSelector({ ownedCardIds, onConfirm, onBack }: CardSelectorPr
                 ].filter(Boolean).join(' ')}
                 onClick={() => toggleCard(card.id)}
               >
-                <Card card={card} size="small" />
+                <img
+                  className="card-selector__card-img"
+                  src={`/cards/final/card-${card.id}.png`}
+                  alt={card.name}
+                  draggable={false}
+                />
                 {owned > 1 && (
                   <span className="card-selector__count-badge">
                     {selected > 0 ? `${selected}/` : ''}x{owned}
@@ -131,7 +141,12 @@ export function CardSelector({ ownedCardIds, onConfirm, onBack }: CardSelectorPr
                   className="card-selector__slot card-selector__slot--filled"
                   onClick={() => deselectSlot(i)}
                 >
-                  <Card card={card} size="medium" />
+                  <img
+                    className="card-selector__card-img"
+                    src={`/cards/final/card-${card.id}.png`}
+                    alt={card.name}
+                    draggable={false}
+                  />
                 </div>
               );
             }

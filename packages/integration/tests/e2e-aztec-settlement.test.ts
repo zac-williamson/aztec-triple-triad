@@ -36,14 +36,10 @@ import { getContractInstanceFromInstantiationParams } from '@aztec/stdlib/contra
 // bb.js
 import { Barretenberg } from '@aztec/bb.js';
 
-// Game logic
-import { CARD_DATABASE } from '@aztec-triple-triad/game-logic';
-
 // Shared helpers
 import {
   computeVkHash,
   computeCardCommit,
-  packRanks,
   generateFullGameProofs,
   loadContractArtifact,
   loadCircuitArtifact,
@@ -55,6 +51,89 @@ import {
 
 const PXE_URL = process.env.AZTEC_PXE_URL || 'http://localhost:8080';
 const SEND_TIMEOUT = 300; // seconds
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/** Safe string-to-Fr conversion: handles both hex and decimal strings */
+function toFr(s: string | any): any {
+  if (s instanceof Fr) return s;
+  const str = s.toString();
+  if (str.startsWith('0x') || str.startsWith('0X')) {
+    return Fr.fromHexString(str);
+  }
+  return new Fr(BigInt(str));
+}
+
+/** Normalize a value to 0x-prefixed hex string */
+function toHex(v: any): string {
+  const s = v.toString();
+  if (s.startsWith('0x') || s.startsWith('0X')) return s;
+  return '0x' + BigInt(s).toString(16);
+}
+
+/**
+ * Import notes created by create_and_push_note into PXE.
+ * This is required because create_and_push_note skips on-chain tagging.
+ */
+async function importNotes(
+  nftContract: any,
+  node: any,
+  txHash: any,
+  owner: any,
+  cardIds: number[],
+  randomnessFrs: any[],
+) {
+  // Fetch TxEffect
+  let txEffect: any = null;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      const txResult = await node.getTxEffect(txHash);
+      if (txResult?.data) { txEffect = txResult.data; break; }
+    } catch { /* not indexed yet */ }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+
+  if (!txEffect) {
+    console.warn('  Could not fetch TxEffect for note import');
+    return;
+  }
+
+  const rawNoteHashes: any[] = txEffect.noteHashes ?? [];
+  const uniqueNoteHashes: string[] = rawNoteHashes
+    .map((h: any) => h.toString())
+    .filter((h: string) => h !== '0' && h !== '0x0' && !/^0x0+$/.test(h));
+  const firstNullifier: string = txEffect.nullifiers?.[0]?.toString() ?? '0';
+
+  const paddedHashes = new Array(64).fill(new Fr(0n));
+  for (let i = 0; i < uniqueNoteHashes.length && i < 64; i++) {
+    paddedHashes[i] = toFr(uniqueNoteHashes[i]);
+  }
+
+  const txHashFr = toFr(txHash.toString());
+  const firstNullFr = toFr(firstNullifier);
+
+  for (let i = 0; i < cardIds.length; i++) {
+    try {
+      await nftContract.methods
+        .import_note(
+          owner,
+          new Fr(BigInt(cardIds[i])),
+          randomnessFrs[i],
+          txHashFr,
+          paddedHashes,
+          uniqueNoteHashes.length,
+          firstNullFr,
+          owner,
+        )
+        .simulate({ from: owner });
+      console.log(`  Imported note for card ${cardIds[i]}`);
+    } catch (err: any) {
+      console.warn(`  Failed to import note for card ${cardIds[i]}:`, err?.message?.slice(0, 120));
+    }
+  }
+}
 
 // ============================================================================
 // SponsoredFPC setup (same pattern as aztec-chess-app)
@@ -70,6 +149,7 @@ async function getSponsoredFPCContract() {
 describe('E2E Aztec Settlement', () => {
   // Aztec state
   let wallet: any;
+  let node: any;
   let fee: any;
   let deployerAddr: any;
   let p1Addr: any;
@@ -91,21 +171,13 @@ describe('E2E Aztec Settlement', () => {
     wait: { timeout: SEND_TIMEOUT },
   });
 
-  // Helper: string-to-Fr conversion
-  const toFr = (s: string): any => {
-    if (s.startsWith('0x') || s.startsWith('0X')) {
-      return Fr.fromHexString(s);
-    }
-    return new Fr(BigInt(s));
-  };
-
   const p1CardIds = [1, 2, 3, 4, 5];
-  const p2CardIds = [6, 7, 8, 9, 10];
+  const p2CardIds = [1, 2, 3, 4, 5]; // Both players use starter cards
 
   beforeAll(async () => {
     // --- Connect to Aztec node ---
     console.log(`Connecting to Aztec node at ${PXE_URL}...`);
-    const node = createAztecNodeClient(PXE_URL);
+    node = createAztecNodeClient(PXE_URL);
 
     // --- Wait for node to have blocks ---
     console.log('Waiting for Aztec node to have blocks...');
@@ -127,8 +199,6 @@ describe('E2E Aztec Settlement', () => {
     wallet = await EmbeddedWallet.create(node, { ephemeral: true });
 
     // --- Wait for PXE to sync ---
-    // The embedded PXE syncs in the background; wait for it to catch up
-    // so the anchor block header has a valid timestamp for tx expiration
     console.log('Waiting for embedded PXE to sync...');
     await new Promise(r => setTimeout(r, 5000));
 
@@ -206,7 +276,6 @@ describe('E2E Aztec Settlement', () => {
     const gameArtifact = loadContractArtifact('triple_triad_game-TripleTriadGame');
 
     console.log('Deploying TripleTriadNFT...');
-    // FieldCompressedString: pack ASCII bytes into a field element (big-endian, up to 31 bytes)
     function encodeCompressedString(s: string): Fr {
       let hex = '';
       for (let i = 0; i < s.length && i < 31; i++) {
@@ -223,8 +292,6 @@ describe('E2E Aztec Settlement', () => {
     ]).send(sendAs(deployerAddr));
     console.log(`  NFT deployed at: ${nftContract.address}`);
 
-    // Register NFT contract as a sender so PXE scans its private logs
-    // (notes from mint_to_private are tagged with the NFT contract address)
     await wallet.registerSender(nftContract.address, 'nft-contract');
 
     console.log('Deploying TripleTriadGame...');
@@ -235,7 +302,6 @@ describe('E2E Aztec Settlement', () => {
     ]).send(sendAs(deployerAddr));
     console.log(`  Game deployed at: ${gameContract.address}`);
 
-    // Register game contract as a sender for note discovery
     await wallet.registerSender(gameContract.address, 'game-contract');
 
     // --- Register game contract on NFT ---
@@ -244,71 +310,68 @@ describe('E2E Aztec Settlement', () => {
       .set_game_contract(gameContract.address)
       .send(sendAs(deployerAddr));
 
-    // --- Mint cards to players (private) ---
-    // Use get_cards_for_new_player for player 1 (self-mint of starter cards 1-5)
-    // This avoids cross-account note delivery issues with deployer → player tagging
+    // --- Mint cards to players ---
+    // Player 1: self-mint starter cards via get_cards_for_new_player
+    // These use create_and_push_note (no tagging) so we MUST import notes after
     console.log('Minting cards to players...');
     console.log('  Player 1: calling get_cards_for_new_player (self-mint)...');
-    await nftContract.methods
+    const p1MintReceipt = await nftContract.methods
       .get_cards_for_new_player()
       .send(sendAs(p1Addr));
-    console.log('  Player 1: starter cards minted');
+    console.log('  Player 1: starter cards minted, importing notes...');
 
-    // For player 2, use mint_to_private with deployer (cards 6-10)
-    for (const id of p2CardIds) {
-      const card = CARD_DATABASE.find((c: any) => c.id === id)!;
-      const packed = packRanks(card.ranks.top, card.ranks.right, card.ranks.bottom, card.ranks.left);
-      await nftContract.methods
-        .mint_to_private(p2Addr, new Fr(BigInt(id)), new Fr(BigInt(packed)))
-        .send(sendAs(deployerAddr));
-    }
-    console.log('  Minted cards 6-10 to Player 2');
-
-    // --- Wait for PXE to discover minted notes ---
-    // After minting, the PXE must sync blocks and run sync_state() for the NFT contract.
-    // Use get_private_cards (utility function using view_notes) to check note visibility.
-    // This is the correct check — compute_blinding_factor doesn't access notes at all.
-    console.log('Waiting for PXE to discover minted notes...');
-    let p1NotesFound = false;
-    let p2NotesFound = false;
-    for (let attempt = 0; attempt < 60; attempt++) {
-      try {
-        if (!p1NotesFound) {
-          const [p1Cards] = await nftContract.methods
-            .get_private_cards(p1Addr, 0)
-            .simulate({ from: p1Addr });
-          const p1Count = p1Cards.filter((v: any) => BigInt(v) !== 0n).length;
-          if (p1Count >= 5) {
-            console.log(`  Player 1: found ${p1Count} notes (attempt ${attempt + 1})`);
-            p1NotesFound = true;
-          } else {
-            console.log(`  Player 1: found ${p1Count}/5 notes (attempt ${attempt + 1}), waiting...`);
-          }
-        }
-        if (!p2NotesFound) {
-          const [p2Cards] = await nftContract.methods
-            .get_private_cards(p2Addr, 0)
-            .simulate({ from: p2Addr });
-          const p2Count = p2Cards.filter((v: any) => BigInt(v) !== 0n).length;
-          if (p2Count >= 5) {
-            console.log(`  Player 2: found ${p2Count} notes (attempt ${attempt + 1})`);
-            p2NotesFound = true;
-          } else {
-            console.log(`  Player 2: found ${p2Count}/5 notes (attempt ${attempt + 1}), waiting...`);
-          }
-        }
-        if (p1NotesFound && p2NotesFound) {
-          console.log('  All notes discovered!');
-          break;
-        }
-      } catch (err: any) {
-        console.log(`  Note check attempt ${attempt + 1} error: ${err?.message?.slice(0, 100)}`);
+    // Import Player 1's starter card notes (create_and_push_note skips tagging)
+    {
+      const randomnessResult = await nftContract.methods
+        .compute_note_randomness(0, 5)
+        .simulate({ from: p1Addr });
+      const randomnessFrs = [];
+      for (let i = 0; i < 5; i++) {
+        randomnessFrs.push(toFr(randomnessResult[i]));
       }
-      await new Promise(r => setTimeout(r, 3000));
+      await importNotes(nftContract, node, p1MintReceipt.txHash, p1Addr, p1CardIds, randomnessFrs);
     }
-    if (!p1NotesFound || !p2NotesFound) {
-      throw new Error(`Note discovery timed out: P1=${p1NotesFound}, P2=${p2NotesFound}`);
+
+    // Verify Player 1 notes are visible
+    const [p1Cards] = await nftContract.methods
+      .get_private_cards(p1Addr, 0)
+      .simulate({ from: p1Addr });
+    const p1Count = p1Cards.filter((v: any) => BigInt(v) !== 0n).length;
+    console.log(`  Player 1: ${p1Count} notes visible after import`);
+    if (p1Count < 5) {
+      throw new Error(`Player 1 note import failed: only ${p1Count}/5 notes visible`);
     }
+
+    // Player 2: also use get_cards_for_new_player (same flow as P1)
+    // This mints starter cards [1,2,3,4,5] AND creates the note_nonce
+    console.log('  Player 2: calling get_cards_for_new_player...');
+    const p2MintReceipt = await nftContract.methods
+      .get_cards_for_new_player()
+      .send(sendAs(p2Addr));
+
+    // Import P2's starter card notes (create_and_push_note skips tagging)
+    {
+      const randomnessResult = await nftContract.methods
+        .compute_note_randomness(0, 5)
+        .simulate({ from: p2Addr });
+      const randomnessFrs = [];
+      for (let i = 0; i < 5; i++) {
+        randomnessFrs.push(toFr(randomnessResult[i]));
+      }
+      await importNotes(nftContract, node, p2MintReceipt.txHash, p2Addr, p2CardIds, randomnessFrs);
+    }
+
+    // Verify P2 notes
+    const [p2Cards] = await nftContract.methods
+      .get_private_cards(p2Addr, 0)
+      .simulate({ from: p2Addr });
+    const p2Count = p2Cards.filter((v: any) => BigInt(v) !== 0n).length;
+    console.log(`  Player 2: ${p2Count} notes visible after import`);
+    if (p2Count < 5) {
+      throw new Error(`Player 2 note import failed: only ${p2Count}/5 notes visible`);
+    }
+
+    console.log('  All notes ready!');
   }, 600_000);
 
   afterAll(async () => {
@@ -319,43 +382,77 @@ describe('E2E Aztec Settlement', () => {
 
   it('two players play a full game and settle on-chain via process_game', async () => {
     // ================================================================
-    // 1. Create game (Player 1 commits cards 1-5)
+    // 1. Preview game data for Player 1 (game_id + randomness derived in-circuit)
+    // ================================================================
+    console.log('Player 1: previewing game data...');
+    const p1Nonce = await nftContract.methods
+      .get_note_nonce(p1Addr)
+      .simulate({ from: p1Addr });
+    console.log(`  P1 nonce: ${p1Nonce}`);
+
+    const p1Preview = await nftContract.methods
+      .preview_game_data(toFr(p1Nonce))
+      .simulate({ from: p1Addr });
+    const gameIdHex = toHex(p1Preview[0]);
+    const p1Randomness = Array.from({ length: 6 }, (_, i) => toHex(p1Preview[i + 1]));
+    console.log(`  Derived game_id: ${gameIdHex}`);
+    console.log(`  P1 randomness: ${p1Randomness.map(r => r.slice(0, 18) + '...')}`);
+
+    // ================================================================
+    // 2. Create game (Player 1 commits cards 1-5)
+    //    game_id and randomness derived IN-CIRCUIT
     // ================================================================
     console.log('Player 1 creating game...');
     await gameContract.methods
       .create_game(p1CardIds.map((id: number) => new Fr(BigInt(id))))
       .send(sendAs(p1Addr));
 
-    const gameId = new Fr(0n); // First game created
+    const gameIdFr = toFr(gameIdHex);
 
     let status = await gameContract.methods
-      .get_game_status(gameId)
+      .get_game_status(gameIdFr)
       .simulate({ from: deployerAddr });
     expect(BigInt(status)).toBe(1n);
     console.log('  Game created (status=1)');
 
     // ================================================================
-    // 2. Join game (Player 2 commits cards 6-10)
+    // 3. Preview game data for Player 2 (randomness derived in-circuit)
+    // ================================================================
+    console.log('Player 2: previewing game data...');
+    const p2Nonce = await nftContract.methods
+      .get_note_nonce(p2Addr)
+      .simulate({ from: p2Addr });
+    console.log(`  P2 nonce: ${p2Nonce}`);
+
+    const p2Preview = await nftContract.methods
+      .preview_game_data(toFr(p2Nonce))
+      .simulate({ from: p2Addr });
+    const p2Randomness = Array.from({ length: 6 }, (_, i) => toHex(p2Preview[i + 1]));
+    console.log(`  P2 randomness: ${p2Randomness.map(r => r.slice(0, 18) + '...')}`);
+
+    // ================================================================
+    // 4. Join game (Player 2 commits cards [1,2,3,4,5])
+    //    randomness derived IN-CIRCUIT
     // ================================================================
     console.log('Player 2 joining game...');
     await gameContract.methods
-      .join_game(gameId, p2CardIds.map((id: number) => new Fr(BigInt(id))))
+      .join_game(gameIdFr, p2CardIds.map((id: number) => new Fr(BigInt(id))))
       .send(sendAs(p2Addr));
 
     status = await gameContract.methods
-      .get_game_status(gameId)
+      .get_game_status(gameIdFr)
       .simulate({ from: deployerAddr });
     expect(BigInt(status)).toBe(2n);
     console.log('  Game active (status=2)');
 
     // ================================================================
-    // 3. Read on-chain card commits
+    // 5. Read on-chain card commits
     // ================================================================
     const onChainCC1 = await gameContract.methods
-      .get_game_card_commit_1(gameId)
+      .get_game_card_commit_1(gameIdFr)
       .simulate({ from: deployerAddr });
     const onChainCC2 = await gameContract.methods
-      .get_game_card_commit_2(gameId)
+      .get_game_card_commit_2(gameIdFr)
       .simulate({ from: deployerAddr });
     console.log(`  On-chain card_commit_1: ${onChainCC1}`);
     console.log(`  On-chain card_commit_2: ${onChainCC2}`);
@@ -363,20 +460,20 @@ describe('E2E Aztec Settlement', () => {
     expect(BigInt(onChainCC2)).not.toBe(0n);
 
     // ================================================================
-    // 4. Derive blinding factors via NFT contract simulate
+    // 6. Derive blinding factors via NFT contract simulate
     // ================================================================
     console.log('Deriving blinding factors via compute_blinding_factor...');
     const p1Blinding = await nftContract.methods
-      .compute_blinding_factor()
+      .compute_blinding_factor(gameIdFr)
       .simulate({ from: p1Addr });
     const p2Blinding = await nftContract.methods
-      .compute_blinding_factor()
+      .compute_blinding_factor(gameIdFr)
       .simulate({ from: p2Addr });
     console.log(`  P1 blinding factor: ${p1Blinding}`);
     console.log(`  P2 blinding factor: ${p2Blinding}`);
 
     // ================================================================
-    // 5. Verify blinding factors match on-chain card commits
+    // 7. Verify blinding factors match on-chain card commits
     // ================================================================
     console.log('Verifying card commitments match...');
     const computedCC1 = await computeCardCommit(api, p1CardIds, BigInt(p1Blinding));
@@ -384,13 +481,12 @@ describe('E2E Aztec Settlement', () => {
     console.log(`  Computed card_commit_1: ${computedCC1}`);
     console.log(`  Computed card_commit_2: ${computedCC2}`);
 
-    // Normalize both to BigInt for comparison (hex strings may differ in case/padding)
     expect(BigInt(computedCC1)).toBe(BigInt(onChainCC1));
     expect(BigInt(computedCC2)).toBe(BigInt(onChainCC2));
     console.log('  Card commitments match on-chain values!');
 
     // ================================================================
-    // 6. Generate all 11 ZK proofs
+    // 8. Generate all 11 ZK proofs
     // ================================================================
     console.log('Generating ZK proofs (2 hand + 9 move)...');
     const proofStart = Date.now();
@@ -410,6 +506,8 @@ describe('E2E Aztec Settlement', () => {
       p2BlindingStr,
       p1CommitStr,
       p2CommitStr,
+      p1Randomness,
+      p2Randomness,
     );
 
     const proofElapsed = ((Date.now() - proofStart) / 1000).toFixed(1);
@@ -417,12 +515,11 @@ describe('E2E Aztec Settlement', () => {
     console.log(`  Winner: ${gameProofs.winner}`);
 
     expect(gameProofs.moveProofs.length).toBe(9);
-    // UltraHonk proofs are 500 field elements (16000 bytes / 32)
     expect(gameProofs.handProof1.proofFields.length).toBe(500);
     expect(gameProofs.handProof2.proofFields.length).toBe(500);
 
     // ================================================================
-    // 7. Verify proof chain integrity
+    // 9. Verify proof chain integrity
     // ================================================================
     console.log('Verifying proof chain...');
     for (let i = 0; i < 8; i++) {
@@ -431,13 +528,12 @@ describe('E2E Aztec Settlement', () => {
     console.log('  Proof chain valid (all end_state[i] == start_state[i+1])');
 
     // ================================================================
-    // 8. Determine winner and call process_game
+    // 10. Determine winner and call process_game
     // ================================================================
     const winner = gameProofs.winner;
     expect(winner).not.toBeNull();
     console.log(`  Game result: ${winner}`);
 
-    // Determine who calls process_game (winner) and who is opponent
     const isP1Winner = winner === 'player1';
     const isDraw = winner === 'draw';
     const callerAddr = isDraw ? p1Addr : (isP1Winner ? p1Addr : p2Addr);
@@ -445,7 +541,6 @@ describe('E2E Aztec Settlement', () => {
     const callerCardIds = isDraw ? p1CardIds : (isP1Winner ? p1CardIds : p2CardIds);
     const opponentCardIds = isDraw ? p2CardIds : (isP1Winner ? p2CardIds : p1CardIds);
 
-    // For non-draw, pick first opponent card as transfer target
     const cardToTransfer = isDraw ? 0 : opponentCardIds[2];
 
     // Format proofs as Fr arrays
@@ -456,12 +551,18 @@ describe('E2E Aztec Settlement', () => {
     const mp = gameProofs.moveProofs.map((p: any) => p.proofFields.map(toFr));
     const mi = gameProofs.moveInputs.map((inputs: string[]) => inputs.map(toFr));
 
+    // Use the in-circuit derived randomness for settlement
+    // The randomness was previewed earlier and committed on-chain via player_state_hash
+    const callerRandomnessHex = isP1Winner || isDraw ? p1Randomness : p2Randomness;
+    const opponentRandomnessHex = isP1Winner || isDraw ? p2Randomness : p1Randomness;
+    const callerRandomness = callerRandomnessHex.map(toFr);
+    const opponentRandomness = opponentRandomnessHex.map(toFr);
+
     console.log('Calling process_game...');
 
-  try {
     const result = await gameContract.methods
       .process_game(
-        gameId,
+        gameIdFr,
         realHandVkFields,
         realMoveVkFields,
         hp1Proof,
@@ -481,31 +582,73 @@ describe('E2E Aztec Settlement', () => {
         new Fr(BigInt(cardToTransfer)),
         callerCardIds.map((id: number) => new Fr(BigInt(id))),
         opponentCardIds.map((id: number) => new Fr(BigInt(id))),
+        callerRandomness,
+        opponentRandomness,
       )
       .send(sendAs(callerAddr));
-    console.log(' process_game result? ', result);
     console.log('  process_game transaction succeeded!');
 
-    } catch (e)
-    {
-    console.log(' process_game fail? ', e);
-
-    }
-
     // ================================================================
-    // 9. Verify on-chain settlement
+    // 11. Verify on-chain settlement
     // ================================================================
     const finalStatus = await gameContract.methods
-      .get_game_status(gameId)
+      .get_game_status(gameIdFr)
       .simulate({ from: deployerAddr });
     expect(BigInt(finalStatus)).toBe(3n);
     console.log(`  Game status: ${finalStatus} (settled)`);
 
     const isSettled = await gameContract.methods
-      .is_game_settled(gameId)
+      .is_game_settled(gameIdFr)
       .simulate({ from: deployerAddr });
     expect(isSettled).toBe(true);
     console.log('  Game settled: true');
+
+    // ================================================================
+    // 12. Import settlement notes and verify card ownership
+    //     Settlement uses create_and_push_note -- must import notes
+    // ================================================================
+    console.log('Importing settlement notes...');
+
+    const winnerAddr = callerAddr;
+    const loserAddr = opponentAddr;
+
+    // Import winner notes (6 cards: 5 original + 1 transferred)
+    {
+      const winnerTokenIds = [...callerCardIds, cardToTransfer].filter(id => id !== 0);
+      const winnerRand = callerRandomness.slice(0, winnerTokenIds.length);
+      await importNotes(nftContract, node, result.txHash, winnerAddr, winnerTokenIds, winnerRand);
+    }
+
+    // Import loser notes (4 cards: 5 original - 1 transferred)
+    if (!isDraw) {
+      const loserTokenIds = opponentCardIds.filter((id: number) => id !== cardToTransfer);
+      const loserRand: any[] = [];
+      let idx = 0;
+      for (let i = 0; i < opponentCardIds.length; i++) {
+        if (opponentCardIds[i] !== cardToTransfer) {
+          loserRand.push(opponentRandomness[i]);
+          idx++;
+        }
+      }
+      await importNotes(nftContract, node, result.txHash, loserAddr, loserTokenIds, loserRand);
+    }
+
+    // Verify card counts
+    const [winnerCards] = await nftContract.methods
+      .get_private_cards(winnerAddr, 0)
+      .simulate({ from: winnerAddr });
+    const winnerCardCount = winnerCards.filter((v: any) => BigInt(v) !== 0n).length;
+
+    const [loserCards] = await nftContract.methods
+      .get_private_cards(loserAddr, 0)
+      .simulate({ from: loserAddr });
+    const loserCardCount = loserCards.filter((v: any) => BigInt(v) !== 0n).length;
+
+    console.log(`  Winner has ${winnerCardCount} cards (expected 6)`);
+    console.log(`  Loser has ${loserCardCount} cards (expected 4)`);
+
+    expect(winnerCardCount).toBe(6);
+    expect(loserCardCount).toBe(4);
 
     console.log('\n  === E2E Settlement Test PASSED ===');
   }, 600_000);

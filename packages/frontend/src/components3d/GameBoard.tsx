@@ -1,13 +1,13 @@
 import { useState, useEffect, useMemo } from 'react';
-import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import {
-  TextureLoader, MeshStandardMaterial, RepeatWrapping,
+  MeshStandardMaterial, RepeatWrapping,
   Group, Texture, Color,
 } from 'three';
 import type { Board, Player } from '../types';
 import { MODELS, TEXTURES } from '../assets/modelManifest';
 import { useBoardPositions } from './hooks/useBoardPositions';
 import { BoardCell3D } from './BoardCell3D';
+import { loadFBX, loadTexture } from './hooks/useFBXModel';
 
 interface GameBoardProps {
   board: Board;
@@ -23,7 +23,7 @@ const CRATE_SCALE = 0.006;
 const CRATE_TOP = 0.643;
 const SPACING = 0.66;
 
-// ---------- Simple FBX model component (same pattern as SwampEnvironment) ----------
+// ---------- Simple model component using shared cache ----------
 
 interface SmallModelProps {
   modelPath: string;
@@ -38,36 +38,25 @@ function SmallModel({ modelPath, texturePath, position, rotation = [0, 0, 0], sc
 
   useEffect(() => {
     let cancelled = false;
-    const loader = new FBXLoader();
-    const texLoader = new TextureLoader();
 
-    Promise.all([
-      new Promise<Group>((resolve, reject) => loader.load(modelPath, resolve, undefined, reject)),
-      new Promise<Texture>((resolve, reject) => texLoader.load(texturePath, resolve, undefined, reject)),
-    ]).then(([fbx, texture]) => {
+    Promise.all([loadFBX(modelPath), loadTexture(texturePath)]).then(([fbx, texture]) => {
       if (cancelled) return;
       texture.wrapS = RepeatWrapping;
       texture.wrapT = RepeatWrapping;
 
-      // FBX models from Synty have baked Unity scene positions on BOTH
-      // the root group and child meshes (equal-and-opposite offsets).
-      // Zero out ALL positions in the hierarchy to bring geometry to origin.
-      fbx.position.set(0, 0, 0);
-      fbx.rotation.set(0, 0, 0);
+      const clone = fbx.clone(true);
+      clone.position.set(0, 0, 0);
+      clone.rotation.set(0, 0, 0);
 
       let meshCount = 0;
-      fbx.traverse((child: any) => {
+      clone.traverse((child: any) => {
         child.position.set(0, 0, 0);
         if (child.isMesh) {
           meshCount++;
-          // Only show LOD0 (first mesh), hide LOD1 (second mesh)
           if (meshCount > 1) {
             child.visible = false;
             return;
           }
-          // Use the gradient texture as a map with green color tint.
-          // The CastleSHD shader in Unity uses a gradient for color ramping -
-          // applying it as a diffuse map with a green tint gives natural moss variation.
           child.material = new MeshStandardMaterial({
             map: texture,
             color: new Color('#4a7a35'),
@@ -79,8 +68,8 @@ function SmallModel({ modelPath, texturePath, position, rotation = [0, 0, 0], sc
         }
       });
 
-      fbx.scale.setScalar(scale);
-      setModel(fbx);
+      clone.scale.setScalar(scale);
+      setModel(clone);
     }).catch((err) => {
       console.error('[SmallModel] LOAD FAILED:', modelPath, err);
     });
@@ -116,11 +105,6 @@ const CRATE_CONFIGS: CrateConfig[] = [
   { tint: '#c8c0a0', roughness: 0.89, rotY: 0.03 },
 ];
 
-// Moss overlay definitions: which crate, which model, scale, rotation
-// Scaled to be subtle corner/edge accents (~12-15cm) on 64cm crate tops:
-//   MossMound_01: 222cm wide → scale 0.0007 = 15.5cm
-//   MossMound_02: 120cm wide → scale 0.001  = 12.0cm
-//   MossMound_03: 207cm wide → scale 0.0007 = 14.5cm
 interface MossOverlay {
   crateRow: number;
   crateCol: number;
@@ -132,23 +116,16 @@ interface MossOverlay {
 }
 
 const MOSS_OVERLAYS: MossOverlay[] = [
-  // Top-left crate: small mound near back-left corner
   { crateRow: 0, crateCol: 0, model: MODELS.mossMound2, scale: 0.001,  rotY: 0.3,  offsetX: -0.14, offsetZ: -0.10 },
-  // Top-right crate: mound near front-right edge
   { crateRow: 0, crateCol: 2, model: MODELS.mossMound3, scale: 0.0007, rotY: 1.8,  offsetX: 0.12,  offsetZ: 0.09 },
-  // Middle-left crate: mound near left edge
   { crateRow: 1, crateCol: 0, model: MODELS.mossMound1, scale: 0.0007, rotY: 0.9,  offsetX: -0.12, offsetZ: 0.03 },
-  // Middle-right crate: small mound near back edge
   { crateRow: 1, crateCol: 2, model: MODELS.mossMound2, scale: 0.0009, rotY: 2.5,  offsetX: 0.05,  offsetZ: -0.12 },
-  // Bottom-left crate: mound near front-left corner
   { crateRow: 2, crateCol: 0, model: MODELS.mossMound3, scale: 0.0007, rotY: 4.2,  offsetX: -0.10, offsetZ: 0.12 },
-  // Bottom-right crate: small mound near right edge
   { crateRow: 2, crateCol: 2, model: MODELS.mossMound1, scale: 0.0006, rotY: 1.2,  offsetX: 0.14,  offsetZ: -0.05 },
-  // Center crate: tiny accent near back edge
   { crateRow: 1, crateCol: 1, model: MODELS.mossMound2, scale: 0.0007, rotY: 3.1,  offsetX: 0.03,  offsetZ: -0.14 },
 ];
 
-// ---------- Crate grid (just crates, no overlays) ----------
+// ---------- Crate grid ----------
 
 function CrateGrid() {
   const [baseModel, setBaseModel] = useState<Group | null>(null);
@@ -156,13 +133,8 @@ function CrateGrid() {
 
   useEffect(() => {
     let cancelled = false;
-    const loader = new FBXLoader();
-    const texLoader = new TextureLoader();
 
-    Promise.all([
-      new Promise<Group>((resolve, reject) => loader.load(MODELS.crate, resolve, undefined, reject)),
-      new Promise<Texture>((resolve, reject) => texLoader.load(TEXTURES.swampAtlas2, resolve, undefined, reject)),
-    ]).then(([fbx, tex]) => {
+    Promise.all([loadFBX(MODELS.crate), loadTexture(TEXTURES.swampAtlas2)]).then(([fbx, tex]) => {
       if (cancelled) return;
       tex.wrapS = RepeatWrapping;
       tex.wrapT = RepeatWrapping;
@@ -228,7 +200,6 @@ export function GameBoard({ board, myPlayer, validPlacements, onCellClick, isAni
     <group>
       <CrateGrid />
 
-      {/* Moss overlays on crate tops */}
       {MOSS_OVERLAYS.map((m, i) => {
         const worldX = (m.crateCol - 1) * SPACING + m.offsetX;
         const worldZ = (m.crateRow - 1) * SPACING + m.offsetZ;

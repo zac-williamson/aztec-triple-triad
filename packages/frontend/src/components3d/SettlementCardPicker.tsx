@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import type { Card } from '../types';
 import type { SettleTxStatus } from './GameScreen3D';
+import './SettlementCardPicker.css';
 
 interface SettlementCardPickerProps {
   opponentCards: Card[];
@@ -20,46 +22,43 @@ export function SettlementCardPicker({
   resultScore,
   onBackToLobby,
 }: SettlementCardPickerProps) {
-  const isProcessing = settleTxStatus !== 'idle' && settleTxStatus !== 'confirmed' && settleTxStatus !== 'error';
+  // Track local "card selected" state — covers the gap between clicking a card
+  // and settleTxStatus changing from 'idle' (e.g. while waiting for 9th proof).
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const hasPickedCard = selectedId !== null || settleTxStatus !== 'idle';
+  const isProcessing = hasPickedCard && settleTxStatus !== 'confirmed' && settleTxStatus !== 'error';
   const isSettled = settleTxStatus === 'confirmed';
-  const hasPickedCard = settleTxStatus !== 'idle';
+
+  const handleSelect = (cardId: number) => {
+    setSelectedId(cardId);
+    onSelect(cardId);
+  };
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 30,
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'rgba(0,0,0,0.75)', pointerEvents: 'auto',
-    }}>
-      <div style={{
-        background: '#1a1a2e', border: '1px solid #333',
-        borderRadius: 12, padding: 24, maxWidth: 500, width: '90%',
-        textAlign: 'center',
-      }}>
+    <div className="settle-overlay">
+      <div className="parchment-dialog settle-dialog">
         {/* Victory header */}
         {resultText && (
-          <div style={{ marginBottom: 8, color: '#4f4', fontSize: 22, fontWeight: 700 }}>
+          <div className="parchment-dialog__title" style={{ fontSize: 28, fontWeight: 900 }}>
             {resultText}
           </div>
         )}
         {resultScore && (
-          <div style={{ marginBottom: 12, color: '#aaa', fontSize: 16 }}>
-            {resultScore}
-          </div>
+          <div className="settle-score">{resultScore}</div>
         )}
 
         {!hasPickedCard && (
           <>
-            <h3 style={{ margin: '0 0 8px', color: '#fff', fontSize: 18 }}>
-              Claim a Card
-            </h3>
-            <p style={{ margin: '0 0 16px', color: '#aaa', fontSize: 13 }}>
+            <h3 className="settle-heading">Claim a Card</h3>
+            <p className="settle-subtext">
               Select one of your opponent's cards to claim as your prize.
             </p>
           </>
         )}
 
         {isProcessing && (
-          <div style={{ margin: '16px 0', color: '#aaf', fontSize: 13 }}>
+          <div className="settle-status settle-status--processing">
+            {settleTxStatus === 'idle' && 'Collecting move proofs...'}
             {settleTxStatus === 'preparing' && 'Preparing settlement...'}
             {settleTxStatus === 'proving' && 'Generating on-chain proof...'}
             {settleTxStatus === 'sending' && 'Sending transaction...'}
@@ -67,41 +66,30 @@ export function SettlementCardPicker({
         )}
 
         {isSettled && (
-          <div style={{ margin: '16px 0', color: '#4f4', fontSize: 14, fontWeight: 600 }}>
+          <div className="settle-status settle-status--success">
             Settlement confirmed!
           </div>
         )}
 
         {settleTxStatus === 'error' && (
-          <div style={{ margin: '16px 0', color: '#f44', fontSize: 13 }}>
+          <div className="settle-status settle-status--error">
             Settlement failed. You can try again from the lobby.
           </div>
         )}
 
-        {/* Card grid — only show when card hasn't been picked yet */}
+        {/* Card grid */}
         {!hasPickedCard && (
-          <div style={{
-            display: 'flex', gap: 12, justifyContent: 'center',
-            flexWrap: 'wrap', marginBottom: 16,
-          }}>
+          <div className="settle-card-grid">
             {opponentCards.map((card) => (
               <button
                 key={card.id}
                 disabled={isProcessing}
-                onClick={() => onSelect(card.id)}
-                style={{
-                  background: '#2a2a4e', border: '2px solid #555',
-                  borderRadius: 8, padding: '12px 8px', cursor: isProcessing ? 'not-allowed' : 'pointer',
-                  color: '#fff', minWidth: 80, textAlign: 'center',
-                  opacity: isProcessing ? 0.5 : 1,
-                  transition: 'border-color 0.15s',
-                }}
-                onMouseEnter={(e) => { if (!isProcessing) (e.target as HTMLElement).style.borderColor = '#88f'; }}
-                onMouseLeave={(e) => { (e.target as HTMLElement).style.borderColor = '#555'; }}
+                onClick={() => handleSelect(card.id)}
+                className="settle-card"
               >
-                <div style={{ fontSize: 11, color: '#aaa', marginBottom: 4 }}>#{card.id}</div>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>{card.name}</div>
-                <div style={{ fontSize: 11, color: '#ccc', fontFamily: 'monospace' }}>
+                <div className="settle-card__id">#{card.id}</div>
+                <div className="settle-card__name">{card.name}</div>
+                <div className="settle-card__ranks">
                   {card.ranks.top}/{card.ranks.right}/{card.ranks.bottom}/{card.ranks.left}
                 </div>
               </button>
@@ -110,28 +98,20 @@ export function SettlementCardPicker({
         )}
 
         {!hasPickedCard && opponentCards.length === 0 && (
-          <div style={{ color: '#888', fontSize: 13, marginBottom: 16 }}>
-            No opponent cards available.
-          </div>
+          <div className="settle-subtext">No opponent cards available.</div>
         )}
 
-        {/* Back to Lobby: visible once settlement has started (or on error), or for cancel */}
         {hasPickedCard && onBackToLobby && (
-          <button
-            className="btn btn--ghost"
-            onClick={onBackToLobby}
-            style={{ marginTop: 12 }}
-          >
+          <button className="parchment-dialog__btn" onClick={onBackToLobby}>
             Back to Lobby
           </button>
         )}
 
-        {/* Cancel only before a card is picked */}
         {!hasPickedCard && (
           <button
-            className="btn btn--ghost btn--small"
+            className="parchment-dialog__btn"
             onClick={onCancel}
-            style={{ marginTop: 8, opacity: 0.6 }}
+            style={{ opacity: 0.7 }}
           >
             Cancel
           </button>

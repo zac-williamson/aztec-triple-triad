@@ -39,14 +39,17 @@ export async function deriveBlindingFactor(
 
   const nftContract = await Contract.at(nftAddress, artifact, wallet as never);
 
+  const { Fr } = await import('@aztec/aztec.js/fields');
   const blinding = await nftContract.methods
-    .compute_blinding_factor()
+    .compute_blinding_factor(Fr.fromHexString(gameId.startsWith('0x') ? gameId : '0x' + BigInt(gameId).toString(16)))
     .simulate({ from: playerAddr });
 
-  // Normalize to hex string
-  const hex = typeof blinding === 'bigint'
-    ? '0x' + blinding.toString(16)
-    : String(blinding);
+  // Normalize to 0x-prefixed hex string.
+  // simulate() may return an Fr object whose toString() is decimal — must convert via BigInt.
+  const raw = String(blinding);
+  const hex = (raw.startsWith('0x') || raw.startsWith('0X'))
+    ? raw
+    : '0x' + BigInt(raw).toString(16);
 
   localStorage.setItem(cacheKey, hex);
   return hex;

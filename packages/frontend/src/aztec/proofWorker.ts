@@ -31,7 +31,7 @@ async function getOrCreateBackend(circuitName: string, bytecode: string): Promis
  */
 export function destroyBackendCache(): void {
   for (const [, backend] of backendCache) {
-    try { backend.destroy(); } catch { /* ignore */ }
+    try { (backend as any).destroy?.(); } catch { /* ignore */ }
   }
   backendCache.clear();
 }
@@ -91,6 +91,22 @@ export function hexToField(hex: string): Uint8Array {
 }
 
 /**
+ * Convert a value (hex string, decimal string, or bigint) to a 32-byte big-endian Uint8Array.
+ * Unlike hexToField, this safely handles decimal strings from simulate() results.
+ */
+export function safeToField(value: string | number | bigint): Uint8Array {
+  if (typeof value === 'number' || typeof value === 'bigint') {
+    return numToField(value);
+  }
+  // If it has 0x prefix, treat as hex
+  if (value.startsWith('0x') || value.startsWith('0X')) {
+    return hexToField(value);
+  }
+  // Otherwise treat as decimal string → convert via BigInt → numToField
+  return numToField(BigInt(value));
+}
+
+/**
  * Base64-encode a Uint8Array proof for JSON serialization.
  */
 function proofToBase64(proof: Uint8Array): string {
@@ -136,7 +152,7 @@ export async function computeCardCommitPoseidon2(
   }
   const inputs: Uint8Array[] = [
     ...cardIds.map((id) => numToField(id)),
-    hexToField(blindingFactor),
+    safeToField(blindingFactor),
   ];
   const hash = await poseidon2Hash(inputs);
   return bufToHex(hash);
@@ -164,16 +180,30 @@ export async function computeBoardStateHash(
 // ====================== prove_hand Proof ======================
 
 /**
+ * Compute player_state_hash = poseidon2(randomness[6]) matching the circuit.
+ */
+export async function computePlayerStateHash(randomness: string[]): Promise<string> {
+  if (randomness.length !== 6) {
+    throw new Error(`computePlayerStateHash: expected 6 values, got ${randomness.length}`);
+  }
+  const inputs = randomness.map((r) => safeToField(r));
+  const hash = await poseidon2Hash(inputs);
+  return bufToHex(hash);
+}
+
+/**
  * Generate a prove_hand proof.
  *
  * Proves ownership of 5 cards via poseidon2 commitment.
- * Circuit has 1 public input: card_commit_hash.
- * Private inputs: card_ids[5], blinding_factor.
+ * Circuit has 2 public inputs: card_commit_hash, opponent_player_state_hash.
+ * Private inputs: card_ids[5], blinding_factor, opponent_randomness[6].
  */
 export async function generateProveHandProof(
   cardIds: number[],
   blindingFactor: string,
   cardCommitHash: string,
+  opponentRandomness: string[],
+  opponentPlayerStateHash: string,
 ): Promise<HandProofData> {
   console.log('[proofWorker] Generating prove_hand proof...');
   const startTime = performance.now();
@@ -183,8 +213,10 @@ export async function generateProveHandProof(
   // Build witness inputs matching circuit parameter names
   const inputs: Record<string, unknown> = {
     card_commit_hash: toFieldHex(cardCommitHash),
+    opponent_player_state_hash: toFieldHex(opponentPlayerStateHash),
     card_ids: cardIds.map((id) => toFieldHex(id)),
     blinding_factor: toFieldHex(blindingFactor),
+    opponent_randomness: opponentRandomness.map((r) => toFieldHex(r)),
   };
 
   const noir = new Noir(artifact as never);
@@ -197,10 +229,10 @@ export async function generateProveHandProof(
   const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
   console.log(`[proofWorker] prove_hand proof generated in ${elapsed}s`);
 
-  // Public inputs: [0] card_commit_hash
-  if (proofData.publicInputs.length < 1) {
+  // Public inputs: [0] card_commit_hash, [1] opponent_player_state_hash
+  if (proofData.publicInputs.length < 2) {
     throw new Error(
-      `prove_hand: expected at least 1 public input, got ${proofData.publicInputs.length}`
+      `prove_hand: expected at least 2 public inputs, got ${proofData.publicInputs.length}`
     );
   }
 

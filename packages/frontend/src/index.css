@@ -24,35 +24,49 @@ body {
   min-height: 100vh;
 }
 
-/* Buttons — image-backed fantasy UI */
+/* Buttons — CSS fantasy UI */
 .btn {
   font-family: 'Cinzel', serif;
   font-size: 13px;
   font-weight: 600;
   padding: 12px 28px;
-  border: none;
-  border-radius: 0;
+  border: 2px solid #6a5530;
+  border-radius: 4px;
   cursor: pointer;
   text-transform: uppercase;
   letter-spacing: 1px;
   transition: all 0.2s ease;
   position: relative;
   overflow: hidden;
-  background: url('/ui-elements/button.png') center / 100% 100% no-repeat;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.06) 0%, transparent 40%, rgba(0,0,0,0.15) 100%),
+    linear-gradient(170deg, #3a4a2a 0%, #2a3a1e 40%, #1e2e16 100%);
   color: rgba(232, 228, 216, 0.9);
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
-  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.4));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+    0 2px 6px rgba(0, 0, 0, 0.4);
 }
 
 .btn:hover:not(:disabled) {
-  background-image: url('/ui-elements/button-hover.png');
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.1) 0%, transparent 40%, rgba(0,0,0,0.1) 100%),
+    linear-gradient(170deg, #4a5a34 0%, #3a4a28 40%, #2a3a1e 100%);
+  border-color: #8a7040;
   transform: translateY(-1px);
-  filter: drop-shadow(0 4px 12px rgba(196, 162, 101, 0.3));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.15),
+    0 4px 12px rgba(196, 162, 101, 0.2),
+    0 0 8px rgba(123, 198, 126, 0.1);
 }
 
 .btn:active:not(:disabled) {
   transform: translateY(1px);
-  filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.4));
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.3),
+    0 1px 4px rgba(0, 0, 0, 0.4);
 }
 
 .btn:disabled {

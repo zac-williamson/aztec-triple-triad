@@ -159,7 +159,7 @@ describe('hexToField', () => {
 describe('encodeBoardState', () => {
   function makeEmptyBoard(): GameState['board'] {
     return Array(3).fill(null).map(() =>
-      Array(3).fill(null).map(() => ({ card: null, owner: null }))
+      Array(3).fill(null).map(() => ({ card: null, owner: null, originalOwner: null }))
     );
   }
 
@@ -181,11 +181,13 @@ describe('encodeBoardState', () => {
     board[0][0] = {
       card: { id: 5, name: 'Test', ranks: { top: 1, right: 2, bottom: 3, left: 4 } },
       owner: 'player1',
+      originalOwner: 'player1',
     };
     // Place card 10 owned by player2 at [1][1]
     board[1][1] = {
       card: { id: 10, name: 'Test2', ranks: { top: 5, right: 6, bottom: 7, left: 8 } },
       owner: 'player2',
+      originalOwner: 'player2',
     };
 
     const encoded = encodeBoardState(board);
@@ -209,6 +211,7 @@ describe('encodeBoardState', () => {
     board[2][2] = {
       card: { id: 42, name: 'X', ranks: { top: 1, right: 1, bottom: 1, left: 1 } },
       owner: 'player2',
+      originalOwner: 'player2',
     };
     const encoded = encodeBoardState(board);
     for (const val of encoded) {

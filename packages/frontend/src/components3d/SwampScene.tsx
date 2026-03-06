@@ -1,4 +1,4 @@
-import { Suspense } from 'react';
+import { Suspense, useState, useEffect } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { ACESFilmicToneMapping, Vector3, Euler } from 'three';
 import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
@@ -59,6 +59,16 @@ function SceneContent(props: SwampSceneProps) {
     isCaptureAnimatingCell, getPendingCaptureOwner,
   } = props;
 
+  // Defer environment loading so game board renders first and PXE isn't starved
+  const [showEnvironment, setShowEnvironment] = useState(false);
+  useEffect(() => {
+    let id2 = 0;
+    const id = requestAnimationFrame(() => {
+      id2 = requestAnimationFrame(() => setShowEnvironment(true));
+    });
+    return () => { cancelAnimationFrame(id); cancelAnimationFrame(id2); };
+  }, []);
+
   const opponentPlayer: Player = myPlayer === 'player1' ? 'player2' : 'player1';
 
   // Compute flying card world positions
@@ -93,11 +103,11 @@ function SceneContent(props: SwampSceneProps) {
         intensity={1.5}
         position={[2, 5, 3]}
         castShadow
-        shadow-mapSize={[2048, 2048]}
-        shadow-camera-left={-4}
-        shadow-camera-right={4}
-        shadow-camera-top={4}
-        shadow-camera-bottom={-4}
+        shadow-mapSize={[1024, 1024]}
+        shadow-camera-left={-3}
+        shadow-camera-right={3}
+        shadow-camera-top={3}
+        shadow-camera-bottom={-3}
       />
       <pointLight color="#44aa66" intensity={0.6} position={[-2, 2, -1]} distance={6} />
       <pointLight color="#4466aa" intensity={0.4} position={[2, 2, 1]} distance={6} />
@@ -186,9 +196,14 @@ function SceneContent(props: SwampSceneProps) {
         <WaterSurface />
       </Suspense>
 
-      <SwampEnvironment />
-      <PropLayout />
-      <Particles />
+      {/* Defer heavy environment models so board renders first */}
+      {showEnvironment && (
+        <>
+          <SwampEnvironment />
+          <PropLayout />
+          <Particles />
+        </>
+      )}
 
       <EffectComposer>
         <Bloom luminanceThreshold={0.6} luminanceSmoothing={0.5} intensity={0.5} />

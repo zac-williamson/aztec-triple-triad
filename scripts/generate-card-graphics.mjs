@@ -142,8 +142,8 @@ const NAME_H = 180;
 // ── SVG generators ──────────────────────────────────────────────────────
 
 function makeStatsSvg(ranks) {
-  const fontSize = 110;
-  const strokeWidth = 8;
+  const fontSize = 220;
+  const strokeWidth = 16;
 
   function statText(value, cx, cy) {
     const text = formatRank(value);
@@ -178,9 +178,9 @@ function makeStatsSvg(ranks) {
 }
 
 function makeNameSvg(name) {
-  let fontSize = 56;
-  if (name.length > 10) fontSize = 48;
-  if (name.length > 13) fontSize = 40;
+  let fontSize = 112;
+  if (name.length > 10) fontSize = 96;
+  if (name.length > 13) fontSize = 80;
 
   const cx = NAME_X + NAME_W / 2;
   const cy = NAME_Y + NAME_H / 2;
@@ -193,14 +193,14 @@ function makeNameSvg(name) {
         </filter>
       </defs>
       <text x="${cx}" y="${cy}"
-        font-family="Georgia, 'Palatino Linotype', serif"
+        font-family="Impact, 'Arial Black', sans-serif"
         font-size="${fontSize}"
         font-weight="bold"
         text-anchor="middle"
         dominant-baseline="central"
-        fill="#f0e6c8"
-        stroke="#2a1f10"
-        stroke-width="3"
+        fill="white"
+        stroke="black"
+        stroke-width="8"
         paint-order="stroke fill"
         filter="url(#ds)"
       >${escapeXml(name)}</text>

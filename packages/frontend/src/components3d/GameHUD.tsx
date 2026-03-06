@@ -71,13 +71,6 @@ export function GameHUD({
     return 'You Lose!';
   };
 
-  const getWinnerClass = () => {
-    if (!gameOver) return '';
-    if (gameOver.winner === 'draw') return 'game-screen__result--draw';
-    if (gameOver.winner === myPlayer) return 'game-screen__result--win';
-    return 'game-screen__result--lose';
-  };
-
   const handleCardPicked = (cardId: number) => {
     onSettle?.(cardId);
   };
@@ -156,14 +149,18 @@ export function GameHUD({
       )}
 
       {gameOver && gameOver.winner !== myPlayer && (
-        <div className={`game-screen__result ${getWinnerClass()}`} style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 20, pointerEvents: 'auto' }}>
-          <div className="game-screen__result-text">{getWinnerText()}</div>
-          <div className="game-screen__result-score">
-            {myScore} - {opponentScore}
+        <div style={{ position: 'fixed', inset: 0, zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+          <div className="parchment-dialog" style={{ pointerEvents: 'auto', textAlign: 'center' }}>
+            <div className="parchment-dialog__title" style={{ fontSize: 32, fontWeight: 900 }}>
+              {getWinnerText()}
+            </div>
+            <div style={{ fontFamily: "'Cinzel', serif", fontSize: 20, color: '#5a4a34' }}>
+              {myScore} - {opponentScore}
+            </div>
+            <button className="parchment-dialog__btn" onClick={onBackToLobby}>
+              Back to Lobby
+            </button>
           </div>
-          <button className="btn btn--ghost" onClick={onBackToLobby} style={{ marginTop: 16 }}>
-            Back to Lobby
-          </button>
         </div>
       )}
 

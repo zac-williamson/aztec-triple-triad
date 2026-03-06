@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useProofGeneration } from './useProofGeneration';
 import type { PlayerHandData } from './useProofGeneration';
 import type { GameState, Player, HandProofData, MoveProofData } from '../types';
-import { deriveBlindingFactor } from './deriveBlindingFactor';
 
 /**
  * Configuration for the game flow hook
@@ -16,6 +15,10 @@ export interface GameFlowConfig {
   wallet: unknown | null;
   /** Player's Aztec account address (hex string) */
   accountAddress: string | null;
+  /** Opponent's game randomness (6 Fr hex strings, received via WebSocket) */
+  opponentGameRandomness: string[] | null;
+  /** Blinding factor derived during on-chain game creation/join (hex string) */
+  derivedBlindingFactor: string | null;
 }
 
 /**
@@ -69,7 +72,7 @@ export interface UseGameFlowReturn {
  * - Determining when the winner can settle the game
  */
 export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
-  const { gameId, playerNumber, cardIds, gameState, wallet, accountAddress } = config;
+  const { gameId, playerNumber, cardIds, gameState, wallet, accountAddress, opponentGameRandomness, derivedBlindingFactor } = config;
   const proofs = useProofGeneration();
 
   const [myHandProof, setMyHandProof] = useState<HandProofData | null>(null);
@@ -77,47 +80,42 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
   const [collectedMoveProofs, setCollectedMoveProofs] = useState<MoveProofData[]>([]);
   const [blindingFactor, setBlindingFactor] = useState<string>('');
   const handProofGenerated = useRef(false);
-  const blindingDerivationStarted = useRef(false);
 
-  // Derive blinding factor from NFT contract when wallet + game are ready
+  // Accept blinding factor from useGameContract (derived sequentially during create/join)
   useEffect(() => {
-    if (!gameId || !playerNumber || !wallet || !accountAddress) return;
-    if (blindingDerivationStarted.current) return;
-    blindingDerivationStarted.current = true;
-
-    deriveBlindingFactor(wallet, accountAddress, gameId, playerNumber)
-      .then(bf => {
-        console.log('[useGameFlow] Blinding factor derived:', bf);
-        setBlindingFactor(bf);
-      })
-      .catch(err => {
-        console.error('[useGameFlow] Failed to derive blinding factor:', err);
-        blindingDerivationStarted.current = false;
-      });
-  }, [gameId, playerNumber, wallet, accountAddress]);
+    if (derivedBlindingFactor && !blindingFactor) {
+      console.log('[useGameFlow] Blinding factor received from game contract:', derivedBlindingFactor);
+      setBlindingFactor(derivedBlindingFactor);
+    }
+  }, [derivedBlindingFactor, blindingFactor]);
 
   // Card commits
   const myCardCommit = myHandProof?.cardCommit ?? null;
   const opponentCardCommit = opponentHandProof?.cardCommit ?? null;
 
-  // Auto-generate hand proof when game starts and blinding factor is derived
+  // Auto-generate hand proof when game starts, blinding factor is derived, and opponent randomness received
   useEffect(() => {
     if (!gameId || !playerNumber || !gameState || handProofGenerated.current) return;
     if (gameState.status !== 'playing') return;
     if (cardIds.length !== 5) return;
     if (!blindingFactor) return;
+    if (!opponentGameRandomness || opponentGameRandomness.length !== 6) return;
 
     handProofGenerated.current = true;
 
-    // Compute card commitment, then generate proof
-    import('../aztec/proofWorker').then(async ({ computeCardCommitPoseidon2 }) => {
+    // Compute card commitment + opponent player state hash, then generate proof
+    import('../aztec/proofWorker').then(async ({ computeCardCommitPoseidon2, computePlayerStateHash }) => {
       const cardCommitHash = await computeCardCommitPoseidon2(cardIds, blindingFactor);
-      const proof = await proofs.generateHandProof(cardIds, blindingFactor, cardCommitHash);
+      const opponentPlayerStateHash = await computePlayerStateHash(opponentGameRandomness);
+      const proof = await proofs.generateHandProof(
+        cardIds, blindingFactor, cardCommitHash,
+        opponentGameRandomness, opponentPlayerStateHash,
+      );
       if (proof) {
         setMyHandProof(proof);
       }
     });
-  }, [gameId, playerNumber, gameState, cardIds, blindingFactor, proofs]);
+  }, [gameId, playerNumber, gameState, cardIds, blindingFactor, opponentGameRandomness, proofs]);
 
   // Determine if the winner can settle
   const myPlayer: Player = playerNumber === 1 ? 'player1' : 'player2';
@@ -217,7 +215,6 @@ export function useGameFlow(config: GameFlowConfig): UseGameFlowReturn {
     setCollectedMoveProofs([]);
     setBlindingFactor('');
     handProofGenerated.current = false;
-    blindingDerivationStarted.current = false;
     proofs.reset();
   }, [proofs]);
 

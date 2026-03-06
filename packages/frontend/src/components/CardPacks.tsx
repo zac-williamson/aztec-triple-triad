@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useCardPacks, LOCATIONS, type LocationInfo } from '../hooks/useCardPacks';
+import { useCardPacks, LOCATIONS, type LocationInfo, type HuntResult } from '../hooks/useCardPacks';
 import './CardPacks.css';
 
 const LOCATION_ICONS: Record<string, string> = {
@@ -10,19 +10,19 @@ const LOCATION_ICONS: Record<string, string> = {
   Dockyard: '\u2693',        // ⚓
 };
 
-const LOCATION_HUNT_IMAGES: Record<string, { src: string; frames: number }> = {
-  River: { src: '/ui-elements/swamp.png', frames: 4 },
-  Forest: { src: '/ui-elements/forest.png', frames: 4 },
-  Beach: { src: '/ui-elements/beach.png', frames: 4 },
-  City: { src: '/ui-elements/city.png', frames: 5 },
-  Dockyard: { src: '/ui-elements/docks.png', frames: 4 },
+const LOCATION_HUNT_GIFS: Record<string, string> = {
+  River: '/ui-elements/swamp.gif',
+  Forest: '/ui-elements/forest.gif',
+  Beach: '/ui-elements/beach.gif',
+  City: '/ui-elements/city.gif',
+  Dockyard: '/ui-elements/docks.gif',
 };
 
 interface CardPacksProps {
   wallet: unknown | null;
   accountAddress: string | null;
   ownedCardIds: number[];
-  onPackOpened: (location: string, cardIds: number[]) => void;
+  onPackOpened: (location: string, result: HuntResult) => void;
   onBack: () => void;
 }
 
@@ -47,8 +47,8 @@ export function CardPacks({ wallet, accountAddress, ownedCardIds, onPackOpened, 
 
   const handleHunt = useCallback(async (location: LocationInfo) => {
     try {
-      const cardIds = await packs.hunt(location);
-      onPackOpened(location.name, cardIds);
+      const result = await packs.hunt(location);
+      onPackOpened(location.name, result);
     } catch {
       // Error handled internally by useCardPacks
     }
@@ -83,19 +83,12 @@ export function CardPacks({ wallet, accountAddress, ownedCardIds, onPackOpened, 
 
               {isHunting ? (
                 <div className="card-packs__hunting">
-                  {(() => {
-                    const hunt = LOCATION_HUNT_IMAGES[loc.name] || { src: '/ui-elements/swamp.png', frames: 4 };
-                    return (
-                      <div
-                        className="card-packs__hunting-sprite"
-                        style={{
-                          backgroundImage: `url('${hunt.src}')`,
-                          backgroundSize: `${hunt.frames * 100}% 100%`,
-                          animationTimingFunction: `steps(${hunt.frames})`,
-                        } as React.CSSProperties}
-                      />
-                    );
-                  })()}
+                  <img
+                    className="card-packs__hunting-sprite"
+                    src={LOCATION_HUNT_GIFS[loc.name] || '/ui-elements/swamp.gif'}
+                    alt={`${loc.name} hunting`}
+                    draggable={false}
+                  />
                   <div className="card-packs__hunting-overlay">
                     <div className="card-packs__hunting-text">Hunting...</div>
                     <div className="card-packs__spinner" />
@@ -124,33 +117,28 @@ export function CardPacks({ wallet, accountAddress, ownedCardIds, onPackOpened, 
       {/* Full-screen hunting overlay */}
       {packs.activeLocation && (
         <div className="card-packs__hunt-overlay">
-          <div className="card-packs__hunt-overlay-scene">
-            {(() => {
-              const hunt = LOCATION_HUNT_IMAGES[packs.activeLocation] || { src: '/ui-elements/swamp.png', frames: 4 };
-              return (
-                <div
-                  className="card-packs__hunt-overlay-sprite"
-                  style={{
-                    backgroundImage: `url('${hunt.src}')`,
-                    backgroundSize: `${hunt.frames * 100}% 100%`,
-                    animationTimingFunction: `steps(${hunt.frames})`,
-                  } as React.CSSProperties}
-                />
-              );
-            })()}
-            <div className="card-packs__hunt-overlay-fireflies">
-              <div className="card-packs__hunt-firefly" />
-              <div className="card-packs__hunt-firefly" />
-              <div className="card-packs__hunt-firefly" />
+          <div className="parchment-dialog card-packs__hunt-dialog">
+            <h2 className="card-packs__hunt-overlay-title">
+              Hunting in {packs.activeLocation}...
+            </h2>
+            <div className="card-packs__hunt-overlay-scene">
+              <img
+                className="card-packs__hunt-overlay-sprite"
+                src={LOCATION_HUNT_GIFS[packs.activeLocation] || '/ui-elements/swamp.gif'}
+                alt={`${packs.activeLocation} hunting`}
+                draggable={false}
+              />
+              <div className="card-packs__hunt-overlay-fireflies">
+                <div className="card-packs__hunt-firefly" />
+                <div className="card-packs__hunt-firefly" />
+                <div className="card-packs__hunt-firefly" />
+              </div>
             </div>
+            <p className="card-packs__hunt-overlay-status">
+              {packs.txStatus === 'sending' ? 'Sending transaction to Aztec...' : 'Waiting for confirmation...'}
+            </p>
+            <div className="card-packs__spinner card-packs__spinner--large" />
           </div>
-          <h2 className="card-packs__hunt-overlay-title">
-            Hunting in {packs.activeLocation}...
-          </h2>
-          <p className="card-packs__hunt-overlay-status">
-            {packs.txStatus === 'sending' ? 'Sending transaction to Aztec...' : 'Waiting for confirmation...'}
-          </p>
-          <div className="card-packs__spinner card-packs__spinner--large" />
         </div>
       )}
     </div>

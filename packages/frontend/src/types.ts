@@ -55,6 +55,12 @@ export interface MoveProofData extends SerializedProof {
   winnerId: number;
 }
 
+/** Plaintext note data for frontend-driven delivery (no tagging) */
+export interface PlaintextNoteData {
+  tokenId: number;
+  randomness: string;   // Fr hex string
+}
+
 // On-chain transaction status tracking
 export type TxStatus = 'idle' | 'sending' | 'mining' | 'confirmed' | 'failed';
 
@@ -78,7 +84,9 @@ export type ClientMessage =
   | { type: 'TX_FAILED'; gameId: string; txType: 'create_game' | 'join_game'; error: string }
   | { type: 'CANCEL_GAME'; gameId: string }
   // Aztec info exchange
-  | { type: 'SHARE_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string }
+  | { type: 'SHARE_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string; gameRandomness?: string[] }
+  // Note relay (offchain settlement delivery)
+  | { type: 'RELAY_NOTE_DATA'; gameId: string; txHash: string; notes: PlaintextNoteData[] }
   // Matchmaking
   | { type: 'QUEUE_MATCHMAKING'; cardIds: number[] }
   | { type: 'CANCEL_MATCHMAKING' }
@@ -101,7 +109,9 @@ export type ServerMessage =
   | { type: 'ON_CHAIN_STATUS'; gameId: string; status: OnChainGameStatus }
   | { type: 'GAME_CANCELLED'; gameId: string; reason: string }
   // Aztec info exchange
-  | { type: 'OPPONENT_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string }
+  | { type: 'OPPONENT_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string; gameRandomness?: string[] }
+  // Note relay (offchain settlement delivery)
+  | { type: 'NOTE_DATA'; gameId: string; txHash: string; notes: PlaintextNoteData[] }
   // Matchmaking
   | { type: 'MATCHMAKING_QUEUED'; position: number }
   | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState }

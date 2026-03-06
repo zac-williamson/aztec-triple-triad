@@ -1,0 +1,5 @@
+blinding_factor = ""
+card_commit_hash = ""
+card_ids = ["", "", "", "", ""]
+opponent_player_state_hash = ""
+opponent_randomness = ["", "", "", "", "", ""]

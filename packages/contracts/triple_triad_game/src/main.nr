@@ -4,13 +4,19 @@ use aztec::macros::aztec;
 /// Manages on-chain game lifecycle: creation, joining, proof verification, and settlement.
 ///
 /// Game Lifecycle:
-/// 1. Player 1 calls create_game(card_ids) - commits cards via NFT.commit_five_nfts
-/// 2. Player 2 calls join_game(game_id, card_ids) - commits cards via NFT.commit_five_nfts
+/// 1. Player 1 calls create_game(card_ids) -- game_id + randomness derived in NFT contract
+/// 2. Player 2 calls join_game(game_id, card_ids) -- randomness derived in NFT contract
 /// 3. Game plays out off-chain with ZK proofs exchanged via WebSocket
-/// 4. Winner calls process_game with all 11 proofs (2 hand + 9 move) - verifies and settles
+/// 4. Winner calls process_game with all 11 proofs (2 hand + 9 move) -- verifies and settles
 ///
 /// Card commitment: poseidon2_hash([card_ids[0..5], blinding_factor])
-/// where blinding_factor = poseidon2_hash([nhk_app_secret, contract_address])
+/// where blinding_factor = poseidon2_hash([nhk_app_secret, contract_address, game_id])
+///
+/// Player state hash: poseidon2_hash([randomness[0..6]])
+/// Constrains the randomness used for note re-creation during settlement.
+///
+/// Game ID: derived deterministically in NFT contract from nhk_app_secret + nonce_value.
+/// Must be unique (checked against existing game status).
 #[aztec]
 pub contract TripleTriadGame {
     use aztec::{
@@ -19,7 +25,10 @@ pub contract TripleTriadGame {
             functions::{external, initializer, only_self, view},
             storage::storage,
         },
-        protocol::address::AztecAddress,
+        protocol::{
+            address::AztecAddress,
+            hash::poseidon2_hash,
+        },
         state_vars::{Map, PublicImmutable, PublicMutable},
     };
     use bb_proof_verification::{UltraHonkVerificationKey, UltraHonkZKProof, verify_honk_proof};
@@ -63,12 +72,13 @@ pub contract TripleTriadGame {
         hand_vk_hash: PublicImmutable<Field, Context>,
         move_vk_hash: PublicImmutable<Field, Context>,
         game_settled: Map<Field, PublicMutable<bool, Context>, Context>,
-        game_id_counter: PublicMutable<Field, Context>,
         game_status: Map<Field, PublicMutable<Field, Context>, Context>,
         game_player1: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
         game_player2: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
         game_card_commit_1: Map<Field, PublicMutable<Field, Context>, Context>,
         game_card_commit_2: Map<Field, PublicMutable<Field, Context>, Context>,
+        game_player_state_1: Map<Field, PublicMutable<Field, Context>, Context>,
+        game_player_state_2: Map<Field, PublicMutable<Field, Context>, Context>,
     }
 
     // --- Constructor ---
@@ -87,49 +97,60 @@ pub contract TripleTriadGame {
 
     // --- Create Game ---
 
-    /// Player 1 creates a new game by committing 5 cards via NFT.commit_five_nfts.
-    /// Cards are nullified (popped from private set) and a poseidon2 commitment is stored.
+    /// Player 1 creates a new game by committing 5 cards via NFT.commit_five_nfts_create.
+    /// game_id and randomness are derived IN-CIRCUIT by the NFT contract.
+    /// No caller-provided game_id or randomness -- everything is deterministic from nhk_app.
     #[external("private")]
     fn create_game(card_ids: [Field; 5]) {
         let player = self.msg_sender();
         let nft_address = self.storage.nft_contract.read();
-        let card_commit_hash = TripleTriadNFT::at(nft_address)
-            .commit_five_nfts(player, card_ids)
+        let commit_result = TripleTriadNFT::at(nft_address)
+            .commit_five_nfts_create(player, card_ids)
             .call(self.context);
 
-        self.enqueue_self.create_game_public(player, card_commit_hash);
+        let card_commit_hash = commit_result[0];
+        let player_state_hash = commit_result[1];
+        let game_id = commit_result[2];
+
+        self.enqueue_self.create_game_public(game_id, player, card_commit_hash, player_state_hash);
     }
 
     #[external("public")]
     #[only_self]
-    fn create_game_public(player1: AztecAddress, card_commit_hash: Field) {
-        let game_id = self.storage.game_id_counter.read();
-        self.storage.game_id_counter.write(game_id + 1);
+    fn create_game_public(game_id: Field, player1: AztecAddress, card_commit_hash: Field, player_state_hash: Field) {
+        // Ensure game_id doesn't already exist (status must be 0 = none)
+        let status = self.storage.game_status.at(game_id).read();
+        assert(status == 0, "Game ID already exists");
 
         self.storage.game_status.at(game_id).write(1); // created
         self.storage.game_player1.at(game_id).write(player1);
         self.storage.game_card_commit_1.at(game_id).write(card_commit_hash);
+        self.storage.game_player_state_1.at(game_id).write(player_state_hash);
 
         self.emit(GameCreated { game_id, player1, card_commit_hash });
     }
 
     // --- Join Game ---
 
-    /// Player 2 joins an existing game by committing 5 cards via NFT.commit_five_nfts.
+    /// Player 2 joins an existing game by committing 5 cards via NFT.commit_five_nfts_join.
+    /// Randomness is derived IN-CIRCUIT by the NFT contract. Only game_id is provided.
     #[external("private")]
     fn join_game(game_id: Field, card_ids: [Field; 5]) {
         let player = self.msg_sender();
         let nft_address = self.storage.nft_contract.read();
-        let card_commit_hash = TripleTriadNFT::at(nft_address)
-            .commit_five_nfts(player, card_ids)
+        let commit_result = TripleTriadNFT::at(nft_address)
+            .commit_five_nfts_join(player, card_ids, game_id)
             .call(self.context);
 
-        self.enqueue_self.join_game_public(game_id, player, card_commit_hash);
+        let card_commit_hash = commit_result[0];
+        let player_state_hash = commit_result[1];
+
+        self.enqueue_self.join_game_public(game_id, player, card_commit_hash, player_state_hash);
     }
 
     #[external("public")]
     #[only_self]
-    fn join_game_public(game_id: Field, player2: AztecAddress, card_commit_hash: Field) {
+    fn join_game_public(game_id: Field, player2: AztecAddress, card_commit_hash: Field, player_state_hash: Field) {
         let status = self.storage.game_status.at(game_id).read();
         assert(status == 1, "Game not in created state");
 
@@ -138,6 +159,7 @@ pub contract TripleTriadGame {
 
         self.storage.game_player2.at(game_id).write(player2);
         self.storage.game_card_commit_2.at(game_id).write(card_commit_hash);
+        self.storage.game_player_state_2.at(game_id).write(player_state_hash);
         self.storage.game_status.at(game_id).write(2); // active
 
         self.emit(GameJoined { game_id, player2, card_commit_hash });
@@ -177,7 +199,7 @@ pub contract TripleTriadGame {
     // --- Process Game ---
 
     /// Process a completed game by verifying all 11 proofs directly:
-    /// 2 hand proofs (prove each player's card commitment) +
+    /// 2 hand proofs (prove each player's card commitment + opponent's player_state_hash) +
     /// 9 move proofs (prove each game move is valid).
     ///
     /// Validates:
@@ -187,6 +209,7 @@ pub contract TripleTriadGame {
     /// - First move starts from canonical empty board
     /// - Intermediate moves have game_ended=0
     /// - Final move has game_ended=1 with valid winner_id
+    /// - Randomness hashes match stored player_state_hash values
     ///
     /// Then re-mints cards to winner and loser (or both on draw).
     #[external("private")]
@@ -195,11 +218,11 @@ pub contract TripleTriadGame {
         // Verification keys (supplied by caller, validated against stored hashes)
         hand_vk: UltraHonkVerificationKey,
         move_vk: UltraHonkVerificationKey,
-        // Hand proofs (2): each has 1 public input [card_commit_hash]
+        // Hand proofs (2): each has 2 public inputs [card_commit_hash, opponent_player_state_hash]
         hand_proof_1: UltraHonkZKProof,
-        hand_proof_1_inputs: [Field; 1],
+        hand_proof_1_inputs: [Field; 2],
         hand_proof_2: UltraHonkZKProof,
-        hand_proof_2_inputs: [Field; 1],
+        hand_proof_2_inputs: [Field; 2],
         // Move proofs (9): each has 6 public inputs
         // [card_commit_1, card_commit_2, start_state, end_state, game_ended, winner_id]
         move_proof_1: UltraHonkZKProof,
@@ -225,6 +248,10 @@ pub contract TripleTriadGame {
         card_to_transfer: Field,
         caller_card_ids: [Field; 5],
         opponent_card_ids: [Field; 5],
+        // Randomness for note creation (no tagging)
+        // These are constrained via player_state_hash stored on-chain
+        caller_randomness: [Field; 6],    // 6 for winner, first 5 for draw
+        opponent_randomness: [Field; 6],   // 6 values (committed via player_state_hash)
     ) {
         // Read stored VK hashes
         let stored_hand_vk_hash = self.storage.hand_vk_hash.read();
@@ -244,9 +271,13 @@ pub contract TripleTriadGame {
         verify_honk_proof(move_vk, move_proof_8, move_inputs_8, stored_move_vk_hash);
         verify_honk_proof(move_vk, move_proof_9, move_inputs_9, stored_move_vk_hash);
 
-        // ===== 2. Extract card commits from hand proofs =====
+        // ===== 2. Extract card commits and player_state_hashes from hand proofs =====
         let card_commit_1 = hand_proof_1_inputs[0];
         let card_commit_2 = hand_proof_2_inputs[0];
+        // hand_proof_1 proves player1's hand + player2's player_state_hash
+        // hand_proof_2 proves player2's hand + player1's player_state_hash
+        let opponent_state_from_p1_proof = hand_proof_1_inputs[1]; // p2's state hash
+        let opponent_state_from_p2_proof = hand_proof_2_inputs[1]; // p1's state hash
 
         // ===== 3. Collect move inputs for validation =====
         let move_inputs: [[Field; 6]; 9] = [
@@ -297,7 +328,14 @@ pub contract TripleTriadGame {
             "Invalid winner_id",
         );
 
-        // ===== 9. Settlement =====
+        // ===== 9. Validate randomness against stored player_state_hash =====
+        // Verify that the randomness provided matches what was committed during game creation/join.
+        // caller_randomness is verified against the caller's player_state_hash
+        // opponent_randomness is verified against the opponent's player_state_hash
+        let caller_state_hash = poseidon2_hash(caller_randomness);
+        let opponent_state_hash = poseidon2_hash(opponent_randomness);
+
+        // ===== 10. Settlement =====
         let caller = self.msg_sender();
         let nft_address = self.storage.nft_contract.read();
 
@@ -321,39 +359,51 @@ pub contract TripleTriadGame {
             winner_tokens[5] = card_to_transfer;
 
             TripleTriadNFT::at(nft_address)
-                .mint_for_game_winner(winner_tokens, caller)
+                .mint_for_game_winner(winner_tokens, caller, caller_randomness)
                 .call(self.context);
 
             // Loser gets their 5 cards minus the transferred one
             let mut loser_tokens: [Field; 4] = [0; 4];
+            let mut loser_rand: [Field; 4] = [0; 4];
             let mut idx: u32 = 0;
             for i in 0..5 {
                 if opponent_card_ids[i] != card_to_transfer {
                     loser_tokens[idx] = opponent_card_ids[i];
+                    loser_rand[idx] = opponent_randomness[i];
                     idx += 1;
                 }
             }
 
             TripleTriadNFT::at(nft_address)
-                .mint_for_game_loser(loser_tokens, opponent)
+                .mint_for_game_loser(loser_tokens, opponent, loser_rand)
                 .call(self.context);
 
             self.enqueue_self.settle_game(
                 game_id, caller, opponent, card_to_transfer,
                 card_commit_1, card_commit_2, winner_id,
+                caller_state_hash, opponent_state_hash,
+                opponent_state_from_p1_proof, opponent_state_from_p2_proof,
             );
         } else {
-            // Draw
+            // Draw -- use offchain mint (no tagging)
+            let mut caller_rand_5: [Field; 5] = [0; 5];
+            for i in 0..5 { caller_rand_5[i] = caller_randomness[i]; }
+
+            let mut opponent_rand_5: [Field; 5] = [0; 5];
+            for i in 0..5 { opponent_rand_5[i] = opponent_randomness[i]; }
+
             TripleTriadNFT::at(nft_address)
-                .mint_for_game_draw(caller_card_ids, caller)
+                .mint_for_game_draw_offchain(caller_card_ids, caller, caller_rand_5)
                 .call(self.context);
 
             TripleTriadNFT::at(nft_address)
-                .mint_for_game_draw(opponent_card_ids, opponent)
+                .mint_for_game_draw_offchain(opponent_card_ids, opponent, opponent_rand_5)
                 .call(self.context);
 
             self.enqueue_self.settle_game_draw(
                 game_id, card_commit_1, card_commit_2,
+                caller_state_hash, opponent_state_hash,
+                opponent_state_from_p1_proof, opponent_state_from_p2_proof,
             );
         }
     }
@@ -370,6 +420,10 @@ pub contract TripleTriadGame {
         proof_card_commit_1: Field,
         proof_card_commit_2: Field,
         winner_id: Field,
+        caller_state_hash: Field,
+        opponent_state_hash: Field,
+        opponent_state_from_p1_proof: Field,
+        opponent_state_from_p2_proof: Field,
     ) {
         let settled = self.storage.game_settled.at(game_id).read();
         assert(!settled, "Game already settled");
@@ -382,6 +436,10 @@ pub contract TripleTriadGame {
         assert(proof_card_commit_1 == stored_cc1, "card_commit_1 mismatch");
         assert(proof_card_commit_2 == stored_cc2, "card_commit_2 mismatch");
 
+        // Verify player_state_hash values match on-chain records
+        let stored_ps1 = self.storage.game_player_state_1.at(game_id).read();
+        let stored_ps2 = self.storage.game_player_state_2.at(game_id).read();
+
         // Verify winner/loser match stored player addresses
         let player1 = self.storage.game_player1.at(game_id).read();
         let player2 = self.storage.game_player2.at(game_id).read();
@@ -389,11 +447,23 @@ pub contract TripleTriadGame {
         if winner_id == 1 {
             assert(winner == player1, "Winner must be player 1");
             assert(loser == player2, "Loser must be player 2");
+            // caller is winner (player1), opponent is loser (player2)
+            assert(caller_state_hash == stored_ps1, "Caller player_state_hash mismatch");
+            assert(opponent_state_hash == stored_ps2, "Opponent player_state_hash mismatch");
         } else {
             assert(winner_id == 2, "Invalid winner ID for non-draw");
             assert(winner == player2, "Winner must be player 2");
             assert(loser == player1, "Loser must be player 1");
+            // caller is winner (player2), opponent is loser (player1)
+            assert(caller_state_hash == stored_ps2, "Caller player_state_hash mismatch");
+            assert(opponent_state_hash == stored_ps1, "Opponent player_state_hash mismatch");
         }
+
+        // Verify hand proofs contained correct opponent player_state_hashes
+        // hand_proof_1 (player1) proves knowledge of player2's state hash
+        // hand_proof_2 (player2) proves knowledge of player1's state hash
+        assert(opponent_state_from_p1_proof == stored_ps2, "Hand proof 1 opponent_state_hash mismatch");
+        assert(opponent_state_from_p2_proof == stored_ps1, "Hand proof 2 opponent_state_hash mismatch");
 
         self.storage.game_settled.at(game_id).write(true);
         self.storage.game_status.at(game_id).write(3); // settled
@@ -412,6 +482,10 @@ pub contract TripleTriadGame {
         game_id: Field,
         proof_card_commit_1: Field,
         proof_card_commit_2: Field,
+        caller_state_hash: Field,
+        opponent_state_hash: Field,
+        opponent_state_from_p1_proof: Field,
+        opponent_state_from_p2_proof: Field,
     ) {
         let settled = self.storage.game_settled.at(game_id).read();
         assert(!settled, "Game already settled");
@@ -422,6 +496,21 @@ pub contract TripleTriadGame {
         assert(stored_cc2 != 0, "Game card_commit_2 not set");
         assert(proof_card_commit_1 == stored_cc1, "card_commit_1 mismatch");
         assert(proof_card_commit_2 == stored_cc2, "card_commit_2 mismatch");
+
+        // Verify player_state_hash values match on-chain records
+        let stored_ps1 = self.storage.game_player_state_1.at(game_id).read();
+        let stored_ps2 = self.storage.game_player_state_2.at(game_id).read();
+        // For draws, caller could be either player. Verify both state hashes match
+        // (one must be stored_ps1 and the other stored_ps2)
+        assert(
+            ((caller_state_hash == stored_ps1) & (opponent_state_hash == stored_ps2))
+            | ((caller_state_hash == stored_ps2) & (opponent_state_hash == stored_ps1)),
+            "Player state hash mismatch in draw",
+        );
+
+        // Verify hand proofs contained correct opponent player_state_hashes
+        assert(opponent_state_from_p1_proof == stored_ps2, "Hand proof 1 opponent_state_hash mismatch");
+        assert(opponent_state_from_p2_proof == stored_ps1, "Hand proof 2 opponent_state_hash mismatch");
 
         self.storage.game_settled.at(game_id).write(true);
         self.storage.game_status.at(game_id).write(3); // settled
@@ -474,7 +563,13 @@ pub contract TripleTriadGame {
 
     #[external("public")]
     #[view]
-    fn get_game_id_counter() -> Field {
-        self.storage.game_id_counter.read()
+    fn get_game_player_state_1(game_id: Field) -> Field {
+        self.storage.game_player_state_1.at(game_id).read()
+    }
+
+    #[external("public")]
+    #[view]
+    fn get_game_player_state_2(game_id: Field) -> Field {
+        self.storage.game_player_state_2.at(game_id).read()
     }
 }

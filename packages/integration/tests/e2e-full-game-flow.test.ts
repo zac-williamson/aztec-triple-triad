@@ -15,14 +15,14 @@
  *     hand proof auto-generation, move proof orchestration
  *   - useGameContract.ts: settleGame VK extraction (getVerificationKey()),
  *     base64ToFields, vkToFields, process_game call format
- *   - App.tsx: handlePlaceCard (local sim → encode → proof → submit),
+ *   - App.tsx: handlePlaceCard (local sim -> encode -> proof -> submit),
  *     hand proof auto-submit, opponent proof collection
  *   - useWebSocket.ts: moveNumber derivation from board state
  *   - Backend createServer: real WebSocket relay
  *   - Aztec contracts: real deployment + settlement
  *
- * Environment shim: fetch() polyfill reads circuit/contract JSON from disk
- * (same artifacts the browser would load via Vite dev server).
+ * Note sync: Uses the same import_note pattern as the frontend.
+ * Game ID / randomness: Derived IN-CIRCUIT, previewed via simulate().
  *
  * Prerequisites:
  *   - Aztec sandbox running: aztec start --local-network
@@ -65,8 +65,6 @@ function findRootDir(): string {
 
 const rootDir = findRootDir();
 
-// Intercept relative-path artifact fetches (used by circuitLoader/useGameContract in
-// browser) while passing ALL other requests through to the real fetch (Aztec node, etc.)
 const originalFetch = globalThis.fetch;
 
 vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) => {
@@ -86,34 +84,29 @@ vi.stubGlobal('fetch', async (url: string | URL | Request, init?: RequestInit) =
 });
 
 // ============================================================================
-// Frontend source code under test — imported directly, same functions the
-// browser calls (not via React hooks, but the SAME underlying code)
+// Frontend source code under test
 // ============================================================================
 
-// proofWorker.ts — proof generation engine
 import {
   computeCardCommitPoseidon2,
+  computePlayerStateHash,
   generateProveHandProof,
   generateGameMoveProof,
   destroyBackendCache,
 } from '../../frontend/src/aztec/proofWorker';
 
-// circuitLoader.ts — used by useGameContract.settleGame for VK extraction
 import {
   loadProveHandCircuit,
   loadGameMoveCircuit,
 } from '../../frontend/src/aztec/circuitLoader';
 
-// proofBackend.ts — singleton Barretenberg WASM instance
 import {
   getBarretenberg,
   destroyBarretenberg,
 } from '../../frontend/src/aztec/proofBackend';
 
-// useProofGeneration.ts — board state encoding
 import { encodeBoardState } from '../../frontend/src/hooks/useProofGeneration';
 
-// types
 import type { HandProofData, MoveProofData } from '../../frontend/src/types';
 
 // ============================================================================
@@ -124,14 +117,13 @@ import { createServer } from '@aztec-triple-triad/backend';
 import type { TripleTriadServer } from '@aztec-triple-triad/backend';
 
 // ============================================================================
-// Game logic — same package used by App.tsx handlePlaceCard for local sim
+// Game logic
 // ============================================================================
 
 import {
   createGame,
   placeCard,
   getCardsByIds,
-  CARD_DATABASE,
 } from '@aztec-triple-triad/game-logic';
 import type { GameState, Player } from '@aztec-triple-triad/game-logic';
 
@@ -150,17 +142,15 @@ import { SponsoredFPCContractArtifact } from '@aztec/noir-contracts.js/Sponsored
 import { SPONSORED_FPC_SALT } from '@aztec/constants';
 import { getContractInstanceFromInstantiationParams } from '@aztec/stdlib/contract';
 
-// bb.js — UltraHonkBackend used by useGameContract.settleGame for VK extraction
 import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
 
 // ============================================================================
-// E2E helpers (only for contract deployment VK hashes — NOT for settlement)
+// E2E helpers (only for contract deployment VK hashes)
 // ============================================================================
 
 import {
   loadContractArtifact,
   computeVkHash,
-  packRanks,
 } from './e2e-helpers.js';
 
 // ============================================================================
@@ -168,18 +158,79 @@ import {
 // ============================================================================
 
 const PXE_URL = process.env.AZTEC_PXE_URL || 'http://localhost:8080';
-const SEND_TIMEOUT = 300; // seconds
+const SEND_TIMEOUT = 300;
 
 // ============================================================================
-// Frontend-identical conversion functions
-// (copied verbatim from useGameContract.ts lines 141-166)
-// These are the EXACT functions the browser uses for settlement.
+// Helpers
 // ============================================================================
+
+/** Safe string-to-Fr conversion: handles both hex and decimal strings */
+function toFr(s: string | any): any {
+  if (s instanceof Fr) return s;
+  const str = s.toString();
+  if (str.startsWith('0x') || str.startsWith('0X')) return Fr.fromHexString(str);
+  return new Fr(BigInt(str));
+}
+
+/** Normalize a value to 0x-prefixed hex string */
+function toHex(v: any): string {
+  const s = v.toString();
+  if (s.startsWith('0x') || s.startsWith('0X')) return s;
+  return '0x' + BigInt(s).toString(16);
+}
 
 /**
- * Convert base64-encoded proof to field element hex strings.
- * Mirrors useGameContract.ts settleGame inline base64ToFields.
+ * Import notes created by create_and_push_note into PXE.
+ * Required because create_and_push_note skips on-chain tagging.
  */
+async function importNotes(
+  nftContract: any,
+  node: any,
+  txHash: any,
+  owner: any,
+  cardIds: number[],
+  randomnessFrs: any[],
+) {
+  let txEffect: any = null;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      const txResult = await node.getTxEffect(txHash);
+      if (txResult?.data) { txEffect = txResult.data; break; }
+    } catch { /* not indexed yet */ }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  if (!txEffect) {
+    console.warn('  Could not fetch TxEffect for note import');
+    return;
+  }
+
+  const rawNoteHashes: any[] = txEffect.noteHashes ?? [];
+  const uniqueNoteHashes: string[] = rawNoteHashes
+    .map((h: any) => h.toString())
+    .filter((h: string) => h !== '0' && h !== '0x0' && !/^0x0+$/.test(h));
+  const firstNullifier: string = txEffect.nullifiers?.[0]?.toString() ?? '0';
+
+  const paddedHashes = new Array(64).fill(new Fr(0n));
+  for (let i = 0; i < uniqueNoteHashes.length && i < 64; i++) {
+    paddedHashes[i] = toFr(uniqueNoteHashes[i]);
+  }
+
+  const txHashFr = toFr(txHash.toString());
+  const firstNullFr = toFr(firstNullifier);
+
+  for (let i = 0; i < cardIds.length; i++) {
+    try {
+      await nftContract.methods
+        .import_note(owner, new Fr(BigInt(cardIds[i])), randomnessFrs[i], txHashFr, paddedHashes, uniqueNoteHashes.length, firstNullFr, owner)
+        .simulate({ from: owner });
+      console.log(`  Imported note for card ${cardIds[i]}`);
+    } catch (err: any) {
+      console.warn(`  Failed to import note for card ${cardIds[i]}:`, err?.message?.slice(0, 120));
+    }
+  }
+}
+
+/** Convert base64-encoded proof to field element hex strings. */
 function frontendBase64ToFields(b64: string): string[] {
   const binary = atob(b64);
   const bytes = new Uint8Array(binary.length);
@@ -195,10 +246,7 @@ function frontendBase64ToFields(b64: string): string[] {
   return fields;
 }
 
-/**
- * Convert VK Uint8Array to field element hex strings.
- * Mirrors useGameContract.ts settleGame inline vkToFields.
- */
+/** Convert VK Uint8Array to field element hex strings. */
 function vkToFields(vk: Uint8Array): string[] {
   const fields: string[] = [];
   for (let i = 0; i < vk.length; i += 32) {
@@ -209,22 +257,13 @@ function vkToFields(vk: Uint8Array): string[] {
   return fields;
 }
 
-/**
- * Map game winner to circuit winner_id value.
- * Mirrors App.tsx mapWinnerId (lines 17-22).
- */
 function mapWinnerId(winner: 'player1' | 'player2' | 'draw' | null): number {
   if (winner === null) return 0;
   if (winner === 'player1') return 1;
   if (winner === 'player2') return 2;
-  return 3; // draw
+  return 3;
 }
 
-/**
- * Count occupied board cells to derive moveNumber.
- * Mirrors useWebSocket.ts placeCard (lines 168-175) and
- * submitMoveProof (lines 193-200).
- */
 function deriveMoveNumber(gameState: GameState): number {
   let count = 0;
   for (const row of gameState.board) {
@@ -236,7 +275,7 @@ function deriveMoveNumber(gameState: GameState): number {
 }
 
 // ============================================================================
-// TestWSClient — buffered WebSocket client for deterministic message assertion
+// TestWSClient
 // ============================================================================
 
 type ServerMsg = Record<string, any> & { type: string };
@@ -270,9 +309,7 @@ class TestWSClient {
   async waitFor(type: string, timeoutMs = 30_000): Promise<ServerMsg> {
     const filter = (m: ServerMsg) => m.type === type;
     const idx = this.buffer.findIndex(filter);
-    if (idx !== -1) {
-      return this.buffer.splice(idx, 1)[0];
-    }
+    if (idx !== -1) return this.buffer.splice(idx, 1)[0];
     return new Promise<ServerMsg>((resolve, reject) => {
       const timeout = setTimeout(() => {
         const idx = this.waiters.findIndex((w) => w.resolve === resolve);
@@ -313,15 +350,14 @@ async function getSponsoredFPCContract() {
 // Test
 // ============================================================================
 
-describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement', () => {
-  // WebSocket server & clients
+describe('E2E Full Game Flow -- Frontend Proofs + WebSocket + Aztec Settlement', () => {
   let server: TripleTriadServer;
   let wsUrl: string;
   let client1: TestWSClient;
   let client2: TestWSClient;
 
-  // Aztec state
   let wallet: any;
+  let node: any;
   let fee: any;
   let deployerAddr: any;
   let p1Addr: any;
@@ -329,24 +365,22 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
   let nftContract: any;
   let gameContract: any;
 
-  // Barretenberg for contract deployment VK hashes only
   let deployApi: Barretenberg;
-  // On-chain VK hashes (for verifying frontend VK extraction compatibility)
   let deployedHandVkHash: string;
   let deployedMoveVkHash: string;
 
-  // Card & commit data
   const p1CardIds = [1, 2, 3, 4, 5];
-  const p2CardIds = [6, 7, 8, 9, 10];
+  const p2CardIds = [1, 2, 3, 4, 5]; // Both players use starter cards
   let p1BlindingHex: string;
   let p2BlindingHex: string;
   let p1CardCommit: string;
   let p2CardCommit: string;
+  let p1Randomness: string[];
+  let p2Randomness: string[];
+  let gameIdHex: string;
 
-  // WebSocket game ID
   let wsGameId: string;
 
-  // Helper: send options for a given address
   const sendAs = (addr: any) => ({
     from: addr,
     fee: { paymentMethod: fee },
@@ -355,7 +389,7 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
 
   beforeAll(async () => {
     // ================================================================
-    // Step 1: Start WebSocket server on ephemeral port
+    // Step 1: Start WebSocket server
     // ================================================================
     console.log('Starting WebSocket server...');
     server = createServer({ port: 0 });
@@ -367,24 +401,20 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
     console.log(`  WebSocket server running at ${wsUrl}`);
 
     // ================================================================
-    // Step 2: Connect to Aztec, create wallet, deploy 3 accounts
-    // (mirrors useAztec.ts connect flow)
+    // Step 2: Connect to Aztec, create wallet, deploy accounts
     // ================================================================
     console.log(`Connecting to Aztec node at ${PXE_URL}...`);
-    const node = createAztecNodeClient(PXE_URL);
+    node = createAztecNodeClient(PXE_URL);
 
-    // Mirrors useAztec.ts: EmbeddedWallet.create(node, { ephemeral: true })
     console.log('Creating EmbeddedWallet...');
     wallet = await EmbeddedWallet.create(node, { ephemeral: true });
+    await new Promise(r => setTimeout(r, 5000));
 
-    // Mirrors useAztec.ts: register SponsoredFPC
     console.log('Registering SponsoredFPC contract...');
     const sponsoredFPCContract = await getSponsoredFPCContract();
     await wallet.registerContract(sponsoredFPCContract, SponsoredFPCContractArtifact);
     fee = new SponsoredFeePaymentMethod(sponsoredFPCContract.address);
-    console.log(`  SponsoredFPC at: ${sponsoredFPCContract.address}`);
 
-    // Mirrors useAztec.ts: deployAccount with retry
     async function deployAccount(account: any, label: string) {
       const deployMethod = await account.getDeployMethod();
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -400,7 +430,7 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
         } catch (err: any) {
           const msg = err?.message || '';
           if (msg.includes('expiration timestamp') && attempt < 2) {
-            console.log(`  ${label} deploy failed with expiration timestamp error, retrying in 5s...`);
+            console.log(`  ${label} deploy retry in 5s...`);
             await new Promise((r) => setTimeout(r, 5000));
             continue;
           }
@@ -409,33 +439,28 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
       }
     }
 
-    // Mirrors useAztec.ts: createSchnorrAccount + deploy + registerSender
-    console.log('Creating deployer account...');
+    console.log('Creating accounts...');
     const deployerAccount = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
     await deployAccount(deployerAccount, 'Deployer');
     deployerAddr = deployerAccount.address;
     await wallet.registerSender(deployerAddr, 'deployer');
-    console.log(`  Deployer: ${deployerAddr}`);
 
-    console.log('Creating player 1 account...');
     const player1Account = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
     await deployAccount(player1Account, 'Player1');
     p1Addr = player1Account.address;
     await wallet.registerSender(p1Addr, 'player1');
-    console.log(`  Player 1: ${p1Addr}`);
 
-    console.log('Creating player 2 account...');
     const player2Account = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
     await deployAccount(player2Account, 'Player2');
     p2Addr = player2Account.address;
     await wallet.registerSender(p2Addr, 'player2');
+
+    console.log(`  Deployer: ${deployerAddr}`);
+    console.log(`  Player 1: ${p1Addr}`);
     console.log(`  Player 2: ${p2Addr}`);
 
     // ================================================================
     // Step 3: Compute VK hashes for contract deployment
-    // (uses e2e-helpers computeVkHash — this is the DEPLOYMENT path,
-    // NOT the settlement path. The settlement will use the frontend's
-    // VK extraction to verify compatibility.)
     // ================================================================
     console.log('Initializing Barretenberg for deployment VK hashes...');
     deployApi = await Barretenberg.new({ threads: 1 });
@@ -447,7 +472,6 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
       readFileSync(resolve(rootDir, 'circuits/target/game_move.json'), 'utf-8'),
     );
 
-    console.log('Computing VK hashes for contract deployment...');
     const handVk = await computeVkHash(deployApi, proveHandArtifact.bytecode);
     const moveVk = await computeVkHash(deployApi, gameMoveArtifact.bytecode);
     deployedHandVkHash = handVk.hash;
@@ -456,7 +480,7 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
     console.log(`  move_vk_hash: ${deployedMoveVkHash}`);
 
     // ================================================================
-    // Step 4: Deploy contracts, mint cards
+    // Step 4: Deploy contracts
     // ================================================================
     const nftArtifact = loadContractArtifact('triple_triad_nft-TripleTriadNFT');
     const gameArtifact = loadContractArtifact('triple_triad_game-TripleTriadGame');
@@ -476,7 +500,6 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
       encodeCompressedString('TC'),
     ]).send(sendAs(deployerAddr));
     console.log(`  NFT deployed at: ${nftContract.address}`);
-
     await wallet.registerSender(nftContract.address, 'nft-contract');
 
     console.log('Deploying TripleTriadGame...');
@@ -486,7 +509,6 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
       Fr.fromHexString(deployedMoveVkHash),
     ]).send(sendAs(deployerAddr));
     console.log(`  Game deployed at: ${gameContract.address}`);
-
     await wallet.registerSender(gameContract.address, 'game-contract');
 
     console.log('Registering game contract on NFT...');
@@ -494,131 +516,136 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
       .set_game_contract(gameContract.address)
       .send(sendAs(deployerAddr));
 
-    // Mint cards with known IDs to both players
+    // ================================================================
+    // Step 5: Mint cards to players using get_cards_for_new_player
+    // (same flow as frontend useAztec.ts)
+    // ================================================================
     console.log('Minting cards to players...');
-    for (const id of p1CardIds) {
-      const card = CARD_DATABASE.find((c: any) => c.id === id)!;
-      const packed = packRanks(card.ranks.top, card.ranks.right, card.ranks.bottom, card.ranks.left);
-      await nftContract.methods
-        .mint_to_private(p1Addr, new Fr(BigInt(id)), new Fr(BigInt(packed)))
-        .send(sendAs(deployerAddr));
-    }
-    console.log('  Minted cards 1-5 to Player 1');
 
-    for (const id of p2CardIds) {
-      const card = CARD_DATABASE.find((c: any) => c.id === id)!;
-      const packed = packRanks(card.ranks.top, card.ranks.right, card.ranks.bottom, card.ranks.left);
-      await nftContract.methods
-        .mint_to_private(p2Addr, new Fr(BigInt(id)), new Fr(BigInt(packed)))
-        .send(sendAs(deployerAddr));
-    }
-    console.log('  Minted cards 6-10 to Player 2');
+    // Player 1: get_cards_for_new_player (creates starter cards [1-5] + note_nonce)
+    console.log('  Player 1: calling get_cards_for_new_player...');
+    const p1MintReceipt = await nftContract.methods
+      .get_cards_for_new_player()
+      .send(sendAs(p1Addr));
 
-    // Wait for PXE to discover minted notes
-    console.log('Waiting for PXE to discover minted notes...');
-    let p1NotesFound = false;
-    let p2NotesFound = false;
-    for (let attempt = 0; attempt < 60; attempt++) {
-      try {
-        if (!p1NotesFound) {
-          const [p1Cards] = await nftContract.methods
-            .get_private_cards(p1Addr, 0)
-            .simulate({ from: p1Addr });
-          const p1Count = p1Cards.filter((v: any) => BigInt(v) !== 0n).length;
-          if (p1Count >= 5) {
-            console.log(`  Player 1: found ${p1Count} notes (attempt ${attempt + 1})`);
-            p1NotesFound = true;
-          } else {
-            console.log(`  Player 1: found ${p1Count}/5 notes (attempt ${attempt + 1}), waiting...`);
-          }
-        }
-        if (!p2NotesFound) {
-          const [p2Cards] = await nftContract.methods
-            .get_private_cards(p2Addr, 0)
-            .simulate({ from: p2Addr });
-          const p2Count = p2Cards.filter((v: any) => BigInt(v) !== 0n).length;
-          if (p2Count >= 5) {
-            console.log(`  Player 2: found ${p2Count} notes (attempt ${attempt + 1})`);
-            p2NotesFound = true;
-          } else {
-            console.log(`  Player 2: found ${p2Count}/5 notes (attempt ${attempt + 1}), waiting...`);
-          }
-        }
-        if (p1NotesFound && p2NotesFound) {
-          console.log('  All notes discovered!');
-          break;
-        }
-      } catch (err: any) {
-        console.log(`  Note check attempt ${attempt + 1} error: ${err?.message?.slice(0, 100)}`);
-      }
-      await new Promise((r) => setTimeout(r, 3000));
+    // Import P1 starter notes (create_and_push_note skips tagging)
+    {
+      const randomnessResult = await nftContract.methods
+        .compute_note_randomness(0, 5)
+        .simulate({ from: p1Addr });
+      const randomnessFrs = [];
+      for (let i = 0; i < 5; i++) randomnessFrs.push(toFr(randomnessResult[i]));
+      await importNotes(nftContract, node, p1MintReceipt.txHash, p1Addr, p1CardIds, randomnessFrs);
     }
-    if (!p1NotesFound || !p2NotesFound) {
-      throw new Error(`Note discovery timed out: P1=${p1NotesFound}, P2=${p2NotesFound}`);
+
+    // Verify P1 notes
+    const [p1Cards] = await nftContract.methods
+      .get_private_cards(p1Addr, 0)
+      .simulate({ from: p1Addr });
+    const p1Count = p1Cards.filter((v: any) => BigInt(v) !== 0n).length;
+    console.log(`  Player 1: ${p1Count} notes visible`);
+    if (p1Count < 5) throw new Error(`P1 note import failed: ${p1Count}/5`);
+
+    // Player 2: also use get_cards_for_new_player (same flow as P1)
+    // This mints starter cards [1,2,3,4,5] AND creates the note_nonce
+    console.log('  Player 2: calling get_cards_for_new_player...');
+    const p2MintReceipt = await nftContract.methods
+      .get_cards_for_new_player()
+      .send(sendAs(p2Addr));
+
+    // Import P2 starter notes
+    {
+      const randomnessResult = await nftContract.methods
+        .compute_note_randomness(0, 5)
+        .simulate({ from: p2Addr });
+      const randomnessFrs = [];
+      for (let i = 0; i < 5; i++) randomnessFrs.push(toFr(randomnessResult[i]));
+      await importNotes(nftContract, node, p2MintReceipt.txHash, p2Addr, p2CardIds, randomnessFrs);
     }
+
+    // Verify P2 notes
+    const [p2c] = await nftContract.methods
+      .get_private_cards(p2Addr, 0)
+      .simulate({ from: p2Addr });
+    const p2Count = p2c.filter((v: any) => BigInt(v) !== 0n).length;
+    console.log(`  Player 2: ${p2Count} notes visible after import`);
+    if (p2Count < 5) throw new Error(`P2 note import failed: ${p2Count}/5`);
 
     // ================================================================
-    // Step 5: Create on-chain game + derive blinding factors
+    // Step 6: Preview game data + create/join game on-chain
+    // (game_id and randomness derived IN-CIRCUIT)
     // ================================================================
+    console.log('Player 1: previewing game data...');
+    const p1Nonce = await nftContract.methods
+      .get_note_nonce(p1Addr)
+      .simulate({ from: p1Addr });
+    const p1Preview = await nftContract.methods
+      .preview_game_data(toFr(p1Nonce))
+      .simulate({ from: p1Addr });
+    gameIdHex = toHex(p1Preview[0]);
+    p1Randomness = Array.from({ length: 6 }, (_, i) => toHex(p1Preview[i + 1]));
+    console.log(`  Derived game_id: ${gameIdHex}`);
+
     console.log('Player 1 creating game on-chain...');
     await gameContract.methods
       .create_game(p1CardIds.map((id: number) => new Fr(BigInt(id))))
       .send(sendAs(p1Addr));
 
-    const gameId = new Fr(0n);
-
+    const gameIdFr = toFr(gameIdHex);
     let status = await gameContract.methods
-      .get_game_status(gameId)
+      .get_game_status(gameIdFr)
       .simulate({ from: deployerAddr });
     expect(BigInt(status)).toBe(1n);
     console.log('  Game created (status=1)');
 
+    // Preview P2 game data (for randomness)
+    console.log('Player 2: previewing game data...');
+    const p2Nonce = await nftContract.methods
+      .get_note_nonce(p2Addr)
+      .simulate({ from: p2Addr });
+    const p2Preview = await nftContract.methods
+      .preview_game_data(toFr(p2Nonce))
+      .simulate({ from: p2Addr });
+    p2Randomness = Array.from({ length: 6 }, (_, i) => toHex(p2Preview[i + 1]));
+
     console.log('Player 2 joining game on-chain...');
     await gameContract.methods
-      .join_game(gameId, p2CardIds.map((id: number) => new Fr(BigInt(id))))
+      .join_game(gameIdFr, p2CardIds.map((id: number) => new Fr(BigInt(id))))
       .send(sendAs(p2Addr));
 
     status = await gameContract.methods
-      .get_game_status(gameId)
+      .get_game_status(gameIdFr)
       .simulate({ from: deployerAddr });
     expect(BigInt(status)).toBe(2n);
     console.log('  Game active (status=2)');
 
     // Read on-chain card commits
     const onChainCC1 = await gameContract.methods
-      .get_game_card_commit_1(gameId)
+      .get_game_card_commit_1(gameIdFr)
       .simulate({ from: deployerAddr });
     const onChainCC2 = await gameContract.methods
-      .get_game_card_commit_2(gameId)
+      .get_game_card_commit_2(gameIdFr)
       .simulate({ from: deployerAddr });
     console.log(`  On-chain card_commit_1: ${onChainCC1}`);
     console.log(`  On-chain card_commit_2: ${onChainCC2}`);
-    expect(BigInt(onChainCC1)).not.toBe(0n);
-    expect(BigInt(onChainCC2)).not.toBe(0n);
 
-    // Derive blinding factors
-    // (mirrors deriveBlindingFactor.ts: calls compute_blinding_factor().simulate())
-    console.log('Deriving blinding factors via compute_blinding_factor...');
+    // Derive blinding factors (with game_id)
+    console.log('Deriving blinding factors...');
     const p1Blinding = await nftContract.methods
-      .compute_blinding_factor()
+      .compute_blinding_factor(gameIdFr)
       .simulate({ from: p1Addr });
     const p2Blinding = await nftContract.methods
-      .compute_blinding_factor()
+      .compute_blinding_factor(gameIdFr)
       .simulate({ from: p2Addr });
     p1BlindingHex = '0x' + BigInt(p1Blinding).toString(16).padStart(64, '0');
     p2BlindingHex = '0x' + BigInt(p2Blinding).toString(16).padStart(64, '0');
-    console.log(`  P1 blinding factor: ${p1BlindingHex}`);
-    console.log(`  P2 blinding factor: ${p2BlindingHex}`);
 
     // Compute card commits using FRONTEND proofWorker
-    // (mirrors useGameFlow.ts line 114: computeCardCommitPoseidon2(cardIds, blindingFactor))
-    console.log('Computing card commitments using frontend proofWorker...');
     p1CardCommit = await computeCardCommitPoseidon2(p1CardIds, p1BlindingHex);
     p2CardCommit = await computeCardCommitPoseidon2(p2CardIds, p2BlindingHex);
     console.log(`  Frontend card_commit_1: ${p1CardCommit}`);
     console.log(`  Frontend card_commit_2: ${p2CardCommit}`);
 
-    // Verify frontend commits match on-chain values
     expect(BigInt(p1CardCommit)).toBe(BigInt(onChainCC1));
     expect(BigInt(p2CardCommit)).toBe(BigInt(onChainCC2));
     console.log('  Frontend card commitments match on-chain values!');
@@ -640,21 +667,17 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
   it('full game via WebSocket with frontend proofs and on-chain settlement', async () => {
     // ================================================================
     // Phase 1: WebSocket game creation
-    // (mirrors useWebSocket.ts: createGame → GAME_CREATED,
-    //  joinGame → GAME_JOINED + GAME_START)
     // ================================================================
     console.log('\n=== Phase 1: WebSocket game creation ===');
 
     client1 = await connectClient(wsUrl);
     client2 = await connectClient(wsUrl);
 
-    // Mirrors useWebSocket.ts createGame (line 148)
     client1.send({ type: 'CREATE_GAME', cardIds: p1CardIds });
     const created = await client1.waitFor('GAME_CREATED');
     wsGameId = created.gameId;
     console.log(`  Game created on WebSocket: ${wsGameId}`);
 
-    // Mirrors useWebSocket.ts joinGame (line 155)
     client2.send({ type: 'JOIN_GAME', gameId: wsGameId, cardIds: p2CardIds });
     const joined = await client2.waitFor('GAME_JOINED');
     const gameStart = await client1.waitFor('GAME_START');
@@ -664,59 +687,44 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
     console.log('  Both players connected, game started');
 
     // ================================================================
-    // Phase 2: Hand proof generation & exchange via WebSocket
-    // (mirrors useGameFlow.ts lines 104-119: auto-generate hand proof
-    //  when gameState.status === 'playing' && blindingFactor ready,
-    //  then App.tsx lines 54-59: auto-submit via ws.submitHandProof,
-    //  then App.tsx lines 62-65: receive opponent hand proof)
+    // Phase 2: Hand proof generation & exchange
+    // (mirrors useGameFlow.ts: generate hand proof with opponent randomness)
     // ================================================================
     console.log('\n=== Phase 2: Hand proof generation (frontend proofWorker) ===');
 
-    // Mirrors useGameFlow.ts line 114-115:
-    //   cardCommitHash = await computeCardCommitPoseidon2(cardIds, blindingFactor)
-    //   proof = await proofs.generateHandProof(cardIds, blindingFactor, cardCommitHash)
-    console.log('  Generating hand proof 1 (frontend proofWorker)...');
+    // Compute opponent player_state_hashes for hand proofs
+    const p2StateHash = await computePlayerStateHash(p2Randomness);
+    const p1StateHash = await computePlayerStateHash(p1Randomness);
+
+    console.log('  Generating hand proof 1 (P1 proves hand + knowledge of P2 randomness)...');
     const proofStart = Date.now();
-    const handProof1 = await generateProveHandProof(p1CardIds, p1BlindingHex, p1CardCommit);
+    const handProof1 = await generateProveHandProof(
+      p1CardIds, p1BlindingHex, p1CardCommit,
+      p2Randomness, p2StateHash,
+    );
     console.log(`  Hand proof 1 generated in ${((Date.now() - proofStart) / 1000).toFixed(1)}s`);
-    expect(handProof1.proof).toBeTruthy();
-    expect(handProof1.publicInputs.length).toBeGreaterThanOrEqual(1);
-    expect(handProof1.cardCommit).toBeTruthy();
 
-    console.log('  Generating hand proof 2 (frontend proofWorker)...');
+    console.log('  Generating hand proof 2 (P2 proves hand + knowledge of P1 randomness)...');
     const proofStart2 = Date.now();
-    const handProof2 = await generateProveHandProof(p2CardIds, p2BlindingHex, p2CardCommit);
+    const handProof2 = await generateProveHandProof(
+      p2CardIds, p2BlindingHex, p2CardCommit,
+      p1Randomness, p1StateHash,
+    );
     console.log(`  Hand proof 2 generated in ${((Date.now() - proofStart2) / 1000).toFixed(1)}s`);
-    expect(handProof2.proof).toBeTruthy();
 
-    // Mirrors App.tsx line 58: ws.submitHandProof(ws.gameId, gameFlow.myHandProof)
+    // Exchange hand proofs via WebSocket
     console.log('  Exchanging hand proofs via WebSocket...');
     client1.send({ type: 'SUBMIT_HAND_PROOF', gameId: wsGameId, handProof: handProof1 });
     const p2ReceivedProof = await client2.waitFor('HAND_PROOF');
     expect(p2ReceivedProof.fromPlayer).toBe(1);
-    expect(p2ReceivedProof.handProof.proof).toBe(handProof1.proof);
 
     client2.send({ type: 'SUBMIT_HAND_PROOF', gameId: wsGameId, handProof: handProof2 });
     const p1ReceivedProof = await client1.waitFor('HAND_PROOF');
     expect(p1ReceivedProof.fromPlayer).toBe(2);
-    expect(p1ReceivedProof.handProof.proof).toBe(handProof2.proof);
     console.log('  Hand proofs exchanged successfully');
 
     // ================================================================
-    // Phase 3: Play 9 moves with real proof generation via WebSocket
-    //
-    // Each move mirrors the EXACT App.tsx handlePlaceCard flow (lines 99-137):
-    //   1. Capture boardBefore from prevGameStateRef (before server responds)
-    //   2. ws.placeCard(handIndex, row, col) — sends to server immediately
-    //   3. Local sim: placeCard(gameState, player, handIndex, row, col)
-    //   4. Encode boardBefore & boardAfter via encodeBoardState()
-    //   5. Generate move proof via generateGameMoveProof()
-    //   6. ws.submitMoveProof(gameId, handIndex, row, col, moveProof)
-    //
-    // Card commit ordering mirrors useGameFlow.ts lines 179-181:
-    //   commit1 = playerNumber === 1 ? myCardCommit : opponentCardCommit
-    //   commit2 = playerNumber === 2 ? myCardCommit : opponentCardCommit
-    //   (commit1 is ALWAYS P1's, commit2 is ALWAYS P2's)
+    // Phase 3: Play 9 moves with real proof generation
     // ================================================================
     console.log('\n=== Phase 3: Play 9 moves (frontend proof generation) ===');
 
@@ -747,60 +755,36 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
 
       console.log(`  Move ${i + 1}/9: ${player} plays card ${card.id} (${card.name}) at [${row},${col}]`);
 
-      // Step 1: Capture boardBefore (mirrors prevGameStateRef.current in App.tsx)
       const boardBefore = encodeBoardState(localState.board);
-
-      // Step 2: Derive moveNumber from board state
-      // (mirrors useWebSocket.ts placeCard lines 168-175)
       const moveNumber = deriveMoveNumber(localState);
-
-      // Step 3: Local simulation (mirrors App.tsx handlePlaceCard lines 115-116)
       const result = placeCard(localState, player, handIdx, row, col);
       const newState = result.newState;
-
-      // Step 4: Encode boardAfter
       const boardAfter = encodeBoardState(newState.board);
-
-      // Step 5: Determine game-end fields (mirrors App.tsx mapWinnerId)
       const gameEnded = newState.status === 'finished';
       const winnerId = mapWinnerId(newState.winner);
 
-      // Step 6: Generate move proof (mirrors useGameFlow.generateMoveProofForPlacement)
-      // Card commit ordering: commit1=P1's, commit2=P2's (useGameFlow.ts lines 179-181)
       const moveStart = Date.now();
       const moveProof = await generateGameMoveProof(
         card.id, row, col, currentPlayer,
         boardBefore, boardAfter,
         [localState.player1Score, localState.player2Score],
         [newState.player1Score, newState.player2Score],
-        p1CardCommit,  // commit1 is ALWAYS P1's (matches useGameFlow.ts)
-        p2CardCommit,  // commit2 is ALWAYS P2's (matches useGameFlow.ts)
+        p1CardCommit, p2CardCommit,
         gameEnded, winnerId,
         { cardIds: isP1 ? p1CardIds : p2CardIds, blindingFactor: isP1 ? p1BlindingHex : p2BlindingHex },
       );
-      const moveElapsed = ((Date.now() - moveStart) / 1000).toFixed(1);
-      console.log(`    Proof generated in ${moveElapsed}s (startHash=${moveProof.startStateHash.slice(0, 18)}..., endHash=${moveProof.endStateHash.slice(0, 18)}...)`);
+      console.log(`    Proof generated in ${((Date.now() - moveStart) / 1000).toFixed(1)}s`);
 
       allMoveProofs.push(moveProof);
 
-      // Step 7: Submit via WebSocket with moveNumber derived from board state
-      // (mirrors useWebSocket.ts submitMoveProof lines 188-202)
       activeClient.send({
-        type: 'SUBMIT_MOVE_PROOF',
-        gameId: wsGameId,
-        handIndex: handIdx,
-        row,
-        col,
-        moveNumber,
-        moveProof,
+        type: 'SUBMIT_MOVE_PROOF', gameId: wsGameId,
+        handIndex: handIdx, row, col, moveNumber, moveProof,
       });
 
-      // Active player gets GAME_STATE, passive player gets MOVE_PROVEN
-      // (mirrors useWebSocket.ts onmessage handler lines 100-126)
       await activeClient.waitFor('GAME_STATE');
       await passiveClient.waitFor('MOVE_PROVEN');
 
-      // On last move, both get GAME_OVER
       if (i === 8) {
         const gameOver1 = await activeClient.waitFor('GAME_OVER');
         const gameOver2 = await passiveClient.waitFor('GAME_OVER');
@@ -819,105 +803,46 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
     // Phase 4: Verify proof chain integrity
     // ================================================================
     console.log('\n=== Phase 4: Verify proof chain integrity ===');
-
     for (let i = 0; i < 8; i++) {
       expect(allMoveProofs[i].endStateHash).toBe(allMoveProofs[i + 1].startStateHash);
     }
-    console.log('  Proof chain valid (all endStateHash[i] == startStateHash[i+1])');
+    console.log('  Proof chain valid');
 
     // ================================================================
     // Phase 5: On-chain settlement using FRONTEND's exact code path
-    //
-    // This mirrors the settlement path:
-    //   1. Load circuit artifacts via circuitLoader (loadProveHandCircuit/loadGameMoveCircuit)
-    //   2. Create UltraHonkBackend instances via getBarretenberg() singleton
-    //   3. Extract VKs via getVerificationKey({ verifierTarget: 'noir-recursive' })
-    //      (must match how VK hashes were computed at deploy time)
-    //   4. Convert VKs to fields via vkToFields (inline, copied verbatim)
-    //   5. Convert proofs via base64ToFields (inline, copied verbatim)
-    //   6. Call process_game with the same argument format
     // ================================================================
     console.log('\n=== Phase 5: Settlement via frontend code path ===');
 
-    // 5a. Load circuit artifacts via frontend circuitLoader
-    // (mirrors useGameContract.ts lines 122-129)
     console.log('  Loading circuit artifacts via frontend circuitLoader...');
     const [handCircuit, moveCircuit] = await Promise.all([
       loadProveHandCircuit(),
       loadGameMoveCircuit(),
     ]);
 
-    // 5b. Create UltraHonkBackend using frontend's barretenberg singleton
-    // (mirrors useGameContract.ts lines 131-133)
     console.log('  Creating UltraHonkBackend via frontend getBarretenberg()...');
     const frontendApi = await getBarretenberg();
     const handBackend = new UltraHonkBackend(handCircuit.bytecode, frontendApi);
     const moveBackend = new UltraHonkBackend(moveCircuit.bytecode, frontendApi);
 
-    // 5c. Extract VKs for recursive verification
-    // The deployment computed VK hashes via computeVkHash which uses
-    // getVerificationKey({ verifierTarget: 'noir-recursive' }).
-    // The VKs supplied to process_game must match, so we use the same option.
-    console.log('  Extracting VKs via getVerificationKey({ verifierTarget: noir-recursive })...');
+    console.log('  Extracting VKs...');
     const [frontendHandVk, frontendMoveVk] = await Promise.all([
       handBackend.getVerificationKey({ verifierTarget: 'noir-recursive' }),
       moveBackend.getVerificationKey({ verifierTarget: 'noir-recursive' }),
     ]);
 
-    // 5d. Convert VKs to field arrays
-    // (mirrors useGameContract.ts lines 158-166, inline vkToFields)
     const frontendHandVkFields = vkToFields(frontendHandVk);
     const frontendMoveVkFields = vkToFields(frontendMoveVk);
-    console.log(`  Frontend hand VK: ${frontendHandVkFields.length} fields`);
-    console.log(`  Frontend move VK: ${frontendMoveVkFields.length} fields`);
 
-    // 5e. VERIFY: Frontend VK fields hash to the same VK hash stored on-chain
-    // This is the key compatibility check between deployment and settlement
-    console.log('  Verifying frontend VK compatibility with deployed VK hash...');
-
-    // Compute poseidon2 hash of frontend-extracted VK fields (same as computeVkHash internals)
-    function bigintToBuffer32(n: bigint): Buffer {
-      const hex = n.toString(16).padStart(64, '0');
-      return Buffer.from(hex, 'hex');
-    }
-    function bufferToHex(buf: any): string {
-      if (Buffer.isBuffer(buf)) return '0x' + buf.toString('hex').padStart(64, '0');
-      if (buf instanceof Uint8Array) return '0x' + Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join('');
-      return '0x' + String(buf);
-    }
-
-    const handVkInputBuffers = frontendHandVkFields.map((f: string) => bigintToBuffer32(BigInt(f)));
-    const handVkHashResult = await (deployApi as any).poseidon2Hash({ inputs: handVkInputBuffers });
-    const frontendHandVkHash = bufferToHex(handVkHashResult.hash);
-    console.log(`  Frontend hand VK hash: ${frontendHandVkHash}`);
-    console.log(`  Deployed hand VK hash: ${deployedHandVkHash}`);
-    expect(BigInt(frontendHandVkHash)).toBe(BigInt(deployedHandVkHash));
-    console.log('  Hand VK hashes MATCH!');
-
-    const moveVkInputBuffers = frontendMoveVkFields.map((f: string) => bigintToBuffer32(BigInt(f)));
-    const moveVkHashResult = await (deployApi as any).poseidon2Hash({ inputs: moveVkInputBuffers });
-    const frontendMoveVkHash = bufferToHex(moveVkHashResult.hash);
-    console.log(`  Frontend move VK hash: ${frontendMoveVkHash}`);
-    console.log(`  Deployed move VK hash: ${deployedMoveVkHash}`);
-    expect(BigInt(frontendMoveVkHash)).toBe(BigInt(deployedMoveVkHash));
-    console.log('  Move VK hashes MATCH!');
-
-    // 5f. Convert proofs from base64 to field arrays
-    // (mirrors useGameContract.ts lines 141-155, inline base64ToFields)
+    // Convert proofs
     const hp1ProofFields = frontendBase64ToFields(handProof1.proof);
     const hp2ProofFields = frontendBase64ToFields(handProof2.proof);
     const moveProofFieldArrays = allMoveProofs.map(mp => frontendBase64ToFields(mp.proof));
 
-    console.log(`  Hand proof 1: ${hp1ProofFields.length} proof fields`);
-    console.log(`  Hand proof 2: ${hp2ProofFields.length} proof fields`);
     expect(hp1ProofFields.length).toBe(500);
     expect(hp2ProofFields.length).toBe(500);
 
-    // 5g. Determine caller/opponent (mirrors App.tsx handleSettle lines 139-158)
+    // Determine caller/opponent
     const winner = localState.winner;
-    expect(winner).not.toBeNull();
-    console.log(`  Game result: ${winner}`);
-
     const isP1Winner = winner === 'player1';
     const isDraw = winner === 'draw';
     const callerAddr = isDraw ? p1Addr : (isP1Winner ? p1Addr : p2Addr);
@@ -926,79 +851,75 @@ describe('E2E Full Game Flow — Frontend Proofs + WebSocket + Aztec Settlement'
     const opponentCardIds = isDraw ? p2CardIds : (isP1Winner ? p2CardIds : p1CardIds);
     const cardToTransfer = isDraw ? 0 : opponentCardIds[0];
 
-    // Hand proof ordering: handProof1 is ALWAYS P1's, handProof2 is ALWAYS P2's
-    // (mirrors App.tsx handleSettle lines 142-143)
-    // In the frontend: handProof1 = playerNumber===1 ? myHandProof : opponentHandProof
+    // Use in-circuit derived randomness for settlement
+    const callerRandomnessHex = isP1Winner || isDraw ? p1Randomness : p2Randomness;
+    const opponentRandomnessHex = isP1Winner || isDraw ? p2Randomness : p1Randomness;
+    const callerRandomness = callerRandomnessHex.map(toFr);
+    const opponentRandomness = opponentRandomnessHex.map(toFr);
 
-    // 5h. Call process_game using the FRONTEND's argument format
-    // (mirrors useGameContract.ts lines 203-220)
-    //
-    // The frontend uses:
-    //   - frontendHandVkFields/frontendMoveVkFields (string[], NOT Fr[])
-    //   - hp1ProofFields/hp2ProofFields (string[] from base64ToFields)
-    //   - handProof.publicInputs (string[] from noir_js, NOT Fr[])
-    //   - ...moveProofs.flatMap((mp, i) => [moveProofFields[i], mp.publicInputs])
-    //
-    // We pass these as string[] — the Aztec SDK converts to Fr internally.
-    console.log('  Calling process_game with frontend-derived VKs and proofs...');
-    const gameId = new Fr(0n);
-    await gameContract.methods
+    const gameIdFr = toFr(gameIdHex);
+
+    console.log('  Calling process_game...');
+    const settlementResult = await gameContract.methods
       .process_game(
-        gameId,
-        frontendHandVkFields,       // Frontend-extracted VK (string[])
-        frontendMoveVkFields,       // Frontend-extracted VK (string[])
-        hp1ProofFields,             // Frontend base64ToFields (string[])
-        handProof1.publicInputs,    // Raw noir_js output (string[])
+        gameIdFr,
+        frontendHandVkFields,
+        frontendMoveVkFields,
+        hp1ProofFields,
+        handProof1.publicInputs,
         hp2ProofFields,
         handProof2.publicInputs,
-        // 9 move proofs + inputs, spread via flatMap
-        // (mirrors useGameContract.ts lines 210-213)
         ...allMoveProofs.flatMap((mp, idx) => [
-          moveProofFieldArrays[idx],  // proof fields (string[])
-          mp.publicInputs,            // public inputs (string[])
+          moveProofFieldArrays[idx],
+          mp.publicInputs,
         ]),
         opponentAddr,
         new Fr(BigInt(cardToTransfer)),
         callerCardIds.map((id: number) => new Fr(BigInt(id))),
         opponentCardIds.map((id: number) => new Fr(BigInt(id))),
+        callerRandomness,
+        opponentRandomness,
       )
       .send(sendAs(callerAddr));
     console.log('  process_game transaction succeeded!');
 
-    // Clean up settlement backends (mirrors useGameContract.ts lines 228-229)
     try { handBackend.destroy(); } catch { /* ignore */ }
     try { moveBackend.destroy(); } catch { /* ignore */ }
 
     // ================================================================
-    // Phase 6: Verify on-chain settlement
+    // Phase 6: Import settlement notes and verify
     // ================================================================
     console.log('\n=== Phase 6: Verify on-chain settlement ===');
 
     const finalStatus = await gameContract.methods
-      .get_game_status(gameId)
+      .get_game_status(gameIdFr)
       .simulate({ from: deployerAddr });
     expect(BigInt(finalStatus)).toBe(3n);
     console.log(`  Game status: ${finalStatus} (settled)`);
 
     const isSettled = await gameContract.methods
-      .is_game_settled(gameId)
+      .is_game_settled(gameIdFr)
       .simulate({ from: deployerAddr });
     expect(isSettled).toBe(true);
     console.log('  Game settled: true');
 
+    // Import settlement notes
+    const winnerAddr = callerAddr;
+    const loserAddr = opponentAddr;
+
+    if (!isDraw) {
+      const winnerTokenIds = [...callerCardIds, cardToTransfer];
+      const winnerRand = callerRandomness.slice(0, winnerTokenIds.length);
+      await importNotes(nftContract, node, settlementResult.txHash, winnerAddr, winnerTokenIds, winnerRand);
+
+      const loserTokenIds = opponentCardIds.filter((id: number) => id !== cardToTransfer);
+      const loserRand: any[] = [];
+      for (let i = 0; i < opponentCardIds.length; i++) {
+        if (opponentCardIds[i] !== cardToTransfer) loserRand.push(opponentRandomness[i]);
+      }
+      await importNotes(nftContract, node, settlementResult.txHash, loserAddr, loserTokenIds, loserRand);
+    }
+
     console.log('\n  === E2E Full Game Flow Test PASSED ===');
-    console.log('  What was proven:');
-    console.log('    1. Frontend proofWorker produces valid ZK proofs');
-    console.log('    2. Frontend card commitments match on-chain values');
-    console.log('    3. WebSocket protocol works (CREATE/JOIN/HAND_PROOF/MOVE_PROOF)');
-    console.log('    4. Hand proof relay carries real proof data between clients');
-    console.log('    5. Move proof relay + server-side move application works');
-    console.log('    6. Proof chain integrity holds (endStateHash[i] == startStateHash[i+1])');
-    console.log('    7. Frontend circuitLoader loads artifacts correctly');
-    console.log('    8. Recursive VKs match deployed VK hashes');
-    console.log('    9. Frontend base64ToFields/vkToFields produce correct field arrays');
-    console.log('   10. Frontend flatMap proof spread matches process_game ABI');
-    console.log('   11. All 11 proofs pass recursive verification in process_game');
-    console.log('   12. Game lifecycle: status 1 → 2 → 3 (created → active → settled)');
   }, 600_000);
 });

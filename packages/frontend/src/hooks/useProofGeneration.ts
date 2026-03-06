@@ -37,6 +37,8 @@ export interface UseProofGenerationReturn {
     cardIds: number[],
     blindingFactor: string,
     cardCommitHash: string,
+    opponentRandomness: string[],
+    opponentPlayerStateHash: string,
   ) => Promise<HandProofData | null>;
   generateMoveProof: (
     cardId: number,
@@ -72,6 +74,8 @@ export function useProofGeneration(): UseProofGenerationReturn {
       cardIds: number[],
       blindingFactor: string,
       cardCommitHash: string,
+      opponentRandomness: string[],
+      opponentPlayerStateHash: string,
     ): Promise<HandProofData | null> => {
       setHandProofStatus('generating');
       setError(null);
@@ -80,6 +84,7 @@ export function useProofGeneration(): UseProofGenerationReturn {
         const { generateProveHandProof } = await import('../aztec/proofWorker');
         const proofData = await generateProveHandProof(
           cardIds, blindingFactor, cardCommitHash,
+          opponentRandomness, opponentPlayerStateHash,
         );
 
         setHandProof(proofData);

@@ -20,10 +20,11 @@ unconstrained fn count_private_cards(
 }
 
 #[test]
-unconstrained fn commit_five_nfts_removes_notes() {
+unconstrained fn commit_five_nfts_create_removes_notes() {
     let (env, contract_address, _, player) = utils::setup();
 
     // Player claims starter set: inserts 5 notes with token_ids [1, 2, 3, 4, 5]
+    // Also creates note_nonce (value 5) and 5 cooldown notes
     env.call_private(
         player,
         TripleTriadNFT::at(contract_address).get_cards_for_new_player(),
@@ -31,10 +32,32 @@ unconstrained fn commit_five_nfts_removes_notes() {
 
     assert(count_private_cards(env, contract_address, player) == 5, "Expected 5 cards after minting");
 
-    // Commit (pop) the 5 notes
+    // Commit (pop) the 5 notes via commit_five_nfts_create
+    // game_id and randomness are derived in-circuit from nhk_app + nonce_value
     env.call_private(
         player,
-        TripleTriadNFT::at(contract_address).commit_five_nfts(player, [1, 2, 3, 4, 5]),
+        TripleTriadNFT::at(contract_address).commit_five_nfts_create(player, [1, 2, 3, 4, 5]),
+    );
+
+    assert(count_private_cards(env, contract_address, player) == 0, "Expected 0 cards after commit");
+}
+
+#[test]
+unconstrained fn commit_five_nfts_join_removes_notes() {
+    let (env, contract_address, _, player) = utils::setup();
+
+    env.call_private(
+        player,
+        TripleTriadNFT::at(contract_address).get_cards_for_new_player(),
+    );
+
+    assert(count_private_cards(env, contract_address, player) == 5, "Expected 5 cards after minting");
+
+    // Commit via commit_five_nfts_join with a given game_id
+    // Randomness is derived in-circuit
+    env.call_private(
+        player,
+        TripleTriadNFT::at(contract_address).commit_five_nfts_join(player, [1, 2, 3, 4, 5], 42),
     );
 
     assert(count_private_cards(env, contract_address, player) == 0, "Expected 0 cards after commit");
@@ -44,14 +67,13 @@ unconstrained fn commit_five_nfts_removes_notes() {
 unconstrained fn commit_five_nfts_with_duplicate_leaves_one() {
     let (env, contract_address, minter, player) = utils::setup();
 
-    // Mint a note with id=1 via minter (registers nft_exists[1] = true)
+    // Mint a note with id=1 via minter
     env.call_private(
         minter,
         TripleTriadNFT::at(contract_address).mint_to_private(player, 1, 0),
     );
 
-    // Player claims starter set [1,2,3,4,5]. finalize_starter_set uses soft
-    // `if !exists` check, so id=1 already existing is fine. Player now has 6
+    // Player claims starter set [1,2,3,4,5]. Player now has 6
     // private notes: [1, 1, 2, 3, 4, 5]
     env.call_private(
         player,
@@ -60,10 +82,10 @@ unconstrained fn commit_five_nfts_with_duplicate_leaves_one() {
 
     assert(count_private_cards(env, contract_address, player) == 6, "Expected 6 cards after minting");
 
-    // Commit 5 notes with ids [1, 2, 3, 4, 5] -should consume one of the two id=1 notes
+    // Commit 5 notes with ids [1, 2, 3, 4, 5] -- should consume one of the two id=1 notes
     env.call_private(
         player,
-        TripleTriadNFT::at(contract_address).commit_five_nfts(player, [1, 2, 3, 4, 5]),
+        TripleTriadNFT::at(contract_address).commit_five_nfts_create(player, [1, 2, 3, 4, 5]),
     );
 
     // Should have exactly 1 note remaining (the second id=1 note)
@@ -87,6 +109,18 @@ unconstrained fn commit_five_nfts_with_duplicate_leaves_one() {
 unconstrained fn commit_five_nfts_fails_with_only_four() {
     let (env, contract_address, minter, player) = utils::setup();
 
+    // First set up the player's note_nonce by claiming starter set
+    env.call_private(
+        player,
+        TripleTriadNFT::at(contract_address).get_cards_for_new_player(),
+    );
+
+    // Now commit the 5 starter cards to clear them
+    env.call_private(
+        player,
+        TripleTriadNFT::at(contract_address).commit_five_nfts_create(player, [1, 2, 3, 4, 5]),
+    );
+
     // Mint only 4 notes: [1, 2, 3, 4]
     let ids: [Field; 4] = [1, 2, 3, 4];
     for i in 0..4 {
@@ -98,9 +132,9 @@ unconstrained fn commit_five_nfts_fails_with_only_four() {
 
     assert(count_private_cards(env, contract_address, player) == 4, "Expected 4 cards after minting");
 
-    // This should fail -requesting 5 but only 4 exist
+    // This should fail -- requesting 5 but only 4 exist
     env.call_private(
         player,
-        TripleTriadNFT::at(contract_address).commit_five_nfts(player, [1, 2, 3, 4, 5]),
+        TripleTriadNFT::at(contract_address).commit_five_nfts_join(player, [1, 2, 3, 4, 5], 99),
     );
 }

@@ -87,6 +87,16 @@ async function hashBoardState(
   return bufToHex(result.hash);
 }
 
+/**
+ * Compute player_state_hash using Poseidon2.
+ * Matches circuit: Poseidon2::hash(randomness, 6)
+ */
+async function computePlayerStateHash(randomness: bigint[]): Promise<string> {
+  const inputs = randomness.map((v) => numToField(v));
+  const result = await bb.poseidon2Hash({ inputs });
+  return bufToHex(result.hash);
+}
+
 // ====================== Test Suite ======================
 
 describe('proof generation integration', () => {
@@ -109,15 +119,28 @@ describe('proof generation integration', () => {
   describe('prove_hand circuit', () => {
     const cardIds = [1n, 2n, 3n, 4n, 5n];
     const blindingFactor = 12345n;
+    const oppRandomness = [100n, 200n, 300n, 400n, 500n, 600n];
+
+    async function makeHandInputs(
+      ids: bigint[],
+      bf: bigint,
+      oppRand: bigint[] = oppRandomness,
+      overrides: Record<string, unknown> = {},
+    ): Promise<Record<string, unknown>> {
+      const cardCommitHash = await computeCardCommit(ids, bf);
+      const oppStateHash = await computePlayerStateHash(oppRand);
+      return {
+        card_commit_hash: cardCommitHash,
+        opponent_player_state_hash: oppStateHash,
+        card_ids: ids.map((id) => toHex(id)),
+        blinding_factor: toHex(bf),
+        opponent_randomness: oppRand.map((r) => toHex(r)),
+        ...overrides,
+      };
+    }
 
     it('executes with valid inputs (cards 1-5)', async () => {
-      const cardCommitHash = await computeCardCommit(cardIds, blindingFactor);
-
-      const inputs: Record<string, unknown> = {
-        card_commit_hash: cardCommitHash,
-        card_ids: cardIds.map((id) => toHex(id)),
-        blinding_factor: toHex(blindingFactor),
-      };
+      const inputs = await makeHandInputs(cardIds, blindingFactor);
 
       const noir = new Noir(proveHandArtifact as never);
       const { witness } = await noir.execute(inputs as never);
@@ -127,13 +150,7 @@ describe('proof generation integration', () => {
 
     it('rejects card ID 0 (below valid range)', async () => {
       const badIds = [0n, 2n, 3n, 4n, 5n];
-      const cardCommitHash = await computeCardCommit(badIds, blindingFactor);
-
-      const inputs: Record<string, unknown> = {
-        card_commit_hash: cardCommitHash,
-        card_ids: badIds.map((id) => toHex(id)),
-        blinding_factor: toHex(blindingFactor),
-      };
+      const inputs = await makeHandInputs(badIds, blindingFactor);
 
       const noir = new Noir(proveHandArtifact as never);
       await expect(noir.execute(inputs as never)).rejects.toThrow();
@@ -141,23 +158,20 @@ describe('proof generation integration', () => {
 
     it('rejects card ID 51 (above valid range)', async () => {
       const badIds = [1n, 2n, 3n, 4n, 51n];
-      const cardCommitHash = await computeCardCommit(badIds, blindingFactor);
-
-      const inputs: Record<string, unknown> = {
-        card_commit_hash: cardCommitHash,
-        card_ids: badIds.map((id) => toHex(id)),
-        blinding_factor: toHex(blindingFactor),
-      };
+      const inputs = await makeHandInputs(badIds, blindingFactor);
 
       const noir = new Noir(proveHandArtifact as never);
       await expect(noir.execute(inputs as never)).rejects.toThrow();
     }, 120000);
 
     it('rejects wrong card commitment', async () => {
+      const oppStateHash = await computePlayerStateHash(oppRandomness);
       const inputs: Record<string, unknown> = {
         card_commit_hash: '0xdeadbeef',
+        opponent_player_state_hash: oppStateHash,
         card_ids: cardIds.map((id) => toHex(id)),
         blinding_factor: toHex(blindingFactor),
+        opponent_randomness: oppRandomness.map((r) => toHex(r)),
       };
 
       const noir = new Noir(proveHandArtifact as never);
@@ -166,13 +180,7 @@ describe('proof generation integration', () => {
 
     it('rejects duplicate card IDs', async () => {
       const dupeIds = [1n, 2n, 3n, 4n, 1n];
-      const cardCommitHash = await computeCardCommit(dupeIds, blindingFactor);
-
-      const inputs: Record<string, unknown> = {
-        card_commit_hash: cardCommitHash,
-        card_ids: dupeIds.map((id) => toHex(id)),
-        blinding_factor: toHex(blindingFactor),
-      };
+      const inputs = await makeHandInputs(dupeIds, blindingFactor);
 
       const noir = new Noir(proveHandArtifact as never);
       await expect(noir.execute(inputs as never)).rejects.toThrow();

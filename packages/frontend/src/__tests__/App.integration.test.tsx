@@ -4,9 +4,20 @@
  * Uses mocked WebSocket and Aztec modules to test the wiring in App.tsx
  * without requiring actual network connections or Noir circuit execution.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
 import { render, screen, act, waitFor } from '@testing-library/react';
 import { App } from '../App';
+
+// Polyfill ResizeObserver for jsdom (required by React Three Fiber / react-use-measure)
+beforeAll(() => {
+  if (!globalThis.ResizeObserver) {
+    globalThis.ResizeObserver = class ResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as any;
+  }
+});
 
 // Mock all Aztec-related hooks
 vi.mock('../hooks/useAztec', () => ({
@@ -17,8 +28,10 @@ vi.mock('../hooks/useAztec', () => ({
     error: null,
     wallet: null,
     nodeClient: null,
+    ownedCardIds: [],
     connect: vi.fn(),
     disconnect: vi.fn(),
+    refreshOwnedCards: vi.fn(),
   }),
 }));
 
@@ -47,6 +60,7 @@ vi.mock('../hooks/useGameContract', () => ({
     error: null,
     ownedCards: [],
     isAvailable: false,
+    onChainGameId: null,
     settleGame: vi.fn(),
     queryOwnedCards: vi.fn().mockResolvedValue([]),
     resetTx: vi.fn(),
@@ -74,13 +88,25 @@ vi.mock('../hooks/useWebSocket', () => ({
     opponentDisconnected: false,
     opponentHandProof: null,
     lastMoveProof: null,
+    opponentAztecAddress: null,
+    opponentOnChainGameId: null,
+    opponentCardIds: [],
+    incomingNoteData: null,
+    matchmakingStatus: 'idle' as const,
+    queuePosition: null,
     createGame: vi.fn(),
     joinGame: vi.fn(),
     placeCard: vi.fn(),
     submitHandProof: vi.fn(),
     submitMoveProof: vi.fn(),
+    shareAztecInfo: vi.fn(),
+    relayNoteData: vi.fn(),
     refreshGameList: vi.fn(),
+    leaveGame: vi.fn(),
     disconnect: vi.fn(),
+    queueMatchmaking: vi.fn(),
+    cancelMatchmaking: vi.fn(),
+    ping: vi.fn(),
   }),
 }));
 
