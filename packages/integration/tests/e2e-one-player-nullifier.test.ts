@@ -216,10 +216,10 @@ describe('E2E One-Player Nullifier Sync', () => {
     // ================================================================
     console.log('\n========== ROUND 1: Starter cards ==========');
 
-    // P1: get_cards_for_new_player_test(0)
-    console.log('\n--- P1: get_cards_for_new_player_test(0) ---');
+    // P1: get_cards_for_new_player (real function, with ONCHAIN_CONSTRAINED nonce note)
+    console.log('\n--- P1: get_cards_for_new_player ---');
     const p1StarterReceipt = await p1.nftContract.methods
-      .get_cards_for_new_player_test(new Fr(0n))
+      .get_cards_for_new_player()
       .send(p1.sendOpts);
     const p1StarterTxHash = p1StarterReceipt.txHash?.toString();
     console.log(`  P1 starter tx: ${p1StarterTxHash}`);
