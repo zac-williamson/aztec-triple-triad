@@ -42,6 +42,9 @@ export default defineConfig({
     },
   },
   assetsInclude: ['**/*.glb', '**/*.gltf', '**/*.fbx'],
+  define: {
+    'process.env.LOG_LEVEL': JSON.stringify(process.env.LOG_LEVEL || 'info'),
+  },
   build: {
     target: 'esnext',
   },

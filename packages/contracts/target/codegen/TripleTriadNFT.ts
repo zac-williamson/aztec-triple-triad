@@ -176,9 +176,6 @@ cooldown_notes: {
     /** constructor(minter: struct, name: struct, symbol: struct) */
     constructor: ((minter: AztecAddressLike, name: { value: FieldLike }, symbol: { value: FieldLike }) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** debug_mint(token_id: field, to: struct, randomness: field) */
-    debug_mint: ((token_id: FieldLike, to: AztecAddressLike, randomness: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
     /** game_transfer(from: struct, to: struct, token_id: field) */
     game_transfer: ((from: AztecAddressLike, to: AztecAddressLike, token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
@@ -188,20 +185,8 @@ cooldown_notes: {
     /** get_cards_for_new_player() */
     get_cards_for_new_player: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** get_cards_from_beach() */
-    get_cards_from_beach: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_cards_from_city() */
-    get_cards_from_city: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_cards_from_dockyard() */
-    get_cards_from_dockyard: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_cards_from_forest() */
-    get_cards_from_forest: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_cards_from_river() */
-    get_cards_from_river: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** get_cards_from_location(location_id: field) */
+    get_cards_from_location: ((location_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** get_note_nonce(owner: struct) */
     get_note_nonce: ((owner: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;

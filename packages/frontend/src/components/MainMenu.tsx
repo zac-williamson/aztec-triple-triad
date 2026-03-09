@@ -80,6 +80,16 @@ export function MainMenu({
         <p className="main-menu__card-status">Loading your cards from Aztec...</p>
       )}
 
+      <button
+        className="main-menu__btn-clear"
+        onClick={() => {
+          localStorage.clear();
+          window.location.reload();
+        }}
+      >
+        Clear Local Storage
+      </button>
+
       {showNotEnoughCards && (
         <div className="main-menu__dialog-overlay" onClick={() => setShowNotEnoughCards(false)}>
           <div className="main-menu__dialog" onClick={(e) => e.stopPropagation()}>

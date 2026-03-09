@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapWinnerId } from './hooks/useGameOrchestrator';
+import { mapWinnerId } from './hooks/useGame';
 
 describe('mapWinnerId', () => {
   it('maps player1 winner to 1', () => {

@@ -67,6 +67,19 @@ global COOLDOWN_BEACH: u64 = 43200;    // 12 hours
 global COOLDOWN_CITY: u64 = 57600;     // 16 hours
 global COOLDOWN_DOCKYARD: u64 = 72000; // 20 hours
 
+/// Map location_id to its cooldown duration in seconds.
+pub fn get_cooldown_for_location(location_id: Field) -> u64 {
+    if location_id == LOCATION_RIVER { COOLDOWN_RIVER }
+    else if location_id == LOCATION_FOREST { COOLDOWN_FOREST }
+    else if location_id == LOCATION_BEACH { COOLDOWN_BEACH }
+    else if location_id == LOCATION_CITY { COOLDOWN_CITY }
+    else if location_id == LOCATION_DOCKYARD { COOLDOWN_DOCKYARD }
+    else {
+        assert(false, "Invalid location ID");
+        0
+    }
+}
+
 /// Location unlock flags use PublicImmutable (one-way, no delay, readable from private).
 
 /// IV field constants for note tagging scheme.
@@ -106,13 +119,15 @@ pub contract TripleTriadNFT {
         note::{
             constants::MAX_NOTES_PER_PAGE,
             note_getter_options::NoteGetterOptions,
-            note_interface::{NoteProperties, NoteType},
+            note_interface::{NoteHash, NoteProperties, NoteType},
             note_viewer_options::NoteViewerOptions,
+            utils::compute_confirmed_note_hash_for_nullification,
         },
+        oracle::logging::debug_log_format,
         oracle::notes::notify_created_note,
         protocol::{
             address::AztecAddress,
-            constants::{DOM_SEP__NOTE_HASH, MAX_NOTE_HASHES_PER_TX},
+            constants::{DOM_SEP__NOTE_HASH, DOM_SEP__NOTE_NULLIFIER, MAX_NOTE_HASHES_PER_TX},
             hash::{poseidon2_hash, poseidon2_hash_with_separator},
             traits::{Hash, Packable, ToField},
         },
@@ -122,14 +137,13 @@ pub contract TripleTriadNFT {
     use compressed_string::FieldCompressedString;
     use super::filters::filter_by_token_ids;
     use super::{
-        generate_card,
+        generate_card, get_cooldown_for_location,
         STARTER_CARD_IDS, COOLDOWN_SEPARATOR,
         LOCATION_RIVER, LOCATION_FOREST, LOCATION_BEACH, LOCATION_CITY, LOCATION_DOCKYARD,
-        COOLDOWN_RIVER, COOLDOWN_FOREST, COOLDOWN_BEACH, COOLDOWN_CITY, COOLDOWN_DOCKYARD,
         AXOLOTL_NOTE_TAG_FIELD, AXOLOTL_NOTE_SECRET_IV_FIELD, AXOLOTL_PAYLOAD_IV_FIELD,
         GAME_ID_IV_FIELD, GAME_RANDOMNESS_IV_FIELD,
     };
-    use aztec::protocol::logging::debug_log_format;
+
 
     // --- Events ---
 
@@ -315,6 +329,63 @@ pub contract TripleTriadNFT {
         symmetric_encrypt([card_id, iv], note_randomness)
     }
 
+    // --- Nullifier Debug Logging ---
+
+    /// Peek at card notes via get_notes, compute their nullifiers, and log them.
+    /// Called BEFORE pop_notes so the code path under test is unchanged.
+    #[contract_library_method]
+    fn log_card_nullifiers(
+        storage: Storage<&mut aztec::context::PrivateContext>,
+        owner: AztecAddress,
+        token_ids: [Field; 5],
+        nhk_app_secret: Field,
+    ) {
+        let options = NoteGetterOptions::with_filter(filter_by_token_ids, token_ids);
+        let peeked = storage.private_nfts.at(owner).get_notes(options);
+        debug_log_format("[NFT] log_card_nullifiers: found {0} notes for owner={1}", [peeked.len() as Field, owner.to_field()]);
+        for i in 0..5 {
+            if i < peeked.len() {
+                let cn = peeked.get(i);
+                let note_hash_for_nul = compute_confirmed_note_hash_for_nullification(cn);
+                let nullifier = poseidon2_hash_with_separator(
+                    [note_hash_for_nul, nhk_app_secret],
+                    DOM_SEP__NOTE_NULLIFIER as Field,
+                );
+                debug_log_format(
+                    "[NFT] card_nullifier[{0}]: value={1} note_hash={2} nullifier={3}",
+                    [i as Field, cn.note.value, note_hash_for_nul, nullifier],
+                );
+            }
+        }
+    }
+
+    /// Peek at the nonce note via get_notes, compute its nullifier, and log it.
+    /// Called BEFORE pop_note_nonce so the code path under test is unchanged.
+    #[contract_library_method]
+    fn log_nonce_nullifier(
+        storage: Storage<&mut aztec::context::PrivateContext>,
+        owner: AztecAddress,
+        nhk_app_secret: Field,
+    ) {
+        let options: NoteGetterOptions<FieldNote, 1, Field, Field> = NoteGetterOptions::new().set_limit(1);
+        let peeked = storage.note_nonce.at(owner).get_notes(options);
+        debug_log_format("[NFT] log_nonce_nullifier: found {0} nonce notes for owner={1}", [peeked.len() as Field, owner.to_field()]);
+        for i in 0..1 {
+            if i < peeked.len() {
+                let cn = peeked.get(i);
+                let note_hash_for_nul = compute_confirmed_note_hash_for_nullification(cn);
+                let nullifier = poseidon2_hash_with_separator(
+                    [note_hash_for_nul, nhk_app_secret],
+                    DOM_SEP__NOTE_NULLIFIER as Field,
+                );
+                debug_log_format(
+                    "[NFT] nonce_nullifier: value={0} note_hash={1} nullifier={2}",
+                    [cn.note.value, note_hash_for_nul, nullifier],
+                );
+            }
+        }
+    }
+
     // --- Note Nonce Management ---
 
     /// Read and nullify the current note_nonce for the owner. Returns the nonce value.
@@ -328,7 +399,9 @@ pub contract TripleTriadNFT {
             .set_limit(1);
         let notes = storage.note_nonce.at(owner).pop_notes(options);
         assert(notes.len() == 1, "Note nonce not found");
-        notes.get(0).value
+        let nonce_val = notes.get(0).value;
+        debug_log_format("[NFT] pop_note_nonce: owner={0} nonce_value={1}", [owner.to_field(), nonce_val]);
+        nonce_val
     }
 
     /// Create a new note_nonce for the owner with the given value.
@@ -339,6 +412,7 @@ pub contract TripleTriadNFT {
         owner: AztecAddress,
         nonce_value: Field,
     ) {
+        debug_log_format("[NFT] push_note_nonce: owner={0} new_nonce={1}", [owner.to_field(), nonce_value]);
         let note = FieldNote { value: nonce_value };
         storage.note_nonce.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
     }
@@ -380,61 +454,20 @@ pub contract TripleTriadNFT {
         }
     }
 
-    /// Generate 10 cards from the River (4-hour cooldown, always available).
-    /// No longer takes counter/randomness -- deterministic via note_nonce.
+    /// Generate 10 cards from a location. Cooldown is derived from location_id.
+    /// Valid location_ids: 1=River, 2=Forest, 3=Beach, 4=City, 5=Dockyard.
     #[external("private")]
-    fn get_cards_from_river() {
+    fn get_cards_from_location(location_id: Field) {
+        let cooldown = get_cooldown_for_location(location_id);
+
         let owner = self.msg_sender();
         let contract_address = self.address;
         let owner_npk_m = get_public_keys(owner).npk_m;
         let owner_npk_m_hash = owner_npk_m.hash();
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
 
-        // Check location unlocked in private (via PublicImmutable)
-        let unlocked = self.storage.location_unlocked.at(LOCATION_RIVER).read();
-        assert(unlocked == 1, "River is locked");
-
-        // Pop and advance note_nonce
-        let nonce_value = pop_note_nonce(self.context, self.storage, owner);
-
-        // Generate cards and emit events
-        for i in 0..10 {
-            let note_randomness = derive_note_randomness(nhk_app_secret, nonce_value, i as Field);
-            let note_tag = derive_note_tag(note_randomness);
-            let (_, card_id) = generate_card(nhk_app_secret, nonce_value + i as Field);
-            let note_payload = encrypt_card_payload(card_id as Field, note_randomness);
-            let _: Field = create_and_push_note(self.context, owner, card_id as Field, note_randomness);
-            self.emit(CardCreated { note_tag, note_payload }).deliver_to(owner, MessageDelivery.OFFCHAIN);
-        }
-
-        // Nullify existing cooldown note and create partial note
-        let cooldown_options: NoteGetterOptions<UintNote, 1, Field, Field> = NoteGetterOptions::new()
-            .set_limit(1);
-        let _cooldown_notes = self.storage.cooldown_notes.at(LOCATION_RIVER).at(owner).pop_notes(cooldown_options);
-
-        let storage_slot = self.storage.cooldown_notes.at(LOCATION_RIVER).get_storage_slot();
-        let partial_cooldown = UintNote::partial(owner, storage_slot, self.context, owner, contract_address);
-
-        // Push new note_nonce (old value + 10)
-        push_note_nonce(self.context, self.storage, owner, nonce_value + 10);
-
-        // Enqueue public finalization (cooldown check + completion)
-        self.enqueue_self.finalize_card_generation(
-            owner, LOCATION_RIVER, COOLDOWN_RIVER, partial_cooldown,
-        );
-    }
-
-    /// Generate 10 cards from the Forest (8-hour cooldown, admin lock).
-    #[external("private")]
-    fn get_cards_from_forest() {
-        let owner = self.msg_sender();
-        let contract_address = self.address;
-        let owner_npk_m = get_public_keys(owner).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
-        let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
-
-        let unlocked = self.storage.location_unlocked.at(LOCATION_FOREST).read();
-        assert(unlocked == 1, "Forest is locked");
+        let unlocked = self.storage.location_unlocked.at(location_id).read();
+        assert(unlocked == 1, "Location is locked");
 
         let nonce_value = pop_note_nonce(self.context, self.storage, owner);
 
@@ -449,126 +482,15 @@ pub contract TripleTriadNFT {
 
         let cooldown_options: NoteGetterOptions<UintNote, 1, Field, Field> = NoteGetterOptions::new()
             .set_limit(1);
-        let _cooldown_notes = self.storage.cooldown_notes.at(LOCATION_FOREST).at(owner).pop_notes(cooldown_options);
+        let _cooldown_notes = self.storage.cooldown_notes.at(location_id).at(owner).pop_notes(cooldown_options);
 
-        let storage_slot = self.storage.cooldown_notes.at(LOCATION_FOREST).get_storage_slot();
+        let storage_slot = self.storage.cooldown_notes.at(location_id).get_storage_slot();
         let partial_cooldown = UintNote::partial(owner, storage_slot, self.context, owner, contract_address);
 
         push_note_nonce(self.context, self.storage, owner, nonce_value + 10);
 
         self.enqueue_self.finalize_card_generation(
-            owner, LOCATION_FOREST, COOLDOWN_FOREST, partial_cooldown,
-        );
-    }
-
-    /// Generate 10 cards from the Beach (12-hour cooldown, admin lock).
-    #[external("private")]
-    fn get_cards_from_beach() {
-        let owner = self.msg_sender();
-        let contract_address = self.address;
-        let owner_npk_m = get_public_keys(owner).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
-        let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
-
-        let unlocked = self.storage.location_unlocked.at(LOCATION_BEACH).read();
-        assert(unlocked == 1, "Beach is locked");
-
-        let nonce_value = pop_note_nonce(self.context, self.storage, owner);
-
-        for i in 0..10 {
-            let note_randomness = derive_note_randomness(nhk_app_secret, nonce_value, i as Field);
-            let note_tag = derive_note_tag(note_randomness);
-            let (_, card_id) = generate_card(nhk_app_secret, nonce_value + i as Field);
-            let note_payload = encrypt_card_payload(card_id as Field, note_randomness);
-            let _: Field = create_and_push_note(self.context, owner, card_id as Field, note_randomness);
-            self.emit(CardCreated { note_tag, note_payload }).deliver_to(owner, MessageDelivery.OFFCHAIN);
-        }
-
-        let cooldown_options: NoteGetterOptions<UintNote, 1, Field, Field> = NoteGetterOptions::new()
-            .set_limit(1);
-        let _cooldown_notes = self.storage.cooldown_notes.at(LOCATION_BEACH).at(owner).pop_notes(cooldown_options);
-
-        let storage_slot = self.storage.cooldown_notes.at(LOCATION_BEACH).get_storage_slot();
-        let partial_cooldown = UintNote::partial(owner, storage_slot, self.context, owner, contract_address);
-
-        push_note_nonce(self.context, self.storage, owner, nonce_value + 10);
-
-        self.enqueue_self.finalize_card_generation(
-            owner, LOCATION_BEACH, COOLDOWN_BEACH, partial_cooldown,
-        );
-    }
-
-    /// Generate 10 cards from the City (16-hour cooldown, admin lock).
-    #[external("private")]
-    fn get_cards_from_city() {
-        let owner = self.msg_sender();
-        let contract_address = self.address;
-        let owner_npk_m = get_public_keys(owner).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
-        let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
-
-        let unlocked = self.storage.location_unlocked.at(LOCATION_CITY).read();
-        assert(unlocked == 1, "City is locked");
-
-        let nonce_value = pop_note_nonce(self.context, self.storage, owner);
-
-        for i in 0..10 {
-            let note_randomness = derive_note_randomness(nhk_app_secret, nonce_value, i as Field);
-            let note_tag = derive_note_tag(note_randomness);
-            let (_, card_id) = generate_card(nhk_app_secret, nonce_value + i as Field);
-            let note_payload = encrypt_card_payload(card_id as Field, note_randomness);
-            let _: Field = create_and_push_note(self.context, owner, card_id as Field, note_randomness);
-            self.emit(CardCreated { note_tag, note_payload }).deliver_to(owner, MessageDelivery.OFFCHAIN);
-        }
-
-        let cooldown_options: NoteGetterOptions<UintNote, 1, Field, Field> = NoteGetterOptions::new()
-            .set_limit(1);
-        let _cooldown_notes = self.storage.cooldown_notes.at(LOCATION_CITY).at(owner).pop_notes(cooldown_options);
-
-        let storage_slot = self.storage.cooldown_notes.at(LOCATION_CITY).get_storage_slot();
-        let partial_cooldown = UintNote::partial(owner, storage_slot, self.context, owner, contract_address);
-
-        push_note_nonce(self.context, self.storage, owner, nonce_value + 10);
-
-        self.enqueue_self.finalize_card_generation(
-            owner, LOCATION_CITY, COOLDOWN_CITY, partial_cooldown,
-        );
-    }
-
-    /// Generate 10 cards from the Dockyard (20-hour cooldown, admin lock).
-    #[external("private")]
-    fn get_cards_from_dockyard() {
-        let owner = self.msg_sender();
-        let contract_address = self.address;
-        let owner_npk_m = get_public_keys(owner).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
-        let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
-
-        let unlocked = self.storage.location_unlocked.at(LOCATION_DOCKYARD).read();
-        assert(unlocked == 1, "Dockyard is locked");
-
-        let nonce_value = pop_note_nonce(self.context, self.storage, owner);
-
-        for i in 0..10 {
-            let note_randomness = derive_note_randomness(nhk_app_secret, nonce_value, i as Field);
-            let note_tag = derive_note_tag(note_randomness);
-            let (_, card_id) = generate_card(nhk_app_secret, nonce_value + i as Field);
-            let note_payload = encrypt_card_payload(card_id as Field, note_randomness);
-            let _: Field = create_and_push_note(self.context, owner, card_id as Field, note_randomness);
-            self.emit(CardCreated { note_tag, note_payload }).deliver_to(owner, MessageDelivery.OFFCHAIN);
-        }
-
-        let cooldown_options: NoteGetterOptions<UintNote, 1, Field, Field> = NoteGetterOptions::new()
-            .set_limit(1);
-        let _cooldown_notes = self.storage.cooldown_notes.at(LOCATION_DOCKYARD).at(owner).pop_notes(cooldown_options);
-
-        let storage_slot = self.storage.cooldown_notes.at(LOCATION_DOCKYARD).get_storage_slot();
-        let partial_cooldown = UintNote::partial(owner, storage_slot, self.context, owner, contract_address);
-
-        push_note_nonce(self.context, self.storage, owner, nonce_value + 10);
-
-        self.enqueue_self.finalize_card_generation(
-            owner, LOCATION_DOCKYARD, COOLDOWN_DOCKYARD, partial_cooldown,
+            owner, location_id, cooldown, partial_cooldown,
         );
     }
 
@@ -602,6 +524,7 @@ pub contract TripleTriadNFT {
         value: Field,
         randomness: Field,
     ) -> Field {
+        debug_log_format("[NFT] create_and_push_note: owner={0} token_id={1} randomness={2}", [owner.to_field(), value, randomness]);
         let note = FieldNote { value };
         let note_hash_counter = context.side_effect_counter;
         // Owned<PrivateSet> uses the BASE storage slot (not a derived/mapped slot).
@@ -623,6 +546,7 @@ pub contract TripleTriadNFT {
             note_hash_counter,
         );
 
+        debug_log_format("[NFT] create_and_push_note: note_hash={0} slot={1}", [note_hash, storage_slot]);
         context.push_note_hash(note_hash);
         note_hash
     }
@@ -666,20 +590,33 @@ pub contract TripleTriadNFT {
         token_ids: [Field; 5],
     ) -> [Field; 3] {
         let caller = self.msg_sender();
+        debug_log_format("Caller = {0}", [owner.to_field()]);
         let game = self.storage.game_contract.read();
         assert((caller == game) | (caller == owner), "Only game contract or owner can commit");
 
-        let nonce_value = pop_note_nonce(self.context, self.storage, owner);
-
+        // Get nhk_app_secret first (needed for nullifier logging and derivations)
         let owner_npk_m = get_public_keys(owner).npk_m;
         let owner_npk_m_hash = owner_npk_m.hash();
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
+
+        // Log nonce note nullifier before popping
+        log_nonce_nullifier(self.storage, owner, nhk_app_secret);
+
+        let nonce_value = pop_note_nonce(self.context, self.storage, owner);
 
         // Derive game_id and randomness deterministically in-circuit
         let game_id = derive_game_id(nhk_app_secret, nonce_value);
         let randomness = derive_game_randomness(nhk_app_secret, nonce_value);
 
-        // Pop the 5 card notes
+        debug_log_format("[NFT] commit_five_nfts_create: owner={0} nonce={1} game_id={2}", [owner.to_field(), nonce_value, game_id]);
+        for i in 0..5 {
+            debug_log_format("[NFT] commit_create: requesting token_id={0}", [token_ids[i]]);
+        }
+
+        // Log card nullifiers before popping (read-only peek)
+        log_card_nullifiers(self.storage, owner, token_ids, nhk_app_secret);
+
+        // Pop the 5 card notes (unchanged code path)
         let options = NoteGetterOptions::with_filter(filter_by_token_ids, token_ids);
         let notes = self.storage.private_nfts.at(owner).pop_notes(options);
         assert(notes.len() == 5, "Could not find all 5 cards");
@@ -696,6 +633,7 @@ pub contract TripleTriadNFT {
 
         push_note_nonce(self.context, self.storage, owner, nonce_value + 6);
 
+        debug_log_format("[NFT] commit_create: card_commit={0} player_state={1}", [card_commit_hash, player_state_hash]);
         [card_commit_hash, player_state_hash, game_id]
     }
 
@@ -712,19 +650,35 @@ pub contract TripleTriadNFT {
         let game = self.storage.game_contract.read();
         assert((caller == game) | (caller == owner), "Only game contract or owner can commit");
 
-        let nonce_value = pop_note_nonce(self.context, self.storage, owner);
-
+        // Get nhk_app_secret first (needed for nullifier logging and derivations)
         let owner_npk_m = get_public_keys(owner).npk_m;
         let owner_npk_m_hash = owner_npk_m.hash();
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
 
+        // Log nonce note nullifier before popping
+        log_nonce_nullifier(self.storage, owner, nhk_app_secret);
+
+        let nonce_value = pop_note_nonce(self.context, self.storage, owner);
+
         // Derive randomness deterministically in-circuit
         let randomness = derive_game_randomness(nhk_app_secret, nonce_value);
 
-        // Pop the 5 card notes
+        debug_log_format("[NFT] commit_five_nfts_join: owner={0} nonce={1} game_id={2}", [owner.to_field(), nonce_value, game_id]);
+        for i in 0..5 {
+            debug_log_format("[NFT] commit_join: requesting token_id={0}", [token_ids[i]]);
+        }
+
+        // Log card nullifiers before popping (read-only peek)
+        log_card_nullifiers(self.storage, owner, token_ids, nhk_app_secret);
+
+        // Pop the 5 card notes (unchanged code path)
         let options = NoteGetterOptions::with_filter(filter_by_token_ids, token_ids);
         let notes = self.storage.private_nfts.at(owner).pop_notes(options);
         assert(notes.len() == 5, "Could not find all 5 cards");
+
+        for i in 0..5 {
+            debug_log_format("[NFT] commit_join: popped note[{0}] value={1}", [i as Field, notes.get(i).value]);
+        }
 
         // card_commit_hash = poseidon2([card_ids[0..5], blinding_factor])
         let mut to_hash: [Field; 6] = [0; 6];
@@ -737,6 +691,7 @@ pub contract TripleTriadNFT {
         let player_state_hash = poseidon2_hash(randomness);
 
         push_note_nonce(self.context, self.storage, owner, nonce_value + 6);
+        debug_log_format("[NFT] commit_join: card_commit={0} player_state={1}", [card_commit_hash, player_state_hash]);
 
         [card_commit_hash, player_state_hash]
     }
@@ -747,16 +702,14 @@ pub contract TripleTriadNFT {
         let game = self.storage.game_contract.read();
         assert(self.msg_sender() == game, "Only game contract can call");
 
+        debug_log_format("[NFT] mint_for_game_winner: to={0}", [to.to_field()]);
         for i in 0..6 {
+            debug_log_format("[NFT] winner_mint[{0}]: token_id={1} randomness={2}", [i as Field, token_ids[i], randomness[i]]);
             let _: Field = create_and_push_note(self.context, to, token_ids[i], randomness[i]);
+            let note_tag = derive_note_tag(randomness[i]);
+            let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
+            self.emit(CardCreated { note_tag, note_payload }).deliver_to(to, MessageDelivery.OFFCHAIN);
         }
-    }
-
-    #[external("private")]
-    fn debug_mint(token_id: Field, to: AztecAddress, randomness: Field)
-    {
-        debug_log_format("TEST TEST TEST ", [randomness]);
-        let _: Field = create_and_push_note(self.context, to, token_id, randomness);
     }
 
     #[external("private")]
@@ -764,8 +717,13 @@ pub contract TripleTriadNFT {
         let game = self.storage.game_contract.read();
         assert(self.msg_sender() == game, "Only game contract can call");
 
+        debug_log_format("[NFT] mint_for_game_loser: to={0}", [to.to_field()]);
         for i in 0..4 {
+            debug_log_format("[NFT] loser_mint[{0}]: token_id={1} randomness={2}", [i as Field, token_ids[i], randomness[i]]);
             let _ = create_and_push_note(self.context, to, token_ids[i], randomness[i]);
+            let note_tag = derive_note_tag(randomness[i]);
+            let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
+            self.emit(CardCreated { note_tag, note_payload }).deliver_to(to, MessageDelivery.OFFCHAIN);
         }
     }
 
@@ -781,7 +739,7 @@ pub contract TripleTriadNFT {
         }
     }
 
-    /// OFFCHAIN draw mint for settlement --uses explicit randomness, no tagging.
+    /// OFFCHAIN draw mint for settlement --uses explicit randomness, with tagging for PXE discovery.
     #[external("private")]
     fn mint_for_game_draw_offchain(token_ids: [Field; 5], to: AztecAddress, randomness: [Field; 5]) {
         let game = self.storage.game_contract.read();
@@ -789,6 +747,9 @@ pub contract TripleTriadNFT {
 
         for i in 0..5 {
             let _ = create_and_push_note(self.context, to, token_ids[i], randomness[i]);
+            let note_tag = derive_note_tag(randomness[i]);
+            let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
+            self.emit(CardCreated { note_tag, note_payload }).deliver_to(to, MessageDelivery.OFFCHAIN);
         }
     }
 

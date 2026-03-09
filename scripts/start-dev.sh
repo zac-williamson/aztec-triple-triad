@@ -86,7 +86,7 @@ echo -e "${GREEN}  ✓ Backend started (PID: $BACKEND_PID) on ws://localhost:517
 echo ""
 echo -e "${YELLOW}Starting frontend Vite dev server...${NC}"
 cd "$ROOT_DIR/packages/frontend"
-npx vite &
+LOG_LEVEL="info;debug:contract_log" npx vite &
 FRONTEND_PID=$!
 cd "$ROOT_DIR"
 

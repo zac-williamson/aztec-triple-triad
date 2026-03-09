@@ -362,12 +362,16 @@ pub contract TripleTriadGame {
                 .mint_for_game_winner(winner_tokens, caller, caller_randomness)
                 .call(self.context);
 
-            // Loser gets their 5 cards minus the transferred one
+            // Loser gets their 5 cards minus ONE copy of the transferred card.
+            // Only skip the first match (the loser may hold duplicate card IDs).
             let mut loser_tokens: [Field; 4] = [0; 4];
             let mut loser_rand: [Field; 4] = [0; 4];
             let mut idx: u32 = 0;
+            let mut removed = false;
             for i in 0..5 {
-                if opponent_card_ids[i] != card_to_transfer {
+                if (opponent_card_ids[i] == card_to_transfer) & (!removed) {
+                    removed = true;
+                } else {
                     loser_tokens[idx] = opponent_card_ids[i];
                     loser_rand[idx] = opponent_randomness[i];
                     idx += 1;

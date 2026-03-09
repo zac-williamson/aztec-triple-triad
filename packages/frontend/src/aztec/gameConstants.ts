@@ -8,7 +8,7 @@ export const AZTEC_SETTLE_TX_TIMEOUT = 600;
 export const PXE_INITIAL_SYNC_DELAY = 5000;
 
 /** Max iterations to poll PXE sync status */
-export const PXE_SYNC_MAX_POLLS = 30;
+export const PXE_SYNC_MAX_POLLS = 60;
 
 /** Delay between PXE sync polls (ms) */
 export const PXE_SYNC_POLL_INTERVAL = 1000;

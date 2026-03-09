@@ -621,13 +621,15 @@ describe('E2E Aztec Settlement', () => {
 
     // Import loser notes (4 cards: 5 original - 1 transferred)
     if (!isDraw) {
-      const loserTokenIds = opponentCardIds.filter((id: number) => id !== cardToTransfer);
+      const loserTokenIds: number[] = [];
       const loserRand: any[] = [];
-      let idx = 0;
+      let removed = false;
       for (let i = 0; i < opponentCardIds.length; i++) {
-        if (opponentCardIds[i] !== cardToTransfer) {
+        if (opponentCardIds[i] === cardToTransfer && !removed) {
+          removed = true;
+        } else {
+          loserTokenIds.push(opponentCardIds[i]);
           loserRand.push(opponentRandomness[i]);
-          idx++;
         }
       }
       await importNotes(nftContract, node, result.txHash, loserAddr, loserTokenIds, loserRand);

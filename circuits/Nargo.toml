@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "card_data",
     "prove_hand",
     "game_move",
 ]

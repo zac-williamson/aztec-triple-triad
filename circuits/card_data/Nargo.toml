@@ -1,0 +1,5 @@
+[package]
+name = "card_data"
+type = "lib"
+authors = [""]
+compiler_version = ">=0.36.0"

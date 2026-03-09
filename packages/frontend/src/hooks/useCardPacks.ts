@@ -8,15 +8,14 @@ export interface LocationInfo {
   name: string;
   description: string;
   cooldownHours: number;
-  methodName: string;
 }
 
 export const LOCATIONS: LocationInfo[] = [
-  { id: 1, name: 'River', description: 'Shallow waters teeming with common axolotls', cooldownHours: 4, methodName: 'get_cards_from_river' },
-  { id: 2, name: 'Forest', description: 'Dense canopy hiding uncommon species', cooldownHours: 8, methodName: 'get_cards_from_forest' },
-  { id: 3, name: 'Beach', description: 'Tidal pools with rare coastal dwellers', cooldownHours: 12, methodName: 'get_cards_from_beach' },
-  { id: 4, name: 'City', description: 'Urban waterways harbor exotic specimens', cooldownHours: 16, methodName: 'get_cards_from_city' },
-  { id: 5, name: 'Dockyard', description: 'Deep harbor waters conceal legendary creatures', cooldownHours: 20, methodName: 'get_cards_from_dockyard' },
+  { id: 1, name: 'River', description: 'Shallow waters teeming with common axolotls', cooldownHours: 4 },
+  { id: 2, name: 'Forest', description: 'Dense canopy hiding uncommon species', cooldownHours: 8 },
+  { id: 3, name: 'Beach', description: 'Tidal pools with rare coastal dwellers', cooldownHours: 12 },
+  { id: 4, name: 'City', description: 'Urban waterways harbor exotic specimens', cooldownHours: 16 },
+  { id: 5, name: 'Dockyard', description: 'Deep harbor waters conceal legendary creatures', cooldownHours: 20 },
 ];
 
 export type PackTxStatus = 'idle' | 'sending' | 'confirming' | 'done' | 'error';
@@ -146,11 +145,8 @@ export function useCardPacks(
 
       setTxStatus('confirming');
 
-      // Call the location-specific method (no args — derives randomness deterministically)
-      const methodFn = (nftContract.methods as any)[location.methodName];
-      if (!methodFn) throw new Error(`Method ${location.methodName} not found on contract`);
-
-      const receipt = await methodFn().send({
+      // Call the generic location method with location ID
+      const receipt = await nftContract.methods.get_cards_from_location(location.id).send({
         from: addr,
         fee: { paymentMethod },
         wait: { timeout: AZTEC_TX_TIMEOUT },

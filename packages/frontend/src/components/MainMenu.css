@@ -219,3 +219,25 @@
   margin: 0;
   line-height: 1.5;
 }
+
+.main-menu__btn-clear {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  padding: 6px 14px;
+  border: 1px solid rgba(232, 228, 216, 0.15);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.4);
+  color: rgba(232, 228, 216, 0.4);
+  font-family: 'Nunito', sans-serif;
+  font-size: 11px;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: all 0.2s ease;
+}
+
+.main-menu__btn-clear:hover {
+  color: rgba(232, 228, 216, 0.7);
+  border-color: rgba(232, 228, 216, 0.3);
+  background: rgba(0, 0, 0, 0.6);
+}

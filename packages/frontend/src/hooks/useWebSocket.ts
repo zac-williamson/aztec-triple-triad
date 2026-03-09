@@ -21,6 +21,9 @@ export interface UseWebSocketReturn {
   // Note relay (offchain settlement delivery)
   incomingNoteData: { txHash: string; notes: PlaintextNoteData[] } | null;
   relayNoteData: (gameId: string, txHash: string, notes: PlaintextNoteData[]) => void;
+  // On-chain tx lifecycle
+  opponentTxConfirmed: boolean;
+  notifyTxConfirmed: (gameId: string, txType: 'create_game' | 'join_game', txHash: string) => void;
   // Matchmaking
   matchmakingStatus: 'idle' | 'queued' | 'matched';
   queuePosition: number | null;
@@ -28,7 +31,7 @@ export interface UseWebSocketReturn {
   joinGame: (gameId: string, cardIds: number[]) => void;
   placeCard: (handIndex: number, row: number, col: number) => void;
   submitHandProof: (gameId: string, handProof: HandProofData) => void;
-  submitMoveProof: (gameId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData) => void;
+  submitMoveProof: (gameId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData, moveNumber: number) => void;
   shareAztecInfo: (gameId: string, aztecAddress: string, onChainGameId?: string, gameRandomness?: string[]) => void;
   opponentGameRandomness: string[] | null;
   refreshGameList: () => void;
@@ -60,6 +63,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const [opponentCardIds, setOpponentCardIds] = useState<number[]>([]);
   const [incomingNoteData, setIncomingNoteData] = useState<{ txHash: string; notes: PlaintextNoteData[] } | null>(null);
   const [opponentGameRandomness, setOpponentGameRandomness] = useState<string[] | null>(null);
+  const [opponentTxConfirmed, setOpponentTxConfirmed] = useState(false);
   const [matchmakingStatus, setMatchmakingStatus] = useState<'idle' | 'queued' | 'matched'>('idle');
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
 
@@ -163,6 +167,16 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
           case 'NOTE_DATA':
             setIncomingNoteData({ txHash: msg.txHash, notes: msg.notes });
             break;
+          case 'ON_CHAIN_STATUS': {
+            const s = msg.status;
+            const myRole = playerNumberRef.current;
+            if (myRole === 2 && s.player1Tx === 'confirmed') {
+              setOpponentTxConfirmed(true);
+            } else if (myRole === 1 && s.player2Tx === 'confirmed') {
+              setOpponentTxConfirmed(true);
+            }
+            break;
+          }
           case 'MATCHMAKING_QUEUED':
             setMatchmakingStatus('queued');
             setQueuePosition(msg.position);
@@ -248,24 +262,18 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     send({ type: 'SHARE_AZTEC_INFO', gameId: gId, aztecAddress, onChainGameId, gameRandomness });
   }, [send]);
 
-  const submitMoveProof = useCallback((gId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData) => {
+  const submitMoveProof = useCallback((gId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData, moveNumber: number) => {
     if (!gId) return;
     setError(null);
-    // Derive global move number from board state (count occupied cells),
-    // consistent with how placeCard derives it.
-    let moveNumber = 0;
-    if (gameState) {
-      for (const r of gameState.board) {
-        for (const cell of r) {
-          if (cell.card !== null) moveNumber++;
-        }
-      }
-    }
     send({ type: 'SUBMIT_MOVE_PROOF', gameId: gId, handIndex, row, col, moveNumber, moveProof });
-  }, [send, gameState]);
+  }, [send]);
 
   const relayNoteData = useCallback((gId: string, txHash: string, notes: PlaintextNoteData[]) => {
     send({ type: 'RELAY_NOTE_DATA', gameId: gId, txHash, notes });
+  }, [send]);
+
+  const notifyTxConfirmed = useCallback((gId: string, txType: 'create_game' | 'join_game', txHash: string) => {
+    send({ type: 'TX_CONFIRMED', gameId: gId, txType, txHash });
   }, [send]);
 
   const queueMatchmaking = useCallback((cardIds: number[]) => {
@@ -302,6 +310,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     setOpponentCardIds([]);
     setIncomingNoteData(null);
     setOpponentGameRandomness(null);
+    setOpponentTxConfirmed(false);
     setMatchmakingStatus('idle');
     setQueuePosition(null);
     playerNumberRef.current = null;
@@ -329,7 +338,9 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     opponentCardIds,
     incomingNoteData,
     opponentGameRandomness,
+    opponentTxConfirmed,
     relayNoteData,
+    notifyTxConfirmed,
     matchmakingStatus,
     queuePosition,
     createGame,

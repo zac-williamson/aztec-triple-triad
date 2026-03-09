@@ -22,6 +22,9 @@ export interface NoteToImport {
 /** Cached NFT artifact to avoid repeated fetch() calls */
 let _cachedNftArtifact: any = null;
 
+/** Cached NFT contract instance (keyed by wallet reference) */
+let _contractCache: { wallet: unknown; contract: any } | null = null;
+
 /** Load and cache the NFT contract artifact */
 export async function getNftArtifact(): Promise<any> {
   if (_cachedNftArtifact) return _cachedNftArtifact;
@@ -70,12 +73,20 @@ export async function importNotesFromTx(
 ): Promise<number[]> {
   const { AztecAddress } = await import('@aztec/aztec.js/addresses');
   const { Fr } = await import('@aztec/aztec.js/fields');
-  const { Contract } = await import('@aztec/aztec.js/contracts');
 
   const myAddr = AztecAddress.fromString(accountAddress);
-  const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress!);
-  const artifact = await getNftArtifact();
-  const nftContract = await Contract.at(nftAddr, artifact, wallet as never);
+
+  // Reuse cached contract instance when wallet hasn't changed
+  if (!_contractCache || _contractCache.wallet !== wallet) {
+    const { Contract } = await import('@aztec/aztec.js/contracts');
+    const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress!);
+    const artifact = await getNftArtifact();
+    _contractCache = {
+      wallet,
+      contract: await Contract.at(nftAddr, artifact, wallet as never),
+    };
+  }
+  const nftContract = _contractCache.contract;
 
   // Fetch TxEffect
   const txEffect = await fetchTxEffect(nodeClient, txHashStr);
@@ -101,9 +112,12 @@ export async function importNotesFromTx(
   const txHashFr = toFr(Fr, txHashStr);
   const firstNullFr = toFr(Fr, firstNullifier);
 
+  console.log(`[noteImporter] ${label}: firstNullifier=${firstNullifier}`);
+  console.log(`[noteImporter] ${label}: noteHashes=`, uniqueNoteHashes);
+
   // Import each note
   for (const note of notes) {
-    console.log(`[noteImporter] ${label}: importing tokenId=${note.tokenId}`);
+    console.log(`[noteImporter] ${label}: importing tokenId=${note.tokenId} randomness=${note.randomness}`);
     await nftContract.methods
       .import_note(
         myAddr,

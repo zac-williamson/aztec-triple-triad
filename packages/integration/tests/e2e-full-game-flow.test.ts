@@ -912,10 +912,16 @@ describe('E2E Full Game Flow -- Frontend Proofs + WebSocket + Aztec Settlement',
       const winnerRand = callerRandomness.slice(0, winnerTokenIds.length);
       await importNotes(nftContract, node, settlementResult.txHash, winnerAddr, winnerTokenIds, winnerRand);
 
-      const loserTokenIds = opponentCardIds.filter((id: number) => id !== cardToTransfer);
+      const loserTokenIds: number[] = [];
       const loserRand: any[] = [];
+      let removed = false;
       for (let i = 0; i < opponentCardIds.length; i++) {
-        if (opponentCardIds[i] !== cardToTransfer) loserRand.push(opponentRandomness[i]);
+        if (opponentCardIds[i] === cardToTransfer && !removed) {
+          removed = true;
+        } else {
+          loserTokenIds.push(opponentCardIds[i]);
+          loserRand.push(opponentRandomness[i]);
+        }
       }
       await importNotes(nftContract, node, settlementResult.txHash, loserAddr, loserTokenIds, loserRand);
     }

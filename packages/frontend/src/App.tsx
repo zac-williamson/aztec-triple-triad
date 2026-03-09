@@ -1,5 +1,5 @@
 import { AztecProvider, useAztecContext } from './aztec/AztecContext';
-import { useGameOrchestrator } from './hooks/useGameOrchestrator';
+import { useGame } from './hooks/useGame';
 import { MenuScene } from './components3d/MenuScene';
 import { MainMenu } from './components/MainMenu';
 import { CardSelector } from './components/CardSelector';
@@ -13,7 +13,7 @@ const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
 
 function AppInner() {
   const aztec = useAztecContext();
-  const game = useGameOrchestrator(WS_URL);
+  const game = useGame(WS_URL);
 
   const showMenuScene = game.screen === 'main-menu' || game.screen === 'card-selector'
     || game.screen === 'finding-opponent' || game.screen === 'card-packs' || game.screen === 'pack-opening';
@@ -80,16 +80,16 @@ function AppInner() {
           onBackToLobby={game.handleBackToMenu}
           aztecStatus={aztec.status}
           proofStatus={{
-            hand: game.session.handProofStatus,
-            move: game.session.moveProofStatus,
+            hand: game.handProofStatus,
+            move: game.moveProofStatus,
           }}
           canSettle={
-            game.session.canSettle &&
+            game.canSettle &&
             game.ws.gameState?.status === 'finished' &&
             game.ws.gameState?.winner === (game.ws.playerNumber === 1 ? 'player1' : 'player2')
           }
           onSettle={game.handleSettle}
-          settleTxStatus={game.session.settleTxStatus}
+          settleTxStatus={game.settleTxStatus}
         />
       )}
       {game.screen === 'game' && !game.ws.gameState && (

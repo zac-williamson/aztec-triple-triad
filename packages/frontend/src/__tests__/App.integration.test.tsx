@@ -38,7 +38,7 @@ vi.mock('../hooks/useAztec', () => ({
   }),
 }));
 
-// Mock useWebSocket (consumed by useGameOrchestrator)
+// Mock useWebSocket (consumed by useGame)
 vi.mock('../hooks/useWebSocket', () => ({
   useWebSocket: () => ({
     connected: true,
@@ -57,6 +57,7 @@ vi.mock('../hooks/useWebSocket', () => ({
     opponentCardIds: [],
     incomingNoteData: null,
     opponentGameRandomness: null,
+    opponentTxConfirmed: false,
     matchmakingStatus: 'idle' as const,
     queuePosition: null,
     createGame: vi.fn(),
@@ -66,6 +67,7 @@ vi.mock('../hooks/useWebSocket', () => ({
     submitMoveProof: vi.fn(),
     shareAztecInfo: vi.fn(),
     relayNoteData: vi.fn(),
+    notifyTxConfirmed: vi.fn(),
     refreshGameList: vi.fn(),
     leaveGame: vi.fn(),
     disconnect: vi.fn(),
@@ -75,34 +77,20 @@ vi.mock('../hooks/useWebSocket', () => ({
   }),
 }));
 
-// Mock useGameSession (consumed by useGameOrchestrator)
-vi.mock('../hooks/useGameSession', () => ({
-  useGameSession: () => ({
-    onChainGameId: null,
-    gameRandomness: null,
-    blindingFactor: null,
-    isContractAvailable: false,
-    settleTxStatus: 'idle' as const,
-    settleTxHash: null,
-    settleError: null,
-    myHandProof: null,
-    opponentHandProof: null,
-    collectedMoveProofs: [],
-    canSettle: false,
-    myCardCommit: null,
-    opponentCardCommit: null,
-    handProofStatus: 'idle' as const,
-    moveProofStatus: 'idle' as const,
-    createGameOnChain: vi.fn(),
-    joinGameOnChain: vi.fn(),
-    settleGame: vi.fn(),
-    setOpponentHandProof: vi.fn(),
-    addMoveProof: vi.fn(),
-    generateHandProofFromState: vi.fn(),
-    generateMoveProofForPlacement: vi.fn().mockResolvedValue(null),
-    restoreState: vi.fn(),
+// Mock useProofGeneration (consumed by useGame)
+vi.mock('../hooks/useProofGeneration', () => ({
+  useProofGeneration: () => ({
+    generateHandProof: vi.fn(),
+    generateMoveProof: vi.fn().mockResolvedValue(null),
     reset: vi.fn(),
   }),
+}));
+
+// Mock contracts module
+vi.mock('../aztec/contracts', () => ({
+  ensureContracts: vi.fn(),
+  contractCache: { gameContract: null },
+  warmupContracts: vi.fn(),
 }));
 
 describe('App Integration', () => {
@@ -120,7 +108,7 @@ describe('App Integration', () => {
   });
 
   it('passes mapWinnerId correctly', async () => {
-    const { mapWinnerId } = await import('../hooks/useGameOrchestrator');
+    const { mapWinnerId } = await import('../hooks/useGame');
     expect(mapWinnerId(null)).toBe(0);
     expect(mapWinnerId('player1')).toBe(1);
     expect(mapWinnerId('player2')).toBe(2);
