@@ -219,7 +219,7 @@ export function useGame(wsUrl: string): UseGameReturn {
 
     // Diagnostic: check what notes the PXE thinks are available
     try {
-      const pxeCards = await nftContract.methods.get_private_cards(senderAddr).simulate({ from: senderAddr });
+      const pxeCards = await nftContract.methods.get_private_cards(senderAddr, 0).simulate({ from: senderAddr });
       const cardList = Array.isArray(pxeCards) ? pxeCards.map((c: any) => Number(c)) : pxeCards;
       console.log('[useGame] PXE private cards before create_game:', cardList);
     } catch (e) {
@@ -232,6 +232,31 @@ export function useGame(wsUrl: string): UseGameReturn {
     const txHash = (receipt as any).txHash?.toString();
     if (!txHash) throw new Error('create_game tx returned no txHash');
     console.log('[useGame] create_game tx mined, txHash:', txHash);
+
+    // DIAGNOSTIC: dump TxEffect nullifiers from create_game so we can compare
+    // with PXE's stored siloedNullifiers
+    try {
+      const nodeClient = aztec.nodeClient as any;
+      if (nodeClient) {
+        const { TxHash } = await import('@aztec/stdlib/tx');
+        const hash = TxHash.fromString(txHash);
+        const txResult = await nodeClient.getTxEffect(hash);
+        if (txResult?.data) {
+          const nullifiers = txResult.data.nullifiers ?? [];
+          console.log(`[useGame] create_game TxEffect: ${nullifiers.length} nullifiers, block=${txResult.l2BlockNumber}`);
+          nullifiers.forEach((n: any, i: number) => {
+            console.log(`[useGame] create_game nullifier[${i}]: ${n.toString()}`);
+          });
+          const noteHashes = txResult.data.noteHashes ?? [];
+          console.log(`[useGame] create_game TxEffect: ${noteHashes.length} noteHashes`);
+          noteHashes.forEach((h: any, i: number) => {
+            console.log(`[useGame] create_game noteHash[${i}]: ${h.toString()}`);
+          });
+        }
+      }
+    } catch (diagErr) {
+      console.warn('[useGame] create_game diagnostic failed:', diagErr);
+    }
 
     return { gameId: gameIdHex, randomness: randomnessHex, blindingFactor: blindingHex, txHash };
   }, [aztec.wallet, aztec.accountAddress]);

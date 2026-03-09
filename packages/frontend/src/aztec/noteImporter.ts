@@ -97,9 +97,17 @@ export async function importNotesFromTx(
 
   // Extract unique note hashes and first nullifier
   const rawNoteHashes: any[] = txEffect.noteHashes ?? [];
+  console.log(`[noteImporter] ${label}: RAW noteHashes count=${rawNoteHashes.length}`);
+  rawNoteHashes.forEach((h: any, i: number) => {
+    console.log(`[noteImporter] ${label}: RAW noteHash[${i}]: ${h.toString()}`);
+  });
   const uniqueNoteHashes: string[] = rawNoteHashes
     .map((h: any) => h.toString())
     .filter((h: string) => h !== '0' && h !== '0x0' && !/^0x0+$/.test(h));
+  console.log(`[noteImporter] ${label}: FILTERED noteHashes count=${uniqueNoteHashes.length}`);
+  uniqueNoteHashes.forEach((h: string, i: number) => {
+    console.log(`[noteImporter] ${label}: FILTERED noteHash[${i}]: ${h}`);
+  });
   const firstNullifier: string = txEffect.nullifiers?.[0]?.toString() ?? '0';
 
   console.log(`[noteImporter] ${label}: TxEffect has ${uniqueNoteHashes.length} non-zero note hashes`);

@@ -93,7 +93,7 @@ global AXOLOTL_PAYLOAD_IV_FIELD: Field = 0x5061796c6f61644956;
 /// IV for deterministic game_id derivation: "GameId" = 0x47616d654964
 global GAME_ID_IV_FIELD: Field = 0x47616d654964;
 /// IV for deterministic game randomness derivation: "GameRand" = 0x47616d6552616e64
-global GAME_RANDOMNESS_IV_FIELD: Field = 0x47616d6552616e64;
+
 
 /// Storage slot for private_nfts: use TripleTriadNFT::storage_layout().private_nfts.slot
 /// The #[storage] macro assigns slots including hidden internal fields, so never hardcode.
@@ -141,7 +141,7 @@ pub contract TripleTriadNFT {
         STARTER_CARD_IDS, COOLDOWN_SEPARATOR,
         LOCATION_RIVER, LOCATION_FOREST, LOCATION_BEACH, LOCATION_CITY, LOCATION_DOCKYARD,
         AXOLOTL_NOTE_TAG_FIELD, AXOLOTL_NOTE_SECRET_IV_FIELD, AXOLOTL_PAYLOAD_IV_FIELD,
-        GAME_ID_IV_FIELD, GAME_RANDOMNESS_IV_FIELD,
+        GAME_ID_IV_FIELD,
     };
 
 
@@ -303,12 +303,12 @@ pub contract TripleTriadNFT {
     }
 
     /// Derive deterministic game randomness (6 values) from nhk_app_secret and nonce_value.
+    /// Uses derive_note_randomness internally so all note randomness uses the same IV and formula.
     #[contract_library_method]
     fn derive_game_randomness(nhk_app_secret: Field, nonce_value: Field) -> [Field; 6] {
-        let iv = poseidon2_hash([GAME_RANDOMNESS_IV_FIELD]);
         let mut result: [Field; 6] = [0; 6];
         for i in 0..6 {
-            result[i] = poseidon2_hash([nhk_app_secret, nonce_value, i as Field, iv]);
+            result[i] = derive_note_randomness(nhk_app_secret, nonce_value, i as Field);
         }
         result
     }
@@ -449,7 +449,9 @@ pub contract TripleTriadNFT {
         let locations = [LOCATION_RIVER, LOCATION_FOREST, LOCATION_BEACH, LOCATION_CITY, LOCATION_DOCKYARD];
         for i in 0..5 {
             let storage_slot = self.storage.cooldown_notes.at(locations[i]).get_storage_slot();
-            let partial = UintNote::partial(owner, storage_slot, self.context, owner, contract_address);
+            debug_log_format("PARTIAL NOTE STORAGE SLOT ={0}", [storage_slot]);
+
+            let partial: PartialUintNote = UintNote::partial(owner, storage_slot, self.context, owner, contract_address);
             self.enqueue_self.finalize_initial_cooldown(partial);
         }
     }
@@ -972,6 +974,10 @@ pub contract TripleTriadNFT {
         self.storage.player_cooldown.at(cooldown_key).read()
     }
 
+    #[external("public")]
+    #[only_self]
+    fn test_noop() {}
+
     // --- Randomness Derivation Utility ---
 
     /// Derive note_randomness values for cards created at a given nonce_value.
@@ -1120,5 +1126,96 @@ pub contract TripleTriadNFT {
         } else {
             notes.get(0).value
         }
+    }
+
+    // --- Test-only Functions ---
+
+    /// Same as mint_for_game_winner but without game contract authorization check.
+    /// Used for testing note creation via create_and_push_note path.
+    #[external("private")]
+    fn test_mint_winner_cards(token_ids: [Field; 6], to: AztecAddress, randomness: [Field; 6]) {
+        debug_log_format("[NFT] test_mint_winner_cards: to={0}", [to.to_field()]);
+        for i in 0..6 {
+            debug_log_format("[NFT] test_mint[{0}]: token_id={1} randomness={2}", [i as Field, token_ids[i], randomness[i]]);
+            let _: Field = create_and_push_note(self.context, to, token_ids[i], randomness[i]);
+            let note_tag = derive_note_tag(randomness[i]);
+            let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
+            self.emit(CardCreated { note_tag, note_payload }).deliver_to(to, MessageDelivery.OFFCHAIN);
+        }
+    }
+
+    /// Same as get_cards_for_new_player but with a configurable nonce_value for randomness derivation.
+    /// Skips cooldown notes. Used for testing to avoid randomness collisions.
+    #[external("private")]
+    fn get_cards_for_new_player_test(nonce_value: Field) {
+        let owner = self.msg_sender();
+
+        let owner_npk_m = get_public_keys(owner).npk_m;
+        let owner_npk_m_hash = owner_npk_m.hash();
+        let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
+
+        for i in 0..5 {
+            let note_randomness = derive_note_randomness(nhk_app_secret, nonce_value, i as Field);
+            let note_tag = derive_note_tag(note_randomness);
+            let note_payload = encrypt_card_payload(STARTER_CARD_IDS[i], note_randomness);
+
+            let _: Field = create_and_push_note(self.context, owner, STARTER_CARD_IDS[i], note_randomness);
+            self.emit(CardCreated { note_tag, note_payload }).deliver_to(owner, MessageDelivery.OFFCHAIN);
+        }
+
+        // Push nonce directly (no pop) -- mirrors real fn's push_note_nonce(... 5)
+        push_note_nonce(self.context, self.storage, owner, nonce_value + 5);
+
+        // Enqueue a no-op public call to match the real fn's enqueue pattern
+        self.enqueue_self.test_noop();
+    }
+
+    /// Initialize a note nonce for the caller without minting any cards.
+    /// Used for testing when we want to mint cards first, then nullify them.
+    #[external("private")]
+    fn test_init_nonce(initial_value: Field) {
+        let owner = self.msg_sender();
+        debug_log_format("[NFT] test_init_nonce: owner={0} value={1}", [owner.to_field(), initial_value]);
+        push_note_nonce(self.context, self.storage, owner, initial_value);
+    }
+
+    /// Same as test_mint_winner_cards but also advances the nonce.
+    /// Used for testing the full mint+nonce-update flow.
+    #[external("private")]
+    fn test_mint_winner_cards_with_nonce(token_ids: [Field; 6], to: AztecAddress, randomness: [Field; 6]) {
+        debug_log_format("[NFT] test_mint_winner_cards_with_nonce: to={0}", [to.to_field()]);
+        for i in 0..6 {
+            debug_log_format("[NFT] test_mint[{0}]: token_id={1} randomness={2}", [i as Field, token_ids[i], randomness[i]]);
+            let _: Field = create_and_push_note(self.context, to, token_ids[i], randomness[i]);
+            let note_tag = derive_note_tag(randomness[i]);
+            let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
+            self.emit(CardCreated { note_tag, note_payload }).deliver_to(to, MessageDelivery.OFFCHAIN);
+        }
+        // Advance nonce by 6 (same as mint_for_game_winner)
+        let nonce_value = pop_note_nonce(self.context, self.storage, to);
+        push_note_nonce(self.context, self.storage, to, nonce_value + 6);
+    }
+
+    /// Nullify 5 cards by popping them from the private set.
+    /// Used for testing: consumes card notes so their nullifiers appear on-chain.
+    #[external("private")]
+    fn test_nullify_cards(owner: AztecAddress, token_ids: [Field; 5]) {
+        assert(self.msg_sender() == owner, "Only owner can nullify");
+
+        let owner_npk_m = get_public_keys(owner).npk_m;
+        let owner_npk_m_hash = owner_npk_m.hash();
+        let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
+
+        // Log nullifiers before popping for diagnostic comparison
+        log_card_nullifiers(self.storage, owner, token_ids, nhk_app_secret);
+
+        let options = NoteGetterOptions::with_filter(filter_by_token_ids, token_ids);
+        let notes = self.storage.private_nfts.at(owner).pop_notes(options);
+        debug_log_format("[NFT] test_nullify_cards: popped {0} notes", [notes.len() as Field]);
+        assert(notes.len() == 5, "Could not find all 5 cards to nullify");
+
+        // update nonce
+        let nonce_value = pop_note_nonce(self.context, self.storage, self.msg_sender());
+        push_note_nonce(self.context, self.storage, self.msg_sender(), nonce_value + 6);
     }
 }
