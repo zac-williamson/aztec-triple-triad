@@ -257,6 +257,9 @@ cooldown_notes: {
     /** sync_state() */
     sync_state: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
+    /** test_create_10_cards(to: struct, token_ids: array, nonce_offset: field) */
+    test_create_10_cards: ((to: AztecAddressLike, token_ids: FieldLike[], nonce_offset: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
     /** test_init_nonce(initial_value: field) */
     test_init_nonce: ((initial_value: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
@@ -265,6 +268,9 @@ cooldown_notes: {
 
     /** test_mint_winner_cards_with_nonce(token_ids: array, to: struct, randomness: array) */
     test_mint_winner_cards_with_nonce: ((token_ids: FieldLike[], to: AztecAddressLike, randomness: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** test_nullify_10_cards(owner: struct, token_ids: array) */
+    test_nullify_10_cards: ((owner: AztecAddressLike, token_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** test_nullify_cards(owner: struct, token_ids: array) */
     test_nullify_cards: ((owner: AztecAddressLike, token_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;

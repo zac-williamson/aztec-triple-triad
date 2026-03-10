@@ -135,7 +135,7 @@ pub contract TripleTriadNFT {
         utils::comparison::Comparator,
     };
     use compressed_string::FieldCompressedString;
-    use super::filters::filter_by_token_ids;
+    use super::filters::{filter_by_token_ids, filter_by_token_ids_10};
     use super::{
         generate_card, get_cooldown_for_location,
         STARTER_CARD_IDS, COOLDOWN_SEPARATOR,
@@ -1217,5 +1217,36 @@ pub contract TripleTriadNFT {
         // update nonce
         let nonce_value = pop_note_nonce(self.context, self.storage, self.msg_sender());
         push_note_nonce(self.context, self.storage, self.msg_sender(), nonce_value + 6);
+    }
+
+    /// Create 10 card notes via create_and_push_note with deterministic randomness.
+    /// token_ids: 10 card IDs to create.
+    /// nonce_offset: used for randomness derivation (each batch should use a different offset).
+    /// Does NOT touch note_nonce -- caller manages nonce separately.
+    #[external("private")]
+    fn test_create_10_cards(to: AztecAddress, token_ids: [Field; 10], nonce_offset: Field) {
+        let owner_npk_m = get_public_keys(to).npk_m;
+        let owner_npk_m_hash = owner_npk_m.hash();
+        let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
+
+        for i in 0..10 {
+            let note_randomness = derive_note_randomness(nhk_app_secret, nonce_offset, i as Field);
+            let _: Field = create_and_push_note(self.context, to, token_ids[i], note_randomness);
+            let note_tag = derive_note_tag(note_randomness);
+            let note_payload = encrypt_card_payload(token_ids[i], note_randomness);
+            self.emit(CardCreated { note_tag, note_payload }).deliver_to(to, MessageDelivery.OFFCHAIN);
+        }
+    }
+
+    /// Nullify 10 cards by popping them from the private set.
+    /// Does NOT touch note_nonce -- caller manages nonce separately.
+    #[external("private")]
+    fn test_nullify_10_cards(owner: AztecAddress, token_ids: [Field; 10]) {
+        assert(self.msg_sender() == owner, "Only owner can nullify");
+
+        let options = NoteGetterOptions::with_filter(filter_by_token_ids_10, token_ids);
+        let notes = self.storage.private_nfts.at(owner).pop_notes(options);
+        debug_log_format("[NFT] test_nullify_10_cards: popped {0} notes", [notes.len() as Field]);
+        assert(notes.len() == 10, "Could not find all 10 cards to nullify");
     }
 }
