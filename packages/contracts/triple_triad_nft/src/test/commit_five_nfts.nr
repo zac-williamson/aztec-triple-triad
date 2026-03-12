@@ -7,7 +7,7 @@ unconstrained fn count_private_cards(
     contract_address: aztec::protocol::address::AztecAddress,
     player: aztec::protocol::address::AztecAddress,
 ) -> u32 {
-    let (cards, _) = env.simulate_utility(
+    let (cards, _) = env.execute_utility(
         TripleTriadNFT::at(contract_address).get_private_cards(player, 0),
     );
     let mut count: u32 = 0;
@@ -89,7 +89,7 @@ unconstrained fn commit_five_nfts_with_duplicate_leaves_one() {
     );
 
     // Should have exactly 1 note remaining (the second id=1 note)
-    let (cards_after, _) = env.simulate_utility(
+    let (cards_after, _) = env.execute_utility(
         TripleTriadNFT::at(contract_address).get_private_cards(player, 0),
     );
 

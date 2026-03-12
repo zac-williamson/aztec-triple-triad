@@ -1,10 +1,10 @@
 {
   "triple_triad_game-TripleTriadGame.json": {
     "contractName": "TripleTriadGame",
-    "hash": "0759307b45ecb08ffc979b41b277e7669f83beff9f461dea17022c4ed51e2bc2"
+    "hash": "8d236359bde70e5d09b7a55a9de59def3ec0fd800b5974b2bed7b8a5d6af32fd"
   },
   "triple_triad_nft-TripleTriadNFT.json": {
     "contractName": "TripleTriadNFT",
-    "hash": "c62a8d338ad9eeebb35d3fb541f512ab5b6920e9145a46c9c9a566e62e40e080"
+    "hash": "896b61375fe632d51d001bbd45bbc36a6143e6e90ff2bbae8a5c779355de9cfa"
   }
 }

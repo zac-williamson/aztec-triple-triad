@@ -46,7 +46,7 @@ Format:
 - Milestone completion status
 - Fix specification (what needs to be done)
 - Project structure and conventions
-- Aztec version: v4.0.0-devnet.2-patch.1
+- Aztec version: v4.1.0-nightly.20260312.2
 
 ## Workflow Rules
 
@@ -62,12 +62,12 @@ You are building a fully functional, visually appealing Triple Triad card game (
 
 **Repository**: git@github.com:zac-williamson/aztec-triple-triad.git
 **Push regularly** - commit and push after completing each major milestone.
-**Aztec version**: v4.0.0-devnet.2-patch.1
+**Aztec version**: v4.1.0-nightly.20260312.2
 
 **CRITICAL RULES:**
 - **NEVER** use `@aztec/test-wallet` or `TestWallet` — this package is FORBIDDEN
 - **ALWAYS** use `@aztec/wallets` with `EmbeddedWallet` from `@aztec/wallets/embedded`
-- **ALL** Aztec dependencies MUST be version `4.0.0-devnet.2-patch.1` — version `patch.0` is FORBIDDEN
+- **ALL** Aztec dependencies MUST be version `4.1.0-nightly.20260312.2`
 
 ## Critical Resources
 
@@ -313,7 +313,7 @@ Commit and push when full integration works.
 
 ### Aztec Development Setup
 - Install Aztec sandbox: follow https://docs.aztec.network/developers/getting_started
-- Use version v4.0.0-devnet.2-patch.1 specifically (patch.0 is FORBIDDEN)
+- Use version v4.1.0-nightly.20260312.2 specifically
 - The sandbox includes PXE, sequencer, and prover
 
 ### Environment Variables
@@ -393,7 +393,7 @@ Frontend pattern (from aztec-chess-app):
 
 The aztec-chess-app is the closest reference for how to build this project's frontend and backend. Study it carefully.
 
-### Aztec SDK Import Paths (for v4.0.0-devnet.2-patch.1)
+### Aztec SDK Import Paths (for v4.1.0-nightly.20260312.2)
 ```typescript
 import { createAztecNodeClient } from "@aztec/aztec.js/node";
 import { Fr } from "@aztec/aztec.js/fields";
@@ -431,7 +431,7 @@ await wallet.registerSender(account.address, 'player1');
 contract.methods.foo().send({ from: account.address, fee: { paymentMethod } }).wait();
 ```
 
-### Aztec SDK Packages (use versions matching v4.0.0-devnet.2-patch.1)
+### Aztec SDK Packages (use versions matching v4.1.0-nightly.20260312.2)
 ```
 @aztec/accounts         - Account management (Schnorr accounts)
 @aztec/aztec.js         - Core SDK (node client, fee payment, fields, addresses, events, wallet)

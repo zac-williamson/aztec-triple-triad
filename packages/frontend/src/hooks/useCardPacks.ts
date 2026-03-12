@@ -90,7 +90,7 @@ export function useCardPacks(
 
       for (const loc of LOCATIONS) {
         try {
-          const result = await nftContract.methods
+          const { result } = await nftContract.methods
             .get_player_cooldown(addr, loc.id)
             .simulate({ from: addr });
           const lastCallEpochSec = Number(result);
@@ -133,12 +133,12 @@ export function useCardPacks(
       const addr = AztecAddress.fromString(accountAddress);
 
       // Get current note nonce (deterministic counter for card generation)
-      const nonceValue = await nftContract.methods
+      const { result: nonceValue } = await nftContract.methods
         .get_note_nonce(addr)
         .simulate({ from: addr });
 
       // Preview which card IDs will be generated (runs client-side via simulate)
-      const previewResult = await nftContract.methods
+      const { result: previewResult } = await nftContract.methods
         .preview_card_ids(nonceValue)
         .simulate({ from: addr });
       const cardIds: number[] = Array.from({ length: CARDS_PER_PACK }, (_, i) => Number(previewResult[i]));
@@ -146,7 +146,7 @@ export function useCardPacks(
       setTxStatus('confirming');
 
       // Call the generic location method with location ID
-      const receipt = await nftContract.methods.get_cards_from_location(location.id).send({
+      const { receipt } = await nftContract.methods.get_cards_from_location(location.id).send({
         from: addr,
         fee: { paymentMethod },
         wait: { timeout: AZTEC_TX_TIMEOUT },
@@ -157,7 +157,7 @@ export function useCardPacks(
       // Import the card notes (create_and_push_note skips tagging)
       if (txHash && nodeClient) {
         try {
-          const randomnessResult = await nftContract.methods
+          const { result: randomnessResult } = await nftContract.methods
             .compute_note_randomness(nonceValue, CARDS_PER_PACK)
             .simulate({ from: addr });
           const notes = cardIds.map((id, i) => ({

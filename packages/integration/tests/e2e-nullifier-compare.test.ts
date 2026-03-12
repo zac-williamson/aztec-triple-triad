@@ -114,7 +114,7 @@ describe('E2E Nullifier Comparison: real vs test function', () => {
   }
 
   async function getPrivateCards(contract: any): Promise<number[]> {
-    const [page] = await contract.methods
+    const { result: [page] } = await contract.methods
       .get_private_cards(playerAddr, 0)
       .simulate({ from: playerAddr });
     return page
@@ -123,7 +123,7 @@ describe('E2E Nullifier Comparison: real vs test function', () => {
   }
 
   async function getNoteRandomness(contract: any, nonceValue: bigint, count: number): Promise<Fr[]> {
-    const result = await contract.methods
+    const { result } = await contract.methods
       .compute_note_randomness(new Fr(nonceValue), count)
       .simulate({ from: playerAddr });
     const values: Fr[] = [];
@@ -163,20 +163,20 @@ describe('E2E Nullifier Comparison: real vs test function', () => {
 
     // Deploy TWO separate NFT contracts (so they have independent state)
     console.log('Deploying REAL NFT contract...');
-    realContract = await Contract.deploy(wallet, nftArtifact, [
+    ({ contract: realContract } = await Contract.deploy(wallet, nftArtifact, [
       playerAddr,
       encodeCompressedString('Real'),
       encodeCompressedString('R'),
-    ]).send(sendAs(playerAddr));
+    ]).send(sendAs(playerAddr)));
     console.log(`  Real NFT at: ${realContract.address}`);
     await wallet.registerSender(realContract.address, 'real-nft');
 
     console.log('Deploying TEST NFT contract...');
-    testContract = await Contract.deploy(wallet, nftArtifact, [
+    ({ contract: testContract } = await Contract.deploy(wallet, nftArtifact, [
       playerAddr,
       encodeCompressedString('Test'),
       encodeCompressedString('T'),
-    ]).send(sendAs(playerAddr));
+    ]).send(sendAs(playerAddr)));
     console.log(`  Test NFT at: ${testContract.address}`);
     await wallet.registerSender(testContract.address, 'test-nft');
   }, 300_000);
@@ -189,7 +189,7 @@ describe('E2E Nullifier Comparison: real vs test function', () => {
     // ================================================================
     console.log('\n========== PART A: REAL get_cards_for_new_player ==========');
 
-    const realReceipt = await realContract.methods
+    const { receipt: realReceipt } = await realContract.methods
       .get_cards_for_new_player()
       .send(sendAs(playerAddr));
     const realTxHash = realReceipt.txHash?.toString();
@@ -210,7 +210,7 @@ describe('E2E Nullifier Comparison: real vs test function', () => {
 
     // Nullify the 5 starter cards
     console.log('\n--- REAL: nullify cards ---');
-    const realNullifyReceipt = await realContract.methods
+    const { receipt: realNullifyReceipt } = await realContract.methods
       .test_nullify_cards(playerAddr, [1, 2, 3, 4, 5].map(n => new Fr(BigInt(n))))
       .send(sendAs(playerAddr));
     const realNullifyTxHash = realNullifyReceipt.txHash?.toString();
@@ -233,7 +233,7 @@ describe('E2E Nullifier Comparison: real vs test function', () => {
     // ================================================================
     console.log('\n========== PART B: TEST get_cards_for_new_player_test ==========');
 
-    const testReceipt = await testContract.methods
+    const { receipt: testReceipt } = await testContract.methods
       .get_cards_for_new_player_test(new Fr(0n))
       .send(sendAs(playerAddr));
     const testTxHash = testReceipt.txHash?.toString();
@@ -254,7 +254,7 @@ describe('E2E Nullifier Comparison: real vs test function', () => {
 
     // Nullify the 5 starter cards
     console.log('\n--- TEST: nullify cards ---');
-    const testNullifyReceipt = await testContract.methods
+    const { receipt: testNullifyReceipt } = await testContract.methods
       .test_nullify_cards(playerAddr, [1, 2, 3, 4, 5].map(n => new Fr(BigInt(n))))
       .send(sendAs(playerAddr));
     const testNullifyTxHash = testNullifyReceipt.txHash?.toString();

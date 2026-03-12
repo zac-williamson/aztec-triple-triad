@@ -58,7 +58,7 @@ describe('E2E 30-Note Create and Nullify', () => {
   });
 
   async function getNoteRandomness(nonceOffset: bigint, count: number): Promise<Fr[]> {
-    const result = await nftContract.methods
+    const { result } = await nftContract.methods
       .compute_note_randomness(new Fr(nonceOffset), count)
       .simulate({ from: playerAddr });
     const values: Fr[] = [];
@@ -109,7 +109,7 @@ describe('E2E 30-Note Create and Nullify', () => {
   }
 
   async function getPrivateCards(): Promise<number[]> {
-    const [page] = await nftContract.methods
+    const { result: [page] } = await nftContract.methods
       .get_private_cards(playerAddr, 0)
       .simulate({ from: playerAddr });
     return page
@@ -144,11 +144,11 @@ describe('E2E 30-Note Create and Nullify', () => {
 
     const nftArtifact = loadContractArtifact('triple_triad_nft-TripleTriadNFT');
     console.log('Deploying TripleTriadNFT...');
-    nftContract = await Contract.deploy(wallet, nftArtifact, [
+    nftContract = (await Contract.deploy(wallet, nftArtifact, [
       playerAddr,
       encodeCompressedString('Test30'),
       encodeCompressedString('T30'),
-    ]).send(sendOpts());
+    ]).send(sendOpts())).contract;
     console.log(`  NFT at: ${nftContract.address}`);
     await wallet.registerSender(nftContract.address, 'nft');
   }, 300_000);
@@ -173,7 +173,7 @@ describe('E2E 30-Note Create and Nullify', () => {
       const randomness = await getNoteRandomness(batch.nonceOffset, 10);
 
       console.log(`\n--- Batch ${b}: creating IDs [${batch.ids}] with nonceOffset=${batch.nonceOffset} ---`);
-      const receipt = await nftContract.methods
+      const { receipt } = await nftContract.methods
         .test_create_10_cards(playerAddr, frIds, new Fr(batch.nonceOffset))
         .send(sendOpts());
       const txHash = receipt.txHash?.toString();
@@ -200,7 +200,7 @@ describe('E2E 30-Note Create and Nullify', () => {
 
       console.log(`\n--- Batch ${b}: nullifying IDs [${batch.ids}] ---`);
       try {
-        const receipt = await nftContract.methods
+        const { receipt } = await nftContract.methods
           .test_nullify_10_cards(playerAddr, frIds)
           .send(sendOpts());
         console.log(`  nullify tx: ${receipt.txHash?.toString()}`);
