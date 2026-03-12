@@ -109,12 +109,20 @@ describe('E2E 30-Note Create and Nullify', () => {
   }
 
   async function getPrivateCards(): Promise<number[]> {
-    const { result: [page] } = await nftContract.methods
-      .get_private_cards(playerAddr, 0)
-      .simulate({ from: playerAddr });
-    return page
-      .map((v: any) => Number(BigInt(v)))
-      .filter((id: number) => id !== 0);
+    const all: number[] = [];
+    let pageIndex = 0;
+    while (true) {
+      const { result: [page, hasMore] } = await nftContract.methods
+        .get_private_cards(playerAddr, pageIndex)
+        .simulate({ from: playerAddr });
+      const ids = page
+        .map((v: any) => Number(BigInt(v)))
+        .filter((id: number) => id !== 0);
+      all.push(...ids);
+      if (!hasMore) break;
+      pageIndex++;
+    }
+    return all;
   }
 
   beforeAll(async () => {
