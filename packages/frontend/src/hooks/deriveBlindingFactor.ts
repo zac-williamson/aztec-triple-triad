@@ -40,7 +40,7 @@ export async function deriveBlindingFactor(
   const nftContract = await Contract.at(nftAddress, artifact, wallet as never);
 
   const { Fr } = await import('@aztec/aztec.js/fields');
-  const blinding = await nftContract.methods
+  const { result: blinding } = await nftContract.methods
     .compute_blinding_factor(Fr.fromHexString(gameId.startsWith('0x') ? gameId : '0x' + BigInt(gameId).toString(16)))
     .simulate({ from: playerAddr });
 

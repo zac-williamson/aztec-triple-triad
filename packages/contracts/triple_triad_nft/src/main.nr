@@ -123,7 +123,7 @@ pub contract TripleTriadNFT {
             note_viewer_options::NoteViewerOptions,
             utils::compute_confirmed_note_hash_for_nullification,
         },
-        oracle::logging::debug_log_format,
+        oracle::logging::verbose_log_format,
         oracle::notes::notify_created_note,
         protocol::{
             address::AztecAddress,
@@ -342,7 +342,7 @@ pub contract TripleTriadNFT {
     ) {
         let options = NoteGetterOptions::with_filter(filter_by_token_ids, token_ids);
         let peeked = storage.private_nfts.at(owner).get_notes(options);
-        debug_log_format("[NFT] log_card_nullifiers: found {0} notes for owner={1}", [peeked.len() as Field, owner.to_field()]);
+        verbose_log_format("[NFT] log_card_nullifiers: found {0} notes for owner={1}", [peeked.len() as Field, owner.to_field()]);
         for i in 0..5 {
             if i < peeked.len() {
                 let cn = peeked.get(i);
@@ -351,7 +351,7 @@ pub contract TripleTriadNFT {
                     [note_hash_for_nul, nhk_app_secret],
                     DOM_SEP__NOTE_NULLIFIER as Field,
                 );
-                debug_log_format(
+                verbose_log_format(
                     "[NFT] card_nullifier[{0}]: value={1} note_hash={2} nullifier={3}",
                     [i as Field, cn.note.value, note_hash_for_nul, nullifier],
                 );
@@ -369,7 +369,7 @@ pub contract TripleTriadNFT {
     ) {
         let options: NoteGetterOptions<FieldNote, 1, Field, Field> = NoteGetterOptions::new().set_limit(1);
         let peeked = storage.note_nonce.at(owner).get_notes(options);
-        debug_log_format("[NFT] log_nonce_nullifier: found {0} nonce notes for owner={1}", [peeked.len() as Field, owner.to_field()]);
+        verbose_log_format("[NFT] log_nonce_nullifier: found {0} nonce notes for owner={1}", [peeked.len() as Field, owner.to_field()]);
         for i in 0..1 {
             if i < peeked.len() {
                 let cn = peeked.get(i);
@@ -378,7 +378,7 @@ pub contract TripleTriadNFT {
                     [note_hash_for_nul, nhk_app_secret],
                     DOM_SEP__NOTE_NULLIFIER as Field,
                 );
-                debug_log_format(
+                verbose_log_format(
                     "[NFT] nonce_nullifier: value={0} note_hash={1} nullifier={2}",
                     [cn.note.value, note_hash_for_nul, nullifier],
                 );
@@ -400,7 +400,7 @@ pub contract TripleTriadNFT {
         let notes = storage.note_nonce.at(owner).pop_notes(options);
         assert(notes.len() == 1, "Note nonce not found");
         let nonce_val = notes.get(0).value;
-        debug_log_format("[NFT] pop_note_nonce: owner={0} nonce_value={1}", [owner.to_field(), nonce_val]);
+        verbose_log_format("[NFT] pop_note_nonce: owner={0} nonce_value={1}", [owner.to_field(), nonce_val]);
         nonce_val
     }
 
@@ -412,7 +412,7 @@ pub contract TripleTriadNFT {
         owner: AztecAddress,
         nonce_value: Field,
     ) {
-        debug_log_format("[NFT] push_note_nonce: owner={0} new_nonce={1}", [owner.to_field(), nonce_value]);
+        verbose_log_format("[NFT] push_note_nonce: owner={0} new_nonce={1}", [owner.to_field(), nonce_value]);
         let note = FieldNote { value: nonce_value };
         storage.note_nonce.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
     }
@@ -449,7 +449,7 @@ pub contract TripleTriadNFT {
         let locations = [LOCATION_RIVER, LOCATION_FOREST, LOCATION_BEACH, LOCATION_CITY, LOCATION_DOCKYARD];
         for i in 0..5 {
             let storage_slot = self.storage.cooldown_notes.at(locations[i]).get_storage_slot();
-            debug_log_format("PARTIAL NOTE STORAGE SLOT ={0}", [storage_slot]);
+            verbose_log_format("PARTIAL NOTE STORAGE SLOT ={0}", [storage_slot]);
 
             let partial: PartialUintNote = UintNote::partial(owner, storage_slot, self.context, owner, contract_address);
             self.enqueue_self.finalize_initial_cooldown(partial);
@@ -526,7 +526,7 @@ pub contract TripleTriadNFT {
         value: Field,
         randomness: Field,
     ) -> Field {
-        debug_log_format("[NFT] create_and_push_note: owner={0} token_id={1} randomness={2}", [owner.to_field(), value, randomness]);
+        verbose_log_format("[NFT] create_and_push_note: owner={0} token_id={1} randomness={2}", [owner.to_field(), value, randomness]);
         let note = FieldNote { value };
         let note_hash_counter = context.side_effect_counter;
         // Owned<PrivateSet> uses the BASE storage slot (not a derived/mapped slot).
@@ -548,7 +548,7 @@ pub contract TripleTriadNFT {
             note_hash_counter,
         );
 
-        debug_log_format("[NFT] create_and_push_note: note_hash={0} slot={1}", [note_hash, storage_slot]);
+        verbose_log_format("[NFT] create_and_push_note: note_hash={0} slot={1}", [note_hash, storage_slot]);
         context.push_note_hash(note_hash);
         note_hash
     }
@@ -592,7 +592,7 @@ pub contract TripleTriadNFT {
         token_ids: [Field; 5],
     ) -> [Field; 3] {
         let caller = self.msg_sender();
-        debug_log_format("Caller = {0}", [owner.to_field()]);
+        verbose_log_format("Caller = {0}", [owner.to_field()]);
         let game = self.storage.game_contract.read();
         assert((caller == game) | (caller == owner), "Only game contract or owner can commit");
 
@@ -610,9 +610,9 @@ pub contract TripleTriadNFT {
         let game_id = derive_game_id(nhk_app_secret, nonce_value);
         let randomness = derive_game_randomness(nhk_app_secret, nonce_value);
 
-        debug_log_format("[NFT] commit_five_nfts_create: owner={0} nonce={1} game_id={2}", [owner.to_field(), nonce_value, game_id]);
+        verbose_log_format("[NFT] commit_five_nfts_create: owner={0} nonce={1} game_id={2}", [owner.to_field(), nonce_value, game_id]);
         for i in 0..5 {
-            debug_log_format("[NFT] commit_create: requesting token_id={0}", [token_ids[i]]);
+            verbose_log_format("[NFT] commit_create: requesting token_id={0}", [token_ids[i]]);
         }
 
         // Log card nullifiers before popping (read-only peek)
@@ -635,7 +635,7 @@ pub contract TripleTriadNFT {
 
         push_note_nonce(self.context, self.storage, owner, nonce_value + 6);
 
-        debug_log_format("[NFT] commit_create: card_commit={0} player_state={1}", [card_commit_hash, player_state_hash]);
+        verbose_log_format("[NFT] commit_create: card_commit={0} player_state={1}", [card_commit_hash, player_state_hash]);
         [card_commit_hash, player_state_hash, game_id]
     }
 
@@ -665,9 +665,9 @@ pub contract TripleTriadNFT {
         // Derive randomness deterministically in-circuit
         let randomness = derive_game_randomness(nhk_app_secret, nonce_value);
 
-        debug_log_format("[NFT] commit_five_nfts_join: owner={0} nonce={1} game_id={2}", [owner.to_field(), nonce_value, game_id]);
+        verbose_log_format("[NFT] commit_five_nfts_join: owner={0} nonce={1} game_id={2}", [owner.to_field(), nonce_value, game_id]);
         for i in 0..5 {
-            debug_log_format("[NFT] commit_join: requesting token_id={0}", [token_ids[i]]);
+            verbose_log_format("[NFT] commit_join: requesting token_id={0}", [token_ids[i]]);
         }
 
         // Log card nullifiers before popping (read-only peek)
@@ -679,7 +679,7 @@ pub contract TripleTriadNFT {
         assert(notes.len() == 5, "Could not find all 5 cards");
 
         for i in 0..5 {
-            debug_log_format("[NFT] commit_join: popped note[{0}] value={1}", [i as Field, notes.get(i).value]);
+            verbose_log_format("[NFT] commit_join: popped note[{0}] value={1}", [i as Field, notes.get(i).value]);
         }
 
         // card_commit_hash = poseidon2([card_ids[0..5], blinding_factor])
@@ -693,7 +693,7 @@ pub contract TripleTriadNFT {
         let player_state_hash = poseidon2_hash(randomness);
 
         push_note_nonce(self.context, self.storage, owner, nonce_value + 6);
-        debug_log_format("[NFT] commit_join: card_commit={0} player_state={1}", [card_commit_hash, player_state_hash]);
+        verbose_log_format("[NFT] commit_join: card_commit={0} player_state={1}", [card_commit_hash, player_state_hash]);
 
         [card_commit_hash, player_state_hash]
     }
@@ -704,9 +704,9 @@ pub contract TripleTriadNFT {
         let game = self.storage.game_contract.read();
         assert(self.msg_sender() == game, "Only game contract can call");
 
-        debug_log_format("[NFT] mint_for_game_winner: to={0}", [to.to_field()]);
+        verbose_log_format("[NFT] mint_for_game_winner: to={0}", [to.to_field()]);
         for i in 0..6 {
-            debug_log_format("[NFT] winner_mint[{0}]: token_id={1} randomness={2}", [i as Field, token_ids[i], randomness[i]]);
+            verbose_log_format("[NFT] winner_mint[{0}]: token_id={1} randomness={2}", [i as Field, token_ids[i], randomness[i]]);
             let _: Field = create_and_push_note(self.context, to, token_ids[i], randomness[i]);
             let note_tag = derive_note_tag(randomness[i]);
             let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
@@ -719,9 +719,9 @@ pub contract TripleTriadNFT {
         let game = self.storage.game_contract.read();
         assert(self.msg_sender() == game, "Only game contract can call");
 
-        debug_log_format("[NFT] mint_for_game_loser: to={0}", [to.to_field()]);
+        verbose_log_format("[NFT] mint_for_game_loser: to={0}", [to.to_field()]);
         for i in 0..4 {
-            debug_log_format("[NFT] loser_mint[{0}]: token_id={1} randomness={2}", [i as Field, token_ids[i], randomness[i]]);
+            verbose_log_format("[NFT] loser_mint[{0}]: token_id={1} randomness={2}", [i as Field, token_ids[i], randomness[i]]);
             let _ = create_and_push_note(self.context, to, token_ids[i], randomness[i]);
             let note_tag = derive_note_tag(randomness[i]);
             let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
@@ -1134,9 +1134,9 @@ pub contract TripleTriadNFT {
     /// Used for testing note creation via create_and_push_note path.
     #[external("private")]
     fn test_mint_winner_cards(token_ids: [Field; 6], to: AztecAddress, randomness: [Field; 6]) {
-        debug_log_format("[NFT] test_mint_winner_cards: to={0}", [to.to_field()]);
+        verbose_log_format("[NFT] test_mint_winner_cards: to={0}", [to.to_field()]);
         for i in 0..6 {
-            debug_log_format("[NFT] test_mint[{0}]: token_id={1} randomness={2}", [i as Field, token_ids[i], randomness[i]]);
+            verbose_log_format("[NFT] test_mint[{0}]: token_id={1} randomness={2}", [i as Field, token_ids[i], randomness[i]]);
             let _: Field = create_and_push_note(self.context, to, token_ids[i], randomness[i]);
             let note_tag = derive_note_tag(randomness[i]);
             let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
@@ -1175,7 +1175,7 @@ pub contract TripleTriadNFT {
     #[external("private")]
     fn test_init_nonce(initial_value: Field) {
         let owner = self.msg_sender();
-        debug_log_format("[NFT] test_init_nonce: owner={0} value={1}", [owner.to_field(), initial_value]);
+        verbose_log_format("[NFT] test_init_nonce: owner={0} value={1}", [owner.to_field(), initial_value]);
         push_note_nonce(self.context, self.storage, owner, initial_value);
     }
 
@@ -1183,9 +1183,9 @@ pub contract TripleTriadNFT {
     /// Used for testing the full mint+nonce-update flow.
     #[external("private")]
     fn test_mint_winner_cards_with_nonce(token_ids: [Field; 6], to: AztecAddress, randomness: [Field; 6]) {
-        debug_log_format("[NFT] test_mint_winner_cards_with_nonce: to={0}", [to.to_field()]);
+        verbose_log_format("[NFT] test_mint_winner_cards_with_nonce: to={0}", [to.to_field()]);
         for i in 0..6 {
-            debug_log_format("[NFT] test_mint[{0}]: token_id={1} randomness={2}", [i as Field, token_ids[i], randomness[i]]);
+            verbose_log_format("[NFT] test_mint[{0}]: token_id={1} randomness={2}", [i as Field, token_ids[i], randomness[i]]);
             let _: Field = create_and_push_note(self.context, to, token_ids[i], randomness[i]);
             let note_tag = derive_note_tag(randomness[i]);
             let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
@@ -1211,7 +1211,7 @@ pub contract TripleTriadNFT {
 
         let options = NoteGetterOptions::with_filter(filter_by_token_ids, token_ids);
         let notes = self.storage.private_nfts.at(owner).pop_notes(options);
-        debug_log_format("[NFT] test_nullify_cards: popped {0} notes", [notes.len() as Field]);
+        verbose_log_format("[NFT] test_nullify_cards: popped {0} notes", [notes.len() as Field]);
         assert(notes.len() == 5, "Could not find all 5 cards to nullify");
 
         // update nonce
@@ -1246,7 +1246,7 @@ pub contract TripleTriadNFT {
 
         let options = NoteGetterOptions::with_filter(filter_by_token_ids_10, token_ids);
         let notes = self.storage.private_nfts.at(owner).pop_notes(options);
-        debug_log_format("[NFT] test_nullify_10_cards: popped {0} notes", [notes.len() as Field]);
+        verbose_log_format("[NFT] test_nullify_10_cards: popped {0} notes", [notes.len() as Field]);
         assert(notes.len() == 10, "Could not find all 10 cards to nullify");
     }
 }

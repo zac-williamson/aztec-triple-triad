@@ -113,7 +113,7 @@ describe('E2E Nullifier Sync: starter vs winner cards', () => {
 
   /** Get private cards from PXE. */
   async function getPrivateCards(): Promise<number[]> {
-    const [page] = await nftContract.methods
+    const { result: [page] } = await nftContract.methods
       .get_private_cards(playerAddr, 0)
       .simulate({ from: playerAddr });
     return page
@@ -123,7 +123,7 @@ describe('E2E Nullifier Sync: starter vs winner cards', () => {
 
   /** Get note nonce from PXE. */
   async function getNoteNonce(): Promise<bigint> {
-    const result = await nftContract.methods
+    const { result } = await nftContract.methods
       .get_note_nonce(playerAddr)
       .simulate({ from: playerAddr });
     return BigInt(result.toString());
@@ -131,7 +131,7 @@ describe('E2E Nullifier Sync: starter vs winner cards', () => {
 
   /** Get game randomness values via preview_game_data. */
   async function getGameRandomness(nonceValue: bigint): Promise<{ gameId: Fr; randomness: Fr[] }> {
-    const result = await nftContract.methods
+    const { result } = await nftContract.methods
       .preview_game_data(new Fr(nonceValue))
       .simulate({ from: playerAddr });
     const gameId = toFr(result[0]);
@@ -144,7 +144,7 @@ describe('E2E Nullifier Sync: starter vs winner cards', () => {
 
   /** Get note randomness values via compute_note_randomness. */
   async function getNoteRandomness(nonceValue: bigint, count: number): Promise<Fr[]> {
-    const result = await nftContract.methods
+    const { result } = await nftContract.methods
       .compute_note_randomness(new Fr(nonceValue), count)
       .simulate({ from: playerAddr });
     const values: Fr[] = [];
@@ -184,11 +184,11 @@ describe('E2E Nullifier Sync: starter vs winner cards', () => {
     // Deploy NFT contract
     const nftArtifact = loadContractArtifact('triple_triad_nft-TripleTriadNFT');
     console.log('Deploying TripleTriadNFT...');
-    nftContract = await Contract.deploy(wallet, nftArtifact, [
+    ({ contract: nftContract } = await Contract.deploy(wallet, nftArtifact, [
       playerAddr,
       encodeCompressedString('Test'),
       encodeCompressedString('T'),
-    ]).send(sendAs(playerAddr));
+    ]).send(sendAs(playerAddr)));
     console.log(`  NFT at: ${nftContract.address}`);
     await wallet.registerSender(nftContract.address, 'nft');
   }, 300_000);
@@ -198,7 +198,7 @@ describe('E2E Nullifier Sync: starter vs winner cards', () => {
     // STEP 0: Initialize note nonce
     // ================================================================
     console.log('\n=== STEP 0: Initialize note nonce ===');
-    const initNonceReceipt = await nftContract.methods
+    const { receipt: initNonceReceipt } = await nftContract.methods
       .test_init_nonce(new Fr(0n))
       .send(sendAs(playerAddr));
     console.log(`  init_nonce tx: ${initNonceReceipt.txHash?.toString()}`);
@@ -207,7 +207,7 @@ describe('E2E Nullifier Sync: starter vs winner cards', () => {
     // STEP 1: Create starter cards via get_cards_for_new_player_test
     // ================================================================
     console.log('\n=== STEP 1: get_cards_for_new_player_test(0) ===');
-    const starterReceipt = await nftContract.methods
+    const { receipt: starterReceipt } = await nftContract.methods
       .get_cards_for_new_player_test(new Fr(0n))
       .send(sendAs(playerAddr));
     const starterTxHash = starterReceipt.txHash?.toString();
@@ -237,7 +237,7 @@ describe('E2E Nullifier Sync: starter vs winner cards', () => {
     // STEP 2: Nullify starter cards via test_nullify_cards
     // ================================================================
     console.log('\n=== STEP 2: Nullify starter cards ===');
-    const nullify1Receipt = await nftContract.methods
+    const { receipt: nullify1Receipt } = await nftContract.methods
       .test_nullify_cards(playerAddr, [1, 2, 3, 4, 5].map(n => new Fr(BigInt(n))))
       .send(sendAs(playerAddr));
     const nullify1TxHash = nullify1Receipt.txHash?.toString();
@@ -283,7 +283,7 @@ describe('E2E Nullifier Sync: starter vs winner cards', () => {
 
     // Mint 6 winner cards (5 returned + 1 won) with game randomness
     const winnerTokenIds = [1, 2, 3, 4, 5, 6].map(n => new Fr(BigInt(n)));
-    const winnerReceipt = await nftContract.methods
+    const { receipt: winnerReceipt } = await nftContract.methods
       .test_mint_winner_cards(winnerTokenIds, playerAddr, gameRandomness)
       .send(sendAs(playerAddr));
     const winnerTxHash = winnerReceipt.txHash?.toString();
@@ -315,7 +315,7 @@ describe('E2E Nullifier Sync: starter vs winner cards', () => {
     console.log('  instead of the new winner cards, causing a duplicate nullifier.');
 
     try {
-      const nullify2Receipt = await nftContract.methods
+      const { receipt: nullify2Receipt } = await nftContract.methods
         .test_nullify_cards(playerAddr, [1, 2, 3, 4, 5].map(n => new Fr(BigInt(n))))
         .send(sendAs(playerAddr));
       const nullify2TxHash = nullify2Receipt.txHash?.toString();

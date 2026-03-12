@@ -210,7 +210,7 @@ export function useAztec(): UseAztecReturn {
           const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
           const nftContract = await Contract.at(nftAddr, nftArtifact, wallet as never);
           console.log('[useAztec] Minting starter cards via get_cards_for_new_player...');
-          const receipt = await nftContract.methods
+          const { receipt } = await nftContract.methods
             .get_cards_for_new_player()
             .send({ from: accountManager.address, fee: { paymentMethod }, wait: { timeout: AZTEC_TX_TIMEOUT } });
           localStorage.setItem(mintKey, 'true');
@@ -220,7 +220,7 @@ export function useAztec(): UseAztecReturn {
           // Import the starter card notes (create_and_push_note skips tagging)
           if (txHashStr) {
             try {
-              const randomnessResult = await nftContract.methods
+              const { result: randomnessResult } = await nftContract.methods
                 .compute_note_randomness(0, STARTER_CARD_COUNT)
                 .simulate({ from: accountManager.address });
               const notes = STARTER_CARD_IDS.map((id, i) => ({
@@ -248,7 +248,7 @@ export function useAztec(): UseAztecReturn {
           let pageIndex = 0;
           let hasMore = true;
           while (hasMore) {
-            const result = await nftContract.methods
+            const { result } = await nftContract.methods
               .get_private_cards(accountManager.address, pageIndex)
               .simulate({ from: accountManager.address });
             // result is [Field[MAX_NOTES_PER_PAGE], bool]
@@ -317,7 +317,7 @@ export function useAztec(): UseAztecReturn {
       let pageIndex = 0;
       let hasMore = true;
       while (hasMore) {
-        const result = await nftContract.methods
+        const { result } = await nftContract.methods
           .get_private_cards(addr, pageIndex)
           .simulate({ from: addr });
         const page = result[0] ?? result;

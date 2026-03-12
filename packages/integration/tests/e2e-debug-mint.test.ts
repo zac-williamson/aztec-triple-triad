@@ -85,11 +85,11 @@ describe('E2E Debug Mint + import_note', () => {
     }
 
     console.log('Deploying TripleTriadNFT...');
-    nftContract = await Contract.deploy(wallet, nftArtifact, [
+    ({ contract: nftContract } = await Contract.deploy(wallet, nftArtifact, [
       playerAddr,
       encodeCompressedString('Test'),
       encodeCompressedString('T'),
-    ]).send(sendAs(playerAddr));
+    ]).send(sendAs(playerAddr)));
     console.log(`  NFT at: ${nftContract.address}`);
     await wallet.registerSender(nftContract.address, 'nft');
   }, 300_000);
@@ -99,7 +99,7 @@ describe('E2E Debug Mint + import_note', () => {
     const RANDOMNESS = Fr.random();
 
     // 1. Confirm 0 cards before
-    const [before] = await nftContract.methods
+    const { result: [before] } = await nftContract.methods
       .get_private_cards(playerAddr, 0)
       .simulate({ from: playerAddr });
     expect(before.filter((v: any) => BigInt(v) !== 0n).length).toBe(0);
@@ -107,7 +107,7 @@ describe('E2E Debug Mint + import_note', () => {
 
     // 2. debug_mint — uses create_and_push_note (no delivery/tagging)
     console.log('  Calling debug_mint...');
-    const receipt = await nftContract.methods
+    const { receipt } = await nftContract.methods
       .debug_mint(TOKEN_ID, playerAddr, RANDOMNESS)
       .send(sendAs(playerAddr));
     const txHashStr = receipt.txHash?.toString();
@@ -150,7 +150,7 @@ describe('E2E Debug Mint + import_note', () => {
     console.log('  import_note completed ✓');
 
     // 5. Check cards via get_private_cards — should see the note
-    const [afterImport] = await nftContract.methods
+    const { result: [afterImport] } = await nftContract.methods
       .get_private_cards(playerAddr, 0)
       .simulate({ from: playerAddr });
     const cards = afterImport
