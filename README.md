@@ -30,9 +30,9 @@ scripts/          Dev tooling (deploy, card art generation, dev startup)
 ## Prerequisites
 
 - **Node.js** >= 22.0.0
-- **Aztec CLI** v4.0.0-devnet.2-patch.1 — install via:
+- **Aztec CLI** v4.2.0-nightly.20260320 — install via:
   ```bash
-  bash -i <(curl -s https://install.aztec.network) 4.0.0-devnet.2-patch.1
+  bash -i <(curl -s https://install.aztec.network) 4.2.0-nightly.20260320
   ```
 - **Nargo** (installed with the Aztec CLI)
 

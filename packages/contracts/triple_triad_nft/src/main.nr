@@ -119,7 +119,7 @@ pub contract TripleTriadNFT {
         note::{
             constants::MAX_NOTES_PER_PAGE,
             note_getter_options::NoteGetterOptions,
-            note_interface::{NoteHash, NoteProperties, NoteType},
+            note_interface::{NoteProperties, NoteType},
             note_viewer_options::NoteViewerOptions,
             utils::compute_confirmed_note_hash_for_nullification,
         },
@@ -451,8 +451,8 @@ pub contract TripleTriadNFT {
             let storage_slot = self.storage.cooldown_notes.at(locations[i]).get_storage_slot();
             debug_log_format("PARTIAL NOTE STORAGE SLOT ={0}", [storage_slot]);
 
-            let partial: PartialUintNote = UintNote::partial(owner, storage_slot, self.context, owner, contract_address);
-            self.enqueue_self.finalize_initial_cooldown(partial);
+            let partial: PartialUintNote = UintNote::partial(owner, self.context, owner, contract_address);
+            self.enqueue_self.finalize_initial_cooldown(partial, storage_slot);
         }
     }
 
@@ -487,12 +487,12 @@ pub contract TripleTriadNFT {
         let _cooldown_notes = self.storage.cooldown_notes.at(location_id).at(owner).pop_notes(cooldown_options);
 
         let storage_slot = self.storage.cooldown_notes.at(location_id).get_storage_slot();
-        let partial_cooldown = UintNote::partial(owner, storage_slot, self.context, owner, contract_address);
+        let partial_cooldown = UintNote::partial(owner, self.context, owner, contract_address);
 
         push_note_nonce(self.context, self.storage, owner, nonce_value + 10);
 
         self.enqueue_self.finalize_card_generation(
-            owner, location_id, cooldown, partial_cooldown,
+            owner, location_id, cooldown, partial_cooldown, storage_slot,
         );
     }
 
@@ -894,8 +894,8 @@ pub contract TripleTriadNFT {
     /// UintNote::complete asserts value != 0, so we use 1 as sentinel.
     #[external("public")]
     #[only_self]
-    fn finalize_initial_cooldown(partial_cooldown: PartialUintNote) {
-        partial_cooldown.complete(self.context, self.context.this_address(), 1);
+    fn finalize_initial_cooldown(partial_cooldown: PartialUintNote, storage_slot: Field) {
+        partial_cooldown.complete(self.context, self.context.this_address(), storage_slot, 1);
     }
 
     /// Finalize card generation from a location.
@@ -908,6 +908,7 @@ pub contract TripleTriadNFT {
         location_id: Field,
         cooldown_seconds: u64,
         partial_cooldown: PartialUintNote,
+        storage_slot: Field,
     ) {
         let owner_field = owner.to_field();
 
@@ -928,7 +929,7 @@ pub contract TripleTriadNFT {
         self.storage.player_cooldown.at(cooldown_key).write(current_time);
 
         // Complete the partial cooldown note with current timestamp
-        partial_cooldown.complete(self.context, self.context.this_address(), current_time as u128);
+        partial_cooldown.complete(self.context, self.context.this_address(), storage_slot, current_time as u128);
     }
 
     // --- View Functions ---
@@ -1081,7 +1082,8 @@ pub contract TripleTriadNFT {
             unique_hashes_vec,
             first_nullifier,
             recipient,
-            _compute_note_hash_and_nullifier,
+            _compute_note_hash,
+            _compute_note_nullifier,
             owner,
             storage_slot,
             randomness,

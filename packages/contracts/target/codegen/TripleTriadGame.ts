@@ -3,7 +3,7 @@
 
 /* eslint-disable */
 import { AztecAddress, CompleteAddress } from '@aztec/aztec.js/addresses';
-import { type AbiType, type AztecAddressLike, type ContractArtifact, EventSelector, decodeFromAbi, type EthAddressLike, type FieldLike, type FunctionSelectorLike, loadContractArtifact, loadContractArtifactForPublic, type NoirCompiledContract, type U128Like, type WrappedFieldLike } from '@aztec/aztec.js/abi';
+import { type AbiType, type AztecAddressLike, type ContractArtifact, EventSelector, decodeFromAbi, type EthAddressLike, type FieldLike, type FunctionSelectorLike, loadContractArtifact, loadContractArtifactForPublic, type NoirCompiledContract, type OptionLike, type U128Like, type WrappedFieldLike } from '@aztec/aztec.js/abi';
 import { Contract, ContractBase, ContractFunctionInteraction, type ContractMethod, type ContractStorageLayout, DeployMethod } from '@aztec/aztec.js/contracts';
 import { EthAddress } from '@aztec/aztec.js/addresses';
 import { Fr, Point } from '@aztec/aztec.js/fields';
@@ -193,6 +193,9 @@ game_player_state_2: {
 
     /** join_game(game_id: field, card_ids: array) */
     join_game: ((game_id: FieldLike, card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** offchain_receive(messages: struct) */
+    offchain_receive: ((messages: { ciphertext: FieldLike[], recipient: AztecAddressLike, tx_hash: OptionLike<FieldLike>, anchor_block_timestamp: (bigint | number) }[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** process_game(game_id: field, hand_vk: array, move_vk: array, hand_proof_1: array, hand_proof_1_inputs: array, hand_proof_2: array, hand_proof_2_inputs: array, move_proof_1: array, move_inputs_1: array, move_proof_2: array, move_inputs_2: array, move_proof_3: array, move_inputs_3: array, move_proof_4: array, move_inputs_4: array, move_proof_5: array, move_inputs_5: array, move_proof_6: array, move_inputs_6: array, move_proof_7: array, move_inputs_7: array, move_proof_8: array, move_inputs_8: array, move_proof_9: array, move_inputs_9: array, opponent: struct, card_to_transfer: field, caller_card_ids: array, opponent_card_ids: array, caller_randomness: array, opponent_randomness: array) */
     process_game: ((game_id: FieldLike, hand_vk: FieldLike[], move_vk: FieldLike[], hand_proof_1: FieldLike[], hand_proof_1_inputs: FieldLike[], hand_proof_2: FieldLike[], hand_proof_2_inputs: FieldLike[], move_proof_1: FieldLike[], move_inputs_1: FieldLike[], move_proof_2: FieldLike[], move_inputs_2: FieldLike[], move_proof_3: FieldLike[], move_inputs_3: FieldLike[], move_proof_4: FieldLike[], move_inputs_4: FieldLike[], move_proof_5: FieldLike[], move_inputs_5: FieldLike[], move_proof_6: FieldLike[], move_inputs_6: FieldLike[], move_proof_7: FieldLike[], move_inputs_7: FieldLike[], move_proof_8: FieldLike[], move_inputs_8: FieldLike[], move_proof_9: FieldLike[], move_inputs_9: FieldLike[], opponent: AztecAddressLike, card_to_transfer: FieldLike, caller_card_ids: FieldLike[], opponent_card_ids: FieldLike[], caller_randomness: FieldLike[], opponent_randomness: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;

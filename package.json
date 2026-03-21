@@ -12,13 +12,13 @@
     "build": "npm run copy-circuits && npm run copy-contracts && npm run build --workspaces"
   },
   "dependencies": {
-    "@aztec/aztec.js": "4.0.0-devnet.2-patch.1",
-    "@aztec/wallets": "4.0.0-devnet.2-patch.1",
-    "@aztec/foundation": "4.0.0-devnet.2-patch.1",
-    "@aztec/constants": "4.0.0-devnet.2-patch.1",
-    "@aztec/noir-contracts.js": "4.0.0-devnet.2-patch.1",
-    "@aztec/stdlib": "4.0.0-devnet.2-patch.1",
-    "@aztec/bb.js": "4.0.0-devnet.2-patch.1"
+    "@aztec/aztec.js": "4.2.0-nightly.20260320",
+    "@aztec/wallets": "4.2.0-nightly.20260320",
+    "@aztec/foundation": "4.2.0-nightly.20260320",
+    "@aztec/constants": "4.2.0-nightly.20260320",
+    "@aztec/noir-contracts.js": "4.2.0-nightly.20260320",
+    "@aztec/stdlib": "4.2.0-nightly.20260320",
+    "@aztec/bb.js": "4.2.0-nightly.20260320"
   },
   "devDependencies": {
     "openai": "^6.25.0",
