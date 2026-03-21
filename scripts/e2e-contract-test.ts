@@ -26,6 +26,7 @@ import { Fr } from '@aztec/aztec.js/fields';
 import { AztecAddress } from '@aztec/aztec.js/addresses';
 import { Contract } from '@aztec/aztec.js/contracts';
 import { SponsoredFeePaymentMethod } from '@aztec/aztec.js/fee';
+import { NO_FROM } from '@aztec/aztec.js/account';
 import { EmbeddedWallet } from '@aztec/wallets/embedded';
 import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
 
@@ -123,22 +124,22 @@ async function main() {
 
   console.log('  Creating deployer account...');
   const deployerAccount = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
-  await (await deployerAccount.getDeployMethod()).send({ from: AztecAddress.ZERO, fee: { paymentMethod: fee } }).wait();
   const deployerAddr = deployerAccount.address;
+  await (await deployerAccount.getDeployMethod()).send({ from: NO_FROM, fee: { paymentMethod: fee } }).wait();
   await wallet.registerSender(deployerAddr, 'deployer');
   console.log(`  Deployer: ${deployerAddr}`);
 
   console.log('  Creating player 1 account...');
   const player1Account = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
-  await (await player1Account.getDeployMethod()).send({ from: AztecAddress.ZERO, fee: { paymentMethod: fee } }).wait();
   const p1Addr = player1Account.address;
+  await (await player1Account.getDeployMethod()).send({ from: NO_FROM, fee: { paymentMethod: fee } }).wait();
   await wallet.registerSender(p1Addr, 'player1');
   console.log(`  Player 1: ${p1Addr}`);
 
   console.log('  Creating player 2 account...');
   const player2Account = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
-  await (await player2Account.getDeployMethod()).send({ from: AztecAddress.ZERO, fee: { paymentMethod: fee } }).wait();
   const p2Addr = player2Account.address;
+  await (await player2Account.getDeployMethod()).send({ from: NO_FROM, fee: { paymentMethod: fee } }).wait();
   await wallet.registerSender(p2Addr, 'player2');
   console.log(`  Player 2: ${p2Addr}`);
 

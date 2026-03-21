@@ -23,6 +23,7 @@ import { createAztecNodeClient } from '@aztec/aztec.js/node';
 import { Fr } from '@aztec/aztec.js/fields';
 import { AztecAddress } from '@aztec/aztec.js/addresses';
 import { SponsoredFeePaymentMethod } from '@aztec/aztec.js/fee';
+import { NO_FROM } from '@aztec/aztec.js/account';
 import { EmbeddedWallet } from '@aztec/wallets/embedded';
 import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
 import { getContractInstanceFromInstantiationParams } from '@aztec/stdlib/contract';
@@ -149,11 +150,12 @@ async function main() {
 
   console.log('Creating deployer account...');
   const deployerAccount = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
+  const deployerAddress = deployerAccount.address;
   // Deploy account with retry for PXE sync race
   const deployMethod = await deployerAccount.getDeployMethod();
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      await deployMethod.send(sendAsAccount(AztecAddress.ZERO));
+      await deployMethod.send(sendAsAccount(NO_FROM));
       break;
     } catch (err: any) {
       if (err?.message?.includes('expiration timestamp') && attempt < 2) {
@@ -164,7 +166,6 @@ async function main() {
       throw err;
     }
   }
-  const deployerAddress = deployerAccount.address;
   await wallet.registerSender(deployerAddress, 'deployer');
   console.log(`Deployer address: ${deployerAddress.toString()}`);
 
@@ -205,7 +206,7 @@ async function main() {
   // Use the Aztec.js Contract deployment pattern
   const { Contract } = await import('@aztec/aztec.js/contracts');
 
-  const nftContract = await Contract.deploy(wallet, nftArtifact, [
+  const { contract: nftContract } = await Contract.deploy(wallet, nftArtifact, [
     deployerAddress,
     nameField,
     symbolField,
@@ -221,7 +222,7 @@ async function main() {
   // 6. Deploy Game contract
   console.log('\nDeploying TripleTriadGame...');
   // Constructor: (nft_address: AztecAddress, hand_vk_hash: Field, move_vk_hash: Field)
-  const gameContract = await Contract.deploy(wallet, gameArtifact, [
+  const { contract: gameContract } = await Contract.deploy(wallet, gameArtifact, [
     nftAddress,
     Fr.fromHexString(handVkHash),
     Fr.fromHexString(moveVkHash),

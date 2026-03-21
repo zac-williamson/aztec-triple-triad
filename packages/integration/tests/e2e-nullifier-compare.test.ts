@@ -28,6 +28,7 @@ import { SponsoredFPCContractArtifact } from '@aztec/noir-contracts.js/Sponsored
 import { SPONSORED_FPC_SALT } from '@aztec/constants';
 import { getContractInstanceFromInstantiationParams } from '@aztec/stdlib/contract';
 
+import { NO_FROM } from '@aztec/aztec.js/account';
 import { loadContractArtifact } from './e2e-helpers.js';
 
 const PXE_URL = process.env.AZTEC_PXE_URL || 'http://localhost:8080';
@@ -149,7 +150,7 @@ describe('E2E Nullifier Comparison: real vs test function', () => {
     console.log('Deploying player account...');
     const playerAccount = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
     await (await playerAccount.getDeployMethod()).send({
-      from: AztecAddress.ZERO,
+      from: NO_FROM,
       fee: { paymentMethod: fee },
       skipClassPublication: true,
       skipInstancePublication: true,

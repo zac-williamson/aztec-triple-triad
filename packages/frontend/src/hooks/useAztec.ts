@@ -130,12 +130,13 @@ export function useAztec(): UseAztecReturn {
       await new Promise(r => setTimeout(r, PXE_INITIAL_SYNC_DELAY));
 
       // Register SponsoredFPC for fee payments
-      const [{ getContractInstanceFromInstantiationParams }, { SponsoredFPCContractArtifact }, { SPONSORED_FPC_SALT }, { SponsoredFeePaymentMethod }, { AztecAddress }] = await Promise.all([
+      const [{ getContractInstanceFromInstantiationParams }, { SponsoredFPCContractArtifact }, { SPONSORED_FPC_SALT }, { SponsoredFeePaymentMethod }, { AztecAddress }, { NO_FROM }] = await Promise.all([
         import('@aztec/stdlib/contract'),
         import('@aztec/noir-contracts.js/SponsoredFPC'),
         import('@aztec/constants'),
         import('@aztec/aztec.js/fee'),
         import('@aztec/aztec.js/addresses'),
+        import('@aztec/aztec.js/account'),
       ]);
 
       const sponsoredFPC = await getContractInstanceFromInstantiationParams(SponsoredFPCContractArtifact, {
@@ -155,7 +156,7 @@ export function useAztec(): UseAztecReturn {
       // Deploy the account on-chain
       const deployMethod = await accountManager.getDeployMethod();
       await deployMethod.send({
-        from: AztecAddress.ZERO,
+        from: NO_FROM,
         fee: { paymentMethod },
         skipClassPublication: true,
         skipInstancePublication: true,

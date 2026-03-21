@@ -141,6 +141,7 @@ import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
 import { SponsoredFPCContractArtifact } from '@aztec/noir-contracts.js/SponsoredFPC';
 import { SPONSORED_FPC_SALT } from '@aztec/constants';
 import { getContractInstanceFromInstantiationParams } from '@aztec/stdlib/contract';
+import { NO_FROM } from '@aztec/aztec.js/account';
 
 import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
 
@@ -420,7 +421,7 @@ describe('E2E Full Game Flow -- Frontend Proofs + WebSocket + Aztec Settlement',
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           await deployMethod.send({
-            from: AztecAddress.ZERO,
+            from: NO_FROM,
             fee: { paymentMethod: fee },
             skipClassPublication: true,
             skipInstancePublication: true,
