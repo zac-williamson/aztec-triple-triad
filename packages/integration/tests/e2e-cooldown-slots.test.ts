@@ -70,11 +70,11 @@ describe('Cooldown slot logging', () => {
     console.log(`  Player: ${playerAddr}`);
 
     const nftArtifact = loadContractArtifact('triple_triad_nft-TripleTriadNFT');
-    nftContract = await Contract.deploy(wallet, nftArtifact, [
+    ({ contract: nftContract } = await Contract.deploy(wallet, nftArtifact, [
       playerAddr,
       encodeCompressedString('Test'),
       encodeCompressedString('T'),
-    ]).send(sendAs(playerAddr));
+    ]).send(sendAs(playerAddr)));
     console.log(`  NFT at: ${nftContract.address}`);
     await wallet.registerSender(nftContract.address, 'nft');
   }, 300_000);

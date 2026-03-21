@@ -120,9 +120,10 @@ describe('E2E Real 3-Round Diagnostic (with cooldown partial notes)', () => {
 
   /** Get visible private cards for the player. */
   async function getPrivateCards(): Promise<number[]> {
-    const [page] = await nftContract.methods
+    const { result } = await nftContract.methods
       .get_private_cards(playerAddr, 0)
       .simulate({ from: playerAddr });
+    const page = result[0];
     return page
       .map((v: any) => Number(BigInt(v)))
       .filter((id: number) => id !== 0);
@@ -130,7 +131,7 @@ describe('E2E Real 3-Round Diagnostic (with cooldown partial notes)', () => {
 
   /** Get note randomness. */
   async function getNoteRandomness(nonceValue: bigint, count: number): Promise<Fr[]> {
-    const result = await nftContract.methods
+    const { result } = await nftContract.methods
       .compute_note_randomness(new Fr(nonceValue), count)
       .simulate({ from: playerAddr });
     const values: Fr[] = [];
@@ -142,7 +143,7 @@ describe('E2E Real 3-Round Diagnostic (with cooldown partial notes)', () => {
 
   /** Get current note nonce. */
   async function getNoteNonce(): Promise<bigint> {
-    const result = await nftContract.methods
+    const { result } = await nftContract.methods
       .get_note_nonce(playerAddr)
       .simulate({ from: playerAddr });
     return BigInt(result.toString());
@@ -150,7 +151,7 @@ describe('E2E Real 3-Round Diagnostic (with cooldown partial notes)', () => {
 
   /** Get game randomness via preview_game_data. */
   async function getGameRandomness(nonceValue: bigint): Promise<{ gameId: Fr; randomness: Fr[] }> {
-    const result = await nftContract.methods
+    const { result } = await nftContract.methods
       .preview_game_data(new Fr(nonceValue))
       .simulate({ from: playerAddr });
     const gameId = toFr(result[0]);
@@ -200,11 +201,11 @@ describe('E2E Real 3-Round Diagnostic (with cooldown partial notes)', () => {
     // Deploy NFT contract
     const nftArtifact = loadContractArtifact('triple_triad_nft-TripleTriadNFT');
     console.log('Deploying TripleTriadNFT...');
-    nftContract = await Contract.deploy(wallet, nftArtifact, [
+    ({ contract: nftContract } = await Contract.deploy(wallet, nftArtifact, [
       playerAddr,
       encodeCompressedString('Diag'),
       encodeCompressedString('D'),
-    ]).send(sendOpts());
+    ]).send(sendOpts()));
     console.log(`  NFT at: ${nftContract.address}`);
     await wallet.registerSender(nftContract.address, 'nft');
   }, 300_000);

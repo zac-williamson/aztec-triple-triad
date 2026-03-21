@@ -115,16 +115,17 @@ describe('E2E Nullifier Comparison: real vs test function', () => {
   }
 
   async function getPrivateCards(contract: any): Promise<number[]> {
-    const [page] = await contract.methods
+    const { result } = await contract.methods
       .get_private_cards(playerAddr, 0)
       .simulate({ from: playerAddr });
+    const page = result[0];
     return page
       .map((v: any) => Number(BigInt(v)))
       .filter((id: number) => id !== 0);
   }
 
   async function getNoteRandomness(contract: any, nonceValue: bigint, count: number): Promise<Fr[]> {
-    const result = await contract.methods
+    const { result } = await contract.methods
       .compute_note_randomness(new Fr(nonceValue), count)
       .simulate({ from: playerAddr });
     const values: Fr[] = [];
@@ -164,20 +165,20 @@ describe('E2E Nullifier Comparison: real vs test function', () => {
 
     // Deploy TWO separate NFT contracts (so they have independent state)
     console.log('Deploying REAL NFT contract...');
-    realContract = await Contract.deploy(wallet, nftArtifact, [
+    ({ contract: realContract } = await Contract.deploy(wallet, nftArtifact, [
       playerAddr,
       encodeCompressedString('Real'),
       encodeCompressedString('R'),
-    ]).send(sendAs(playerAddr));
+    ]).send(sendAs(playerAddr)));
     console.log(`  Real NFT at: ${realContract.address}`);
     await wallet.registerSender(realContract.address, 'real-nft');
 
     console.log('Deploying TEST NFT contract...');
-    testContract = await Contract.deploy(wallet, nftArtifact, [
+    ({ contract: testContract } = await Contract.deploy(wallet, nftArtifact, [
       playerAddr,
       encodeCompressedString('Test'),
       encodeCompressedString('T'),
-    ]).send(sendAs(playerAddr));
+    ]).send(sendAs(playerAddr)));
     console.log(`  Test NFT at: ${testContract.address}`);
     await wallet.registerSender(testContract.address, 'test-nft');
   }, 300_000);

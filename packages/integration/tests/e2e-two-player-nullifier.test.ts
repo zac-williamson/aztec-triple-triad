@@ -120,9 +120,10 @@ class PlayerContext {
 
   /** Get private cards visible to this player. */
   async getPrivateCards(): Promise<number[]> {
-    const [page] = await this.nftContract.methods
+    const { result } = await this.nftContract.methods
       .get_private_cards(this.addr, 0)
       .simulate({ from: this.addr });
+    const page = result[0];
     return page
       .map((v: any) => Number(BigInt(v)))
       .filter((id: number) => id !== 0);
@@ -130,7 +131,7 @@ class PlayerContext {
 
   /** Get current note nonce. */
   async getNoteNonce(): Promise<bigint> {
-    const result = await this.nftContract.methods
+    const { result } = await this.nftContract.methods
       .get_note_nonce(this.addr)
       .simulate({ from: this.addr });
     return BigInt(result.toString());
@@ -138,7 +139,7 @@ class PlayerContext {
 
   /** Get game randomness via preview_game_data. */
   async getGameRandomness(nonceValue: bigint): Promise<{ gameId: Fr; randomness: Fr[] }> {
-    const result = await this.nftContract.methods
+    const { result } = await this.nftContract.methods
       .preview_game_data(new Fr(nonceValue))
       .simulate({ from: this.addr });
     const gameId = toFr(result[0]);
@@ -151,7 +152,7 @@ class PlayerContext {
 
   /** Get note randomness via compute_note_randomness. */
   async getNoteRandomness(nonceValue: bigint, count: number): Promise<Fr[]> {
-    const result = await this.nftContract.methods
+    const { result } = await this.nftContract.methods
       .compute_note_randomness(new Fr(nonceValue), count)
       .simulate({ from: this.addr });
     const values: Fr[] = [];
@@ -213,7 +214,7 @@ describe('E2E Two-Player Nullifier Sync', () => {
     // Deploy NFT contract from wallet1
     const nftArtifact = loadContractArtifact('triple_triad_nft-TripleTriadNFT');
     console.log('Deploying TripleTriadNFT...');
-    const nftContract = await Contract.deploy(wallet1, nftArtifact, [
+    const { contract: nftContract } = await Contract.deploy(wallet1, nftArtifact, [
       account1.address,
       encodeCompressedString('Test'),
       encodeCompressedString('T'),

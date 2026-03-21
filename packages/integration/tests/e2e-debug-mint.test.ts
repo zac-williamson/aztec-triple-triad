@@ -86,11 +86,11 @@ describe('E2E Debug Mint + import_note', () => {
     }
 
     console.log('Deploying TripleTriadNFT...');
-    nftContract = await Contract.deploy(wallet, nftArtifact, [
+    ({ contract: nftContract } = await Contract.deploy(wallet, nftArtifact, [
       playerAddr,
       encodeCompressedString('Test'),
       encodeCompressedString('T'),
-    ]).send(sendAs(playerAddr));
+    ]).send(sendAs(playerAddr)));
     console.log(`  NFT at: ${nftContract.address}`);
     await wallet.registerSender(nftContract.address, 'nft');
   }, 300_000);
@@ -100,9 +100,10 @@ describe('E2E Debug Mint + import_note', () => {
     const RANDOMNESS = Fr.random();
 
     // 1. Confirm 0 cards before
-    const [before] = await nftContract.methods
+    const { result: beforeResult } = await nftContract.methods
       .get_private_cards(playerAddr, 0)
       .simulate({ from: playerAddr });
+    const before = beforeResult[0];
     expect(before.filter((v: any) => BigInt(v) !== 0n).length).toBe(0);
     console.log('  0 cards before mint ✓');
 
@@ -151,9 +152,10 @@ describe('E2E Debug Mint + import_note', () => {
     console.log('  import_note completed ✓');
 
     // 5. Check cards via get_private_cards — should see the note
-    const [afterImport] = await nftContract.methods
+    const { result: afterImportResult } = await nftContract.methods
       .get_private_cards(playerAddr, 0)
       .simulate({ from: playerAddr });
+    const afterImport = afterImportResult[0];
     const cards = afterImport
       .map((v: any) => Number(BigInt(v)))
       .filter((id: number) => id !== 0);

@@ -175,24 +175,22 @@ async function main() {
   console.log('  Deploying TripleTriadNFT...');
   const nameField = Fr.fromString('TestCards');
   const symbolField = Fr.fromString('TC');
-  const nftContract = await Contract.deploy(wallet, nftArtifact, [
+  const { contract: nftContract } = await Contract.deploy(wallet, nftArtifact, [
     deployerAddr,
     nameField,
     symbolField,
   ])
-    .send({ from: deployerAddr, fee: { paymentMethod: fee } })
-    .deployed();
+    .send({ from: deployerAddr, fee: { paymentMethod: fee }, wait: { timeout: 300 } });
   console.log(`  NFT deployed at: ${nftContract.address}`);
 
   // Deploy Game
   console.log('  Deploying TripleTriadGame...');
-  const gameContract = await Contract.deploy(wallet, gameArtifact, [
+  const { contract: gameContract } = await Contract.deploy(wallet, gameArtifact, [
     nftContract.address,
     Fr.fromHexString(handVk.hash),
     Fr.fromHexString(moveVk.hash),
   ])
-    .send({ from: deployerAddr, fee: { paymentMethod: fee } })
-    .deployed();
+    .send({ from: deployerAddr, fee: { paymentMethod: fee }, wait: { timeout: 300 } });
   console.log(`  Game deployed at: ${gameContract.address}`);
 
   // Register game contract on NFT

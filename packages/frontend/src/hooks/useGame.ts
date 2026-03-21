@@ -187,16 +187,16 @@ export function useGame(wsUrl: string): UseGameReturn {
     const senderAddr = AztecAddress.fromString(addr);
 
     console.log('[useGame] Starting create_game pipeline...');
-    const nonceResult = await nftContract.methods.get_note_nonce(senderAddr).simulate({ from: senderAddr });
+    const { result: nonceResult } = await nftContract.methods.get_note_nonce(senderAddr).simulate({ from: senderAddr });
     const nonceFr = toFrUtil(Fr, nonceResult);
     console.log('[useGame] Note nonce:', nonceFr.toString());
 
-    const previewResult: any = await nftContract.methods.preview_game_data(nonceFr).simulate({ from: senderAddr });
+    const { result: previewResult }: any = await nftContract.methods.preview_game_data(nonceFr).simulate({ from: senderAddr });
     const gameId = String(previewResult[0]);
     const randomnessHex = Array.from({ length: 6 }, (_, i) => toHexString(previewResult[i + 1]));
     const gameIdFr = toFrUtil(Fr, gameId);
 
-    const [statusResult, blindingResult] = await Promise.all([
+    const [{ result: statusResult }, { result: blindingResult }] = await Promise.all([
       gameContract.methods.get_game_status(gameIdFr).simulate({ from: senderAddr }),
       nftContract.methods.compute_blinding_factor(gameIdFr).simulate({ from: senderAddr }),
     ]);
@@ -219,8 +219,10 @@ export function useGame(wsUrl: string): UseGameReturn {
 
     // Diagnostic: check what notes the PXE thinks are available
     try {
-      const pxeCards = await nftContract.methods.get_private_cards(senderAddr, 0).simulate({ from: senderAddr });
-      const cardList = Array.isArray(pxeCards) ? pxeCards.map((c: any) => Number(c)) : pxeCards;
+      const { result: pxeCards } = await nftContract.methods.get_private_cards(senderAddr, 0).simulate({ from: senderAddr });
+      // simulate() returns tuple as nested array: [fieldArray, hasMore]
+      const page = pxeCards[0] ?? pxeCards;
+      const cardList = Array.isArray(page) ? page.map((c: any) => Number(c)) : page;
       console.log('[useGame] PXE private cards before create_game:', cardList);
     } catch (e) {
       console.warn('[useGame] Could not query PXE private cards:', e);
@@ -270,14 +272,14 @@ export function useGame(wsUrl: string): UseGameReturn {
     const senderAddr = AztecAddress.fromString(addr);
     const chainGameIdFr = toFrUtil(Fr, chainGameId);
 
-    const [nonceResult, blindingResult] = await Promise.all([
+    const [{ result: nonceResult }, { result: blindingResult }] = await Promise.all([
       nftContract.methods.get_note_nonce(senderAddr).simulate({ from: senderAddr }),
       nftContract.methods.compute_blinding_factor(chainGameIdFr).simulate({ from: senderAddr }),
     ]);
     const nonceFr = toFrUtil(Fr, nonceResult);
     const blindingHex = toHexString(blindingResult);
 
-    const previewResult: any = await nftContract.methods.preview_game_data(nonceFr).simulate({ from: senderAddr });
+    const { result: previewResult }: any = await nftContract.methods.preview_game_data(nonceFr).simulate({ from: senderAddr });
     const randomnessHex = Array.from({ length: 6 }, (_, i) => toHexString(previewResult[i + 1]));
 
     setOnChainGameId(chainGameId);
