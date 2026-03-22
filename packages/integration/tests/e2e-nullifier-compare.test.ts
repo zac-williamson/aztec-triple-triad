@@ -191,7 +191,7 @@ describe('E2E Nullifier Comparison: real vs test function', () => {
     // ================================================================
     console.log('\n========== PART A: REAL get_cards_for_new_player ==========');
 
-    const realReceipt = await realContract.methods
+    const { receipt: realReceipt } = await realContract.methods
       .get_cards_for_new_player()
       .send(sendAs(playerAddr));
     const realTxHash = realReceipt.txHash?.toString();
@@ -212,7 +212,7 @@ describe('E2E Nullifier Comparison: real vs test function', () => {
 
     // Nullify the 5 starter cards
     console.log('\n--- REAL: nullify cards ---');
-    const realNullifyReceipt = await realContract.methods
+    const { receipt: realNullifyReceipt } = await realContract.methods
       .test_nullify_cards(playerAddr, [1, 2, 3, 4, 5].map(n => new Fr(BigInt(n))))
       .send(sendAs(playerAddr));
     const realNullifyTxHash = realNullifyReceipt.txHash?.toString();
@@ -235,7 +235,7 @@ describe('E2E Nullifier Comparison: real vs test function', () => {
     // ================================================================
     console.log('\n========== PART B: TEST get_cards_for_new_player_test ==========');
 
-    const testReceipt = await testContract.methods
+    const { receipt: testReceipt } = await testContract.methods
       .get_cards_for_new_player_test(new Fr(0n))
       .send(sendAs(playerAddr));
     const testTxHash = testReceipt.txHash?.toString();
@@ -256,7 +256,7 @@ describe('E2E Nullifier Comparison: real vs test function', () => {
 
     // Nullify the 5 starter cards
     console.log('\n--- TEST: nullify cards ---');
-    const testNullifyReceipt = await testContract.methods
+    const { receipt: testNullifyReceipt } = await testContract.methods
       .test_nullify_cards(playerAddr, [1, 2, 3, 4, 5].map(n => new Fr(BigInt(n))))
       .send(sendAs(playerAddr));
     const testNullifyTxHash = testNullifyReceipt.txHash?.toString();

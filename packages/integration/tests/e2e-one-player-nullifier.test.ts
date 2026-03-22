@@ -220,7 +220,7 @@ describe('E2E One-Player Nullifier Sync', () => {
 
     // P1: get_cards_for_new_player (real function, with ONCHAIN_CONSTRAINED nonce note)
     console.log('\n--- P1: get_cards_for_new_player ---');
-    const p1StarterReceipt = await p1.nftContract.methods
+    const { receipt: p1StarterReceipt } = await p1.nftContract.methods
       .get_cards_for_new_player()
       .send(p1.sendOpts);
     const p1StarterTxHash = p1StarterReceipt.txHash?.toString();
@@ -239,7 +239,7 @@ describe('E2E One-Player Nullifier Sync', () => {
 
     // Nullify starter cards
     console.log('\n--- P1: nullify starter cards ---');
-    const p1Nullify1Receipt = await p1.nftContract.methods
+    const { receipt: p1Nullify1Receipt } = await p1.nftContract.methods
       .test_nullify_cards(p1.addr, [1, 2, 3, 4, 5].map(n => new Fr(BigInt(n))))
       .send(p1.sendOpts);
     console.log(`  P1 nullify-1 tx: ${p1Nullify1Receipt.txHash?.toString()}`);
@@ -268,7 +268,7 @@ describe('E2E One-Player Nullifier Sync', () => {
       console.log(`  P1 randomness[${i}]: ${p1GameRand1[i].toString()}`);
     }
 
-    const p1MintReceipt1 = await p1.nftContract.methods
+    const { receipt: p1MintReceipt1 } = await p1.nftContract.methods
       .test_mint_winner_cards(
         [1, 2, 3, 4, 5, 6].map(n => new Fr(BigInt(n))),
         p1.addr,
@@ -290,7 +290,7 @@ describe('E2E One-Player Nullifier Sync', () => {
     // Nullify winner cards
     console.log('\n--- P1: nullify round-2 cards ---');
     try {
-      const p1Nullify2Receipt = await p1.nftContract.methods
+      const { receipt: p1Nullify2Receipt } = await p1.nftContract.methods
         .test_nullify_cards(p1.addr, [1, 2, 3, 4, 5].map(n => new Fr(BigInt(n))))
         .send(p1.sendOpts);
       console.log(`  P1 nullify-2 tx: ${p1Nullify2Receipt.txHash?.toString()}`);
@@ -331,7 +331,7 @@ describe('E2E One-Player Nullifier Sync', () => {
       console.log(`  P1 randomness[${i}]: ${p1GameRand2[i].toString()}`);
     }
 
-    const p1MintReceipt2 = await p1.nftContract.methods
+    const { receipt: p1MintReceipt2 } = await p1.nftContract.methods
       .test_mint_winner_cards(
         [1, 2, 3, 4, 5, 6].map(n => new Fr(BigInt(n))),
         p1.addr,
@@ -353,7 +353,7 @@ describe('E2E One-Player Nullifier Sync', () => {
     // Nullify winner cards (round 3) — THIS IS THE FAILURE POINT IN THE TWO-PLAYER TEST
     console.log('\n--- P1: nullify round-3 cards (THE CRITICAL TEST) ---');
     try {
-      const p1Nullify3Receipt = await p1.nftContract.methods
+      const { receipt: p1Nullify3Receipt } = await p1.nftContract.methods
         .test_nullify_cards(p1.addr, [1, 2, 3, 4, 5].map(n => new Fr(BigInt(n))))
         .send(p1.sendOpts);
       console.log(`  P1 nullify-3 tx: ${p1Nullify3Receipt.txHash?.toString()}`);

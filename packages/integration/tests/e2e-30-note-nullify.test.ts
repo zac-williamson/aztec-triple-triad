@@ -184,7 +184,7 @@ describe('E2E 30-Note Create and Nullify', () => {
       const randomness = await getNoteRandomness(batch.nonceOffset, 10);
 
       console.log(`\n--- Batch ${b}: creating IDs [${batch.ids}] with nonceOffset=${batch.nonceOffset} ---`);
-      const receipt = await nftContract.methods
+      const { receipt } = await nftContract.methods
         .test_create_10_cards(playerAddr, frIds, new Fr(batch.nonceOffset))
         .send(sendOpts());
       const txHash = receipt.txHash?.toString();
@@ -211,7 +211,7 @@ describe('E2E 30-Note Create and Nullify', () => {
 
       console.log(`\n--- Batch ${b}: nullifying IDs [${batch.ids}] ---`);
       try {
-        const receipt = await nftContract.methods
+        const { receipt } = await nftContract.methods
           .test_nullify_10_cards(playerAddr, frIds)
           .send(sendOpts());
         console.log(`  nullify tx: ${receipt.txHash?.toString()}`);

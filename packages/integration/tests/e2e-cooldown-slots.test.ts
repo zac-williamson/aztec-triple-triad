@@ -81,7 +81,7 @@ describe('Cooldown slot logging', () => {
 
   it('should log cooldown partial note storage slots', async () => {
     console.log('\n--- Calling get_cards_for_new_player (check DEBUG logs for PARTIAL NOTE STORAGE SLOT) ---');
-    const receipt = await nftContract.methods
+    const { receipt } = await nftContract.methods
       .get_cards_for_new_player()
       .send(sendAs(playerAddr));
     console.log(`  tx: ${receipt.txHash?.toString()}`);

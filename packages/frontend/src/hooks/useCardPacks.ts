@@ -146,7 +146,7 @@ export function useCardPacks(
       setTxStatus('confirming');
 
       // Call the generic location method with location ID
-      const receipt = await nftContract.methods.get_cards_from_location(location.id).send({
+      const { receipt } = await nftContract.methods.get_cards_from_location(location.id).send({
         from: addr,
         fee: { paymentMethod },
         wait: { timeout: AZTEC_TX_TIMEOUT },

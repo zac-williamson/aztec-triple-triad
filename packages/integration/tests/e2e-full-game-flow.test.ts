@@ -525,7 +525,7 @@ describe('E2E Full Game Flow -- Frontend Proofs + WebSocket + Aztec Settlement',
 
     // Player 1: get_cards_for_new_player (creates starter cards [1-5] + note_nonce)
     console.log('  Player 1: calling get_cards_for_new_player...');
-    const p1MintReceipt = await nftContract.methods
+    const { receipt: p1MintReceipt } = await nftContract.methods
       .get_cards_for_new_player()
       .send(sendAs(p1Addr));
 
@@ -551,7 +551,7 @@ describe('E2E Full Game Flow -- Frontend Proofs + WebSocket + Aztec Settlement',
     // Player 2: also use get_cards_for_new_player (same flow as P1)
     // This mints starter cards [1,2,3,4,5] AND creates the note_nonce
     console.log('  Player 2: calling get_cards_for_new_player...');
-    const p2MintReceipt = await nftContract.methods
+    const { receipt: p2MintReceipt } = await nftContract.methods
       .get_cards_for_new_player()
       .send(sendAs(p2Addr));
 
@@ -863,7 +863,7 @@ describe('E2E Full Game Flow -- Frontend Proofs + WebSocket + Aztec Settlement',
     const gameIdFr = toFr(gameIdHex);
 
     console.log('  Calling process_game...');
-    const settlementResult = await gameContract.methods
+    const { receipt: settlementResult } = await gameContract.methods
       .process_game(
         gameIdFr,
         frontendHandVkFields,

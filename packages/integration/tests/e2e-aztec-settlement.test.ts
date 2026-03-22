@@ -316,7 +316,7 @@ describe('E2E Aztec Settlement', () => {
     // These use create_and_push_note (no tagging) so we MUST import notes after
     console.log('Minting cards to players...');
     console.log('  Player 1: calling get_cards_for_new_player (self-mint)...');
-    const p1MintReceipt = await nftContract.methods
+    const { receipt: p1MintReceipt } = await nftContract.methods
       .get_cards_for_new_player()
       .send(sendAs(p1Addr));
     console.log('  Player 1: starter cards minted, importing notes...');
@@ -347,7 +347,7 @@ describe('E2E Aztec Settlement', () => {
     // Player 2: also use get_cards_for_new_player (same flow as P1)
     // This mints starter cards [1,2,3,4,5] AND creates the note_nonce
     console.log('  Player 2: calling get_cards_for_new_player...');
-    const p2MintReceipt = await nftContract.methods
+    const { receipt: p2MintReceipt } = await nftContract.methods
       .get_cards_for_new_player()
       .send(sendAs(p2Addr));
 
@@ -563,7 +563,7 @@ describe('E2E Aztec Settlement', () => {
 
     console.log('Calling process_game...');
 
-    const result = await gameContract.methods
+    const { receipt: result } = await gameContract.methods
       .process_game(
         gameIdFr,
         realHandVkFields,

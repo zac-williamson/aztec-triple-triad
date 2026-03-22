@@ -211,11 +211,11 @@ export function useAztec(): UseAztecReturn {
           const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
           const nftContract = await Contract.at(nftAddr, nftArtifact, wallet as never);
           console.log('[useAztec] Minting starter cards via get_cards_for_new_player...');
-          const receipt = await nftContract.methods
+          const { receipt } = await nftContract.methods
             .get_cards_for_new_player()
             .send({ from: accountManager.address, fee: { paymentMethod }, wait: { timeout: AZTEC_TX_TIMEOUT } });
           localStorage.setItem(mintKey, 'true');
-          const txHashStr = (receipt as any).txHash?.toString() || '';
+          const txHashStr = receipt?.txHash?.toString() || '';
           console.log('[useAztec] Starter cards tx mined, txHash:', txHashStr);
 
           // Import the starter card notes (create_and_push_note skips tagging)

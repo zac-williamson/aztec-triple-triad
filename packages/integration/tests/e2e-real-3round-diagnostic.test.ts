@@ -232,7 +232,7 @@ describe('E2E Real 3-Round Diagnostic (with cooldown partial notes)', () => {
 
     // Call REAL get_cards_for_new_player
     console.log('\n--- Calling get_cards_for_new_player() (REAL) ---');
-    const starterReceipt = await nftContract.methods
+    const { receipt: starterReceipt } = await nftContract.methods
       .get_cards_for_new_player()
       .send(sendOpts());
     const starterTxHash = starterReceipt.txHash?.toString();
@@ -252,7 +252,7 @@ describe('E2E Real 3-Round Diagnostic (with cooldown partial notes)', () => {
 
     // Nullify round 1 cards
     console.log('\n--- Nullifying round 1 cards ---');
-    const nullify1Receipt = await nftContract.methods
+    const { receipt: nullify1Receipt } = await nftContract.methods
       .test_nullify_cards(playerAddr, [1, 2, 3, 4, 5].map(n => new Fr(BigInt(n))))
       .send(sendOpts());
     const nullify1TxHash = nullify1Receipt.txHash?.toString();
@@ -285,7 +285,7 @@ describe('E2E Real 3-Round Diagnostic (with cooldown partial notes)', () => {
     const { randomness: gameRand1 } = await getGameRandomness(nonce1);
 
     console.log('\n--- Minting round 2 cards ---');
-    const mint1Receipt = await nftContract.methods
+    const { receipt: mint1Receipt } = await nftContract.methods
       .test_mint_winner_cards(
         [1, 2, 3, 4, 5, 6].map(n => new Fr(BigInt(n))),
         playerAddr,
@@ -309,7 +309,7 @@ describe('E2E Real 3-Round Diagnostic (with cooldown partial notes)', () => {
     // Nullify round 2 cards
     console.log('\n--- Nullifying round 2 cards ---');
     try {
-      const nullify2Receipt = await nftContract.methods
+      const { receipt: nullify2Receipt } = await nftContract.methods
         .test_nullify_cards(playerAddr, [1, 2, 3, 4, 5].map(n => new Fr(BigInt(n))))
         .send(sendOpts());
       const nullify2TxHash = nullify2Receipt.txHash?.toString();
@@ -358,7 +358,7 @@ describe('E2E Real 3-Round Diagnostic (with cooldown partial notes)', () => {
     const { randomness: gameRand2 } = await getGameRandomness(nonce2);
 
     console.log('\n--- Minting round 3 cards ---');
-    const mint2Receipt = await nftContract.methods
+    const { receipt: mint2Receipt } = await nftContract.methods
       .test_mint_winner_cards(
         [1, 2, 3, 4, 5, 6].map(n => new Fr(BigInt(n))),
         playerAddr,
@@ -397,7 +397,7 @@ describe('E2E Real 3-Round Diagnostic (with cooldown partial notes)', () => {
     // Nullify round 3 cards — THIS IS THE FAILURE POINT
     console.log('\n--- Nullifying round 3 cards (THE CRITICAL TEST) ---');
     try {
-      const nullify3Receipt = await nftContract.methods
+      const { receipt: nullify3Receipt } = await nftContract.methods
         .test_nullify_cards(playerAddr, [1, 2, 3, 4, 5].map(n => new Fr(BigInt(n))))
         .send(sendOpts());
       const nullify3TxHash = nullify3Receipt.txHash?.toString();

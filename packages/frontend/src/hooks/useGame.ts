@@ -228,10 +228,10 @@ export function useGame(wsUrl: string): UseGameReturn {
       console.warn('[useGame] Could not query PXE private cards:', e);
     }
 
-    const receipt = await gameContract.methods
+    const { receipt } = await gameContract.methods
       .create_game(ids.map((id: number) => new Fr(BigInt(id))))
       .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_TX_TIMEOUT } });
-    const txHash = (receipt as any).txHash?.toString();
+    const txHash = receipt?.txHash?.toString();
     if (!txHash) throw new Error('create_game tx returned no txHash');
     console.log('[useGame] create_game tx mined, txHash:', txHash);
 
@@ -300,10 +300,10 @@ export function useGame(wsUrl: string): UseGameReturn {
     const senderAddr = AztecAddress.fromString(addr);
     const chainGameIdFr = toFrUtil(Fr, chainGameId);
 
-    const receipt = await gameContract.methods
+    const { receipt } = await gameContract.methods
       .join_game(chainGameIdFr, ids.map((id: number) => new Fr(BigInt(id))))
       .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_TX_TIMEOUT } });
-    const txHash = (receipt as any).txHash?.toString();
+    const txHash = receipt?.txHash?.toString();
     if (!txHash) throw new Error('join_game tx returned no txHash');
     console.log('[useGame] join_game tx mined, txHash:', txHash);
 
@@ -935,7 +935,7 @@ export function useGame(wsUrl: string): UseGameReturn {
       const hp2ProofData = base64ToFrArray(handProof2.proof);
       const hp2InputData = handProof2.publicInputs.map(hexToFr);
 
-      const receipt = await contract.methods
+      const { receipt } = await contract.methods
         .process_game(
           toFrUtil(Fr, onChainGameId),
           handVkFields,
@@ -954,7 +954,7 @@ export function useGame(wsUrl: string): UseGameReturn {
         )
         .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_SETTLE_TX_TIMEOUT } });
 
-      const hash = (receipt as any).txHash?.toString();
+      const hash = receipt?.txHash?.toString();
       if (!hash) throw new Error('Settlement tx returned no txHash');
       setSettleTxHash(hash);
       lastSettleTxHashRef.current = hash;
