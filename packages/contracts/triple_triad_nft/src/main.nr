@@ -532,9 +532,11 @@ pub contract TripleTriadNFT {
         // Owned<PrivateSet> uses the BASE storage slot (not a derived/mapped slot).
         // Use the auto-generated storage_layout() to get the correct slot.
         let storage_slot = TripleTriadNFT::storage_layout().private_nfts.slot;
-        // FieldNote hash: poseidon2([value, owner, storage_slot, randomness], DOM_SEP__NOTE_HASH)
+        // FieldNote hash must match the #[note] macro's generated compute_note_hash:
+        //   data = pack(self).concat([owner, randomness]) = [value, owner, randomness]
+        //   compute_note_hash(storage_slot, data) = poseidon2([storage_slot, value, owner, randomness], DOM_SEP)
         let note_hash = poseidon2_hash_with_separator(
-            [value, owner.to_field(), storage_slot, randomness],
+            [storage_slot, value, owner.to_field(), randomness],
             DOM_SEP__NOTE_HASH,
         );
 
