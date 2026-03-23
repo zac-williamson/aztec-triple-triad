@@ -16,6 +16,9 @@ export const PXE_SYNC_POLL_INTERVAL = 1000;
 /** Timeout for waiting on move proofs before settlement (ms) */
 export const MOVE_PROOF_WAIT_TIMEOUT = 30_000;
 
+/** Timeout for waiting on hand proofs before settlement (ms) */
+export const HAND_PROOF_WAIT_TIMEOUT = 120_000;
+
 /** Delay between move proof wait polls (ms) */
 export const MOVE_PROOF_POLL_INTERVAL = 500;
 
