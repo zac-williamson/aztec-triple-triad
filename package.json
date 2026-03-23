@@ -21,6 +21,7 @@
     "@aztec/wallets": "4.2.0-nightly.20260320"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "fake-indexeddb": "^6.2.5",
     "openai": "^6.25.0",
     "sharp": "^0.34.5"
