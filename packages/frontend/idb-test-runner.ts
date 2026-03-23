@@ -211,30 +211,88 @@ async function run() {
     log(`Game ID: ${gameIdHex.slice(0, 20)}...`);
 
     // THE CRITICAL CALL
-    log('=== Calling create_game().send() ===');
+    log('=== Calling create_game().send() with concurrent PXE activity ===');
     log('This generates 6 nullifiers + 6 notes in a cross-contract call.');
-    log('In browser IndexedDB, this triggers TransactionInactiveError.');
+    log('We fire concurrent .simulate() calls during .send() to reproduce');
+    log('what the React app does (effects re-evaluating, warmup, etc.).');
 
     const t0 = performance.now();
+
+    // Fire concurrent .simulate() calls while .send() is in flight.
+    // This is what the app does: React effects call simulate() on utility
+    // functions while the pipeline's .send() is running. Both hit the same
+    // PXE instance, causing concurrent IDB access.
+    let concurrentOpsCount = 0;
+    let concurrentErrors: string[] = [];
+    let stopConcurrent = false;
+
+    // Fire MULTIPLE concurrent simulate calls with NO delays.
+    // In the real app, React effects can trigger overlapping PXE calls:
+    // - warmupContracts → Contract.at() (PXE registration)
+    // - get_private_cards (card refresh)
+    // - get_note_nonce (preview)
+    // - compute_blinding_factor
+    // These all queue on the PXE's job queue and compete for IDB transactions.
+    const concurrentActivity = (async () => {
+      await new Promise(r => setTimeout(r, 300));
+      while (!stopConcurrent) {
+        // Fire multiple simulate calls concurrently (like Promise.all in app code)
+        const batch = [
+          nftContract.methods.get_note_nonce(addr).simulate({ from: addr }),
+          nftContract.methods.get_private_cards(addr, 0).simulate({ from: addr }),
+        ];
+        try {
+          await Promise.all(batch);
+          concurrentOpsCount += 2;
+        } catch (e: any) {
+          concurrentErrors.push(e.message?.slice(0, 120) || 'unknown');
+          concurrentOpsCount++;
+        }
+        // Minimal delay — the app's React effects re-fire rapidly
+        await new Promise(r => setTimeout(r, 50));
+      }
+    })();
+
+    let sendError: any = null;
     try {
       await gameContract.methods
         .create_game([1, 2, 3, 4, 5].map(id => new Fr(BigInt(id))))
         .send(sendAs(addr));
-
-      const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
-      log(`create_game SUCCEEDED in ${elapsed}s`);
-      (window as any).__IDB_TEST_RESULT__ = { success: true, elapsed };
     } catch (err: any) {
-      const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
-      log(`create_game FAILED after ${elapsed}s: ${err.message}`);
+      sendError = err;
+    } finally {
+      stopConcurrent = true;
+      // Wait for concurrent activity to stop
+      await concurrentActivity.catch(() => {});
+    }
+
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+    log(`Concurrent .simulate() calls made during .send(): ${concurrentOpsCount}`);
+    if (concurrentErrors.length > 0) {
+      log(`Concurrent errors: ${concurrentErrors.length}`);
+      concurrentErrors.forEach((e, i) => log(`  error[${i}]: ${e}`));
+    }
+
+    if (sendError) {
+      log(`create_game FAILED after ${elapsed}s: ${sendError.message}`);
       (window as any).__IDB_TEST_RESULT__ = {
         success: false,
-        error: err.message,
-        name: err.name,
+        error: sendError.message,
+        name: sendError.name,
+        concurrentOps: concurrentOpsCount,
+        concurrentErrors,
         isTransactionInactiveError:
-          err.message?.includes('TransactionInactiveError') ||
-          err.message?.includes('transaction is inactive or finished') ||
-          err.name === 'TransactionInactiveError',
+          sendError.message?.includes('TransactionInactiveError') ||
+          sendError.message?.includes('transaction is inactive or finished') ||
+          sendError.name === 'TransactionInactiveError',
+      };
+    } else {
+      log(`create_game SUCCEEDED in ${elapsed}s (with ${concurrentOpsCount} concurrent ops)`);
+      (window as any).__IDB_TEST_RESULT__ = {
+        success: true,
+        elapsed,
+        concurrentOps: concurrentOpsCount,
+        concurrentErrors,
       };
     }
   } catch (err: any) {

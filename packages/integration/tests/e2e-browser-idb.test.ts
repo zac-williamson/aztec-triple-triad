@@ -1,67 +1,59 @@
 /**
  * E2E Browser Test: Reproduce TransactionInactiveError with REAL IndexedDB
  *
- * Uses Playwright to open a headless Chromium browser, load a minimal page
- * that exercises the exact EmbeddedWallet → create_game code path with
- * real browser IndexedDB (no polyfills, no fakes).
+ * Uses Playwright to open a headless browser, load a page that exercises
+ * the exact EmbeddedWallet → create_game code path with real browser IndexedDB.
+ *
+ * The test page fires concurrent .simulate() calls while .send() is in flight,
+ * reproducing what the React app does when effects re-evaluate during the
+ * 12-17 second create_game transaction.
  *
  * Prerequisites:
  *   - Aztec sandbox running: aztec start --local-network
  *   - Contracts deployed (VITE_NFT_CONTRACT_ADDRESS and VITE_GAME_CONTRACT_ADDRESS in .env)
  *   - Frontend dev server running: cd packages/frontend && npm run dev
- *     (provides Vite bundling, COOP/COEP headers, WASM support)
- *   - Playwright installed: npx playwright install chromium
  *
- * Run:
+ * Run (Chromium):
  *   npx playwright test packages/integration/tests/e2e-browser-idb.test.ts
  *
- * Or with headed browser for debugging:
+ * Run (WebKit/Safari — more likely to reproduce):
+ *   npx playwright test packages/integration/tests/e2e-browser-idb.test.ts --project=webkit
+ *
+ * Run headed for debugging:
  *   npx playwright test packages/integration/tests/e2e-browser-idb.test.ts --headed
  */
 
 import { test, expect } from '@playwright/test';
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
-// Generous timeout — account deployment + card minting + create_game can take minutes
-const TEST_TIMEOUT = 10 * 60 * 1000; // 10 minutes
+const TEST_TIMEOUT = 10 * 60 * 1000;
 
 test.describe('Browser IndexedDB TransactionInactiveError', () => {
-  test('create_game triggers TransactionInactiveError with real browser IndexedDB', async ({ page }) => {
+  test('create_game with concurrent PXE activity triggers IDB error', async ({ page, browserName }) => {
     test.setTimeout(TEST_TIMEOUT);
 
     const consoleMessages: string[] = [];
     const consoleErrors: string[] = [];
 
-    // Capture ALL console output from the browser
     page.on('console', msg => {
       const text = msg.text();
       consoleMessages.push(`[${msg.type()}] ${text}`);
-      if (msg.type() === 'error') {
-        consoleErrors.push(text);
-      }
-      // Print to Node.js stdout for live visibility
-      console.log(`  [browser:${msg.type()}] ${text}`);
+      if (msg.type() === 'error') consoleErrors.push(text);
+      console.log(`  [${browserName}:${msg.type()}] ${text}`);
     });
 
-    // Capture uncaught exceptions
     page.on('pageerror', err => {
       consoleErrors.push(err.message);
-      console.log(`  [browser:pageerror] ${err.message}`);
+      console.log(`  [${browserName}:pageerror] ${err.message}`);
     });
 
-    console.log('Navigating to test page...');
-    console.log(`URL: ${FRONTEND_URL}/idb-test.html`);
-
-    await page.goto(`${FRONTEND_URL}/idb-test.html`, {
-      waitUntil: 'domcontentloaded',
-    });
-
-    console.log('Page loaded. Waiting for test to complete...');
-    console.log('(This takes several minutes: account deploy, card mint, create_game)');
+    console.log(`Browser: ${browserName}`);
+    console.log(`Navigating to ${FRONTEND_URL}/idb-test.html`);
     console.log('');
 
-    // Wait for the test runner to set __IDB_TEST_RESULT__ on the window object.
-    // Poll every 5 seconds, with total timeout matching the test timeout.
+    await page.goto(`${FRONTEND_URL}/idb-test.html`, { waitUntil: 'domcontentloaded' });
+
+    // Wait for __IDB_TEST_RESULT__ to be set
     let result: any = null;
     const pollInterval = 5000;
     const maxPolls = Math.floor(TEST_TIMEOUT / pollInterval);
@@ -73,46 +65,40 @@ test.describe('Browser IndexedDB TransactionInactiveError', () => {
     }
 
     console.log('');
-    console.log('=== TEST RESULT ===');
+    console.log('=== RESULT ===');
     console.log(JSON.stringify(result, null, 2));
     console.log('');
 
-    // Check if TransactionInactiveError appeared anywhere
     const idbErrorInConsole = consoleErrors.some(
       e => e.includes('TransactionInactiveError') || e.includes('transaction is inactive or finished'),
     );
     const idbErrorInResult = result?.isTransactionInactiveError === true;
-    const idbErrorInMessage = result?.error?.includes?.('transaction is inactive or finished');
+    const idbErrorInConcurrent = (result?.concurrentErrors || []).some(
+      (e: string) => e.includes('TransactionInactiveError') || e.includes('transaction is inactive'),
+    );
 
-    if (idbErrorInConsole || idbErrorInResult || idbErrorInMessage) {
-      console.log('BUG CONFIRMED: TransactionInactiveError occurred in real browser IndexedDB.');
-      console.log('');
-      console.log('Relevant console errors:');
-      for (const e of consoleErrors.filter(
-        e => e.includes('TransactionInactiveError') || e.includes('transaction is inactive'),
-      )) {
-        console.log(`  ${e.slice(0, 200)}`);
-      }
+    const bugReproduced = idbErrorInConsole || idbErrorInResult || idbErrorInConcurrent;
+
+    if (bugReproduced) {
+      console.log(`BUG REPRODUCED on ${browserName}!`);
+      console.log('TransactionInactiveError occurred during concurrent PXE access.');
+      if (idbErrorInResult) console.log('  → .send() itself failed');
+      if (idbErrorInConcurrent) console.log('  → Concurrent .simulate() calls failed');
+      if (idbErrorInConsole) console.log('  → Error seen in browser console');
     } else if (result?.success) {
-      console.log('create_game succeeded — bug did NOT reproduce in this run.');
-      console.log('The bug may be timing-dependent. Try running with --headed or on a slower machine.');
+      console.log(`create_game succeeded on ${browserName} with ${result.concurrentOps} concurrent ops.`);
+      if (result.concurrentErrors?.length > 0) {
+        console.log(`  But ${result.concurrentErrors.length} concurrent errors occurred:`);
+        result.concurrentErrors.forEach((e: string) => console.log(`    ${e.slice(0, 120)}`));
+      }
     } else if (result?.error) {
-      console.log(`create_game failed with a different error: ${result.error.slice(0, 200)}`);
+      console.log(`Failed with: ${result.error.slice(0, 200)}`);
     } else {
-      console.log('Test did not complete within the timeout.');
+      console.log('Test did not complete within timeout.');
     }
 
-    // Assert that we got a result (test completed)
     expect(result).not.toBeNull();
-
-    // If TransactionInactiveError was seen, the bug is confirmed.
-    // If create_game succeeded, the test still passes (the bug is timing-dependent).
-    // We just report what happened.
-    if (idbErrorInConsole || idbErrorInResult || idbErrorInMessage) {
-      // Bug reproduced — log it clearly
-      console.log('');
-      console.log('To use this as a regression test, uncomment the expect below:');
-      console.log('// expect(result.success).toBe(true);');
-    }
+    // The test reports what happened. If the bug reproduces, it's logged clearly.
+    // The test passes either way — it's a reproduction test, not a regression test.
   });
 });
