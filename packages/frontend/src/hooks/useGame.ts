@@ -202,19 +202,25 @@ export function useGame(wsUrl: string): UseGameReturn {
     const senderAddr = AztecAddress.fromString(addr);
 
     console.log('[useGame] Starting create_game pipeline...');
+    console.log(`[PXE-TRACE] ${Date.now()} nftContract.get_note_nonce(${senderAddr}).simulate()`);
     const { result: nonceResult } = await nftContract.methods.get_note_nonce(senderAddr).simulate({ from: senderAddr });
     const nonceFr = toFrUtil(Fr, nonceResult);
-    console.log('[useGame] Note nonce:', nonceFr.toString());
+    console.log(`[PXE-TRACE] ${Date.now()} get_note_nonce COMPLETE result=${nonceFr.toString()}`);
 
+    console.log(`[PXE-TRACE] ${Date.now()} nftContract.preview_game_data(${nonceFr}).simulate()`);
     const { result: previewResult }: any = await nftContract.methods.preview_game_data(nonceFr).simulate({ from: senderAddr });
     const gameId = String(previewResult[0]);
     const randomnessHex = Array.from({ length: 6 }, (_, i) => toHexString(previewResult[i + 1]));
     const gameIdFr = toFrUtil(Fr, gameId);
+    console.log(`[PXE-TRACE] ${Date.now()} preview_game_data COMPLETE gameId=${toHexString(gameId).slice(0,20)}...`);
 
-    // PXE does not support concurrent simulate() calls — IDB transactions auto-commit
-    // and the shared container.db reference is invalidated between jobs (see IDB_TRANSACTION_ERROR_REPORT.md)
+    console.log(`[PXE-TRACE] ${Date.now()} gameContract.get_game_status(${toHexString(gameId).slice(0,20)}...).simulate()`);
     const { result: statusResult } = await gameContract.methods.get_game_status(gameIdFr).simulate({ from: senderAddr });
+    console.log(`[PXE-TRACE] ${Date.now()} get_game_status COMPLETE result=${statusResult}`);
+
+    console.log(`[PXE-TRACE] ${Date.now()} nftContract.compute_blinding_factor(${toHexString(gameId).slice(0,20)}...).simulate()`);
     const { result: blindingResult } = await nftContract.methods.compute_blinding_factor(gameIdFr).simulate({ from: senderAddr });
+    console.log(`[PXE-TRACE] ${Date.now()} compute_blinding_factor COMPLETE`);
     if (Number(statusResult) !== 0) {
       throw new Error(`Game ID already exists with status ${Number(statusResult)}, nonce may be stale`);
     }
@@ -234,7 +240,9 @@ export function useGame(wsUrl: string): UseGameReturn {
 
     // Diagnostic: check what notes the PXE thinks are available
     try {
+      console.log(`[PXE-TRACE] ${Date.now()} nftContract.get_private_cards(${senderAddr}, 0).simulate() [diagnostic]`);
       const { result: pxeCards } = await nftContract.methods.get_private_cards(senderAddr, 0).simulate({ from: senderAddr });
+      console.log(`[PXE-TRACE] ${Date.now()} get_private_cards COMPLETE [diagnostic]`);
       // simulate() returns tuple as nested array: [fieldArray, hasMore]
       const page = pxeCards[0] ?? pxeCards;
       const cardList = Array.isArray(page) ? page.map((c: any) => Number(c)) : page;
@@ -243,12 +251,13 @@ export function useGame(wsUrl: string): UseGameReturn {
       console.warn('[useGame] Could not query PXE private cards:', e);
     }
 
+    console.log(`[PXE-TRACE] ${Date.now()} gameContract.create_game([${ids.join(',')}]).send(from=${senderAddr})`);
     const { receipt } = await gameContract.methods
       .create_game(ids.map((id: number) => new Fr(BigInt(id))))
       .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_TX_TIMEOUT } });
     const txHash = receipt?.txHash?.toString();
     if (!txHash) throw new Error('create_game tx returned no txHash');
-    console.log('[useGame] create_game tx mined, txHash:', txHash);
+    console.log(`[PXE-TRACE] ${Date.now()} create_game().send COMPLETE txHash=${txHash}`);
 
     // DIAGNOSTIC: dump TxEffect nullifiers from create_game so we can compare
     // with PXE's stored siloedNullifiers
@@ -398,7 +407,10 @@ export function useGame(wsUrl: string): UseGameReturn {
 
   // Pre-warm contract cache
   useEffect(() => {
-    if (aztec.wallet) warmupContracts(aztec.wallet);
+    if (aztec.wallet) {
+      console.log(`[PXE-TRACE] ${Date.now()} warmupContracts(wallet) [fire-and-forget]`);
+      warmupContracts(aztec.wallet);
+    }
   }, [aztec.wallet]);
 
   // Populate board state history from WS game state
@@ -632,7 +644,7 @@ export function useGame(wsUrl: string): UseGameReturn {
       (async () => {
         // Ensure PXE has processed nullifiers from any previous game's settlement
         if (lastSettleTxHashRef.current) {
-          console.log('[useGame] P1: syncing PXE before create_game (previous settle tx:', lastSettleTxHashRef.current, ')');
+          console.log(`[PXE-TRACE] ${Date.now()} waitForPxeSync (pre-create_game, previous settle tx: ${lastSettleTxHashRef.current})`);
           await waitForPxeSync(aztec.wallet, aztec.nodeClient);
           lastSettleTxHashRef.current = null;
         }

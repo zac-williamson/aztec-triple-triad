@@ -41,6 +41,7 @@ export const contractCache: {
 };
 
 export async function ensureContracts(wallet: unknown) {
+  console.log(`[PXE-TRACE] ${Date.now()} ensureContracts called (cached=${contractCache.wallet === wallet && !!contractCache.gameContract})`);
   if (contractCache.wallet !== wallet) {
     contractCache.wallet = wallet;
     contractCache.gameContract = null;
@@ -69,6 +70,7 @@ export async function ensureContracts(wallet: unknown) {
     const gameResp = await fetch('/contracts/triple_triad_game-TripleTriadGame.json');
     if (!gameResp.ok) throw new Error('Failed to load game contract artifact');
     const gameArtifact = loadContractArtifact(await gameResp.json());
+    console.log(`[PXE-TRACE] ${Date.now()} Contract.at(Game, ${gameAddr})`);
     contractCache.gameContract = await Contract.at(gameAddr, gameArtifact, wallet as never);
   }
 
@@ -76,6 +78,7 @@ export async function ensureContracts(wallet: unknown) {
     if (!AZTEC_CONFIG.nftContractAddress) throw new Error('nftContractAddress not configured');
     const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
     const nftArtifact = await getNftArtifact();
+    console.log(`[PXE-TRACE] ${Date.now()} Contract.at(NFT, ${nftAddr})`);
     contractCache.nftContract = await Contract.at(nftAddr, nftArtifact, wallet as never);
   }
 

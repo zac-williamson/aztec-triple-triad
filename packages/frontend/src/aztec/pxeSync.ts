@@ -19,6 +19,7 @@ export async function waitForPxeSync(wallet: unknown, nodeClient: unknown): Prom
   // We need the PXE to have processed the latest *existing* block, so subtract 1.
   // Use getProvenBlockNumber() when available (returns last finalized), else fall back.
   let targetBlock: number;
+  console.log(`[PXE-TRACE] ${Date.now()} pxeSync: getting target block number`);
   if (typeof node.getProvenBlockNumber === 'function') {
     targetBlock = await node.getProvenBlockNumber();
   } else {
@@ -27,6 +28,7 @@ export async function waitForPxeSync(wallet: unknown, nodeClient: unknown): Prom
   }
 
   // Check if PXE is already caught up before polling
+  console.log(`[PXE-TRACE] ${Date.now()} pxe.getSyncedBlockHeader() target=${targetBlock}`);
   const header = await pxe.getSyncedBlockHeader();
   const currentBlock = Number(header.globalVariables?.blockNumber ?? 0);
   if (currentBlock >= targetBlock) {
@@ -36,6 +38,7 @@ export async function waitForPxeSync(wallet: unknown, nodeClient: unknown): Prom
   console.log(`[pxeSync] Waiting for PXE sync to block ${targetBlock} (currently at ${currentBlock})...`);
 
   for (let i = 0; i < PXE_SYNC_MAX_POLLS; i++) {
+    console.log(`[PXE-TRACE] ${Date.now()} pxe.getSyncedBlockHeader() poll ${i}`);
     const h = await pxe.getSyncedBlockHeader();
     const syncedBlock = Number(h.globalVariables?.blockNumber ?? 0);
     if (syncedBlock >= targetBlock) {

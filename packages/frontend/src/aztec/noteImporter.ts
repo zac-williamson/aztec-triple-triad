@@ -125,7 +125,7 @@ export async function importNotesFromTx(
 
   // Import each note
   for (const note of notes) {
-    console.log(`[noteImporter] ${label}: importing tokenId=${note.tokenId} randomness=${note.randomness}`);
+    console.log(`[PXE-TRACE] ${Date.now()} nftContract.import_note(owner=${myAddr}, tokenId=${note.tokenId}, randomness=${note.randomness.toString().slice(0,20)}...).simulate()`);
     await nftContract.methods
       .import_note(
         myAddr,
@@ -138,6 +138,7 @@ export async function importNotesFromTx(
         myAddr,
       )
       .simulate({ from: myAddr });
+    console.log(`[PXE-TRACE] ${Date.now()} import_note COMPLETE tokenId=${note.tokenId}`);
   }
 
   console.log(`[noteImporter] ${label}: Imported ${notes.length} notes successfully`);

@@ -142,6 +142,7 @@ export function useAztec(): UseAztecReturn {
       const sponsoredFPC = await getContractInstanceFromInstantiationParams(SponsoredFPCContractArtifact, {
         salt: new Fr(SPONSORED_FPC_SALT),
       });
+      console.log(`[PXE-TRACE] ${Date.now()} wallet.registerContract(SponsoredFPC, ${sponsoredFPC.address})`);
       await wallet.registerContract(sponsoredFPC, SponsoredFPCContractArtifact);
       const paymentMethod = new SponsoredFeePaymentMethod(sponsoredFPC.address);
 
@@ -155,6 +156,7 @@ export function useAztec(): UseAztecReturn {
 
       // Deploy the account on-chain
       const deployMethod = await accountManager.getDeployMethod();
+      console.log(`[PXE-TRACE] ${Date.now()} deployMethod.send(from=NO_FROM)`);
       await deployMethod.send({
         from: NO_FROM,
         fee: { paymentMethod },
@@ -162,8 +164,10 @@ export function useAztec(): UseAztecReturn {
         skipInstancePublication: true,
         wait: { timeout: AZTEC_TX_TIMEOUT },
       });
+      console.log(`[PXE-TRACE] ${Date.now()} deployMethod.send COMPLETE`);
 
       // Register this account as a sender for note discovery
+      console.log(`[PXE-TRACE] ${Date.now()} wallet.registerSender(${accountManager.address}, 'player')`);
       await wallet.registerSender(accountManager.address, 'player');
 
       // Register NFT and Game contracts with the PXE so we can call their methods
@@ -172,11 +176,14 @@ export function useAztec(): UseAztecReturn {
       let nftArtifact: any = null;
       if (AZTEC_CONFIG.nftContractAddress) {
         const nftAddress = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
+        console.log(`[PXE-TRACE] ${Date.now()} wallet.registerSender(${nftAddress}, 'nft-contract')`);
         await wallet.registerSender(nftAddress, 'nft-contract');
         try {
+          console.log(`[PXE-TRACE] ${Date.now()} node.getContract(${nftAddress})`);
           const nftInstance = await node.getContract(nftAddress);
           if (nftInstance) {
             nftArtifact = await getNftArtifact();
+            console.log(`[PXE-TRACE] ${Date.now()} wallet.registerContract(NFT, ${nftAddress})`);
             await wallet.registerContract(nftInstance, nftArtifact);
             console.log('[useAztec] NFT contract registered with PXE');
           }
@@ -187,13 +194,16 @@ export function useAztec(): UseAztecReturn {
 
       if (AZTEC_CONFIG.gameContractAddress) {
         const gameAddress = AztecAddress.fromString(AZTEC_CONFIG.gameContractAddress);
+        console.log(`[PXE-TRACE] ${Date.now()} wallet.registerSender(${gameAddress}, 'game-contract')`);
         await wallet.registerSender(gameAddress, 'game-contract');
         try {
+          console.log(`[PXE-TRACE] ${Date.now()} node.getContract(${gameAddress})`);
           const gameInstance = await node.getContract(gameAddress);
           if (gameInstance) {
             const resp = await fetch('/contracts/triple_triad_game-TripleTriadGame.json');
             const rawArtifact = await resp.json();
             const gameArtifact = loadContractArtifact(rawArtifact);
+            console.log(`[PXE-TRACE] ${Date.now()} wallet.registerContract(Game, ${gameAddress})`);
             await wallet.registerContract(gameInstance, gameArtifact);
             console.log('[useAztec] Game contract registered with PXE');
           }
@@ -210,25 +220,29 @@ export function useAztec(): UseAztecReturn {
           const { Contract } = await import('@aztec/aztec.js/contracts');
           const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
           const nftContract = await Contract.at(nftAddr, nftArtifact, wallet as never);
-          console.log('[useAztec] Minting starter cards via get_cards_for_new_player...');
+          console.log(`[PXE-TRACE] ${Date.now()} nftContract.get_cards_for_new_player().send(from=${accountManager.address})`);
           const { receipt } = await nftContract.methods
             .get_cards_for_new_player()
             .send({ from: accountManager.address, fee: { paymentMethod }, wait: { timeout: AZTEC_TX_TIMEOUT } });
           localStorage.setItem(mintKey, 'true');
           const txHashStr = receipt?.txHash?.toString() || '';
-          console.log('[useAztec] Starter cards tx mined, txHash:', txHashStr);
+          console.log(`[PXE-TRACE] ${Date.now()} get_cards_for_new_player().send COMPLETE txHash=${txHashStr}`);
 
           // Import the starter card notes (create_and_push_note skips tagging)
           if (txHashStr) {
             try {
+              console.log(`[PXE-TRACE] ${Date.now()} nftContract.compute_note_randomness(0, ${STARTER_CARD_COUNT}).simulate(from=${accountManager.address})`);
               const { result: randomnessResult } = await nftContract.methods
                 .compute_note_randomness(0, STARTER_CARD_COUNT)
                 .simulate({ from: accountManager.address });
+              console.log(`[PXE-TRACE] ${Date.now()} compute_note_randomness COMPLETE`);
               const notes = STARTER_CARD_IDS.map((id, i) => ({
                 tokenId: id,
                 randomness: toFr(Fr, randomnessResult[i]).toString(),
               }));
+              console.log(`[PXE-TRACE] ${Date.now()} importNotesFromTx(txHash=${txHashStr}, notes=${JSON.stringify(notes.map(n => n.tokenId))})`);
               await importNotesFromTx(wallet, node, address, txHashStr, notes, 'Starter cards');
+              console.log(`[PXE-TRACE] ${Date.now()} importNotesFromTx COMPLETE`);
             } catch (importErr) {
               console.warn('[useAztec] Failed to import starter card notes:', importErr);
             }
@@ -249,6 +263,7 @@ export function useAztec(): UseAztecReturn {
           let pageIndex = 0;
           let hasMore = true;
           while (hasMore) {
+            console.log(`[PXE-TRACE] ${Date.now()} nftContract.get_private_cards(${accountManager.address}, ${pageIndex}).simulate()`);
             const { result: flatResult } = await nftContract.methods
               .get_private_cards(accountManager.address, pageIndex)
               .simulate({ from: accountManager.address });
