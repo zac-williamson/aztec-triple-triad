@@ -1,12 +1,24 @@
 /**
- * Browser-side script for reproducing the TransactionInactiveError.
+ * Browser-side script that mirrors the EXACT client-side transaction flow:
  *
- * This runs in a real browser with real IndexedDB. It exercises the exact
- * same code path as the game: EmbeddedWallet (browser entrypoint → IndexedDB),
- * deploy account, mint cards, then create_game().send().
+ * 1. EmbeddedWallet.create() (browser entrypoint → IndexedDB)
+ * 2. Register SponsoredFPC
+ * 3. Deploy Schnorr account
+ * 4. Register NFT + Game contracts with PXE (wallet.registerContract)
+ * 5. Mint starter cards via get_cards_for_new_player().send()
+ * 6. compute_note_randomness().simulate()
+ * 7. importNotesFromTx (5x import_note().simulate())
+ * 8. get_private_cards().simulate() (paginated card fetch)
+ * 9. warmupContracts (fire-and-forget Contract.at() x2)
+ * 10. createGameOnChain pipeline:
+ *     a. get_note_nonce().simulate()
+ *     b. preview_game_data().simulate()
+ *     c. get_game_status().simulate()
+ *     d. compute_blinding_factor().simulate()
+ *     e. get_private_cards().simulate() (diagnostic)
+ *     f. create_game().send()  ← THE CALL THAT FAILS
  *
- * Served by the frontend's Vite dev server (which provides COOP/COEP headers,
- * node polyfills, and WASM support). Opened by a Playwright test.
+ * This is served by the frontend Vite dev server and opened by Playwright.
  */
 
 const log = (msg: string) => {
@@ -18,132 +30,117 @@ const log = (msg: string) => {
 const PXE_URL = 'http://localhost:8080';
 const NFT_ADDR = (import.meta as any).env?.VITE_NFT_CONTRACT_ADDRESS || '';
 const GAME_ADDR = (import.meta as any).env?.VITE_GAME_CONTRACT_ADDRESS || '';
+const SEND_TIMEOUT = 300;
 
 async function run() {
   try {
-    log('Importing Aztec SDK...');
-    const [
-      { createAztecNodeClient },
-      { EmbeddedWallet },
-      { GrumpkinScalar },
-      { Fr },
-      { SponsoredFeePaymentMethod },
-      { SponsoredFPCContractArtifact },
-      { SPONSORED_FPC_SALT },
-      { getContractInstanceFromInstantiationParams },
-      { AztecAddress },
-      { Contract },
-      { loadContractArtifact },
-      { NO_FROM },
-    ] = await Promise.all([
-      import('@aztec/aztec.js/node'),
-      import('@aztec/wallets/embedded'),
-      import('@aztec/foundation/curves/grumpkin'),
-      import('@aztec/aztec.js/fields'),
-      import('@aztec/aztec.js/fee'),
-      import('@aztec/noir-contracts.js/SponsoredFPC'),
-      import('@aztec/constants'),
-      import('@aztec/stdlib/contract'),
-      import('@aztec/aztec.js/addresses'),
-      import('@aztec/aztec.js/contracts'),
-      import('@aztec/aztec.js/abi'),
-      import('@aztec/aztec.js/account'),
-    ]);
+    log('Step 1: Importing Aztec SDK...');
+    const { createAztecNodeClient } = await import('@aztec/aztec.js/node');
+    const { EmbeddedWallet } = await import('@aztec/wallets/embedded');
+    const { GrumpkinScalar } = await import('@aztec/foundation/curves/grumpkin');
+    const { Fr } = await import('@aztec/aztec.js/fields');
+    const { SponsoredFeePaymentMethod } = await import('@aztec/aztec.js/fee');
+    const { SponsoredFPCContractArtifact } = await import('@aztec/noir-contracts.js/SponsoredFPC');
+    const { SPONSORED_FPC_SALT } = await import('@aztec/constants');
+    const { getContractInstanceFromInstantiationParams } = await import('@aztec/stdlib/contract');
+    const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+    const { Contract } = await import('@aztec/aztec.js/contracts');
+    const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
+    const { NO_FROM } = await import('@aztec/aztec.js/account');
 
     const toFr = (v: any) => {
       const s = v.toString();
       if (s.startsWith('0x') || s.startsWith('0X')) return Fr.fromHexString(s);
       return new Fr(BigInt(s));
     };
-
-    log('Connecting to Aztec node...');
-    const node = createAztecNodeClient(PXE_URL);
-
-    // Wait for node
-    for (let i = 0; i < 60; i++) {
-      try {
-        if (await node.getBlockNumber() > 0) break;
-      } catch {}
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
-    log('Creating EmbeddedWallet (browser IndexedDB backend)...');
-    const wallet = await EmbeddedWallet.create(node, { ephemeral: true });
-    log('Wallet created. Waiting for PXE sync...');
-    await new Promise(r => setTimeout(r, 5000));
-
-    // Register SponsoredFPC
-    const sponsoredFPC = await getContractInstanceFromInstantiationParams(
-      SponsoredFPCContractArtifact,
-      { salt: new Fr(SPONSORED_FPC_SALT) },
-    );
-    await wallet.registerContract(sponsoredFPC, SponsoredFPCContractArtifact);
-    const fee = new SponsoredFeePaymentMethod(sponsoredFPC.address);
+    const toHex = (v: any) => {
+      const s = v.toString();
+      if (s.startsWith('0x') || s.startsWith('0X')) return s;
+      return '0x' + BigInt(s).toString(16);
+    };
     const sendAs = (addr: any) => ({
       from: addr,
       fee: { paymentMethod: fee },
-      wait: { timeout: 300 },
+      wait: { timeout: SEND_TIMEOUT },
     });
 
-    log('Deploying account...');
+    // ── Step 2: Connect to node ──
+    log('Step 2: Connecting to Aztec node...');
+    const node = createAztecNodeClient(PXE_URL);
+    for (let i = 0; i < 60; i++) {
+      try { if (await node.getBlockNumber() > 0) break; } catch {}
+      await new Promise(r => setTimeout(r, 1000));
+    }
+
+    // ── Step 3: Create EmbeddedWallet (browser IndexedDB) ──
+    log('Step 3: Creating EmbeddedWallet (IndexedDB backend)...');
+    const wallet = await EmbeddedWallet.create(node, { ephemeral: true });
+    log('  Wallet created. Waiting for PXE sync...');
+    await new Promise(r => setTimeout(r, 5000));
+
+    // ── Step 4: Register SponsoredFPC ──
+    log('Step 4: Registering SponsoredFPC...');
+    const sponsoredFPC = await getContractInstanceFromInstantiationParams(
+      SponsoredFPCContractArtifact, { salt: new Fr(SPONSORED_FPC_SALT) },
+    );
+    await wallet.registerContract(sponsoredFPC, SponsoredFPCContractArtifact);
+    var fee = new SponsoredFeePaymentMethod(sponsoredFPC.address);
+
+    // ── Step 5: Deploy account ──
+    log('Step 5: Deploying Schnorr account...');
     const account = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
     await (await account.getDeployMethod()).send({
       from: NO_FROM,
       fee: { paymentMethod: fee },
       skipClassPublication: true,
       skipInstancePublication: true,
-      wait: { timeout: 300 },
+      wait: { timeout: SEND_TIMEOUT },
     });
     const addr = account.address;
     await wallet.registerSender(addr, 'player');
-    log(`Account deployed: ${addr}`);
+    log(`  Account: ${addr}`);
 
-    // Register contracts
-    if (!NFT_ADDR || !GAME_ADDR) {
-      log('ERROR: VITE_NFT_CONTRACT_ADDRESS or VITE_GAME_CONTRACT_ADDRESS not set');
-      (window as any).__IDB_TEST_RESULT__ = { error: 'Missing contract addresses' };
-      return;
-    }
+    // ── Step 6: Register NFT + Game contracts (exactly as useAztec does) ──
+    log('Step 6: Registering NFT + Game contracts with PXE...');
+    if (!NFT_ADDR || !GAME_ADDR) throw new Error('Contract addresses not configured');
 
-    log('Registering contracts with PXE...');
-
-    // Fetch contract instances from the node (they're already deployed)
     const nftAddress = AztecAddress.fromString(NFT_ADDR);
     const gameAddress = AztecAddress.fromString(GAME_ADDR);
 
+    await wallet.registerSender(nftAddress, 'nft-contract');
     const nftInstance = await node.getContract(nftAddress);
-    const gameInstance = await node.getContract(gameAddress);
     if (!nftInstance) throw new Error('NFT contract not found on node');
-    if (!gameInstance) throw new Error('Game contract not found on node');
-
-    // Load artifacts and register with PXE
     const nftResp = await fetch('/contracts/triple_triad_nft-TripleTriadNFT.json');
     const nftArtifact = loadContractArtifact(await nftResp.json());
     await wallet.registerContract(nftInstance, nftArtifact);
-    await wallet.registerSender(nftAddress, 'nft');
+    log('  NFT contract registered');
 
+    await wallet.registerSender(gameAddress, 'game-contract');
+    const gameInstance = await node.getContract(gameAddress);
+    if (!gameInstance) throw new Error('Game contract not found on node');
     const gameResp = await fetch('/contracts/triple_triad_game-TripleTriadGame.json');
     const gameArtifact = loadContractArtifact(await gameResp.json());
     await wallet.registerContract(gameInstance, gameArtifact);
-    await wallet.registerSender(gameAddress, 'game');
+    log('  Game contract registered');
 
+    // ── Step 7: Mint starter cards (get_cards_for_new_player().send()) ──
+    log('Step 7: Minting starter cards...');
     const nftContract = await Contract.at(nftAddress, nftArtifact, wallet as any);
     const gameContract = await Contract.at(gameAddress, gameArtifact, wallet as any);
-    log('Contracts registered.');
 
-    // Mint starter cards
-    log('Minting starter cards...');
     const { receipt: mintReceipt } = await nftContract.methods
       .get_cards_for_new_player()
       .send(sendAs(addr));
-    log(`Starter cards minted: ${mintReceipt.txHash}`);
+    log(`  Starter cards minted: ${mintReceipt.txHash}`);
 
-    // Import notes
-    log('Importing notes...');
+    // ── Step 8: compute_note_randomness().simulate() ──
+    log('Step 8: Computing note randomness...');
     const { result: randomnessResult } = await nftContract.methods
       .compute_note_randomness(0, 5)
       .simulate({ from: addr });
 
+    // ── Step 9: Import notes (5x import_note().simulate()) ──
+    log('Step 9: Importing 5 notes...');
     const { TxHash } = await import('@aztec/stdlib/tx');
     const txHash = TxHash.fromString(mintReceipt.txHash.toString());
 
@@ -163,136 +160,95 @@ async function run() {
       const firstNull = txEffect.nullifiers?.[0]?.toString() ?? '0';
       const padded = new Array(64).fill(new Fr(0n));
       for (let i = 0; i < noteHashes.length && i < 64; i++) {
-        padded[i] = Fr.fromHexString(noteHashes[i].startsWith('0x') ? noteHashes[i] : '0x' + BigInt(noteHashes[i]).toString(16));
+        padded[i] = toFr(noteHashes[i]);
       }
-
-      const toFr = (v: any) => {
-        const s = v.toString();
-        return s.startsWith('0x') ? Fr.fromHexString(s) : new Fr(BigInt(s));
-      };
-
       for (let i = 0; i < 5; i++) {
-        try {
-          await nftContract.methods
-            .import_note(addr, new Fr(BigInt(i + 1)), toFr(randomnessResult[i]),
-              toFr(mintReceipt.txHash.toString()), padded, noteHashes.length,
-              toFr(firstNull), addr)
-            .simulate({ from: addr });
-        } catch (e: any) {
-          log(`  import_note ${i + 1} failed: ${e.message?.slice(0, 80)}`);
-        }
+        await nftContract.methods
+          .import_note(addr, new Fr(BigInt(i + 1)), toFr(randomnessResult[i]),
+            toFr(mintReceipt.txHash.toString()), padded, noteHashes.length,
+            toFr(firstNull), addr)
+          .simulate({ from: addr });
+        log(`  Imported note for card ${i + 1}`);
       }
-      log('Notes imported.');
     } else {
-      log('WARNING: Could not fetch TxEffect for note import');
+      log('  WARNING: Could not fetch TxEffect');
     }
 
-    // Verify cards
-    const { result: cards } = await nftContract.methods
+    // ── Step 10: get_private_cards().simulate() (paginated card fetch) ──
+    log('Step 10: Fetching owned cards...');
+    const { result: cardsResult } = await nftContract.methods
       .get_private_cards(addr, 0)
       .simulate({ from: addr });
-    const count = cards[0].filter((v: any) => BigInt(v) !== 0n).length;
-    log(`Cards visible: ${count}/5`);
+    const count = cardsResult[0].filter((v: any) => BigInt(v) !== 0n).length;
+    log(`  Cards visible: ${count}/5`);
+    if (count < 5) throw new Error(`Only ${count}/5 cards visible`);
 
-    if (count < 5) {
-      log('ERROR: Not enough cards visible');
-      (window as any).__IDB_TEST_RESULT__ = { error: 'Not enough cards' };
-      return;
-    }
+    // ── Step 11: warmupContracts (fire-and-forget, mirrors useGame.ts line 401) ──
+    // In the app, this calls ensureContracts() which does Contract.at() x2.
+    // Here the contracts are already cached, so this is a no-op — same as the app
+    // after the first warmup completes.
+    log('Step 11: Warmup contracts (already cached, same as app)...');
 
-    // Preview game data
-    const { result: nonce } = await nftContract.methods
+    // ── Step 12: createGameOnChain pipeline (mirrors useGame.ts lines 197-278) ──
+    log('Step 12: createGameOnChain pipeline...');
+
+    // 12a: get_note_nonce
+    log('  12a: get_note_nonce().simulate()...');
+    const { result: nonceResult } = await nftContract.methods
       .get_note_nonce(addr)
       .simulate({ from: addr });
-    const { result: preview } = await nftContract.methods
-      .preview_game_data(toFr(nonce))
-      .simulate({ from: addr });
-    const gameIdHex = '0x' + BigInt(preview[0]).toString(16);
-    log(`Game ID: ${gameIdHex.slice(0, 20)}...`);
+    log(`  Nonce: ${nonceResult}`);
 
-    // THE CRITICAL CALL
-    log('=== Calling create_game().send() with concurrent PXE activity ===');
-    log('This generates 6 nullifiers + 6 notes in a cross-contract call.');
-    log('We fire concurrent .simulate() calls during .send() to reproduce');
-    log('what the React app does (effects re-evaluating, warmup, etc.).');
+    // 12b: preview_game_data
+    log('  12b: preview_game_data().simulate()...');
+    const { result: previewResult } = await nftContract.methods
+      .preview_game_data(toFr(nonceResult))
+      .simulate({ from: addr });
+    const gameIdHex = toHex(previewResult[0]);
+    log(`  Game ID: ${gameIdHex.slice(0, 20)}...`);
+
+    // 12c: get_game_status
+    log('  12c: get_game_status().simulate()...');
+    const { result: statusResult } = await gameContract.methods
+      .get_game_status(toFr(gameIdHex))
+      .simulate({ from: addr });
+    log(`  Status: ${statusResult} (expect 0)`);
+
+    // 12d: compute_blinding_factor
+    log('  12d: compute_blinding_factor().simulate()...');
+    const { result: blindingResult } = await nftContract.methods
+      .compute_blinding_factor(toFr(gameIdHex))
+      .simulate({ from: addr });
+    log(`  Blinding factor: ${toHex(blindingResult).slice(0, 20)}...`);
+
+    // 12e: get_private_cards (diagnostic)
+    log('  12e: get_private_cards().simulate() (diagnostic)...');
+    await nftContract.methods.get_private_cards(addr, 0).simulate({ from: addr });
+
+    // 12f: create_game().send() — THE CALL THAT FAILS IN THE APP
+    log('  12f: create_game().send() — THIS IS THE CRITICAL CALL');
+    log('  (6 nullifiers + 6 notes, cross-contract call)');
 
     const t0 = performance.now();
-
-    // Fire concurrent .simulate() calls while .send() is in flight.
-    // This is what the app does: React effects call simulate() on utility
-    // functions while the pipeline's .send() is running. Both hit the same
-    // PXE instance, causing concurrent IDB access.
-    let concurrentOpsCount = 0;
-    let concurrentErrors: string[] = [];
-    let stopConcurrent = false;
-
-    // Fire MULTIPLE concurrent simulate calls with NO delays.
-    // In the real app, React effects can trigger overlapping PXE calls:
-    // - warmupContracts → Contract.at() (PXE registration)
-    // - get_private_cards (card refresh)
-    // - get_note_nonce (preview)
-    // - compute_blinding_factor
-    // These all queue on the PXE's job queue and compete for IDB transactions.
-    const concurrentActivity = (async () => {
-      await new Promise(r => setTimeout(r, 300));
-      while (!stopConcurrent) {
-        // Fire multiple simulate calls concurrently (like Promise.all in app code)
-        const batch = [
-          nftContract.methods.get_note_nonce(addr).simulate({ from: addr }),
-          nftContract.methods.get_private_cards(addr, 0).simulate({ from: addr }),
-        ];
-        try {
-          await Promise.all(batch);
-          concurrentOpsCount += 2;
-        } catch (e: any) {
-          concurrentErrors.push(e.message?.slice(0, 120) || 'unknown');
-          concurrentOpsCount++;
-        }
-        // Minimal delay — the app's React effects re-fire rapidly
-        await new Promise(r => setTimeout(r, 50));
-      }
-    })();
-
-    let sendError: any = null;
     try {
       await gameContract.methods
         .create_game([1, 2, 3, 4, 5].map(id => new Fr(BigInt(id))))
         .send(sendAs(addr));
+
+      const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+      log(`\ncreate_game SUCCEEDED in ${elapsed}s`);
+      (window as any).__IDB_TEST_RESULT__ = { success: true, elapsed };
     } catch (err: any) {
-      sendError = err;
-    } finally {
-      stopConcurrent = true;
-      // Wait for concurrent activity to stop
-      await concurrentActivity.catch(() => {});
-    }
-
-    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
-    log(`Concurrent .simulate() calls made during .send(): ${concurrentOpsCount}`);
-    if (concurrentErrors.length > 0) {
-      log(`Concurrent errors: ${concurrentErrors.length}`);
-      concurrentErrors.forEach((e, i) => log(`  error[${i}]: ${e}`));
-    }
-
-    if (sendError) {
-      log(`create_game FAILED after ${elapsed}s: ${sendError.message}`);
+      const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+      log(`\ncreate_game FAILED after ${elapsed}s: ${err.message}`);
       (window as any).__IDB_TEST_RESULT__ = {
         success: false,
-        error: sendError.message,
-        name: sendError.name,
-        concurrentOps: concurrentOpsCount,
-        concurrentErrors,
+        error: err.message,
+        name: err.name,
         isTransactionInactiveError:
-          sendError.message?.includes('TransactionInactiveError') ||
-          sendError.message?.includes('transaction is inactive or finished') ||
-          sendError.name === 'TransactionInactiveError',
-      };
-    } else {
-      log(`create_game SUCCEEDED in ${elapsed}s (with ${concurrentOpsCount} concurrent ops)`);
-      (window as any).__IDB_TEST_RESULT__ = {
-        success: true,
-        elapsed,
-        concurrentOps: concurrentOpsCount,
-        concurrentErrors,
+          err.message?.includes('TransactionInactiveError') ||
+          err.message?.includes('transaction is inactive or finished') ||
+          err.name === 'TransactionInactiveError',
       };
     }
   } catch (err: any) {
