@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { AZTEC_CONFIG } from '../aztec/config';
-import { importNotesFromTx, getNftArtifact } from '../aztec/noteImporter';
-import { toFr } from '../aztec/fieldUtils';
-import { AZTEC_TX_TIMEOUT, PXE_INITIAL_SYNC_DELAY, STARTER_CARD_IDS, STARTER_CARD_COUNT } from '../aztec/gameConstants';
+import { getNftArtifact } from '../aztec/noteImporter';
+import { connectToAztec } from '../aztec/connectToAztec';
 
 /**
  * Aztec wallet connection status
@@ -79,218 +78,16 @@ export function useAztec(): UseAztecReturn {
     setError(null);
 
     try {
-      // Dynamically import Aztec SDK subpath modules
-      const [nodeModule, walletsModule, foundationModule, fieldsModule] = await Promise.all([
-        import('@aztec/aztec.js/node'),
-        import('@aztec/wallets/embedded'),
-        import('@aztec/foundation/curves/grumpkin'),
-        import('@aztec/aztec.js/fields'),
-      ]);
-
-      const { createAztecNodeClient } = nodeModule;
-      const { EmbeddedWallet } = walletsModule;
-      const { GrumpkinScalar } = foundationModule;
-      const { Fr } = fieldsModule;
-
-      // Connect to the Aztec node
-      const node = createAztecNodeClient(AZTEC_CONFIG.pxeUrl);
-      nodeClientRef.current = node;
-
-      // Check if we have a saved secret, or generate a new one
-      // Use Fr.random() to guarantee the value is within the BN254 field modulus
-      let secret = localStorage.getItem(AZTEC_CONFIG.storageKeys.accountSecret);
-      let secretFr: typeof Fr.prototype;
-      try {
-        secretFr = secret ? Fr.fromHexString(secret.startsWith('0x') ? secret : '0x' + secret) : Fr.random();
-      } catch {
-        // Stored value exceeds field modulus — regenerate
-        secretFr = Fr.random();
-      }
-      const secretHex = secretFr.toString();
-      if (secret !== secretHex) {
-        localStorage.setItem(AZTEC_CONFIG.storageKeys.accountSecret, secretHex);
-      }
-
-      let salt = localStorage.getItem(AZTEC_CONFIG.storageKeys.accountSalt);
-      let saltFr: typeof Fr.prototype;
-      try {
-        saltFr = salt ? Fr.fromHexString(salt.startsWith('0x') ? salt : '0x' + salt) : Fr.random();
-      } catch {
-        saltFr = Fr.random();
-      }
-      const saltHex = saltFr.toString();
-      if (salt !== saltHex) {
-        localStorage.setItem(AZTEC_CONFIG.storageKeys.accountSalt, saltHex);
-      }
-
-      // Create EmbeddedWallet — runs a full PXE in the browser tab
-      const wallet = await EmbeddedWallet.create(node, { ephemeral: true });
-
-      // Wait for PXE to sync so tx expiration timestamps are valid
-      await new Promise(r => setTimeout(r, PXE_INITIAL_SYNC_DELAY));
-
-      // Register SponsoredFPC for fee payments
-      const [{ getContractInstanceFromInstantiationParams }, { SponsoredFPCContractArtifact }, { SPONSORED_FPC_SALT }, { SponsoredFeePaymentMethod }, { AztecAddress }, { NO_FROM }] = await Promise.all([
-        import('@aztec/stdlib/contract'),
-        import('@aztec/noir-contracts.js/SponsoredFPC'),
-        import('@aztec/constants'),
-        import('@aztec/aztec.js/fee'),
-        import('@aztec/aztec.js/addresses'),
-        import('@aztec/aztec.js/account'),
-      ]);
-
-      const sponsoredFPC = await getContractInstanceFromInstantiationParams(SponsoredFPCContractArtifact, {
-        salt: new Fr(SPONSORED_FPC_SALT),
+      const result = await connectToAztec({
+        log: (msg) => console.log('[useAztec]', msg),
       });
-      console.log(`[PXE-TRACE] ${Date.now()} wallet.registerContract(SponsoredFPC, ${sponsoredFPC.address})`);
-      await wallet.registerContract(sponsoredFPC, SponsoredFPCContractArtifact);
-      const paymentMethod = new SponsoredFeePaymentMethod(sponsoredFPC.address);
 
-      // Create a Schnorr account within the wallet using persisted secret + salt
-      const signingKey = GrumpkinScalar.random();
-      const accountManager = await wallet.createSchnorrAccount(
-        secretFr,
-        saltFr,
-        signingKey,
-      );
+      walletRef.current = result.wallet;
+      nodeClientRef.current = result.node;
+      setAccountAddress(result.accountAddress);
+      setOwnedCardIds(result.ownedCardIds);
 
-      // Deploy the account on-chain
-      const deployMethod = await accountManager.getDeployMethod();
-      console.log(`[PXE-TRACE] ${Date.now()} deployMethod.send(from=NO_FROM)`);
-      await deployMethod.send({
-        from: NO_FROM,
-        fee: { paymentMethod },
-        skipClassPublication: true,
-        skipInstancePublication: true,
-        wait: { timeout: AZTEC_TX_TIMEOUT },
-      });
-      console.log(`[PXE-TRACE] ${Date.now()} deployMethod.send COMPLETE`);
-
-      // Register this account as a sender for note discovery
-      console.log(`[PXE-TRACE] ${Date.now()} wallet.registerSender(${accountManager.address}, 'player')`);
-      await wallet.registerSender(accountManager.address, 'player');
-
-      // Register NFT and Game contracts with the PXE so we can call their methods
-      const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
-
-      let nftArtifact: any = null;
-      if (AZTEC_CONFIG.nftContractAddress) {
-        const nftAddress = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
-        console.log(`[PXE-TRACE] ${Date.now()} wallet.registerSender(${nftAddress}, 'nft-contract')`);
-        await wallet.registerSender(nftAddress, 'nft-contract');
-        try {
-          console.log(`[PXE-TRACE] ${Date.now()} node.getContract(${nftAddress})`);
-          const nftInstance = await node.getContract(nftAddress);
-          if (nftInstance) {
-            nftArtifact = await getNftArtifact();
-            console.log(`[PXE-TRACE] ${Date.now()} wallet.registerContract(NFT, ${nftAddress})`);
-            await wallet.registerContract(nftInstance, nftArtifact);
-            console.log('[useAztec] NFT contract registered with PXE');
-          }
-        } catch (e) {
-          console.warn('[useAztec] Failed to register NFT contract:', e);
-        }
-      }
-
-      if (AZTEC_CONFIG.gameContractAddress) {
-        const gameAddress = AztecAddress.fromString(AZTEC_CONFIG.gameContractAddress);
-        console.log(`[PXE-TRACE] ${Date.now()} wallet.registerSender(${gameAddress}, 'game-contract')`);
-        await wallet.registerSender(gameAddress, 'game-contract');
-        try {
-          console.log(`[PXE-TRACE] ${Date.now()} node.getContract(${gameAddress})`);
-          const gameInstance = await node.getContract(gameAddress);
-          if (gameInstance) {
-            const resp = await fetch('/contracts/triple_triad_game-TripleTriadGame.json');
-            const rawArtifact = await resp.json();
-            const gameArtifact = loadContractArtifact(rawArtifact);
-            console.log(`[PXE-TRACE] ${Date.now()} wallet.registerContract(Game, ${gameAddress})`);
-            await wallet.registerContract(gameInstance, gameArtifact);
-            console.log('[useAztec] Game contract registered with PXE');
-          }
-        } catch (e) {
-          console.warn('[useAztec] Failed to register Game contract:', e);
-        }
-      }
-
-      // Mint starter cards if this account hasn't claimed them yet
-      const address = accountManager.address.toString();
-      const mintKey = AZTEC_CONFIG.storageKeys.cardsMintedPrefix + address + '_' + AZTEC_CONFIG.nftContractAddress;
-      if (nftArtifact && AZTEC_CONFIG.nftContractAddress && !localStorage.getItem(mintKey)) {
-        try {
-          const { Contract } = await import('@aztec/aztec.js/contracts');
-          const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
-          const nftContract = await Contract.at(nftAddr, nftArtifact, wallet as never);
-          console.log(`[PXE-TRACE] ${Date.now()} nftContract.get_cards_for_new_player().send(from=${accountManager.address})`);
-          const { receipt } = await nftContract.methods
-            .get_cards_for_new_player()
-            .send({ from: accountManager.address, fee: { paymentMethod }, wait: { timeout: AZTEC_TX_TIMEOUT } });
-          localStorage.setItem(mintKey, 'true');
-          const txHashStr = receipt?.txHash?.toString() || '';
-          console.log(`[PXE-TRACE] ${Date.now()} get_cards_for_new_player().send COMPLETE txHash=${txHashStr}`);
-
-          // Import the starter card notes (create_and_push_note skips tagging)
-          if (txHashStr) {
-            try {
-              console.log(`[PXE-TRACE] ${Date.now()} nftContract.compute_note_randomness(0, ${STARTER_CARD_COUNT}).simulate(from=${accountManager.address})`);
-              const { result: randomnessResult } = await nftContract.methods
-                .compute_note_randomness(0, STARTER_CARD_COUNT)
-                .simulate({ from: accountManager.address });
-              console.log(`[PXE-TRACE] ${Date.now()} compute_note_randomness COMPLETE`);
-              const notes = STARTER_CARD_IDS.map((id, i) => ({
-                tokenId: id,
-                randomness: toFr(Fr, randomnessResult[i]).toString(),
-              }));
-              console.log(`[PXE-TRACE] ${Date.now()} importNotesFromTx(txHash=${txHashStr}, notes=${JSON.stringify(notes.map(n => n.tokenId))})`);
-              await importNotesFromTx(wallet, node, address, txHashStr, notes, 'Starter cards');
-              console.log(`[PXE-TRACE] ${Date.now()} importNotesFromTx COMPLETE`);
-            } catch (importErr) {
-              console.warn('[useAztec] Failed to import starter card notes:', importErr);
-            }
-          }
-        } catch (e) {
-          console.warn('[useAztec] Failed to mint starter cards:', e);
-        }
-      }
-
-      // Fetch the player's owned cards from the NFT contract
-      if (nftArtifact && AZTEC_CONFIG.nftContractAddress) {
-        try {
-          const { Contract } = await import('@aztec/aztec.js/contracts');
-          const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
-          const nftContract = await Contract.at(nftAddr, nftArtifact, wallet as never);
-
-          const cardIds: number[] = [];
-          let pageIndex = 0;
-          let hasMore = true;
-          while (hasMore) {
-            console.log(`[PXE-TRACE] ${Date.now()} nftContract.get_private_cards(${accountManager.address}, ${pageIndex}).simulate()`);
-            const { result: flatResult } = await nftContract.methods
-              .get_private_cards(accountManager.address, pageIndex)
-              .simulate({ from: accountManager.address });
-            // v4.2.0: simulate() returns { result: [fieldArray, bool] }
-            const page = flatResult[0] ?? [];
-            hasMore = flatResult[1] === true;
-            for (const val of page) {
-              const id = Number(BigInt(val));
-              if (id !== 0) cardIds.push(id);
-            }
-            pageIndex++;
-          }
-
-          setOwnedCardIds(cardIds);
-          console.log('[useAztec] Owned cards:', cardIds);
-        } catch (e) {
-          console.warn('[useAztec] Failed to fetch owned cards:', e);
-        }
-      }
-
-      walletRef.current = wallet;
-
-      // Get account address from the AccountManager
-      setAccountAddress(address);
-      localStorage.setItem(AZTEC_CONFIG.storageKeys.accountAddress, address);
-
-      console.log('[useAztec] Connected, account deployed:', address);
+      console.log('[useAztec] Connected, account deployed:', result.accountAddress);
       setStatus('connected');
     } catch (err) {
       console.error('[useAztec] Connection failed:', err);
