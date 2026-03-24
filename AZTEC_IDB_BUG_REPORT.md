@@ -8,7 +8,7 @@ This is reproducible with transactions that generate a large number of staged no
 
 ## Environment
 
-- **Aztec version**: `4.2.0-nightly.20260320`
+- **Aztec version**: `4.2.0-nightly.20260323`
 - **Runtime**: Browser (EmbeddedWallet via `@aztec/wallets/embedded`)
 - **KV Store**: IndexedDB (ephemeral mode)
 - **Browser**: Safari (macOS), also observed in Chrome
