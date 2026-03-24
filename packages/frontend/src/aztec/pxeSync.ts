@@ -47,5 +47,10 @@ export async function waitForPxeSync(wallet: unknown, nodeClient: unknown): Prom
     }
     await new Promise(r => setTimeout(r, PXE_SYNC_POLL_INTERVAL));
   }
-  throw new Error(`PXE sync timeout: stuck at block ${await pxe.getSyncedBlockHeader().then((h: any) => Number(h.globalVariables?.blockNumber ?? 0))}, target was ${targetBlock} (after ${PXE_SYNC_MAX_POLLS} polls)`);
+  // Don't throw — the PXE may be stuck processing a complex block (e.g., settlement
+  // with 10+ notes). The caller's .send() will trigger its own PXE sync internally
+  // via proveTx → blockStateSynchronizer.sync(), which may succeed where our polling
+  // failed (it uses a different sync path).
+  const stuckBlock = Number((await pxe.getSyncedBlockHeader()).globalVariables?.blockNumber ?? 0);
+  console.warn(`[pxeSync] PXE sync timed out: stuck at block ${stuckBlock}, target was ${targetBlock} (after ${PXE_SYNC_MAX_POLLS} polls). Proceeding anyway.`);
 }

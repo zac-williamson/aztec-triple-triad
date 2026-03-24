@@ -5,7 +5,7 @@ import type { PlayerHandData } from './useProofGeneration';
 import { useGameStorage, type PersistedGameState } from './useGameStorage';
 import { useAztecContext } from '../aztec/AztecContext';
 import { importNotesFromTx } from '../aztec/noteImporter';
-import { waitForPxeSync } from '../aztec/pxeSync';
+// waitForPxeSync removed — PXE syncs automatically inside .simulate()/.send() calls
 import { ensureContracts, contractCache, warmupContracts } from '../aztec/contracts';
 import { AZTEC_CONFIG } from '../aztec/config';
 import { toFr as toFrUtil, toHexString } from '../aztec/fieldUtils';
@@ -642,10 +642,13 @@ export function useGame(wsUrl: string): UseGameReturn {
     if (ws.playerNumber === 1 && phase === 'idle') {
       onChainPhaseRef.current = 'creating';
       (async () => {
-        // Ensure PXE has processed nullifiers from any previous game's settlement
+        // Clear previous settle tx hash — no need to wait for PXE sync here.
+        // The PXE syncs automatically when the next .simulate() or .send() runs
+        // (via blockStateSynchronizer.sync() inside executeUtility/proveTx).
+        // Polling getSyncedBlockHeader() does NOT trigger a sync and will spin
+        // forever if the PXE hasn't had a job to process.
         if (lastSettleTxHashRef.current) {
-          console.log(`[PXE-TRACE] ${Date.now()} waitForPxeSync (pre-create_game, previous settle tx: ${lastSettleTxHashRef.current})`);
-          await waitForPxeSync(aztec.wallet, aztec.nodeClient);
+          console.log(`[useGame] P1: clearing previous settle tx ref: ${lastSettleTxHashRef.current}`);
           lastSettleTxHashRef.current = null;
         }
         console.log('[useGame] P1: starting on-chain game creation...');
@@ -669,10 +672,8 @@ export function useGame(wsUrl: string): UseGameReturn {
     if (ws.playerNumber === 2 && phase === 'idle' && ws.opponentOnChainGameId) {
       onChainPhaseRef.current = 'preparing';
       (async () => {
-        // Ensure PXE has processed nullifiers from any previous game's settlement
         if (lastSettleTxHashRef.current) {
-          console.log('[useGame] P2: syncing PXE before prepare (previous settle tx:', lastSettleTxHashRef.current, ')');
-          await waitForPxeSync(aztec.wallet, aztec.nodeClient);
+          console.log(`[useGame] P2: clearing previous settle tx ref: ${lastSettleTxHashRef.current}`);
           lastSettleTxHashRef.current = null;
         }
         console.log('[useGame] P2: preparing join preview data...');
@@ -693,8 +694,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     if (ws.playerNumber === 2 && phase === 'awaiting_p1_tx' && ws.opponentTxConfirmed && onChainGameId) {
       onChainPhaseRef.current = 'joining';
       (async () => {
-        console.log('[useGame] P2: P1 tx confirmed, syncing PXE then sending join_game...');
-        await waitForPxeSync(aztec.wallet, aztec.nodeClient);
+        console.log('[useGame] P2: P1 tx confirmed, sending join_game...');
         const txHash = await sendJoinGameTx(ws.opponentOnChainGameId!, cardIds);
         ws.notifyTxConfirmed(ws.gameId!, 'join_game', txHash);
         console.log('[useGame] P2: join_game mined, notified backend');
@@ -770,9 +770,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     if (noteImportProcessedRef.current === txHash) return;
     noteImportProcessedRef.current = txHash;
     lastSettleTxHashRef.current = txHash;
-    importNotes(txHash, notes, 'Loser import').then(() =>
-      waitForPxeSync(aztec.wallet, aztec.nodeClient),
-    );
+    importNotes(txHash, notes, 'Loser import');
   }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, aztec.nodeClient, importNotes]);
 
   // --- User actions ---
@@ -1111,7 +1109,7 @@ export function useGame(wsUrl: string): UseGameReturn {
       console.log('opponentNotes = ', opponentNotes);
       ws.relayNoteData(ws.gameId!, hash, opponentNotes);
       await importNotes(hash, callerNotes, 'Winner import');
-      await waitForPxeSync(aztec.wallet, aztec.nodeClient);
+      // PXE will sync automatically on the next .simulate() or .send() call
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Transaction failed';
       console.error('[useGame] settleGame error:', err);
