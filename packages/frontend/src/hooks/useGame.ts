@@ -934,6 +934,36 @@ export function useGame(wsUrl: string): UseGameReturn {
     if (!ws.opponentGameRandomness || ws.opponentGameRandomness.length !== 6) throw new Error('Opponent randomness not available');
     if (!onChainGameId) throw new Error('No on-chain game ID for settlement');
 
+    // Verify the game is fully set up on-chain (both create_game AND join_game have landed).
+    // Without this check, Player 1 might settle before Player 2's join_game tx is mined,
+    // causing settle_game's public assertions to fail (card_commit_2 not set, player2 not set).
+    {
+      const { gameContract, Fr, AztecAddress: AztecAddr } = await ensureContracts(requireWallet());
+      const gameIdFr = toFrUtil(Fr, onChainGameId);
+      const senderForCheck = AztecAddr.fromString(requireAccountAddress());
+      const { result: gameStatus } = await gameContract.methods
+        .get_game_status(gameIdFr)
+        .simulate({ from: senderForCheck });
+      const status = Number(gameStatus);
+      if (status !== 2) {
+        // Game is not in "active" state (status 2 = both players joined)
+        // Poll until it reaches status 2
+        console.log(`[useGame] Game status is ${status}, waiting for opponent to join on-chain...`);
+        setSettleTxStatus('preparing');
+        for (let poll = 0; poll < 60; poll++) {
+          await new Promise(r => setTimeout(r, 2000));
+          const { result: s } = await gameContract.methods
+            .get_game_status(gameIdFr)
+            .simulate({ from: senderForCheck });
+          if (Number(s) === 2) {
+            console.log('[useGame] Opponent join_game confirmed on-chain');
+            break;
+          }
+          if (poll === 59) throw new Error('Timed out waiting for opponent to join game on-chain');
+        }
+      }
+    }
+
     // Wait for all move proofs (bug #4 fix: promise-based, not busy-polling)
     if (moveProofsRef.current.length < TOTAL_MOVES) {
       await new Promise<void>((resolve, reject) => {
