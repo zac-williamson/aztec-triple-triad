@@ -9,8 +9,8 @@ import {
   buildGameMoveInput,
   buildProveHandInput,
 } from '../src/state.js';
-import { createGame, placeCard, getCardsByIds } from '@aztec-triple-triad/game-logic';
-import type { Board, BoardCell, GameState, Card } from '@aztec-triple-triad/game-logic';
+import { createGame, placeCard, getCardsByIds } from '@axolotl-arena/game-logic';
+import type { Board, BoardCell, GameState, Card } from '@axolotl-arena/game-logic';
 
 describe('playerToField', () => {
   it('converts player1 to "1"', () => {

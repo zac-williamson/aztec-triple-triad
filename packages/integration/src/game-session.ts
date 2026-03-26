@@ -1,5 +1,5 @@
-import type { GameState, Player, Card } from '@aztec-triple-triad/game-logic';
-import { placeCard, createGame } from '@aztec-triple-triad/game-logic';
+import type { GameState, Player, Card } from '@axolotl-arena/game-logic';
+import { placeCard, createGame } from '@axolotl-arena/game-logic';
 import type {
   PlayerSession,
   HandProof,

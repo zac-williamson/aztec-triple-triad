@@ -122,7 +122,7 @@ const ROUNDEL_CENTERS = {
 // ── SVG generators ──────────────────────────────────────────────────────
 
 function makeStatsSvg(ranks) {
-  const fontSize = 70;
+  const fontSize = 140;
   const strokeWidth = 5;
 
   function statText(value, cx, cy) {

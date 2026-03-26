@@ -193,6 +193,46 @@
   margin-bottom: 32px;
 }
 
+.card-selector__slot-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.card-selector__slot-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.card-selector__slot-indicator svg {
+  width: 18px;
+  height: 18px;
+}
+
+.card-selector__slot-indicator--visible {
+  color: rgba(123, 198, 126, 0.85);
+}
+
+.card-selector__slot-indicator--visible svg {
+  filter: drop-shadow(0 0 4px rgba(123, 198, 126, 0.5));
+}
+
+.card-selector__slot-indicator--hidden {
+  color: rgba(180, 140, 80, 0.85);
+}
+
+.card-selector__slot-indicator--hidden svg {
+  filter: drop-shadow(0 0 4px rgba(180, 140, 80, 0.4));
+}
+
 .card-selector__slot {
   width: 100px;
   height: 140px;

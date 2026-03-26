@@ -49,7 +49,7 @@ function storageKey(suffix: string): string {
 
 /**
  * Hook providing helpers to persist and restore game state in localStorage,
- * scoped to the current TripleTriadGame contract address.
+ * scoped to the current CardGame contract address.
  */
 export function useGameStorage() {
   const gameKey = useMemo(() => storageKey('current_game'), []);

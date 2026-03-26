@@ -6,4 +6,4 @@ export type {
   GameListEntry,
   GameRoom,
 } from './types.js';
-export type { ServerOptions, TripleTriadServer } from './server.js';
+export type { ServerOptions, CardGameServer } from './server.js';

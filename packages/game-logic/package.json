@@ -1,5 +1,5 @@
 {
-  "name": "@aztec-triple-triad/game-logic",
+  "name": "@axolotl-arena/game-logic",
   "version": "0.1.0",
   "private": true,
   "main": "dist/index.js",

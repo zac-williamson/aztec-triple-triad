@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { GameSession } from '../src/game-session.js';
 import { ProofService, MockProofBackend } from '../src/prover.js';
-import { getCardsByIds } from '@aztec-triple-triad/game-logic';
+import { getCardsByIds } from '@axolotl-arena/game-logic';
 import type { PlayerSession } from '../src/types.js';
 import { createHandProof } from '../src/proof-utils.js';
 

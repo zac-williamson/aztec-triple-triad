@@ -1,4 +1,4 @@
-import type { GameState, Card } from '@aztec-triple-triad/game-logic';
+import type { GameState, Card } from '@axolotl-arena/game-logic';
 
 // Serialized proof for transport
 export interface SerializedProof {

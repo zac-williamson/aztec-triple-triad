@@ -1,4 +1,4 @@
-import type { GameState, Board, Player, Card } from '@aztec-triple-triad/game-logic';
+import type { GameState, Board, Player, Card } from '@axolotl-arena/game-logic';
 import type { CircuitBoard, GameMoveInput, ProveHandInput } from './types.js';
 
 /**

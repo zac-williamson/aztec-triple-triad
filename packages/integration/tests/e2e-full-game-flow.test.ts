@@ -113,8 +113,8 @@ import type { HandProofData, MoveProofData } from '../../frontend/src/types';
 // Backend server
 // ============================================================================
 
-import { createServer } from '@aztec-triple-triad/backend';
-import type { TripleTriadServer } from '@aztec-triple-triad/backend';
+import { createServer } from '@axolotl-arena/backend';
+import type { CardGameServer } from '@axolotl-arena/backend';
 
 // ============================================================================
 // Game logic
@@ -124,8 +124,8 @@ import {
   createGame,
   placeCard,
   getCardsByIds,
-} from '@aztec-triple-triad/game-logic';
-import type { GameState, Player } from '@aztec-triple-triad/game-logic';
+} from '@axolotl-arena/game-logic';
+import type { GameState, Player } from '@axolotl-arena/game-logic';
 
 // ============================================================================
 // Aztec SDK
@@ -352,7 +352,7 @@ async function getSponsoredFPCContract() {
 // ============================================================================
 
 describe('E2E Full Game Flow -- Frontend Proofs + WebSocket + Aztec Settlement', () => {
-  let server: TripleTriadServer;
+  let server: CardGameServer;
   let wsUrl: string;
   let client1: TestWSClient;
   let client2: TestWSClient;

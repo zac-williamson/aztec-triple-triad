@@ -3,7 +3,7 @@ import http from 'http';
 import { v4 as uuidv4 } from 'uuid';
 import { GameManager } from './GameManager.js';
 import type { ClientMessage, ServerMessage } from './types.js';
-import type { GameState } from '@aztec-triple-triad/game-logic';
+import type { GameState } from '@axolotl-arena/game-logic';
 
 const DEFAULT_PORT = 5174;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -25,14 +25,14 @@ export interface ServerOptions {
   host?: string;
 }
 
-export interface TripleTriadServer {
+export interface CardGameServer {
   httpServer: http.Server;
   wss: WebSocketServer;
   gameManager: GameManager;
   close: () => Promise<void>;
 }
 
-export function createServer(options: ServerOptions = {}): TripleTriadServer {
+export function createServer(options: ServerOptions = {}): CardGameServer {
   const port = options.port ?? DEFAULT_PORT;
   const host = options.host ?? '0.0.0.0';
   const gameManager = new GameManager();
@@ -136,14 +136,15 @@ export function createServer(options: ServerOptions = {}): TripleTriadServer {
 
     const isPlayer1 = playerId === room.player1Id;
 
-    // During active game, hide opponent's hand card details
+    // During active game, hide the first 2 opponent cards; reveal the other 3
     if (state.status === 'playing') {
       const sanitized = { ...state };
       const hiddenCard = { id: 0, name: 'Hidden', ranks: { top: 0, right: 0, bottom: 0, left: 0 } };
+      const HIDDEN_COUNT = 2;
       if (isPlayer1) {
-        sanitized.player2Hand = state.player2Hand.map(() => ({ ...hiddenCard }));
+        sanitized.player2Hand = state.player2Hand.map((card, i) => i >= state.player2Hand.length - HIDDEN_COUNT ? { ...hiddenCard } : card);
       } else {
-        sanitized.player1Hand = state.player1Hand.map(() => ({ ...hiddenCard }));
+        sanitized.player1Hand = state.player1Hand.map((card, i) => i >= state.player1Hand.length - HIDDEN_COUNT ? { ...hiddenCard } : card);
       }
       return sanitized;
     }
@@ -619,6 +620,6 @@ if (process.argv[1]?.endsWith('server.js') || process.argv[1]?.endsWith('server.
   const port = parseInt(process.env.WS_PORT ?? String(DEFAULT_PORT), 10);
   const server = createServer({ port });
   server.httpServer.listen(port, () => {
-    console.log(`Triple Triad server running on port ${port}`);
+    console.log(`Axolotl Arena server running on port ${port}`);
   });
 }

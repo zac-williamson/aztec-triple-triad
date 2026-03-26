@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import type { GameState, Player, Card, Board } from '../types';
 import { SwampScene } from './SwampScene';
 import { GameHUD } from './GameHUD';
+import { TurnAnnouncer } from './TurnAnnouncer';
 import { useCardAnimation } from './hooks/useCardAnimation';
 import { useCaptureAnimation, type CaptureAnimationEntry } from './hooks/useCaptureAnimation';
 
@@ -230,7 +231,12 @@ export function GameScreen3D({
         onCaptureAnimComplete={onCaptureAnimComplete}
         isCaptureAnimatingCell={isCellCaptureAnimating}
         getPendingCaptureOwner={getPendingCaptureOwner}
+        playerNumber={playerNumber}
+        myScore={myScore}
+        opponentScore={opponentScore}
       />
+
+      <TurnAnnouncer isMyTurn={isMyTurn} isFinished={isFinished} />
 
       <GameHUD
         gameState={gameState}

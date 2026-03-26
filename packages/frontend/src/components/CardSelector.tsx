@@ -134,25 +134,40 @@ export function CardSelector({ ownedCardIds, onConfirm, onBack }: CardSelectorPr
         <div className="card-selector__slots">
           {Array.from({ length: 5 }).map((_, i) => {
             const card = selectedCards[i];
-            if (card) {
-              return (
-                <div
-                  key={`slot-${i}`}
-                  className="card-selector__slot card-selector__slot--filled"
-                  onClick={() => deselectSlot(i)}
-                >
-                  <img
-                    className="card-selector__card-img"
-                    src={`/cards/final/card-${card.id}.png`}
-                    alt={card.name}
-                    draggable={false}
-                  />
-                </div>
-              );
-            }
+            const isVisible = i < 3;
             return (
-              <div key={`empty-${i}`} className="card-selector__slot">
-                {i + 1}
+              <div key={`wrapper-${i}`} className="card-selector__slot-wrapper">
+                <div className={`card-selector__slot-indicator ${isVisible ? 'card-selector__slot-indicator--visible' : 'card-selector__slot-indicator--hidden'}`}>
+                  {isVisible ? (
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M12 5C7 5 2.73 8.11 1 12c1.73 3.89 6 7 11 7s9.27-3.11 11-7c-1.73-3.89-6-7-11-7z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/>
+                      <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2"/>
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="2"/>
+                      <path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                    </svg>
+                  )}
+                  <span>{isVisible ? 'Visible' : 'Hidden'}</span>
+                </div>
+                {card ? (
+                  <div
+                    className="card-selector__slot card-selector__slot--filled"
+                    onClick={() => deselectSlot(i)}
+                  >
+                    <img
+                      className="card-selector__card-img"
+                      src={`/cards/final/card-${card.id}.png`}
+                      alt={card.name}
+                      draggable={false}
+                    />
+                  </div>
+                ) : (
+                  <div className="card-selector__slot">
+                    {i + 1}
+                  </div>
+                )}
               </div>
             );
           })}

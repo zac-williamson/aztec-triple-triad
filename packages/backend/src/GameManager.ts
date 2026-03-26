@@ -7,7 +7,7 @@ import {
   type Card,
   type PlaceCardResult,
   type Player,
-} from '@aztec-triple-triad/game-logic';
+} from '@axolotl-arena/game-logic';
 import type { GameRoom, GameListEntry, OnChainGameStatus, TxStatus } from './types.js';
 
 /**

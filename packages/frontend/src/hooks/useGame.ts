@@ -5,7 +5,6 @@ import type { PlayerHandData } from './useProofGeneration';
 import { useGameStorage, type PersistedGameState } from './useGameStorage';
 import { useAztecContext } from '../aztec/AztecContext';
 import { importNotesFromTx } from '../aztec/noteImporter';
-// waitForPxeSync removed — PXE syncs automatically inside .simulate()/.send() calls
 import { ensureContracts, contractCache, warmupContracts } from '../aztec/contracts';
 import { AZTEC_CONFIG } from '../aztec/config';
 import { toFr as toFrUtil, toHexString } from '../aztec/fieldUtils';
@@ -512,7 +511,7 @@ export function useGame(wsUrl: string): UseGameReturn {
           }
 
           // Apply the move using the pure game logic function
-          const { placeCard: applyMove } = await import('@aztec-triple-triad/game-logic');
+          const { placeCard: applyMove } = await import('@axolotl-arena/game-logic');
           const myPlayer = ws.playerNumber === 1 ? 'player1' : 'player2';
 
           // Use hand snapshots captured at queue time (not the current
@@ -850,7 +849,7 @@ export function useGame(wsUrl: string): UseGameReturn {
 
     if (aztec.isAvailable && card) {
       try {
-        const { placeCard: applyMove } = await import('@aztec-triple-triad/game-logic');
+        const { placeCard: applyMove } = await import('@axolotl-arena/game-logic');
         const myPlayer = ws.playerNumber === 1 ? 'player1' : 'player2';
         const result = applyMove(ws.gameState, myPlayer, handIndex, row, col);
         const boardAfter = result.newState.board;

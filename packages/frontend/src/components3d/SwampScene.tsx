@@ -1,6 +1,16 @@
 import { Suspense, useState, useEffect } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { ACESFilmicToneMapping, Vector3, Euler } from 'three';
+
+// Scene tilt: 15° toward the player around the X axis
+const SCENE_TILT = Math.PI * 15 / 180;
+const _cosTilt = Math.cos(SCENE_TILT);
+const _sinTilt = Math.sin(SCENE_TILT);
+
+/** Transform a point from the tilted-scene local frame to world space. */
+function tiltToWorld(x: number, y: number, z: number): Vector3 {
+  return new Vector3(x, y * _cosTilt - z * _sinTilt, y * _sinTilt + z * _cosTilt);
+}
 import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
 import type { Board, Card, Player } from '../types';
 import { GameBoard } from './GameBoard';
@@ -15,6 +25,7 @@ import { OpponentHand3D } from './OpponentHand3D';
 import { FlyingCard } from './FlyingCard';
 import { CaptureFlipCard } from './CaptureFlipCard';
 import { SparkBurst } from './SparkBurst';
+import { Nameplate3D } from './Nameplate3D';
 import type { FlyingCardState } from './hooks/useCardAnimation';
 import type { CaptureAnimationEntry } from './hooks/useCaptureAnimation';
 import {
@@ -48,6 +59,9 @@ interface SwampSceneProps {
   onCaptureAnimComplete: () => void;
   isCaptureAnimatingCell: (row: number, col: number) => boolean;
   getPendingCaptureOwner: (row: number, col: number) => 'blue' | 'red' | undefined;
+  playerNumber: 1 | 2;
+  myScore: number;
+  opponentScore: number;
 }
 
 function SceneContent(props: SwampSceneProps) {
@@ -56,8 +70,14 @@ function SceneContent(props: SwampSceneProps) {
     myHand, opponentHand, myPlayer, selectedCardIndex, isMyTurn, isFinished,
     onCardClick, flyingCard, onFlyComplete, isAnimatingCell,
     activeCaptureEntry, captureActiveIndex, onCaptureAnimComplete,
-    isCaptureAnimatingCell, getPendingCaptureOwner,
+    isCaptureAnimatingCell, getPendingCaptureOwner, playerNumber,
+    myScore, opponentScore,
   } = props;
+
+  const myCardImg = `/cards/card-${playerNumber}.png`;
+  const oppCardImg = `/cards/card-${playerNumber === 1 ? 2 : 1}.png`;
+  const myName = `Player ${playerNumber}`;
+  const oppName = `Player ${playerNumber === 1 ? 2 : 1}`;
 
   // Defer environment loading so game board renders first and PXE isn't starved
   const [showEnvironment, setShowEnvironment] = useState(false);
@@ -87,8 +107,8 @@ function SceneContent(props: SwampSceneProps) {
     const cellX = (flyingCard.toCol - 1) * 0.66;
     const cellZ = (flyingCard.toRow - 1) * 0.66;
     flyTo = {
-      position: new Vector3(cellX, 0.678, cellZ),
-      rotation: new Euler(-Math.PI / 2, 0, 0),
+      position: tiltToWorld(cellX, 0.678, cellZ),
+      rotation: new Euler(-Math.PI / 2 + SCENE_TILT, 0, 0),
     };
   }
 
@@ -114,18 +134,68 @@ function SceneContent(props: SwampSceneProps) {
 
       <fog attach="fog" args={['#0a1a0a', 4, 12]} />
 
-      {/* Game board */}
-      <GameBoard
-        board={board}
-        myPlayer={myPlayer}
-        validPlacements={validPlacements}
-        onCellClick={onCellClick}
-        isAnimatingCell={isAnimatingCell}
-        isCaptureAnimatingCell={isCaptureAnimatingCell}
-        getPendingCaptureOwner={getPendingCaptureOwner}
-      />
+      {/* World geometry — tilted 15° toward the player */}
+      <group rotation={[SCENE_TILT, 0, 0]}>
+        {/* Game board */}
+        <GameBoard
+          board={board}
+          myPlayer={myPlayer}
+          validPlacements={validPlacements}
+          onCellClick={onCellClick}
+          isAnimatingCell={isAnimatingCell}
+          isCaptureAnimatingCell={isCaptureAnimatingCell}
+          getPendingCaptureOwner={getPendingCaptureOwner}
+        />
 
-      {/* Player hand (near camera, bottom of viewport) */}
+        {/* Capture flip animation — lives on the board surface */}
+        {activeCaptureEntry && (
+          <CaptureFlipCard
+            key={`capture-${captureActiveIndex}`}
+            card={activeCaptureEntry.card}
+            cellPosition={[
+              (activeCaptureEntry.col - 1) * 0.66,
+              0.648,
+              (activeCaptureEntry.row - 1) * 0.66,
+            ]}
+            row={activeCaptureEntry.row}
+            col={activeCaptureEntry.col}
+            oldOwner={activeCaptureEntry.oldOwner}
+            newOwner={activeCaptureEntry.newOwner}
+            onComplete={onCaptureAnimComplete}
+          />
+        )}
+
+        {/* Spark burst for capture — lives on the board surface */}
+        {activeCaptureEntry && (
+          <SparkBurst
+            key={`spark-${captureActiveIndex}`}
+            position={[
+              (activeCaptureEntry.col - 1) * 0.66,
+              0.68,
+              (activeCaptureEntry.row - 1) * 0.66,
+            ]}
+            color={activeCaptureEntry.newOwner === 'blue' ? '#4488ff' : '#ff4422'}
+          />
+        )}
+
+        {/* Ground island + vegetation */}
+        <SwampFloor />
+
+        <Suspense fallback={null}>
+          <WaterSurface />
+        </Suspense>
+
+        {/* Defer heavy environment models so board renders first */}
+        {showEnvironment && (
+          <>
+            <SwampEnvironment />
+            <PropLayout />
+            <Particles />
+          </>
+        )}
+      </group>
+
+      {/* Player hands — kept outside the tilt so they stay in front of the camera */}
       <PlayerHand3D
         cards={myHand}
         owner={myPlayer}
@@ -134,8 +204,6 @@ function SceneContent(props: SwampSceneProps) {
         onCardClick={onCardClick}
         flyingCardIndex={flyingCard && !flyingCard.isOpponent ? flyingCard.fromHandIndex : null}
       />
-
-      {/* Opponent hand (far side, top of viewport) */}
       <OpponentHand3D
         cards={opponentHand}
         owner={opponentPlayer}
@@ -143,7 +211,13 @@ function SceneContent(props: SwampSceneProps) {
         isFinished={isFinished}
       />
 
-      {/* Flying card animation */}
+      {/* Player nameplates — left side, billboard toward camera.
+          P2 is ~28% farther from camera so scale=1.28 equalises apparent size.
+          P2 Y adjusted down by 50% of its visual height (0.45 * 1.28 * 0.5 ≈ 0.29). */}
+      <Nameplate3D name={myName}  cardImageSrc={myCardImg}  position={[-1.35, 0.65, 1.4]}  meshScale={1}    score={myScore} />
+      <Nameplate3D name={oppName} cardImageSrc={oppCardImg} position={[-1.9,  0.76, -0.9]} meshScale={1.28} score={opponentScore} />
+
+      {/* Flying card animation — uses world-space coords bridging hand → tilted board */}
       {flyingCard && flyFrom && flyTo && (
         <FlyingCard
           key={`fly-${flyingCard.toRow}-${flyingCard.toCol}-${flyingCard.isOpponent}`}
@@ -156,53 +230,6 @@ function SceneContent(props: SwampSceneProps) {
           faceDown={flyingCard.faceDown}
           onComplete={onFlyComplete}
         />
-      )}
-
-      {/* Capture flip animation */}
-      {activeCaptureEntry && (
-        <CaptureFlipCard
-          key={`capture-${captureActiveIndex}`}
-          card={activeCaptureEntry.card}
-          cellPosition={[
-            (activeCaptureEntry.col - 1) * 0.66,
-            0.648,
-            (activeCaptureEntry.row - 1) * 0.66,
-          ]}
-          row={activeCaptureEntry.row}
-          col={activeCaptureEntry.col}
-          oldOwner={activeCaptureEntry.oldOwner}
-          newOwner={activeCaptureEntry.newOwner}
-          onComplete={onCaptureAnimComplete}
-        />
-      )}
-
-      {/* Spark burst for capture */}
-      {activeCaptureEntry && (
-        <SparkBurst
-          key={`spark-${captureActiveIndex}`}
-          position={[
-            (activeCaptureEntry.col - 1) * 0.66,
-            0.68,
-            (activeCaptureEntry.row - 1) * 0.66,
-          ]}
-          color={activeCaptureEntry.newOwner === 'blue' ? '#4488ff' : '#ff4422'}
-        />
-      )}
-
-      {/* Ground island + vegetation */}
-      <SwampFloor />
-
-      <Suspense fallback={null}>
-        <WaterSurface />
-      </Suspense>
-
-      {/* Defer heavy environment models so board renders first */}
-      {showEnvironment && (
-        <>
-          <SwampEnvironment />
-          <PropLayout />
-          <Particles />
-        </>
       )}
 
       <EffectComposer>

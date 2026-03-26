@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<coverage generated="1772733879892" clover="3.2.0">
-  <project timestamp="1772733879892" name="All files">
+<coverage generated="1774225737524" clover="3.2.0">
+  <project timestamp="1774225737524" name="All files">
     <metrics statements="534" coveredstatements="529" conditionals="105" coveredconditionals="99" methods="19" coveredmethods="19" elements="658" coveredelements="647" complexity="0" loc="534" ncloc="534" packages="1" files="4" classes="4"/>
     <file name="axolotlCards.ts" path="/Users/zac/aztec-triple-triad-ui/repo/packages/game-logic/src/axolotlCards.ts">
       <metrics statements="296" coveredstatements="296" conditionals="19" coveredconditionals="17" methods="5" coveredmethods="5"/>
@@ -292,8 +292,8 @@
       <line num="354" count="10114" type="cond" truecount="2" falsecount="0"/>
       <line num="355" count="10114" type="cond" truecount="2" falsecount="0"/>
       <line num="356" count="10114" type="cond" truecount="2" falsecount="0"/>
-      <line num="357" count="192" type="stmt"/>
-      <line num="358" count="192" type="stmt"/>
+      <line num="357" count="199" type="stmt"/>
+      <line num="358" count="199" type="stmt"/>
       <line num="365" count="1" type="cond" truecount="1" falsecount="0"/>
       <line num="366" count="300" type="stmt"/>
       <line num="367" count="300" type="cond" truecount="0" falsecount="1"/>

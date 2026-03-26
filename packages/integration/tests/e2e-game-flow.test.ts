@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { GameSession } from '../src/game-session.js';
 import { ProofService, MockProofBackend } from '../src/prover.js';
 import type { PlayerSession, MoveProof } from '../src/types.js';
-import { getCardsByIds } from '@aztec-triple-triad/game-logic';
+import { getCardsByIds } from '@axolotl-arena/game-logic';
 
 /**
  * Simple hash function for testing (deterministic, non-cryptographic).

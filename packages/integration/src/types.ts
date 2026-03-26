@@ -1,4 +1,4 @@
-import type { GameState, Card, Player, Board, BoardCell } from '@aztec-triple-triad/game-logic';
+import type { GameState, Card, Player, Board, BoardCell } from '@axolotl-arena/game-logic';
 
 /**
  * A Noir field element represented as a bigint string (hex or decimal).

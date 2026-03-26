@@ -66,6 +66,7 @@ interface Card3DProps {
   renderOrder?: number;
   opacity?: number;
   depthWrite?: boolean;
+  depthTest?: boolean;
   /** Emissive glow color — rendered as a border behind the card, picked up by Bloom */
   glowColor?: string;
 }
@@ -86,6 +87,7 @@ export function Card3D({
   renderOrder,
   opacity = 1,
   depthWrite = true,
+  depthTest = true,
   glowColor,
 }: Card3DProps) {
   const texture = useCardTexture(card.id, faceDown, !!boardOwner);
@@ -117,6 +119,7 @@ export function Card3D({
             color={OWNER_COLORS[boardOwner]}
             toneMapped={false}
             depthWrite={depthWrite}
+            depthTest={depthTest}
           />
         </mesh>
       )}
@@ -131,6 +134,7 @@ export function Card3D({
           side={DoubleSide}
           toneMapped={false}
           depthWrite={depthWrite}
+          depthTest={depthTest}
         />
       </mesh>
     </group>

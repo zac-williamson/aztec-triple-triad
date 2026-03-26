@@ -44,6 +44,7 @@ function getSettleTxLabel(status: SettleTxStatus): string {
   }
 }
 
+
 export function GameHUD({
   gameState,
   playerNumber,
@@ -163,18 +164,6 @@ export function GameHUD({
           </div>
         </div>
       )}
-
-      {/* Scores */}
-      <div style={{ position: 'fixed', top: 50, right: 20, zIndex: 5 }}>
-        <div className="game-screen__score game-screen__score--opponent">
-          {opponentScore}
-        </div>
-      </div>
-      <div style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 5 }}>
-        <div className="game-screen__score game-screen__score--player">
-          {myScore}
-        </div>
-      </div>
 
       {/* Hints */}
       {!isFinished && (

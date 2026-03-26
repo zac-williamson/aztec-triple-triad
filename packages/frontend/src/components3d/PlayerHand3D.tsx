@@ -1,6 +1,6 @@
 import { useRef, useState, useCallback, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Quaternion, Vector3 } from 'three';
+import { Quaternion, Vector3, CanvasTexture, SRGBColorSpace } from 'three';
 import type { ThreeEvent } from '@react-three/fiber';
 import type { Card, Player } from '../types';
 import { Card3D } from './Card3D';
@@ -24,6 +24,63 @@ interface PlayerHand3DProps {
 }
 
 const LERP_SPEED = 10;
+const HIDDEN_COUNT = 2; // last N cards are hidden from opponent
+
+// ── Eye / Lock icon textures (created once) ───────────────────────────────
+let _eyeTex: CanvasTexture | null = null;
+let _lockTex: CanvasTexture | null = null;
+
+function getEyeTexture(): CanvasTexture {
+  if (_eyeTex) return _eyeTex;
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 64;
+  const ctx = c.getContext('2d')!;
+  // Dark pill bg
+  ctx.fillStyle = 'rgba(0,0,0,0.68)';
+  ctx.beginPath(); ctx.arc(32, 32, 29, 0, Math.PI * 2); ctx.fill();
+  // Eye lids
+  ctx.strokeStyle = '#88ff99';
+  ctx.lineWidth = 3.5;
+  ctx.beginPath();
+  ctx.moveTo(7, 32);
+  ctx.quadraticCurveTo(32, 11, 57, 32);
+  ctx.quadraticCurveTo(32, 53, 7, 32);
+  ctx.stroke();
+  // Iris
+  ctx.fillStyle = '#88ff99';
+  ctx.beginPath(); ctx.arc(32, 32, 9, 0, Math.PI * 2); ctx.fill();
+  // Pupil
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.beginPath(); ctx.arc(32, 32, 4.5, 0, Math.PI * 2); ctx.fill();
+  _eyeTex = new CanvasTexture(c);
+  _eyeTex.colorSpace = SRGBColorSpace;
+  return _eyeTex;
+}
+
+function getLockTexture(): CanvasTexture {
+  if (_lockTex) return _lockTex;
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 64;
+  const ctx = c.getContext('2d')!;
+  // Dark bg
+  ctx.fillStyle = 'rgba(0,0,0,0.68)';
+  ctx.beginPath(); ctx.arc(32, 32, 29, 0, Math.PI * 2); ctx.fill();
+  // Lock body
+  ctx.fillStyle = '#ffaa44';
+  ctx.beginPath(); ctx.roundRect(17, 33, 30, 20, 4); ctx.fill();
+  // Keyhole
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.beginPath(); ctx.arc(32, 40, 4, 0, Math.PI * 2); ctx.fill();
+  ctx.fillRect(30, 40, 4, 6);
+  // Shackle
+  ctx.strokeStyle = '#ffaa44';
+  ctx.lineWidth = 5;
+  ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(32, 30, 11, Math.PI, 0); ctx.stroke();
+  _lockTex = new CanvasTexture(c);
+  _lockTex.colorSpace = SRGBColorSpace;
+  return _lockTex;
+}
 
 // Reusable objects to avoid per-frame allocation
 const _parentQuat = new Quaternion();
@@ -169,6 +226,9 @@ export function PlayerHand3D({
         const isActive = selectedIndex === i || hoveredIndex === i;
         const glowColor = selectedIndex === i ? '#ffcc00' : hoveredIndex === i ? '#44ff66' : null;
         const ro = isActive ? 50 + i : 10 + i;
+        const isHidden = i >= cards.length - HIDDEN_COUNT;
+        const iconTex = isHidden ? getLockTexture() : getEyeTexture();
+        const iconY = HAND_CARD_HEIGHT / 2 + 0.14;
 
         return (
           <group
@@ -185,6 +245,17 @@ export function PlayerHand3D({
               depthWrite={false}
               glowColor={glowColor ?? undefined}
             />
+            {/* Eye / lock visibility indicator */}
+            <mesh position={[0, iconY, 0.03]} renderOrder={ro + 100}>
+              <planeGeometry args={[0.19, 0.19]} />
+              <meshBasicMaterial
+                map={iconTex}
+                transparent
+                depthTest={false}
+                depthWrite={false}
+                toneMapped={false}
+              />
+            </mesh>
           </group>
         );
       })}

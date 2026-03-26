@@ -1,5 +1,5 @@
 {
-  "name": "@aztec-triple-triad/integration",
+  "name": "@axolotl-arena/integration",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,8 +11,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@aztec-triple-triad/game-logic": "*",
-    "@aztec-triple-triad/backend": "*",
+    "@axolotl-arena/game-logic": "*",
+    "@axolotl-arena/backend": "*",
     "@noir-lang/noir_js": "1.0.0-beta.18-2db78f8.nightly",
     "@noir-lang/types": "1.0.0-beta.18-2db78f8.nightly",
     "@aztec/bb.js": "4.2.0-nightly.20260323",

@@ -17,8 +17,8 @@ import {
   placeCard,
   getCardsByIds,
   CARD_DATABASE,
-} from '@aztec-triple-triad/game-logic';
-import type { GameState, Card, Player } from '@aztec-triple-triad/game-logic';
+} from '@axolotl-arena/game-logic';
+import type { GameState, Card, Player } from '@axolotl-arena/game-logic';
 
 // Re-export game-logic types for convenience
 export type { GameState, Card, Player };
