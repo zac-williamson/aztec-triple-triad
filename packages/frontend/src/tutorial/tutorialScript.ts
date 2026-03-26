@@ -82,13 +82,13 @@ export const TUTORIAL_SCENES: TutorialScene[] = [
     allowPlayerAction: true,
   },
 
-  // ── SCENE 2 — First Placement (player places any card) ─────────────────
+  // ── SCENE 2 — Player placed; Xochitl responds with Swamp Sprite ────────
   {
-    id: 'first_placement',
+    id: 'xochitl_first_move',
     trigger: { kind: 'ANY_CARD_PLACED' },
     dialogue: [
       { text: 'There. Your card is on the board. Now it belongs to the game.' },
-      { text: 'Watch.' },
+      { text: 'My first move. Nothing dramatic. I am simply warming up.' },
     ],
     highlights: [{ kind: 'NONE' }],
     xochitlMoveAfter: { cardId: 106, row: 1, col: 1 },
@@ -97,12 +97,11 @@ export const TUTORIAL_SCENES: TutorialScene[] = [
     autoAdvance: true,
   },
 
-  // ── SCENE 3 — Xochitl places, teach capture ────────────────────────────
+  // ── SCENE 3 — Teach capture (Vine Creeper vs Swamp Sprite) ─────────────
   {
-    id: 'xochitl_first_move',
+    id: 'capture_setup',
     trigger: { kind: 'TURN_START' },
     dialogue: [
-      { text: 'My first move. Nothing dramatic. I am simply warming up.' },
       { text: 'Your Vine Creeper. Six on its bottom edge.' },
       { text: 'My Sprite has only three on its top. If your card sits above mine... do the maths.' },
       { text: 'Place it above my card. See what happens.' },
