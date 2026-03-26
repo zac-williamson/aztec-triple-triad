@@ -76,28 +76,16 @@ export const TUTORIAL_SCENES: TutorialScene[] = [
       { text: 'Top, right, bottom, left. These are the card\'s fighting edges.' },
       { text: 'When you place a card next to one of mine, the touching edges are compared. If yours is higher — my card flips to your colour.' },
       { text: 'That is a capture. That is how you win.' },
-      { text: 'Now place a card. Any empty cell on the board will glow when you select one.' },
+      { text: 'I will go first. Watch.' },
     ],
     highlights: [{ kind: 'PLAYER_HAND' }],
-    allowPlayerAction: true,
-  },
-
-  // ── SCENE 2 — Player placed; Xochitl responds with Swamp Sprite ────────
-  {
-    id: 'xochitl_first_move',
-    trigger: { kind: 'ANY_CARD_PLACED' },
-    dialogue: [
-      { text: 'There. Your card is on the board. Now it belongs to the game.' },
-      { text: 'My first move. Nothing dramatic. I am simply warming up.' },
-    ],
-    highlights: [{ kind: 'NONE' }],
     xochitlMoveAfter: { cardId: 106, row: 1, col: 1 },
-    xochitlMoveDelayMs: 1200,
+    xochitlMoveDelayMs: 900,
     allowPlayerAction: false,
     autoAdvance: true,
   },
 
-  // ── SCENE 3 — Teach capture (Vine Creeper vs Swamp Sprite) ─────────────
+  // ── SCENE 2 — Teach capture (Vine Creeper vs Swamp Sprite) ─────────────
   {
     id: 'capture_setup',
     trigger: { kind: 'TURN_START' },

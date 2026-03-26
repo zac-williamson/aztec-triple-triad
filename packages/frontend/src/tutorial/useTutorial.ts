@@ -36,10 +36,12 @@ export interface TutorialState {
 const TYPEWRITER_MS = 35;
 
 function initGameState(): GameState {
-  return createGame(
+  const gs = createGame(
     PLAYER_TUTORIAL_HAND.map(c => ({ ...c, ranks: { ...c.ranks } })),
     XOCHITL_TUTORIAL_HAND.map(c => ({ ...c, ranks: { ...c.ranks } })),
   );
+  // Xochitl goes first in the tutorial
+  return { ...gs, currentTurn: 'player2' };
 }
 
 export function useTutorial(onExit: () => void): TutorialState {
