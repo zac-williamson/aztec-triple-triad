@@ -65,7 +65,6 @@ export const TUTORIAL_SCENES: TutorialScene[] = [
       { kind: 'OPPONENT_HAND', revealCount: 3 },
     ],
     allowPlayerAction: false,
-    autoAdvance: true,
   },
 
   // ── SCENE 1 — Card Anatomy ─────────────────────────────────────────────
