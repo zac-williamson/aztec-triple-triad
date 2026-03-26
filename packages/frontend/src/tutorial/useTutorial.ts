@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import type { GameState, Player } from '../types';
-import { createGame, placeCard } from '../../../game-logic/src/index.js';
+import { createGame, placeCard } from '@axolotl-arena/game-logic';
 import { PLAYER_TUTORIAL_HAND, XOCHITL_TUTORIAL_HAND } from './tutorialCards';
 import { TUTORIAL_SCENES } from './tutorialScript';
 import type { HighlightTarget, TutorialScene, TriggerKind } from './tutorialScript';

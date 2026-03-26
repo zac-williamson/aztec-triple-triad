@@ -13,6 +13,7 @@
     "copy-contracts": "mkdir -p public/contracts && cp ../../packages/contracts/target/*.json public/contracts/"
   },
   "dependencies": {
+    "@axolotl-arena/game-logic": "file:../game-logic",
     "@aztec/accounts": "4.2.0-nightly.20260323",
     "@aztec/aztec.js": "4.2.0-nightly.20260323",
     "@aztec/bb.js": "4.2.0-nightly.20260323",
