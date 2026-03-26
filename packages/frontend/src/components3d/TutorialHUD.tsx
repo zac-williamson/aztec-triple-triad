@@ -164,7 +164,7 @@ export function TutorialHUD({
       <button
         onClick={onSkip}
         style={{
-          position: 'fixed', top: 48, right: 16, zIndex: 40,
+          position: 'fixed', top: 8, right: 16, zIndex: 40,
           background: 'rgba(30,12,3,0.8)',
           border: '1px solid rgba(180,140,60,0.4)',
           borderRadius: 6,
@@ -183,7 +183,7 @@ export function TutorialHUD({
         <div
           onClick={isTyping ? onSkipTypewriter : undefined}
           style={{
-            position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)',
+            position: 'fixed', top: 48, left: '50%', transform: 'translateX(-50%)',
             width: 'min(700px, calc(100vw - 32px))',
             zIndex: 40,
             display: 'flex', alignItems: 'center', gap: 16,
