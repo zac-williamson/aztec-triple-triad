@@ -17,6 +17,7 @@ interface GameBoardProps {
   isAnimatingCell?: (row: number, col: number) => boolean;
   isCaptureAnimatingCell?: (row: number, col: number) => boolean;
   getPendingCaptureOwner?: (row: number, col: number) => 'blue' | 'red' | undefined;
+  tutorialHighlightCells?: { row: number; col: number }[];
 }
 
 const CRATE_SCALE = 0.006;
@@ -190,11 +191,14 @@ function CrateGrid() {
 
 // ---------- Main board ----------
 
-export function GameBoard({ board, myPlayer, validPlacements, onCellClick, isAnimatingCell, isCaptureAnimatingCell, getPendingCaptureOwner }: GameBoardProps) {
+export function GameBoard({ board, myPlayer, validPlacements, onCellClick, isAnimatingCell, isCaptureAnimatingCell, getPendingCaptureOwner, tutorialHighlightCells }: GameBoardProps) {
   const { positions, cellSize } = useBoardPositions();
 
   const isValid = (row: number, col: number) =>
     validPlacements.some(p => p.row === row && p.col === col);
+
+  const isTutorialHighlight = (row: number, col: number) =>
+    tutorialHighlightCells?.some(p => p.row === row && p.col === col) ?? false;
 
   return (
     <group>
@@ -228,6 +232,7 @@ export function GameBoard({ board, myPlayer, validPlacements, onCellClick, isAni
             isValid={isValid(r, c)}
             isAnimating={(isAnimatingCell?.(r, c) ?? false) || (isCaptureAnimatingCell?.(r, c) ?? false)}
             pendingCaptureOwner={getPendingCaptureOwner?.(r, c)}
+            isTutorialHighlight={isTutorialHighlight(r, c)}
             onCellClick={onCellClick}
           />
         ))

@@ -21,6 +21,8 @@ interface OpponentHand3DProps {
   owner: Player;
   flyingCardIndex?: number | null;
   isFinished?: boolean;
+  /** Tutorial: how many cards to show face-up (from index 0). Undefined = use default logic. */
+  revealCount?: number;
 }
 
 // Opponent cards are 50% larger than player cards
@@ -55,6 +57,7 @@ export function OpponentHand3D({
   owner,
   flyingCardIndex,
   isFinished = false,
+  revealCount,
 }: OpponentHand3DProps) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const cardGroupRefs = useRef<(any)[]>([]);
@@ -126,7 +129,7 @@ export function OpponentHand3D({
             <group scale={[-1, 1, 1]}>
               <Card3D
                 card={card}
-                faceDown={card.id === 0 && !isFinished}
+                faceDown={revealCount !== undefined ? i >= revealCount : (card.id === 0 && !isFinished)}
                 width={HAND_CARD_WIDTH}
                 renderOrder={ro}
                 depthWrite={false}

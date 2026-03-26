@@ -13,6 +13,7 @@ interface BoardCell3DProps {
   isValid: boolean;
   isAnimating?: boolean;
   pendingCaptureOwner?: 'blue' | 'red';
+  isTutorialHighlight?: boolean;
   onCellClick?: (row: number, col: number) => void;
 }
 
@@ -26,6 +27,7 @@ export function BoardCell3D({
   isValid,
   isAnimating = false,
   pendingCaptureOwner,
+  isTutorialHighlight = false,
   onCellClick,
 }: BoardCell3DProps) {
   const [hovered, setHovered] = useState(false);
@@ -34,7 +36,8 @@ export function BoardCell3D({
   const boardOwner = pendingCaptureOwner
     ?? (cell.owner ? (cell.owner === myPlayer ? 'blue' : 'red') : undefined);
 
-  const pulse = isValid ? 0.35 : 0;
+  const pulse = isValid ? 0.35 : isTutorialHighlight ? 0.45 : 0;
+  const emissiveColor = isTutorialHighlight ? '#cc9900' : isValid ? '#00ff44' : '#000000';
 
   return (
     <group position={position}>
@@ -57,12 +60,12 @@ export function BoardCell3D({
       >
         <planeGeometry args={[cellSize * 0.92, cellSize * 0.92]} />
         <meshStandardMaterial
-          color={isValid ? '#1a3a2a' : '#1a2a1a'}
+          color={isValid ? '#1a3a2a' : isTutorialHighlight ? '#3a2a0a' : '#1a2a1a'}
           transparent
-          opacity={isValid ? 0.5 : 0.2}
+          opacity={isValid || isTutorialHighlight ? 0.5 : 0.2}
           roughness={0.9}
-          emissive={isValid ? '#00ff44' : '#000000'}
-          emissiveIntensity={isValid ? (hovered ? 0.6 : pulse) : 0}
+          emissive={emissiveColor}
+          emissiveIntensity={(isValid || isTutorialHighlight) ? (hovered ? 0.6 : pulse) : 0}
         />
       </mesh>
 

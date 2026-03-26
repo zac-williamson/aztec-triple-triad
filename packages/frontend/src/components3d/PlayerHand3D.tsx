@@ -21,6 +21,7 @@ interface PlayerHand3DProps {
   isMyTurn: boolean;
   onCardClick: (index: number) => void;
   flyingCardIndex?: number | null;
+  tutorialPulseIndex?: number | null;
 }
 
 const LERP_SPEED = 10;
@@ -127,6 +128,7 @@ export function PlayerHand3D({
   isMyTurn,
   onCardClick,
   flyingCardIndex,
+  tutorialPulseIndex,
 }: PlayerHand3DProps) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   // Use `any` to avoid dual @types/three version conflicts
@@ -224,7 +226,7 @@ export function PlayerHand3D({
         const initial = getCardFanTransform(i, cards.length, selectedIndex, hoveredIndex);
 
         const isActive = selectedIndex === i || hoveredIndex === i;
-        const glowColor = selectedIndex === i ? '#ffcc00' : hoveredIndex === i ? '#44ff66' : null;
+        const glowColor = selectedIndex === i ? '#ffcc00' : hoveredIndex === i ? '#44ff66' : tutorialPulseIndex === i ? '#cc9900' : null;
         const ro = isActive ? 50 + i : 10 + i;
         const isHidden = i >= cards.length - HIDDEN_COUNT;
         const iconTex = isHidden ? getLockTexture() : getEyeTexture();

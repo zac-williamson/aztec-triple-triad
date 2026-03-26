@@ -28,6 +28,10 @@ interface GameScreenProps {
   onSettle?: (selectedCardId: number) => void;
   settleTxStatus?: SettleTxStatus;
   settleProgress?: { myHand: boolean; oppHand: boolean; moves: number };
+  // Tutorial optional
+  tutorialHighlightCells?: { row: number; col: number }[];
+  tutorialPulseHandIndex?: number | null;
+  xochitlRevealCount?: number;
 }
 
 export function GameScreen3D({
@@ -45,6 +49,9 @@ export function GameScreen3D({
   onSettle,
   settleTxStatus,
   settleProgress,
+  tutorialHighlightCells,
+  tutorialPulseHandIndex,
+  xochitlRevealCount,
 }: GameScreenProps) {
   const [selectedCardIndex, setSelectedCardIndex] = useState<number | null>(null);
   const { flyingCard, startFlyAnimation, completeFlyAnimation, isAnimatingCell } = useCardAnimation();
@@ -234,6 +241,9 @@ export function GameScreen3D({
         playerNumber={playerNumber}
         myScore={myScore}
         opponentScore={opponentScore}
+        tutorialHighlightCells={tutorialHighlightCells}
+        tutorialPulseHandIndex={tutorialPulseHandIndex}
+        xochitlRevealCount={xochitlRevealCount}
       />
 
       <TurnAnnouncer isMyTurn={isMyTurn} isFinished={isFinished} />

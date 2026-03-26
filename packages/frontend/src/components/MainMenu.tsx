@@ -58,12 +58,9 @@ export function MainMenu({
         <button
           className="main-menu__btn main-menu__btn--tutorial"
           onClick={onTutorial}
-          disabled
-          title="Coming soon"
         >
           <span className="main-menu__btn-icon">&#128214;</span>
           Tutorial
-          <span className="main-menu__btn-badge">Soon</span>
         </button>
 
         <button

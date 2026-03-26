@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { AztecProvider, useAztecContext } from './aztec/AztecContext';
 import { useGame } from './hooks/useGame';
 import { MenuScene } from './components3d/MenuScene';
@@ -6,6 +7,8 @@ import { CardSelector } from './components/CardSelector';
 import { FindingOpponent } from './components/FindingOpponent';
 import { CardPacks } from './components/CardPacks';
 import { PackOpening } from './components/PackOpening';
+import { TutorialScreen } from './components/TutorialScreen';
+import { TutorialPrompt } from './components/TutorialPrompt';
 import { GameScreen3D as GameScreen } from './components3d/GameScreen3D';
 import './App.css';
 
@@ -14,6 +17,32 @@ const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
 function AppInner() {
   const aztec = useAztecContext();
   const game = useGame(WS_URL);
+
+  const [showTutorialPrompt, setShowTutorialPrompt] = useState(
+    () => !localStorage.getItem('tutorial_seen'),
+  );
+  const [tutorialScreen, setTutorialScreen] = useState(false);
+
+  const handleTutorial = () => {
+    localStorage.setItem('tutorial_seen', 'true');
+    setShowTutorialPrompt(false);
+    setTutorialScreen(true);
+  };
+
+  const handleExitTutorial = () => {
+    localStorage.setItem('tutorial_completed', 'true');
+    setTutorialScreen(false);
+  };
+
+  const handlePromptSkip = () => {
+    localStorage.setItem('tutorial_seen', 'true');
+    setShowTutorialPrompt(false);
+  };
+
+  // Tutorial screen replaces all other screens
+  if (tutorialScreen) {
+    return <TutorialScreen onExit={handleExitTutorial} />;
+  }
 
   const showMenuScene = game.screen === 'main-menu' || game.screen === 'card-selector'
     || game.screen === 'finding-opponent' || game.screen === 'card-packs' || game.screen === 'pack-opening';
@@ -24,6 +53,10 @@ function AppInner() {
 
       {showMenuScene && <MenuScene />}
 
+      {showTutorialPrompt && game.screen === 'main-menu' && (
+        <TutorialPrompt onLearnToPlay={handleTutorial} onSkip={handlePromptSkip} />
+      )}
+
       {game.screen === 'main-menu' && (
         <MainMenu
           connected={game.ws.connected}
@@ -32,7 +65,7 @@ function AppInner() {
           cardCount={aztec.ownedCardIds.length}
           hasGameInProgress={game.hasGameInProgress}
           onPlay={game.handlePlay}
-          onTutorial={() => {}}
+          onTutorial={handleTutorial}
           onCardPacks={game.handleCardPacks}
         />
       )}

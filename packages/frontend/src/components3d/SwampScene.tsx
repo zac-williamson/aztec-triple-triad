@@ -62,6 +62,10 @@ interface SwampSceneProps {
   playerNumber: 1 | 2;
   myScore: number;
   opponentScore: number;
+  // Tutorial optional
+  tutorialHighlightCells?: { row: number; col: number }[];
+  tutorialPulseHandIndex?: number | null;
+  xochitlRevealCount?: number;
 }
 
 function SceneContent(props: SwampSceneProps) {
@@ -72,6 +76,7 @@ function SceneContent(props: SwampSceneProps) {
     activeCaptureEntry, captureActiveIndex, onCaptureAnimComplete,
     isCaptureAnimatingCell, getPendingCaptureOwner, playerNumber,
     myScore, opponentScore,
+    tutorialHighlightCells, tutorialPulseHandIndex, xochitlRevealCount,
   } = props;
 
   const myCardImg = `/cards/card-${playerNumber}.png`;
@@ -145,6 +150,7 @@ function SceneContent(props: SwampSceneProps) {
           isAnimatingCell={isAnimatingCell}
           isCaptureAnimatingCell={isCaptureAnimatingCell}
           getPendingCaptureOwner={getPendingCaptureOwner}
+          tutorialHighlightCells={tutorialHighlightCells}
         />
 
         {/* Capture flip animation — lives on the board surface */}
@@ -203,12 +209,14 @@ function SceneContent(props: SwampSceneProps) {
         isMyTurn={isMyTurn}
         onCardClick={onCardClick}
         flyingCardIndex={flyingCard && !flyingCard.isOpponent ? flyingCard.fromHandIndex : null}
+        tutorialPulseIndex={tutorialPulseHandIndex}
       />
       <OpponentHand3D
         cards={opponentHand}
         owner={opponentPlayer}
         flyingCardIndex={flyingCard?.isOpponent ? flyingCard.fromHandIndex : null}
         isFinished={isFinished}
+        revealCount={xochitlRevealCount}
       />
 
       {/* Player nameplates — left side, billboard toward camera.
