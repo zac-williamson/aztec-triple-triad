@@ -14,14 +14,16 @@ import { TEXTURES } from '../assets/modelManifest';
 // Use `any` to avoid dual @types/three version conflicts between root and packages/frontend
 const textureCache = new Map<string, any>();
 
-function useCardTexture(cardId: number, faceDown: boolean, isBoard?: boolean) {
+function useCardTexture(cardId: number, faceDown: boolean, isBoard?: boolean, imageUrl?: string) {
   let texPath: string;
   if (faceDown) {
     texPath = TEXTURES.cardBack;
   } else if (isBoard) {
-    texPath = `/cards/board/card-${cardId}-board.png`;
+    // For board cards, derive a base ID ≤ 50 so tutorial card IDs fall back to existing images
+    const baseId = cardId > 50 ? ((cardId - 1) % 50) + 1 : cardId;
+    texPath = `/cards/board/card-${baseId}-board.png`;
   } else {
-    texPath = `/cards/final/card-${cardId}.png`;
+    texPath = imageUrl ?? `/cards/final/card-${cardId}.png`;
   }
 
   const [texture, setTexture] = useState<any>(textureCache.get(texPath) ?? null);
@@ -90,7 +92,7 @@ export function Card3D({
   depthTest = true,
   glowColor,
 }: Card3DProps) {
-  const texture = useCardTexture(card.id, faceDown, !!boardOwner);
+  const texture = useCardTexture(card.id, faceDown, !!boardOwner, card.imageUrl);
   // Board cards are square (1:1), hand cards use CARD_ASPECT
   const height = boardOwner ? width : width * CARD_ASPECT;
 
