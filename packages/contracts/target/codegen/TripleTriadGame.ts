@@ -71,14 +71,14 @@ export class TripleTriadGameContract extends ContractBase {
   /**
    * Creates a tx to deploy a new instance of this contract.
    */
-  public static deploy(wallet: Wallet, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike) {
+  public static deploy(wallet: Wallet, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, token_address: AztecAddressLike) {
     return new DeployMethod<TripleTriadGameContract>(PublicKeys.default(), wallet, TripleTriadGameContractArtifact, (instance, wallet) => TripleTriadGameContract.at(instance.address, wallet), Array.from(arguments).slice(1));
   }
 
   /**
    * Creates a tx to deploy a new instance of this contract using the specified public keys hash to derive the address.
    */
-  public static deployWithPublicKeys(publicKeys: PublicKeys, wallet: Wallet, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike) {
+  public static deployWithPublicKeys(publicKeys: PublicKeys, wallet: Wallet, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, token_address: AztecAddressLike) {
     return new DeployMethod<TripleTriadGameContract>(publicKeys, wallet, TripleTriadGameContractArtifact, (instance, wallet) => TripleTriadGameContract.at(instance.address, wallet), Array.from(arguments).slice(2));
   }
 
@@ -116,7 +116,7 @@ export class TripleTriadGameContract extends ContractBase {
   }
   
 
-  public static get storage(): ContractStorageLayout<'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2' | 'game_player_state_1' | 'game_player_state_2'> {
+  public static get storage(): ContractStorageLayout<'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2' | 'game_player_state_1' | 'game_player_state_2' | 'token_contract'> {
       return {
         nft_contract: {
       slot: new Fr(1n),
@@ -150,8 +150,11 @@ game_player_state_1: {
     },
 game_player_state_2: {
       slot: new Fr(14n),
+    },
+token_contract: {
+      slot: new Fr(15n),
     }
-      } as ContractStorageLayout<'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2' | 'game_player_state_1' | 'game_player_state_2'>;
+      } as ContractStorageLayout<'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2' | 'game_player_state_1' | 'game_player_state_2' | 'token_contract'>;
     }
     
 
@@ -161,8 +164,8 @@ game_player_state_2: {
     /** cancel_game(game_id: field, card_ids: array) */
     cancel_game: ((game_id: FieldLike, card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** constructor(nft_address: struct, hand_vk_hash: field, move_vk_hash: field) */
-    constructor: ((nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** constructor(nft_address: struct, hand_vk_hash: field, move_vk_hash: field, token_address: struct) */
+    constructor: ((nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, token_address: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** create_game(card_ids: array) */
     create_game: ((card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -235,7 +238,7 @@ game_player_state_2: {
                         }
                     }
                 ],
-                "path": "aztec::protocol_types::address::aztec_address::AztecAddress"
+                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
             }
         },
         {
@@ -250,7 +253,7 @@ game_player_state_2: {
                         }
                     }
                 ],
-                "path": "aztec::protocol_types::address::aztec_address::AztecAddress"
+                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
             }
         },
         {
@@ -287,7 +290,7 @@ GameJoined: {
                         }
                     }
                 ],
-                "path": "aztec::protocol_types::address::aztec_address::AztecAddress"
+                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
             }
         },
         {
@@ -324,7 +327,7 @@ GameCreated: {
                         }
                     }
                 ],
-                "path": "aztec::protocol_types::address::aztec_address::AztecAddress"
+                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
             }
         },
         {

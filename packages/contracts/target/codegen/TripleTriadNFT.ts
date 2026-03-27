@@ -13,11 +13,6 @@ import TripleTriadNFTContractArtifactJson from '../triple_triad_nft-TripleTriadN
 export const TripleTriadNFTContractArtifact = loadContractArtifact(TripleTriadNFTContractArtifactJson as NoirCompiledContract);
 
 
-      export type LocationUnlocked = {
-        location_id: FieldLike
-      }
-    
-
       export type CardTransferred = {
         token_id: FieldLike
 from: AztecAddressLike
@@ -113,7 +108,7 @@ export class TripleTriadNFTContract extends ContractBase {
   }
   
 
-  public static get storage(): ContractStorageLayout<'name' | 'symbol' | 'minter' | 'game_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'card_game_lock' | 'player_cooldown' | 'location_unlocked' | 'note_nonce' | 'cooldown_notes'> {
+  public static get storage(): ContractStorageLayout<'name' | 'symbol' | 'minter' | 'game_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'card_game_lock' | 'note_nonce' | 'token_contract'> {
       return {
         name: {
       slot: new Fr(1n),
@@ -142,19 +137,13 @@ card_ranks: {
 card_game_lock: {
       slot: new Fr(13n),
     },
-player_cooldown: {
+note_nonce: {
       slot: new Fr(14n),
     },
-location_unlocked: {
+token_contract: {
       slot: new Fr(15n),
-    },
-note_nonce: {
-      slot: new Fr(16n),
-    },
-cooldown_notes: {
-      slot: new Fr(17n),
     }
-      } as ContractStorageLayout<'name' | 'symbol' | 'minter' | 'game_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'card_game_lock' | 'player_cooldown' | 'location_unlocked' | 'note_nonce' | 'cooldown_notes'>;
+      } as ContractStorageLayout<'name' | 'symbol' | 'minter' | 'game_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'card_game_lock' | 'note_nonce' | 'token_contract'>;
     }
     
 
@@ -188,23 +177,14 @@ cooldown_notes: {
     /** get_cards_for_new_player_test(nonce_value: field) */
     get_cards_for_new_player_test: ((nonce_value: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** get_cards_from_location(location_id: field) */
-    get_cards_from_location: ((location_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
     /** get_note_nonce(owner: struct) */
     get_note_nonce: ((owner: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_player_cooldown(owner: struct, location_id: field) */
-    get_player_cooldown: ((owner: AztecAddressLike, location_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** get_private_cards(owner: struct, page_index: integer) */
     get_private_cards: ((owner: AztecAddressLike, page_index: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** import_note(owner: struct, value: field, randomness: field, tx_hash: field, unique_note_hashes: array, num_note_hashes: integer, first_nullifier: field, recipient: struct) */
     import_note: ((owner: AztecAddressLike, value: FieldLike, randomness: FieldLike, tx_hash: FieldLike, unique_note_hashes: FieldLike[], num_note_hashes: (bigint | number), first_nullifier: FieldLike, recipient: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** is_location_unlocked(location_id: field) */
-    is_location_unlocked: ((location_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** mint_for_game_draw(token_ids: array, to: struct) */
     mint_for_game_draw: ((token_ids: FieldLike[], to: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -251,11 +231,17 @@ cooldown_notes: {
     /** public_owner_of(token_id: field) */
     public_owner_of: ((token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
+    /** purchase_card_pack() */
+    purchase_card_pack: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
     /** reclaim_card(token_id: field) */
     reclaim_card: ((token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** set_game_contract(game_address: struct) */
     set_game_contract: ((game_address: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** set_token_contract(token_address: struct) */
+    set_token_contract: ((token_address: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** sync_state() */
     sync_state: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -289,31 +275,12 @@ cooldown_notes: {
 
     /** unlock_cards(token_ids: array, game_id: field) */
     unlock_cards: ((token_ids: FieldLike[], game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** unlock_location(location_id: field) */
-    unlock_location: ((location_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
   };
 
   
-    public static get events(): { LocationUnlocked: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, CardTransferred: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, CardMinted: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, CardCreated: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] } } {
+    public static get events(): { CardTransferred: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, CardMinted: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, CardCreated: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] } } {
     return {
-      LocationUnlocked: {
-        abiType: {
-    "kind": "struct",
-    "fields": [
-        {
-            "name": "location_id",
-            "type": {
-                "kind": "field"
-            }
-        }
-    ],
-    "path": "TripleTriadNFT::LocationUnlocked"
-},
-        eventSelector: EventSelector.fromString("0x326ea17e"),
-        fieldNames: ["location_id"],
-      },
-CardTransferred: {
+      CardTransferred: {
         abiType: {
     "kind": "struct",
     "fields": [
@@ -335,7 +302,7 @@ CardTransferred: {
                         }
                     }
                 ],
-                "path": "aztec::protocol_types::address::aztec_address::AztecAddress"
+                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
             }
         },
         {
@@ -350,7 +317,7 @@ CardTransferred: {
                         }
                     }
                 ],
-                "path": "aztec::protocol_types::address::aztec_address::AztecAddress"
+                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
             }
         }
     ],
@@ -381,7 +348,7 @@ CardMinted: {
                         }
                     }
                 ],
-                "path": "aztec::protocol_types::address::aztec_address::AztecAddress"
+                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
             }
         }
     ],
