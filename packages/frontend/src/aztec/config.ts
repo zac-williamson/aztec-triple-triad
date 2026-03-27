@@ -4,7 +4,7 @@
  */
 export const AZTEC_CONFIG = {
   /** PXE URL for connecting to an Aztec node */
-  pxeUrl: import.meta.env.VITE_AZTEC_PXE_URL || 'http://localhost:8080',
+  pxeUrl: import.meta.env.VITE_AZTEC_PXE_URL || 'https://rpc.testnet.aztec-labs.com',
 
   /** Contract addresses (set after deployment) */
   nftContractAddress: import.meta.env.VITE_NFT_CONTRACT_ADDRESS || '',
