@@ -131,7 +131,7 @@ export function TutorialHUD({
     );
   }
 
-  // ── Win card picker ────────────────────────────────────────────────────
+  // ── Win result ──────────────────────────────────────────────────────────
   if (tutorialResult === 'player_win' && gameOver) {
     const isTimmy = phase === 'timmy';
     return (
@@ -140,45 +140,22 @@ export function TutorialHUD({
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         background: 'rgba(0,0,0,0.7)',
       }}>
-        <div className="parchment-dialog" style={{ maxWidth: 480, textAlign: 'center' }}>
+        <div className="parchment-dialog" style={{ maxWidth: 440, textAlign: 'center' }}>
           <div className="parchment-dialog__title">You Win!</div>
-          <p style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#5a4a34', marginBottom: 8 }}>
+          <p style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#5a4a34', margin: '12px 0 8px' }}>
             {isTimmy
               ? '"What?! No way! My legendary cards...! Well... I guess they were just a boot and a cat."'
               : '"You counted well. Most newcomers forget the hand cards."'
             }
           </p>
-          <p style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#5a4a34', marginBottom: 20 }}>
-            {isTimmy
-              ? '"Fine. Take one. But I want a rematch someday!"'
-              : '"You win. Choose one of my cards."'
-            }
+          <p style={{ fontFamily: "'Cinzel', serif", fontSize: 13, color: '#8a7a64', margin: '0 0 24px' }}>
+            In a real game, the winner picks one of the loser's cards to keep. That's how you grow your collection.
           </p>
-
-          <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap', marginBottom: 20 }}>
-            {xochitlBoardCards.map(card => (
-              <button
-                key={card.id}
-                onClick={() => onSelectWinCard(card.id)}
-                style={{
-                  background: 'rgba(90,60,20,0.4)',
-                  border: '2px solid rgba(180,140,60,0.5)',
-                  borderRadius: 8,
-                  padding: '8px 14px',
-                  color: '#f8e6b2',
-                  fontFamily: "'Cinzel', serif",
-                  fontSize: 13,
-                  cursor: 'pointer',
-                }}
-              >
-                {card.name}
-              </button>
-            ))}
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+            <button className="parchment-dialog__btn" onClick={() => onSelectWinCard(0)}>
+              Continue
+            </button>
           </div>
-
-          <p style={{ fontFamily: "'Cinzel', serif", fontSize: 12, color: '#8a7a64' }}>
-            (Tutorial cards are not added to your collection — this is just for practice!)
-          </p>
         </div>
       </div>
     );

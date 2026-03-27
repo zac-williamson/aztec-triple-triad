@@ -34,3 +34,8 @@ export const TOTAL_MOVES = 9;
 /** Number of starter cards for new players */
 export const STARTER_CARD_COUNT = 5;
 export const STARTER_CARD_IDS = [1, 2, 3, 4, 5];
+
+/** Arena Token rewards and costs */
+export const STARTER_TOKEN_REWARD = 100;
+export const GAME_TOKEN_REWARD = 20;
+export const CARD_PACK_COST = 100;

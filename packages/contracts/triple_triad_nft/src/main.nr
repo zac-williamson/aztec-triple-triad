@@ -3,35 +3,33 @@ mod test;
 
 use aztec::macros::aztec;
 
-/// Card pool sizes per rarity: [common, rare, epic, legendary]
-/// Common maps to frontend IDs 1-20, rare 21-30, epic 31-40, legendary 41-50
-global CARDS_PER_POOL: [u32; 4] = [20, 10, 10, 10];
-
-/// Separator for cooldown hash
-global COOLDOWN_SEPARATOR: u32 = 0xCA4D0002;
+/// Card pool sizes per rarity: [common, uncommon, rare, epic, legendary]
+/// Common: 1-10, Uncommon: 11-176, Rare: 177-226, Epic: 227-246, Legendary: 247-256
+global CARDS_PER_POOL: [u32; 5] = [10, 166, 50, 20, 10];
 
 /// Compute a card_id from a seed and counter.
-/// card_seed = poseidon2([seed, counter]) truncated to u32
-/// rarity = (card_seed >> 16) % 100 -> 0-69 common, 70-89 rare, 90-97 epic, 98-99 legendary
+/// card_seed = pedersen_hash([seed, counter]) truncated to u32
+/// rarity = (card_seed >> 16) % 100 -> 0-34 common, 35-74 uncommon, 75-89 rare, 90-97 epic, 98-99 legendary
 /// card_index = (card_seed & 0xFFFF) % CARDS_PER_POOL[rarity]
 /// global_card_id = pool_offset + card_index + 1
 ///
 /// Returns (rarity_index, global_card_id)
 pub fn generate_card(seed: Field, counter: Field) -> (u8, u32) {
-    // Use pedersen_hash for card seed generation (poseidon2 not accessible outside contract scope)
     let hash = std::hash::pedersen_hash([seed, counter]);
     let card_seed = hash as u32;
 
-    // Determine rarity
+    // Determine rarity (5 tiers)
     let rarity_roll = (card_seed >> 16) % 100;
-    let rarity: u8 = if rarity_roll < 70 {
-        0
+    let rarity: u8 = if rarity_roll < 35 {
+        0 // common
+    } else if rarity_roll < 75 {
+        1 // uncommon
     } else if rarity_roll < 90 {
-        1
+        2 // rare
     } else if rarity_roll < 98 {
-        2
+        3 // epic
     } else {
-        3
+        4 // legendary
     };
 
     // Determine card within pool
@@ -40,7 +38,7 @@ pub fn generate_card(seed: Field, counter: Field) -> (u8, u32) {
 
     // Compute pool offset (sum of all previous pool sizes)
     let mut offset: u32 = 0;
-    for i in 0..4 {
+    for i in 0..5 {
         if (i as u8) < rarity {
             offset += CARDS_PER_POOL[i];
         }
@@ -53,34 +51,8 @@ pub fn generate_card(seed: Field, counter: Field) -> (u8, u32) {
 /// Fixed starter set card IDs (common cards)
 global STARTER_CARD_IDS: [Field; 5] = [1, 2, 3, 4, 5];
 
-/// Location IDs for admin lock mechanism
-global LOCATION_RIVER: Field = 1;
-global LOCATION_FOREST: Field = 2;
-global LOCATION_BEACH: Field = 3;
-global LOCATION_CITY: Field = 4;
-global LOCATION_DOCKYARD: Field = 5;
-
-/// Cooldowns in seconds
-global COOLDOWN_RIVER: u64 = 14400;    // 4 hours
-global COOLDOWN_FOREST: u64 = 28800;   // 8 hours
-global COOLDOWN_BEACH: u64 = 43200;    // 12 hours
-global COOLDOWN_CITY: u64 = 57600;     // 16 hours
-global COOLDOWN_DOCKYARD: u64 = 72000; // 20 hours
-
-/// Map location_id to its cooldown duration in seconds.
-pub fn get_cooldown_for_location(location_id: Field) -> u64 {
-    if location_id == LOCATION_RIVER { COOLDOWN_RIVER }
-    else if location_id == LOCATION_FOREST { COOLDOWN_FOREST }
-    else if location_id == LOCATION_BEACH { COOLDOWN_BEACH }
-    else if location_id == LOCATION_CITY { COOLDOWN_CITY }
-    else if location_id == LOCATION_DOCKYARD { COOLDOWN_DOCKYARD }
-    else {
-        assert(false, "Invalid location ID");
-        0
-    }
-}
-
-/// Location unlock flags use PublicImmutable (one-way, no delay, readable from private).
+/// Cost of a card pack in Arena Tokens
+global CARD_PACK_COST: u128 = 100;
 
 /// IV field constants for note tagging scheme.
 /// Distinct domain separators hashed with poseidon2 to derive IVs.
@@ -104,7 +76,7 @@ global GAME_ID_IV_FIELD: Field = 0x47616d654964;
 #[aztec]
 pub contract TripleTriadNFT {
     use field_note::FieldNote;
-    use uint_note::{UintNote, PartialUintNote};
+    use uint_note::UintNote;
     use aztec::{
         macros::{
             events::event,
@@ -137,12 +109,12 @@ pub contract TripleTriadNFT {
     use compressed_string::FieldCompressedString;
     use super::filters::{filter_by_token_ids, filter_by_token_ids_10};
     use super::{
-        generate_card, get_cooldown_for_location,
-        STARTER_CARD_IDS, COOLDOWN_SEPARATOR,
-        LOCATION_RIVER, LOCATION_FOREST, LOCATION_BEACH, LOCATION_CITY, LOCATION_DOCKYARD,
+        generate_card,
+        STARTER_CARD_IDS, CARD_PACK_COST,
         AXOLOTL_NOTE_TAG_FIELD, AXOLOTL_NOTE_SECRET_IV_FIELD, AXOLOTL_PAYLOAD_IV_FIELD,
         GAME_ID_IV_FIELD,
     };
+    use arena_token::ArenaToken;
 
 
     // --- Events ---
@@ -158,11 +130,6 @@ pub contract TripleTriadNFT {
         token_id: Field,
         from: AztecAddress,
         to: AztecAddress,
-    }
-
-    #[event]
-    struct LocationUnlocked {
-        location_id: Field,
     }
 
     /// Event emitted for each card created with deterministic tagging.
@@ -187,16 +154,10 @@ pub contract TripleTriadNFT {
         public_owners: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
         card_ranks: Map<Field, PublicImmutable<Field, Context>, Context>,
         card_game_lock: Map<Field, PublicMutable<Field, Context>, Context>,
-        // Card generation tracking
-        // player_cooldown stores timestamps of last hunt per (player, location) -- used for cooldown verification
-        player_cooldown: Map<Field, PublicMutable<u64, Context>, Context>,
-        // Location unlock uses PublicImmutable (one-way flag, readable from private, no delay)
-        // Field(1) = unlocked. Uninitialized (or Field(0)) = locked.
-        location_unlocked: Map<Field, PublicImmutable<Field, Context>, Context>,
         // Note nonce: a single FieldNote per user tracking nonce counter for deterministic randomness
         note_nonce: Owned<PrivateSet<FieldNote, Context>, Context>,
-        // Cooldown notes: per-location partial notes for cooldown tracking
-        cooldown_notes: Map<Field, Owned<PrivateSet<UintNote, Context>, Context>, Context>,
+        // Arena Token contract address
+        token_contract: PublicImmutable<AztecAddress, Context>,
     }
 
     // --- Constructor ---
@@ -211,10 +172,6 @@ pub contract TripleTriadNFT {
         self.storage.name.initialize(name);
         self.storage.symbol.initialize(symbol);
         self.storage.minter.initialize(minter);
-        // River is always unlocked; Forest and Beach start unlocked too
-        self.storage.location_unlocked.at(LOCATION_RIVER).initialize(1 as Field);
-        self.storage.location_unlocked.at(LOCATION_FOREST).initialize(1 as Field);
-        self.storage.location_unlocked.at(LOCATION_BEACH).initialize(1 as Field);
     }
 
     // --- Admin ---
@@ -226,20 +183,12 @@ pub contract TripleTriadNFT {
         self.storage.game_contract.initialize(game_address);
     }
 
-    /// Admin unlocks a card generation location.
+    /// Set the Arena Token contract address. Admin only.
     #[external("public")]
-    fn unlock_location(location_id: Field) {
+    fn set_token_contract(token_address: AztecAddress) {
         let minter = self.storage.minter.read();
-        assert(self.msg_sender() == minter, "Only admin can unlock locations");
-        assert(
-            (location_id == LOCATION_FOREST)
-                | (location_id == LOCATION_BEACH)
-                | (location_id == LOCATION_CITY)
-                | (location_id == LOCATION_DOCKYARD),
-            "Invalid location ID",
-        );
-        self.storage.location_unlocked.at(location_id).initialize(1 as Field);
-        self.emit(LocationUnlocked { location_id });
+        assert(self.msg_sender() == minter, "Only minter can set token contract");
+        self.storage.token_contract.initialize(token_address);
     }
 
     // --- Symmetric Encryption (from mpclib::common::crypto) ---
@@ -419,13 +368,11 @@ pub contract TripleTriadNFT {
 
     // --- Card Generation ---
 
-    /// Give a new player their starter set of 5 common cards.
+    /// Give a new player their starter set of 5 common cards + 100 Arena Tokens.
     /// Creates a note_nonce with initial value 5 (since 5 cards were created at indices 0..4).
-    /// Also creates initial cooldown notes (value 0) for each location.
     #[external("private")]
     fn get_cards_for_new_player() {
         let owner = self.msg_sender();
-        let contract_address = self.address;
 
         // Get nhk_app_secret for deterministic randomness
         let owner_npk_m = get_public_keys(owner).npk_m;
@@ -445,31 +392,22 @@ pub contract TripleTriadNFT {
         // Create initial note_nonce with value 5
         push_note_nonce(self.context, self.storage, owner, 5);
 
-        // Create initial cooldown notes (value 1 = "never hunted") for each location
-        let locations = [LOCATION_RIVER, LOCATION_FOREST, LOCATION_BEACH, LOCATION_CITY, LOCATION_DOCKYARD];
-        for i in 0..5 {
-            let storage_slot = self.storage.cooldown_notes.at(locations[i]).get_storage_slot();
-            debug_log_format("PARTIAL NOTE STORAGE SLOT ={0}", [storage_slot]);
-
-            let partial: PartialUintNote = UintNote::partial(owner, self.context, owner, contract_address);
-            self.enqueue_self.finalize_initial_cooldown(partial, storage_slot);
-        }
+        // Mint 100 Arena Tokens to the new player
+        let token_addr = self.storage.token_contract.read();
+        ArenaToken::at(token_addr).mint_private(owner, 100).call(self.context);
     }
 
-    /// Generate 10 cards from a location. Cooldown is derived from location_id.
-    /// Valid location_ids: 1=River, 2=Forest, 3=Beach, 4=City, 5=Dockyard.
+    /// Purchase a card pack: burns 100 Arena Tokens and generates 10 random cards.
     #[external("private")]
-    fn get_cards_from_location(location_id: Field) {
-        let cooldown = get_cooldown_for_location(location_id);
-
+    fn purchase_card_pack() {
         let owner = self.msg_sender();
-        let contract_address = self.address;
         let owner_npk_m = get_public_keys(owner).npk_m;
         let owner_npk_m_hash = owner_npk_m.hash();
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
 
-        let unlocked = self.storage.location_unlocked.at(location_id).read();
-        assert(unlocked == 1, "Location is locked");
+        // Burn 100 Arena Tokens
+        let token_addr = self.storage.token_contract.read();
+        ArenaToken::at(token_addr).burn_from(owner, CARD_PACK_COST).call(self.context);
 
         let nonce_value = pop_note_nonce(self.context, self.storage, owner);
 
@@ -482,18 +420,7 @@ pub contract TripleTriadNFT {
             self.emit(CardCreated { note_tag, note_payload }).deliver_to(owner, MessageDelivery.OFFCHAIN);
         }
 
-        let cooldown_options: NoteGetterOptions<UintNote, 1, Field, Field> = NoteGetterOptions::new()
-            .set_limit(1);
-        let _cooldown_notes = self.storage.cooldown_notes.at(location_id).at(owner).pop_notes(cooldown_options);
-
-        let storage_slot = self.storage.cooldown_notes.at(location_id).get_storage_slot();
-        let partial_cooldown = UintNote::partial(owner, self.context, owner, contract_address);
-
         push_note_nonce(self.context, self.storage, owner, nonce_value + 10);
-
-        self.enqueue_self.finalize_card_generation(
-            owner, location_id, cooldown, partial_cooldown, storage_slot,
-        );
     }
 
     /// Preview which card IDs will be generated for a given nonce value.
@@ -891,49 +818,6 @@ pub contract TripleTriadNFT {
         self.storage.public_owners.at(token_id).write(AztecAddress::zero());
     }
 
-    /// Finalize initial cooldown note (value 1 = "never hunted").
-    /// Called once per location during get_cards_for_new_player.
-    /// UintNote::complete asserts value != 0, so we use 1 as sentinel.
-    #[external("public")]
-    #[only_self]
-    fn finalize_initial_cooldown(partial_cooldown: PartialUintNote, storage_slot: Field) {
-        partial_cooldown.complete(self.context, self.context.this_address(), storage_slot, 1);
-    }
-
-    /// Finalize card generation from a location.
-    /// Checks cooldown elapsed and completes the partial cooldown note with current timestamp.
-    /// Location unlock check is done in private (via PublicImmutable).
-    #[external("public")]
-    #[only_self]
-    fn finalize_card_generation(
-        owner: AztecAddress,
-        location_id: Field,
-        cooldown_seconds: u64,
-        partial_cooldown: PartialUintNote,
-        storage_slot: Field,
-    ) {
-        let owner_field = owner.to_field();
-
-        // Check cooldown using public state
-        let cooldown_key = poseidon2_hash_with_separator(
-            [owner_field, location_id],
-            COOLDOWN_SEPARATOR,
-        );
-        let last_call = self.storage.player_cooldown.at(cooldown_key).read();
-        let current_time = self.context.timestamp() as u64;
-
-        if last_call != 0 {
-            assert(
-                current_time >= last_call + cooldown_seconds,
-                "Cooldown has not elapsed",
-            );
-        }
-        self.storage.player_cooldown.at(cooldown_key).write(current_time);
-
-        // Complete the partial cooldown note with current timestamp
-        partial_cooldown.complete(self.context, self.context.this_address(), storage_slot, current_time as u128);
-    }
-
     // --- View Functions ---
 
     #[external("public")]
@@ -958,23 +842,6 @@ pub contract TripleTriadNFT {
     #[view]
     fn get_card_ranks(token_id: Field) -> Field {
         self.storage.card_ranks.at(token_id).read()
-    }
-
-    #[external("public")]
-    #[view]
-    fn is_location_unlocked(location_id: Field) -> bool {
-        // Use read_unsafe to avoid reverting for uninitialized (locked) locations
-        self.storage.location_unlocked.at(location_id).read_unsafe() == 1
-    }
-
-    #[external("public")]
-    #[view]
-    fn get_player_cooldown(owner: AztecAddress, location_id: Field) -> u64 {
-        let cooldown_key = poseidon2_hash_with_separator(
-            [owner.to_field(), location_id],
-            COOLDOWN_SEPARATOR,
-        );
-        self.storage.player_cooldown.at(cooldown_key).read()
     }
 
     #[external("public")]
@@ -1149,7 +1016,7 @@ pub contract TripleTriadNFT {
     }
 
     /// Same as get_cards_for_new_player but with a configurable nonce_value for randomness derivation.
-    /// Skips cooldown notes. Used for testing to avoid randomness collisions.
+    /// Does not mint Arena Tokens. Used for testing to avoid randomness collisions.
     #[external("private")]
     fn get_cards_for_new_player_test(nonce_value: Field) {
         let owner = self.msg_sender();

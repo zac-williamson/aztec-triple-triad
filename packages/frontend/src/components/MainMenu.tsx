@@ -6,6 +6,7 @@ interface MainMenuProps {
   aztecConnecting: boolean;
   aztecReady: boolean;
   cardCount: number;
+  tokenBalance: number;
   hasGameInProgress: boolean;
   onPlay: () => void;
   onTutorial: () => void;
@@ -17,6 +18,7 @@ export function MainMenu({
   aztecConnecting,
   aztecReady,
   cardCount,
+  tokenBalance,
   hasGameInProgress,
   onPlay,
   onTutorial,
@@ -42,6 +44,16 @@ export function MainMenu({
         <div className={`main-menu__status ${connected ? 'main-menu__status--connected' : ''}`}>
           {connected ? 'Connected' : 'Connecting...'}
         </div>
+        {connected && (
+          <div className="main-menu__token-balance" style={{
+            fontFamily: "'Cinzel', serif",
+            fontSize: 14,
+            color: '#c8a860',
+            marginTop: 8,
+          }}>
+            Arena Tokens: {tokenBalance} | Cards: {cardCount}
+          </div>
+        )}
       </div>
 
       <div className="main-menu__buttons">
@@ -69,7 +81,7 @@ export function MainMenu({
           disabled={!connected}
         >
           <span className="main-menu__btn-icon">&#127183;</span>
-          Card Packs
+          Buy Card Pack
         </button>
       </div>
 

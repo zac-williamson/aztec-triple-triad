@@ -33,6 +33,7 @@ pub contract TripleTriadGame {
     };
     use bb_proof_verification::{UltraHonkVerificationKey, UltraHonkZKProof, verify_honk_proof};
     use triple_triad_nft::TripleTriadNFT;
+    use arena_token::ArenaToken;
 
     // --- Events ---
 
@@ -79,6 +80,7 @@ pub contract TripleTriadGame {
         game_card_commit_2: Map<Field, PublicMutable<Field, Context>, Context>,
         game_player_state_1: Map<Field, PublicMutable<Field, Context>, Context>,
         game_player_state_2: Map<Field, PublicMutable<Field, Context>, Context>,
+        token_contract: PublicImmutable<AztecAddress, Context>,
     }
 
     // --- Constructor ---
@@ -89,10 +91,12 @@ pub contract TripleTriadGame {
         nft_address: AztecAddress,
         hand_vk_hash: Field,
         move_vk_hash: Field,
+        token_address: AztecAddress,
     ) {
         self.storage.nft_contract.initialize(nft_address);
         self.storage.hand_vk_hash.initialize(hand_vk_hash);
         self.storage.move_vk_hash.initialize(move_vk_hash);
+        self.storage.token_contract.initialize(token_address);
     }
 
     // --- Create Game ---
@@ -382,6 +386,11 @@ pub contract TripleTriadGame {
                 .mint_for_game_loser(loser_tokens, opponent, loser_rand)
                 .call(self.context);
 
+            // Reward both players with 20 Arena Tokens
+            let token_addr = self.storage.token_contract.read();
+            ArenaToken::at(token_addr).mint_private(caller, 20).call(self.context);
+            ArenaToken::at(token_addr).mint_private(opponent, 20).call(self.context);
+
             self.enqueue_self.settle_game(
                 game_id, caller, opponent, card_to_transfer,
                 card_commit_1, card_commit_2, winner_id,
@@ -403,6 +412,11 @@ pub contract TripleTriadGame {
             TripleTriadNFT::at(nft_address)
                 .mint_for_game_draw_offchain(opponent_card_ids, opponent, opponent_rand_5)
                 .call(self.context);
+
+            // Reward both players with 20 Arena Tokens
+            let token_addr = self.storage.token_contract.read();
+            ArenaToken::at(token_addr).mint_private(caller, 20).call(self.context);
+            ArenaToken::at(token_addr).mint_private(opponent, 20).call(self.context);
 
             self.enqueue_self.settle_game_draw(
                 game_id, card_commit_1, card_commit_2,

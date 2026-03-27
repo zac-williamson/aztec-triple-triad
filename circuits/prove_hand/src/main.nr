@@ -27,11 +27,11 @@ fn main(
     blinding_factor: Field,
     opponent_randomness: [Field; 6],
 ) {
-    // 1. Verify all card IDs are valid (1-50) and unique
+    // 1. Verify all card IDs are valid (1-256) and unique
     for i in 0..5 {
         let id = card_ids[i] as u32;
         assert(id >= 1, "Card ID must be >= 1");
-        assert(id <= 50, "Card ID must be <= 50");
+        assert(id <= 256, "Card ID must be <= 256");
 
         // Check uniqueness against all subsequent cards
         for j in (i + 1)..5 {
@@ -134,9 +134,9 @@ fn test_fail_card_id_zero() {
     main(commit, opp_state, card_ids, blinding_factor, opponent_randomness);
 }
 
-#[test(should_fail_with = "Card ID must be <= 50")]
+#[test(should_fail_with = "Card ID must be <= 256")]
 fn test_fail_card_id_too_high() {
-    let card_ids: [Field; 5] = [1, 2, 3, 4, 51];
+    let card_ids: [Field; 5] = [1, 2, 3, 4, 257];
     let blinding_factor: Field = 12345;
     let opponent_randomness: [Field; 6] = [1, 2, 3, 4, 5, 6];
     let commit = test_compute_commit(card_ids, blinding_factor);

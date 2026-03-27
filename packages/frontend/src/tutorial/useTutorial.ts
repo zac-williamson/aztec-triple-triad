@@ -114,8 +114,18 @@ export function useTutorial(onExit: () => void): TutorialState {
     const oppHighlight = currentHighlights.find(h => h.kind === 'OPPONENT_HAND') as
       Extract<HighlightTarget, { kind: 'OPPONENT_HAND' }> | undefined;
     if (oppHighlight) return oppHighlight.revealCount;
-    // Default: Xochitl shows all 5, Timmy shows 3 (Old Boot + Lost Cat hidden)
-    return phase === 'timmy' ? 3 : 5;
+    if (phase === 'timmy' && gameState) {
+      // Timmy: cards 204 (Old Boot) and 205 (Lost Cat) are hidden.
+      // Count how many non-hidden cards remain in hand to set correct revealCount.
+      const TIMMY_HIDDEN_IDS = [204, 205];
+      const hand = gameState.player2Hand;
+      let visibleCount = 0;
+      for (const c of hand) {
+        if (!TIMMY_HIDDEN_IDS.includes(c.id)) visibleCount++;
+      }
+      return visibleCount;
+    }
+    return 5;
   })();
 
   // ── Typewriter ─────────────────────────────────────────────────────────

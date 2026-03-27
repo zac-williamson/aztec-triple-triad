@@ -9,6 +9,7 @@ export const AZTEC_CONFIG = {
   /** Contract addresses (set after deployment) */
   nftContractAddress: import.meta.env.VITE_NFT_CONTRACT_ADDRESS || '',
   gameContractAddress: import.meta.env.VITE_GAME_CONTRACT_ADDRESS || '',
+  tokenContractAddress: import.meta.env.VITE_TOKEN_CONTRACT_ADDRESS || '',
 
   /** localStorage keys for persistence, scoped by game contract address */
   storageKeys: {

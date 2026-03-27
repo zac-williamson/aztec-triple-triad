@@ -189,6 +189,7 @@ async function main() {
     nftContract.address,
     Fr.fromHexString(handVk.hash),
     Fr.fromHexString(moveVk.hash),
+    AztecAddress.ZERO, // token_address (not needed for this test)
   ])
     .send({ from: deployerAddr, fee: { paymentMethod: fee }, wait: { timeout: 300 } });
   console.log(`  Game deployed at: ${gameContract.address}`);

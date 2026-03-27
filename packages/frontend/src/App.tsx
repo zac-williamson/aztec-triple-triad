@@ -63,6 +63,7 @@ function AppInner() {
           aztecConnecting={aztec.isConnecting}
           aztecReady={aztec.hasConnected}
           cardCount={aztec.ownedCardIds.length}
+          tokenBalance={aztec.tokenBalance ?? 0}
           hasGameInProgress={game.hasGameInProgress}
           onPlay={game.handlePlay}
           onTutorial={handleTutorial}
@@ -88,6 +89,7 @@ function AppInner() {
       {game.screen === 'card-packs' && (
         <CardPacks
           ownedCardIds={aztec.ownedCardIds}
+          tokenBalance={aztec.tokenBalance ?? 0}
           onPackOpened={game.handlePackOpened}
           onBack={() => game.setScreen('main-menu')}
         />

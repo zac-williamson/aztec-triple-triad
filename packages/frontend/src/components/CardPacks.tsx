@@ -1,54 +1,27 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback } from 'react';
 import { useAztecContext } from '../aztec/AztecContext';
-import { useCardPacks, LOCATIONS, type LocationInfo, type HuntResult } from '../hooks/useCardPacks';
+import { useCardPacks, type HuntResult } from '../hooks/useCardPacks';
+import { CARD_PACK_COST } from '../aztec/gameConstants';
 import './CardPacks.css';
-
-const LOCATION_ICONS: Record<string, string> = {
-  River: '\uD83C\uDF0A',     // 🌊
-  Forest: '\uD83C\uDF32',    // 🌲
-  Beach: '\uD83C\uDFD6\uFE0F', // 🏖️
-  City: '\uD83C\uDFD9\uFE0F',  // 🏙️
-  Dockyard: '\u2693',        // ⚓
-};
-
-const LOCATION_HUNT_GIFS: Record<string, string> = {
-  River: '/ui-elements/swamp.gif',
-  Forest: '/ui-elements/forest.gif',
-  Beach: '/ui-elements/beach.gif',
-  City: '/ui-elements/city.gif',
-  Dockyard: '/ui-elements/docks.gif',
-};
 
 interface CardPacksProps {
   ownedCardIds: number[];
+  tokenBalance: number;
   onPackOpened: (location: string, result: HuntResult) => void;
   onBack: () => void;
 }
 
-function formatCountdown(ms: number): string {
-  if (ms <= 0) return '00:00:00';
-  const totalSec = Math.floor(ms / 1000);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
-export function CardPacks({ ownedCardIds, onPackOpened, onBack }: CardPacksProps) {
+export function CardPacks({ ownedCardIds, tokenBalance, onPackOpened, onBack }: CardPacksProps) {
   const { wallet, nodeClient, accountAddress } = useAztecContext();
   const packs = useCardPacks(wallet, nodeClient, accountAddress);
-  const [now, setNow] = useState(Date.now());
 
-  // Tick countdown every second
-  useEffect(() => {
-    const interval = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(interval);
-  }, []);
+  const canAfford = tokenBalance >= CARD_PACK_COST;
+  const isBusy = packs.txStatus === 'sending' || packs.txStatus === 'confirming';
 
-  const handleHunt = useCallback(async (location: LocationInfo) => {
+  const handlePurchase = useCallback(async () => {
     try {
-      const result = await packs.hunt(location);
-      onPackOpened(location.name, result);
+      const result = await packs.hunt({ id: 1, name: 'Card Pack', description: '', cooldownHours: 0 });
+      onPackOpened('Card Pack', result);
     } catch {
       // Error handled internally by useCardPacks
     }
@@ -61,71 +34,56 @@ export function CardPacks({ ownedCardIds, onPackOpened, onBack }: CardPacksProps
       </button>
 
       <h1 className="card-packs__title">Card Packs</h1>
-      <p className="card-packs__subtitle">Hunt for new axolotls in the wild</p>
+      <p className="card-packs__subtitle">Purchase a pack of 10 random cards</p>
 
-      <div className="card-packs__grid">
-        {LOCATIONS.map(loc => {
-          const cooldownEnd = packs.cooldowns[loc.id] || 0;
-          const isOnCooldown = cooldownEnd > now;
-          const isHunting = packs.activeLocation === loc.name;
-          const remainingMs = isOnCooldown ? cooldownEnd - now : 0;
+      <div style={{
+        maxWidth: 400,
+        margin: '24px auto',
+        textAlign: 'center',
+      }}>
+        <div style={{
+          fontFamily: "'Cinzel', serif",
+          fontSize: 18,
+          color: '#c8a860',
+          marginBottom: 8,
+        }}>
+          Your Balance: {tokenBalance} Arena Tokens
+        </div>
+        <div style={{
+          fontFamily: "'Cinzel', serif",
+          fontSize: 14,
+          color: '#5a4a34',
+          marginBottom: 24,
+        }}>
+          Cost: {CARD_PACK_COST} Arena Tokens | You own {ownedCardIds.length} cards
+        </div>
 
-          return (
-            <div key={loc.id} className="card-packs__location">
-              <span className="card-packs__location-icon">
-                {LOCATION_ICONS[loc.name] || '?'}
-              </span>
-              <span className="card-packs__location-name">{loc.name}</span>
-              <span className="card-packs__location-desc">{loc.description}</span>
-              <span className="card-packs__location-cooldown">
-                Cooldown: {loc.cooldownHours}h
-              </span>
-
-              {isHunting ? (
-                <div className="card-packs__hunting">
-                  <img
-                    className="card-packs__hunting-sprite"
-                    src={LOCATION_HUNT_GIFS[loc.name] || '/ui-elements/swamp.gif'}
-                    alt={`${loc.name} hunting`}
-                    draggable={false}
-                  />
-                  <div className="card-packs__hunting-overlay">
-                    <div className="card-packs__hunting-text">Hunting...</div>
-                    <div className="card-packs__spinner" />
-                  </div>
-                </div>
-              ) : isOnCooldown ? (
-                <span className="card-packs__timer">{formatCountdown(remainingMs)}</span>
-              ) : (
-                <button
-                  className="card-packs__hunt-btn"
-                  onClick={() => handleHunt(loc)}
-                  disabled={packs.txStatus === 'sending' || packs.txStatus === 'confirming'}
-                >
-                  Hunt
-                </button>
-              )}
-            </div>
-          );
-        })}
+        <button
+          className="card-packs__hunt-btn"
+          onClick={handlePurchase}
+          disabled={!canAfford || isBusy}
+          style={{ width: '100%', padding: '14px 20px', fontSize: 16 }}
+        >
+          {isBusy ? 'Purchasing...' : !canAfford ? 'Not Enough Tokens' : 'Purchase Card Pack'}
+        </button>
       </div>
 
       {packs.error && (
         <div className="card-packs__error">{packs.error}</div>
       )}
 
-      {/* Full-screen hunting overlay */}
+      {/* Full-screen purchase overlay */}
       {packs.activeLocation && (
         <div className="card-packs__hunt-overlay">
           <div className="parchment-dialog card-packs__hunt-dialog">
             <h2 className="card-packs__hunt-overlay-title">
-              Hunting in {packs.activeLocation}...
+              Purchasing Card Pack...
             </h2>
             <div className="card-packs__hunt-overlay-scene">
               <img
                 className="card-packs__hunt-overlay-sprite"
-                src={LOCATION_HUNT_GIFS[packs.activeLocation] || '/ui-elements/swamp.gif'}
-                alt={`${packs.activeLocation} hunting`}
+                src="/ui-elements/swamp.gif"
+                alt="Card pack purchase"
                 draggable={false}
               />
               <div className="card-packs__hunt-overlay-fireflies">

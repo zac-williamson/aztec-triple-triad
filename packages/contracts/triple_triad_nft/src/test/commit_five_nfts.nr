@@ -24,7 +24,7 @@ unconstrained fn commit_five_nfts_create_removes_notes() {
     let (env, contract_address, _, player) = utils::setup();
 
     // Player claims starter set: inserts 5 notes with token_ids [1, 2, 3, 4, 5]
-    // Also creates note_nonce (value 5) and 5 cooldown notes
+    // Also creates note_nonce (value 5)
     env.call_private(
         player,
         TripleTriadNFT::at(contract_address).get_cards_for_new_player(),

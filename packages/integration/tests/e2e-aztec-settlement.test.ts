@@ -300,6 +300,7 @@ describe('E2E Aztec Settlement', () => {
       nftContract.address,
       Fr.fromHexString(handVk.hash),
       Fr.fromHexString(moveVk.hash),
+      AztecAddress.ZERO, // token_address (not needed for this test)
     ]).send(sendAs(deployerAddr)));
     console.log(`  Game deployed at: ${gameContract.address}`);
 

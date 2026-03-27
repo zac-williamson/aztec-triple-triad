@@ -38,6 +38,10 @@ export interface UseAztecReturn {
   refreshOwnedCards: () => Promise<void>;
   /** Directly update the owned card IDs (bypasses view_notes which may return stale notes) */
   updateOwnedCards: (updater: (prev: number[]) => number[]) => void;
+  /** Player's Arena Token balance */
+  tokenBalance: number;
+  /** Refresh the Arena Token balance */
+  refreshTokenBalance: () => Promise<void>;
 }
 
 /**
@@ -55,6 +59,7 @@ export function useAztec(): UseAztecReturn {
   const [accountAddress, setAccountAddress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ownedCardIds, setOwnedCardIds] = useState<number[]>([]);
+  const [tokenBalance, setTokenBalance] = useState<number>(0);
   const walletRef = useRef<unknown>(null);
   const nodeClientRef = useRef<unknown>(null);
 
@@ -150,6 +155,14 @@ export function useAztec(): UseAztecReturn {
     }
   }, [accountAddress]);
 
+  // Token balance is a stub until the ArenaToken contract is deployed.
+  // Once deployed, this will call tokenContract.methods.get_balance(addr).simulate().
+  const refreshTokenBalance = useCallback(async () => {
+    // TODO: Query ArenaToken contract when deployed
+    // For now, token balance is tracked client-side based on known game events
+    console.log('[useAztec] refreshTokenBalance (stub)');
+  }, []);
+
   return {
     status,
     isConnecting: status === 'connecting',
@@ -164,5 +177,7 @@ export function useAztec(): UseAztecReturn {
     disconnect,
     refreshOwnedCards,
     updateOwnedCards: setOwnedCardIds,
+    tokenBalance,
+    refreshTokenBalance,
   };
 }

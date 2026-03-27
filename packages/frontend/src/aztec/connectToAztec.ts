@@ -155,6 +155,23 @@ export async function connectToAztec(options?: {
     }
   }
 
+  if (AZTEC_CONFIG.tokenContractAddress) {
+    const tokenAddress = AztecAddress.fromString(AZTEC_CONFIG.tokenContractAddress);
+    await wallet.registerSender(tokenAddress, 'token-contract');
+    try {
+      const tokenInstance = await node.getContract(tokenAddress);
+      if (tokenInstance) {
+        const resp = await fetch('/contracts/arena_token-ArenaToken.json');
+        const rawArtifact = await resp.json();
+        const tokenArtifact = loadContractArtifact(rawArtifact);
+        await wallet.registerContract(tokenInstance, tokenArtifact);
+        log('Token contract registered');
+      }
+    } catch (e) {
+      log(`Failed to register Token contract: ${e}`);
+    }
+  }
+
   // Mint starter cards if this account hasn't claimed them yet
   const address = accountManager.address.toString();
   const mintKey = AZTEC_CONFIG.storageKeys.cardsMintedPrefix + address + '_' + AZTEC_CONFIG.nftContractAddress;

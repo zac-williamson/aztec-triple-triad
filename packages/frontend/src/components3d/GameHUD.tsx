@@ -158,6 +158,9 @@ export function GameHUD({
             <div style={{ fontFamily: "'Cinzel', serif", fontSize: 20, color: '#5a4a34' }}>
               {myScore} - {opponentScore}
             </div>
+            <div style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#c8a860', margin: '12px 0' }}>
+              +20 Arena Tokens earned!
+            </div>
             <button className="parchment-dialog__btn" onClick={onBackToLobby}>
               Back to Lobby
             </button>

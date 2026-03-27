@@ -508,6 +508,7 @@ describe('E2E Full Game Flow -- Frontend Proofs + WebSocket + Aztec Settlement',
       nftContract.address,
       Fr.fromHexString(deployedHandVkHash),
       Fr.fromHexString(deployedMoveVkHash),
+      AztecAddress.ZERO, // token_address (not needed for this test)
     ]).send(sendAs(deployerAddr)));
     console.log(`  Game deployed at: ${gameContract.address}`);
     await wallet.registerSender(gameContract.address, 'game-contract');
