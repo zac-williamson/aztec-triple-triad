@@ -100,23 +100,46 @@ export async function connectToAztec(options?: {
   await wallet.registerContract(sponsoredFPC, SponsoredFPCContractArtifact);
   const paymentMethod = new SponsoredFeePaymentMethod(sponsoredFPC.address);
 
-  // Create a Schnorr account
-  const signingKey = GrumpkinScalar.random();
+  // Create a Schnorr account — persist signing key for wallet recovery
+  let signingKey: typeof GrumpkinScalar.prototype;
+  if (useStorage) {
+    const storedSk = localStorage.getItem(AZTEC_CONFIG.storageKeys.signingKey);
+    if (storedSk) {
+      try {
+        signingKey = GrumpkinScalar.fromHexString(storedSk.startsWith('0x') ? storedSk : '0x' + storedSk);
+      } catch {
+        signingKey = GrumpkinScalar.random();
+      }
+    } else {
+      signingKey = GrumpkinScalar.random();
+    }
+    localStorage.setItem(AZTEC_CONFIG.storageKeys.signingKey, signingKey.toString());
+  } else {
+    signingKey = GrumpkinScalar.random();
+  }
+
   const accountManager = await wallet.createSchnorrAccount(secretFr, saltFr, signingKey);
 
-  // Deploy the account on-chain
-  log('Deploying account...');
-  const deployMethod = await accountManager.getDeployMethod();
-  await deployMethod.send({
-    from: NO_FROM,
-    fee: { paymentMethod },
-    skipClassPublication: true,
-    skipInstancePublication: true,
-    wait: { timeout: AZTEC_TX_TIMEOUT },
-  });
-  log(`Account deployed: ${accountManager.address}`);
+  // Deploy the account on-chain (skip if already deployed)
+  const alreadyDeployed = useStorage && localStorage.getItem(AZTEC_CONFIG.storageKeys.deploymentStatus) === 'deployed';
+  if (alreadyDeployed) {
+    log(`Account recovered: ${accountManager.address}`);
+  } else {
+    log('Deploying account...');
+    const deployMethod = await accountManager.getDeployMethod();
+    await deployMethod.send({
+      from: NO_FROM,
+      fee: { paymentMethod },
+      skipClassPublication: true,
+      skipInstancePublication: true,
+      wait: { timeout: AZTEC_TX_TIMEOUT },
+    });
+    if (useStorage) localStorage.setItem(AZTEC_CONFIG.storageKeys.deploymentStatus, 'deployed');
+    log(`Account deployed: ${accountManager.address}`);
+  }
 
-  // Register this account as a sender for note discovery
+  // Persist account address and register for note discovery
+  if (useStorage) localStorage.setItem(AZTEC_CONFIG.storageKeys.accountAddress, accountManager.address.toString());
   await wallet.registerSender(accountManager.address, 'player');
 
   // Register NFT and Game contracts with the PXE

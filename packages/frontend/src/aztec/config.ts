@@ -16,6 +16,7 @@ export const AZTEC_CONFIG = {
     accountSecret: `aztec_tt_account_secret_${import.meta.env.VITE_GAME_CONTRACT_ADDRESS || 'default'}`,
     accountAddress: `aztec_tt_account_address_${import.meta.env.VITE_GAME_CONTRACT_ADDRESS || 'default'}`,
     accountSalt: `aztec_tt_account_salt_${import.meta.env.VITE_GAME_CONTRACT_ADDRESS || 'default'}`,
+    signingKey: `aztec_tt_signing_key_${import.meta.env.VITE_GAME_CONTRACT_ADDRESS || 'default'}`,
     deploymentStatus: `aztec_tt_deployed_${import.meta.env.VITE_GAME_CONTRACT_ADDRESS || 'default'}`,
     cardsMintedPrefix: 'aztec_tt_cards_minted_',
   },
