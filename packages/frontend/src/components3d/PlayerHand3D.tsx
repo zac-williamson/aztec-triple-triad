@@ -177,19 +177,23 @@ export function PlayerHand3D({
 
   // ── Hit plane handlers (Hearthstone-style horizontal strips) ──
 
+  const isTutorialLocked = useCallback((idx: number) =>
+    tutorialPulseIndex !== null && tutorialPulseIndex !== undefined && idx !== tutorialPulseIndex,
+  [tutorialPulseIndex]);
+
   const handleHitMove = useCallback((e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
     if (cards.length === 0) return;
     const localX = e.point.x - PLAYER_HAND_POS.x;
-    // Account for the parent group's position — e.point is in world space,
-    // but card X positions are in the hand group's local space.
-    // The hand group only rotates around X, so world X ≈ local X.
     const idx = hitTestCardIndex(localX, cardXPositions);
-    if (idx !== null && idx !== flyingCardIndex) {
+    if (idx !== null && idx !== flyingCardIndex && !isTutorialLocked(idx)) {
       setHoveredIndex(idx);
       if (isMyTurn) document.body.style.cursor = 'pointer';
+    } else {
+      setHoveredIndex(null);
+      document.body.style.cursor = 'default';
     }
-  }, [cards.length, cardXPositions, flyingCardIndex, isMyTurn]);
+  }, [cards.length, cardXPositions, flyingCardIndex, isMyTurn, isTutorialLocked]);
 
   const handleHitLeave = useCallback(() => {
     setHoveredIndex(null);
@@ -201,10 +205,10 @@ export function PlayerHand3D({
     e.stopPropagation();
     const localX = e.point.x - PLAYER_HAND_POS.x;
     const idx = hitTestCardIndex(localX, cardXPositions);
-    if (idx !== null && idx !== flyingCardIndex) {
+    if (idx !== null && idx !== flyingCardIndex && !isTutorialLocked(idx)) {
       onCardClick(idx);
     }
-  }, [cards.length, cardXPositions, flyingCardIndex, isMyTurn, onCardClick]);
+  }, [cards.length, cardXPositions, flyingCardIndex, isMyTurn, onCardClick, isTutorialLocked]);
 
   // Compute hit plane width: span all card positions plus padding
   const hitPlaneWidth = useMemo(() => {
@@ -226,7 +230,9 @@ export function PlayerHand3D({
         const initial = getCardFanTransform(i, cards.length, selectedIndex, hoveredIndex);
 
         const isActive = selectedIndex === i || hoveredIndex === i;
-        const glowColor = selectedIndex === i ? '#ffcc00' : hoveredIndex === i ? '#44ff66' : tutorialPulseIndex === i ? '#cc9900' : null;
+        const locked = isTutorialLocked(i);
+        const glowColor = locked ? null : selectedIndex === i ? '#ffcc00' : hoveredIndex === i ? '#44ff66' : tutorialPulseIndex === i ? '#cc9900' : null;
+        const cardOpacity = locked ? 0.35 : 1;
         const ro = isActive ? 50 + i : 10 + i;
         const isHidden = i >= cards.length - HIDDEN_COUNT;
         const iconTex = isHidden ? getLockTexture() : getEyeTexture();
@@ -245,6 +251,7 @@ export function PlayerHand3D({
               width={HAND_CARD_WIDTH}
               renderOrder={ro}
               depthWrite={false}
+              opacity={cardOpacity}
               glowColor={glowColor ?? undefined}
             />
             {/* Eye / lock visibility indicator */}

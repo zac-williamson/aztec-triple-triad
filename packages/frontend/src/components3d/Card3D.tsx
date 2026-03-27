@@ -19,9 +19,7 @@ function useCardTexture(cardId: number, faceDown: boolean, isBoard?: boolean, im
   if (faceDown) {
     texPath = TEXTURES.cardBack;
   } else if (isBoard) {
-    // For board cards, derive a base ID ≤ 50 so tutorial card IDs fall back to existing images
-    const baseId = cardId > 50 ? ((cardId - 1) % 50) + 1 : cardId;
-    texPath = `/cards/board/card-${baseId}-board.png`;
+    texPath = `/cards/board/card-${cardId}-board.png`;
   } else {
     texPath = imageUrl ?? `/cards/final/card-${cardId}.png`;
   }

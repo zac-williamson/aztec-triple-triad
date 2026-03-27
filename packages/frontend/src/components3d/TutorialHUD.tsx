@@ -1,4 +1,4 @@
-import type { TutorialResult } from '../tutorial/useTutorial';
+import type { TutorialResult, TutorialPhase } from '../tutorial/useTutorial';
 import type { TutorialScene } from '../tutorial/tutorialScript';
 import type { Card } from '../types';
 
@@ -9,16 +9,24 @@ interface TutorialHUDProps {
   showContinueButton: boolean;
   tutorialResult: TutorialResult;
   isComplete: boolean;
+  phase: TutorialPhase;
   gameOver: { winner: string } | null;
-  /** Cards Xochitl placed on the board (for win card picker) */
+  /** Cards opponent placed on the board (for win card picker) */
   xochitlBoardCards: Card[];
   onContinue: () => void;
   onSkipTypewriter: () => void;
+  onAdvanceDialogue: () => void;
   onSelectWinCard: (cardId: number) => void;
   onSkip: () => void;
   onPlayAgain: () => void;
   onExitToMenu: () => void;
+  onStartTimmy: () => void;
 }
+
+const SPEAKERS = {
+  xochitl: { name: 'Xochitl', emoji: '🐊', bg: 'radial-gradient(circle at 35% 35%, #C8904A, #7A4A18)' },
+  timmy:   { name: 'Timmy',   emoji: '🧒', bg: 'radial-gradient(circle at 35% 35%, #6AB4E8, #2868A0)' },
+} as const;
 
 export function TutorialHUD({
   currentScene,
@@ -27,18 +35,56 @@ export function TutorialHUD({
   showContinueButton,
   tutorialResult,
   isComplete,
+  phase,
   gameOver,
   xochitlBoardCards,
   onContinue,
   onSkipTypewriter,
+  onAdvanceDialogue,
   onSelectWinCard,
   onSkip,
   onPlayAgain,
   onExitToMenu,
+  onStartTimmy,
 }: TutorialHUDProps) {
 
-  // ── Summary modal (shown after win-card selection or on draw/loss) ─────
+  // ── Phase transition modal (between Xochitl and Timmy) ─────────────────
+  if (phase === 'transition') {
+    return (
+      <div style={{
+        position: 'fixed', inset: 0, zIndex: 50,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'rgba(0,0,0,0.7)',
+      }}>
+        <div className="parchment-dialog" style={{ maxWidth: 460, textAlign: 'center' }}>
+          <div className="parchment-dialog__title">Lesson Over</div>
+
+          <div style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#5a4a34', lineHeight: 1.7, margin: '12px 0 20px' }}>
+            <div>"You know the rules now. But knowing is not the same as winning."</div>
+            <div>"There is a boy at the edge of the swamp. Timmy. He talks a lot."</div>
+            <div>"He would be... good practice."</div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexDirection: 'column', alignItems: 'center' }}>
+            <button className="parchment-dialog__btn" onClick={onStartTimmy}>
+              Challenge Timmy
+            </button>
+            <button
+              className="parchment-dialog__btn"
+              style={{ background: 'rgba(90,74,52,0.3)' }}
+              onClick={onExitToMenu}
+            >
+              Play a Real Game
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Summary modal (shown after phase 2 ends) ──────────────────────────
   if (isComplete) {
+    const isTimmy = phase === 'timmy';
     return (
       <div style={{
         position: 'fixed', inset: 0, zIndex: 50,
@@ -49,10 +95,19 @@ export function TutorialHUD({
           <div className="parchment-dialog__title">Tutorial Complete</div>
 
           <div style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#5a4a34', lineHeight: 1.7, margin: '12px 0 20px' }}>
-            <div>"Nine cells. Five cards each. Alternate turns."</div>
-            <div>"Place a card — if its touching rank beats its neighbour's matching rank, you capture it."</div>
-            <div>"Fill the board. Count your colour. Most cards wins."</div>
-            <div>"Winner takes one card. Loser learns."</div>
+            {isTimmy ? (
+              <>
+                <div>"See? Even Timmy's legendary cards couldn't stop you."</div>
+                <div>"You are ready for the real thing."</div>
+              </>
+            ) : (
+              <>
+                <div>"Nine cells. Five cards each. Alternate turns."</div>
+                <div>"Place a card — if its touching rank beats its neighbour's matching rank, you capture it."</div>
+                <div>"Fill the board. Count your colour. Most cards wins."</div>
+                <div>"Winner takes one card. Loser learns."</div>
+              </>
+            )}
           </div>
 
           <p style={{ fontFamily: "'Cinzel', serif", fontSize: 13, color: '#8a7a64', marginBottom: 24 }}>
@@ -68,7 +123,7 @@ export function TutorialHUD({
               style={{ background: 'rgba(90,74,52,0.3)' }}
               onClick={onPlayAgain}
             >
-              Play Tutorial Again
+              Play Again
             </button>
           </div>
         </div>
@@ -77,7 +132,8 @@ export function TutorialHUD({
   }
 
   // ── Win card picker ────────────────────────────────────────────────────
-  if (tutorialResult === 'player_win' && !isComplete && gameOver) {
+  if (tutorialResult === 'player_win' && gameOver) {
+    const isTimmy = phase === 'timmy';
     return (
       <div style={{
         position: 'fixed', inset: 0, zIndex: 50,
@@ -87,10 +143,16 @@ export function TutorialHUD({
         <div className="parchment-dialog" style={{ maxWidth: 480, textAlign: 'center' }}>
           <div className="parchment-dialog__title">You Win!</div>
           <p style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#5a4a34', marginBottom: 8 }}>
-            "You counted well. Most newcomers forget the hand cards."
+            {isTimmy
+              ? '"What?! No way! My legendary cards...! Well... I guess they were just a boot and a cat."'
+              : '"You counted well. Most newcomers forget the hand cards."'
+            }
           </p>
           <p style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#5a4a34', marginBottom: 20 }}>
-            "You win. Choose one of my cards."
+            {isTimmy
+              ? '"Fine. Take one. But I want a rematch someday!"'
+              : '"You win. Choose one of my cards."'
+            }
           </p>
 
           <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap', marginBottom: 20 }}>
@@ -123,11 +185,16 @@ export function TutorialHUD({
   }
 
   // ── Loss / draw result ─────────────────────────────────────────────────
-  if ((tutorialResult === 'xochitl_win' || tutorialResult === 'draw') && !isComplete && gameOver) {
-    const title = tutorialResult === 'draw' ? 'Equal.' : 'The board does not lie.';
+  if ((tutorialResult === 'xochitl_win' || tutorialResult === 'draw') && gameOver) {
+    const isTimmy = phase === 'timmy';
+    const title = tutorialResult === 'draw'
+      ? 'Equal.'
+      : isTimmy ? 'Timmy wins?!' : 'The board does not lie.';
     const body = tutorialResult === 'draw'
-      ? '"In a draw, no cards are exchanged. The game simply... ends. You are more careful than most. We will play again."'
-      : '"You played well in places. But you hesitated too long in the middle. Do not be downcast. You learned today."';
+      ? '"In a draw, no cards are exchanged. The game simply... ends."'
+      : isTimmy
+        ? '"YES!! I won!! I mean — of course I won. My deck is legendary. ...Please don\'t tell Xochitl."'
+        : '"You played well in places. But you hesitated too long in the middle. Do not be downcast. You learned today."';
 
     return (
       <div style={{
@@ -158,6 +225,8 @@ export function TutorialHUD({
   }
 
   // ── Dialogue panel ─────────────────────────────────────────────────────
+  const speaker = SPEAKERS[currentScene?.speaker ?? 'xochitl'];
+
   return (
     <>
       {/* Skip button */}
@@ -181,7 +250,7 @@ export function TutorialHUD({
       {/* Dialogue box */}
       {currentScene && (
         <div
-          onClick={isTyping ? onSkipTypewriter : undefined}
+          onClick={onAdvanceDialogue}
           style={{
             position: 'fixed', top: 48, left: '50%', transform: 'translateX(-50%)',
             width: 'min(700px, calc(100vw - 32px))',
@@ -191,19 +260,19 @@ export function TutorialHUD({
             border: '2px solid rgba(180,140,60,0.45)',
             borderRadius: 12,
             padding: '14px 20px',
-            cursor: isTyping ? 'pointer' : 'default',
+            cursor: 'pointer',
           }}
         >
-          {/* Xochitl portrait */}
+          {/* Speaker portrait */}
           <div style={{
             width: 56, height: 56, flexShrink: 0,
             borderRadius: '50%',
-            background: 'radial-gradient(circle at 35% 35%, #C8904A, #7A4A18)',
+            background: speaker.bg,
             border: '2px solid rgba(30,12,3,0.9)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: 28,
           }}>
-            🐊
+            {speaker.emoji}
           </div>
 
           <div style={{ flex: 1 }}>
@@ -214,7 +283,7 @@ export function TutorialHUD({
               marginBottom: 4,
               letterSpacing: '0.08em',
             }}>
-              Xochitl
+              {speaker.name}
             </div>
             <div style={{
               fontFamily: "'Cinzel', serif",

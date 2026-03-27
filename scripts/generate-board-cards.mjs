@@ -77,6 +77,25 @@ const CARD_DATABASE = [
   { id: 48, name: 'Whisper', ranks: { top: 5, right: 5, bottom: 7, left: 6 } },
   { id: 49, name: 'Misty', ranks: { top: 7, right: 7, bottom: 4, left: 2 } },
   { id: 50, name: 'Lerma', ranks: { top: 7, right: 2, bottom: 7, left: 4 } },
+
+  // Tutorial cards — Xochitl (101-110)
+  { id: 101, name: 'Stone Lizard',  ranks: { top: 2, right: 5, bottom: 2, left: 3 } },
+  { id: 102, name: 'Vine Creeper',  ranks: { top: 4, right: 4, bottom: 6, left: 1 } },
+  { id: 103, name: 'River Drake',   ranks: { top: 7, right: 3, bottom: 5, left: 7 } },
+  { id: 104, name: 'Marsh Hawk',    ranks: { top: 5, right: 6, bottom: 4, left: 6 } },
+  { id: 105, name: 'Storm Elder',   ranks: { top: 8, right: 8, bottom: 6, left: 7 } },
+  { id: 106, name: 'Swamp Sprite',  ranks: { top: 3, right: 2, bottom: 4, left: 2 } },
+  { id: 107, name: 'Reed Dancer',   ranks: { top: 5, right: 1, bottom: 3, left: 5 } },
+  { id: 108, name: 'Mud Golem',     ranks: { top: 6, right: 6, bottom: 2, left: 4 } },
+  { id: 109, name: 'Bog Witch',     ranks: { top: 7, right: 3, bottom: 7, left: 5 } },
+  { id: 110, name: 'Swamp King',    ranks: { top: 8, right: 7, bottom: 8, left: 6 } },
+
+  // Tutorial cards — Timmy (201-205)
+  { id: 201, name: "Timmy's Friend",       ranks: { top: 1, right: 2, bottom: 1, left: 1 } },
+  { id: 202, name: "Timmy's Other Friend", ranks: { top: 2, right: 1, bottom: 1, left: 1 } },
+  { id: 203, name: 'Timmy',                ranks: { top: 2, right: 2, bottom: 2, left: 2 } },
+  { id: 204, name: 'Old Boot',             ranks: { top: 1, right: 1, bottom: 1, left: 1 } },
+  { id: 205, name: 'Lost Cat',             ranks: { top: 1, right: 1, bottom: 1, left: 1 } },
 ];
 
 function formatRank(rank) {
