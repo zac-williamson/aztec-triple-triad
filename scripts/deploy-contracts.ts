@@ -23,7 +23,7 @@ import { createAztecNodeClient } from '@aztec/aztec.js/node';
 import { Fr } from '@aztec/aztec.js/fields';
 import { AztecAddress } from '@aztec/aztec.js/addresses';
 import { SponsoredFeePaymentMethod } from '@aztec/aztec.js/fee';
-import { NO_FROM } from '@aztec/aztec.js/account';
+
 import { EmbeddedWallet } from '@aztec/wallets/embedded';
 import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
 import { getContractInstanceFromInstantiationParams } from '@aztec/stdlib/contract';
@@ -155,7 +155,7 @@ async function main() {
   const deployMethod = await deployerAccount.getDeployMethod();
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      await deployMethod.send(sendAsAccount(NO_FROM));
+      await deployMethod.send(sendAsAccount(AztecAddress.ZERO));
       break;
     } catch (err: any) {
       if (err?.message?.includes('expiration timestamp') && attempt < 2) {

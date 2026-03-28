@@ -31,7 +31,7 @@ import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
 import { SponsoredFPCContractArtifact } from '@aztec/noir-contracts.js/SponsoredFPC';
 import { SPONSORED_FPC_SALT } from '@aztec/constants';
 import { getContractInstanceFromInstantiationParams } from '@aztec/stdlib/contract';
-import { NO_FROM } from '@aztec/aztec.js/account';
+
 import { createLogger } from '@aztec/foundation/log';
 import { openTmpStore as openIdbTmpStore } from '@aztec/kv-store/indexeddb';
 import { createPXE } from '@aztec/pxe/server';
@@ -180,7 +180,7 @@ describe('E2E: create_game with IndexedDB PXE (browser auto-commit simulation)',
     console.log('Deploying account...');
     const acct = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
     await (await acct.getDeployMethod()).send({
-      from: NO_FROM, fee: { paymentMethod: fee },
+      from: AztecAddress.ZERO, fee: { paymentMethod: fee },
       skipClassPublication: true, skipInstancePublication: true,
       wait: { timeout: SEND_TIMEOUT },
     });

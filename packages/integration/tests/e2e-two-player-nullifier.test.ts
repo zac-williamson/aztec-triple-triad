@@ -34,7 +34,7 @@ import { SponsoredFPCContractArtifact } from '@aztec/noir-contracts.js/Sponsored
 import { SPONSORED_FPC_SALT } from '@aztec/constants';
 import { getContractInstanceFromInstantiationParams } from '@aztec/stdlib/contract';
 
-import { NO_FROM } from '@aztec/aztec.js/account';
+
 import { loadContractArtifact } from './e2e-helpers.js';
 
 const PXE_URL = process.env.AZTEC_PXE_URL || 'http://localhost:8080';
@@ -189,7 +189,7 @@ describe('E2E Two-Player Nullifier Sync', () => {
     console.log('Deploying Player 1 account...');
     const account1 = await wallet1.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
     await (await account1.getDeployMethod()).send({
-      from: NO_FROM,
+      from: AztecAddress.ZERO,
       fee: { paymentMethod: fee1 },
       skipClassPublication: true,
       skipInstancePublication: true,
@@ -202,7 +202,7 @@ describe('E2E Two-Player Nullifier Sync', () => {
     console.log('Deploying Player 2 account...');
     const account2 = await wallet2.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
     await (await account2.getDeployMethod()).send({
-      from: NO_FROM,
+      from: AztecAddress.ZERO,
       fee: { paymentMethod: fee2 },
       skipClassPublication: true,
       skipInstancePublication: true,
