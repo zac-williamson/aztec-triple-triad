@@ -23,10 +23,14 @@ export async function connectWithAzguard(options?: {
 
   const { AztecWallet } = await import('@azguardwallet/aztec-wallet');
 
-  log('Connecting to Azguard Wallet...');
+  // Determine Azguard chain based on PXE URL — sandbox if localhost, testnet otherwise
+  const azguardChain: 'sandbox' | 'testnet' = AZTEC_CONFIG.pxeUrl.includes('localhost')
+    ? 'sandbox'
+    : 'testnet';
+  log(`Connecting to Azguard Wallet (chain: ${azguardChain})...`);
   const wallet: any = await AztecWallet.connect(
     { name: 'Axolotl Arena', description: 'Triple Triad card game on Aztec' },
-    'testnet',
+    azguardChain,
     5000,
   );
   log('Azguard connected');

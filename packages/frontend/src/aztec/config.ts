@@ -7,7 +7,8 @@ export const AZTEC_CONFIG = {
   pxeUrl: import.meta.env.VITE_AZTEC_PXE_URL || 'https://rpc.testnet.aztec-labs.com',
 
   /** Wallet mode: 'azguard' uses the browser extension, 'embedded' uses EmbeddedWallet */
-  walletMode: (import.meta.env.VITE_WALLET_MODE || 'azguard') as 'azguard' | 'embedded',
+  /** Wallet mode: 'azguard' uses the browser extension, 'embedded' uses EmbeddedWallet, 'azguard-mock' simulates Azguard via EmbeddedWallet for automated testing */
+  walletMode: (import.meta.env.VITE_WALLET_MODE || 'azguard') as 'azguard' | 'embedded' | 'azguard-mock',
 
   /** Contract addresses (set after deployment) */
   nftContractAddress: import.meta.env.VITE_NFT_CONTRACT_ADDRESS || '',
