@@ -46,20 +46,27 @@ export async function connectWithAzguard(options?: {
   const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
   const { AztecAddress } = await import('@aztec/aztec.js/addresses');
 
-  // Helper: register a contract with Azguard's PXE.
-  // getContractMetadata returns the full metadata including the instance.
+  // Create a node client for contract instance lookups.
+  // Azguard's getContractMetadata returns a different format than registerContract expects,
+  // so we use the node directly (same pattern as the EmbeddedWallet flow).
+  const { createAztecNodeClient } = await import('@aztec/aztec.js/node');
+  const node = createAztecNodeClient(AZTEC_CONFIG.pxeUrl);
+
+  // Helper: register a contract with Azguard's PXE via node.getContract
   async function registerContract(contractAddress: string, artifactPath: string, label: string): Promise<any> {
     const addr = AztecAddress.fromString(contractAddress);
     await wallet.registerSender(addr as any, label);
     try {
-      const metadata = await wallet.getContractMetadata(addr as any);
-      // metadata may contain the contract instance directly or as a property
-      const instance = metadata?.contractInstance ?? metadata;
-      const resp = await fetch(artifactPath);
-      const artifact = loadContractArtifact(await resp.json());
-      await wallet.registerContract(instance as any, artifact as any);
-      log(`${label} registered`);
-      return artifact;
+      const instance = await node.getContract(addr);
+      if (instance) {
+        const resp = await fetch(artifactPath);
+        const artifact = loadContractArtifact(await resp.json());
+        await wallet.registerContract(instance as any, artifact as any);
+        log(`${label} registered`);
+        return artifact;
+      }
+      log(`${label} not found on-chain`);
+      return null;
     } catch (e) {
       log(`Failed to register ${label}: ${e}`);
       return null;
@@ -121,10 +128,7 @@ export async function connectWithAzguard(options?: {
           tokenId: id,
           randomness: toFr(Fr, randomnessResult[i]).toString(),
         }));
-        // Create a lightweight node client for getTxEffect (needed by noteImporter)
-        const { createAztecNodeClient } = await import('@aztec/aztec.js/node');
-        const tempNode = createAztecNodeClient(AZTEC_CONFIG.pxeUrl);
-        await importNotesFromTx(wallet, tempNode, address, txHashStr, notes, 'Starter cards');
+        await importNotesFromTx(wallet, node, address, txHashStr, notes, 'Starter cards');
         log('Notes imported');
       } catch (importErr) {
         log(`Failed to import starter card notes: ${importErr}`);
@@ -162,13 +166,6 @@ export async function connectWithAzguard(options?: {
 
   localStorage.setItem(AZTEC_CONFIG.storageKeys.accountAddress, address);
   log(`Connected via Azguard: ${address}`);
-
-  // Create a node client for downstream use (getTxEffect, etc.)
-  let node: unknown = null;
-  try {
-    const { createAztecNodeClient } = await import('@aztec/aztec.js/node');
-    node = createAztecNodeClient(AZTEC_CONFIG.pxeUrl);
-  } catch { /* ignore */ }
 
   return { wallet, node, accountAddress: address, ownedCardIds };
 }
