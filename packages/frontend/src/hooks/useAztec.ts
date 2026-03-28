@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { AZTEC_CONFIG } from '../aztec/config';
 import { getNftArtifact } from '../aztec/noteImporter';
 import { connectToAztec } from '../aztec/connectToAztec';
+import { connectWithAzguard } from '../aztec/connectAzguard';
 
 /**
  * Aztec wallet connection status
@@ -83,7 +84,8 @@ export function useAztec(): UseAztecReturn {
     setError(null);
 
     try {
-      const result = await connectToAztec({
+      const connectFn = AZTEC_CONFIG.walletMode === 'azguard' ? connectWithAzguard : connectToAztec;
+      const result = await connectFn({
         log: (msg) => console.log('[useAztec]', msg),
       });
 

@@ -12,6 +12,7 @@
     "build": "npm run copy-circuits && npm run copy-contracts && npm run build --workspaces"
   },
   "dependencies": {
+    "@azguardwallet/aztec-wallet": "^4.1.0-rc.4",
     "@aztec/aztec.js": "4.1.0",
     "@aztec/bb.js": "4.1.0",
     "@aztec/constants": "4.1.0",

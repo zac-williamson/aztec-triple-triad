@@ -3,8 +3,11 @@
  * All values can be overridden via environment variables.
  */
 export const AZTEC_CONFIG = {
-  /** PXE URL for connecting to an Aztec node */
+  /** PXE URL for connecting to an Aztec node (only used in 'embedded' wallet mode) */
   pxeUrl: import.meta.env.VITE_AZTEC_PXE_URL || 'https://rpc.testnet.aztec-labs.com',
+
+  /** Wallet mode: 'azguard' uses the browser extension, 'embedded' uses EmbeddedWallet */
+  walletMode: (import.meta.env.VITE_WALLET_MODE || 'azguard') as 'azguard' | 'embedded',
 
   /** Contract addresses (set after deployment) */
   nftContractAddress: import.meta.env.VITE_NFT_CONTRACT_ADDRESS || '',
