@@ -128,7 +128,7 @@ export async function connectToAztec(options?: {
     log('Deploying account...');
     const deployMethod = await accountManager.getDeployMethod();
     await deployMethod.send({
-      from: NO_FROM,
+      from: AztecAddress.ZERO,
       fee: { paymentMethod },
       skipClassPublication: true,
       skipInstancePublication: true,
