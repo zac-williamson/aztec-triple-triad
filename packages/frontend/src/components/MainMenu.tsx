@@ -7,6 +7,7 @@ interface MainMenuProps {
   aztecReady: boolean;
   cardCount: number;
   tokenBalance: number;
+  accountAddress: string | null;
   hasGameInProgress: boolean;
   onPlay: () => void;
   onTutorial: () => void;
@@ -19,6 +20,7 @@ export function MainMenu({
   aztecReady,
   cardCount,
   tokenBalance,
+  accountAddress,
   hasGameInProgress,
   onPlay,
   onTutorial,
@@ -44,6 +46,19 @@ export function MainMenu({
         <div className={`main-menu__status ${connected ? 'main-menu__status--connected' : ''}`}>
           {connected ? 'Connected' : 'Connecting...'}
         </div>
+        {connected && accountAddress && (
+          <div style={{
+            fontFamily: 'monospace',
+            fontSize: 11,
+            color: '#8a7a64',
+            marginTop: 4,
+            wordBreak: 'break-all',
+            maxWidth: 400,
+            textAlign: 'center',
+          }}>
+            {accountAddress.slice(0, 10)}...{accountAddress.slice(-8)}
+          </div>
+        )}
         {connected && (
           <div className="main-menu__token-balance" style={{
             fontFamily: "'Cinzel', serif",

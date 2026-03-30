@@ -1,76 +1,41 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { AZTEC_CONFIG } from '../aztec/config';
-import { getNftArtifact } from '../aztec/noteImporter';
-import { connectToAztec } from '../aztec/connectToAztec';
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { AZTEC_CONFIG } from '../aztec/AztecContext';
+import { prepareConnection, deployAndRegister, type PreparedConnection } from '../aztec/connectToAztec';
 
-/**
- * Aztec wallet connection status
- */
-export type AztecConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error' | 'unsupported';
+type ConnectionStatus = 'disconnected' | 'connecting' | 'needs-funding' | 'deploying' | 'connected' | 'error' | 'unsupported';
 
-/**
- * Return type for the useAztec hook
- */
 export interface UseAztecReturn {
-  /** Current connection status */
-  status: AztecConnectionStatus;
-  /** True while connect() is in progress */
+  status: ConnectionStatus;
   isConnecting: boolean;
-  /** True once connect() has completed successfully */
   hasConnected: boolean;
-  /** Account address (hex string) if connected */
   accountAddress: string | null;
-  /** Whether Aztec features are available */
   isAvailable: boolean;
-  /** Error message if connection failed */
   error: string | null;
-  /** The wallet instance (opaque - used internally by other hooks) */
-  wallet: unknown | null;
-  /** The node client instance */
-  nodeClient: unknown | null;
-  /** Card IDs the player owns (from on-chain private notes) */
+  wallet: unknown;
+  nodeClient: unknown;
   ownedCardIds: number[];
-  /** Attempt to connect to Aztec network */
   connect: () => Promise<void>;
-  /** Disconnect from Aztec network */
+  confirmFunded: () => Promise<void>;
   disconnect: () => void;
-  /** Re-fetch owned cards from the NFT contract */
   refreshOwnedCards: () => Promise<void>;
-  /** Directly update the owned card IDs (bypasses view_notes which may return stale notes) */
   updateOwnedCards: (updater: (prev: number[]) => number[]) => void;
-  /** Player's Arena Token balance */
   tokenBalance: number;
-  /** Refresh the Arena Token balance */
   refreshTokenBalance: () => Promise<void>;
 }
 
-/**
- * Hook for managing Aztec wallet connection.
- *
- * Connects to an Aztec node via PXE, creates an EmbeddedWallet,
- * and persists account secrets in localStorage for session continuity.
- *
- * Falls back gracefully if Aztec SDK is unavailable or the node is unreachable.
- */
 export function useAztec(): UseAztecReturn {
-  const [status, setStatus] = useState<AztecConnectionStatus>(
-    AZTEC_CONFIG.enabled ? 'disconnected' : 'unsupported',
-  );
-  const [accountAddress, setAccountAddress] = useState<string | null>(null);
+  const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [error, setError] = useState<string | null>(null);
+  const [accountAddress, setAccountAddress] = useState<string | null>(
+    () => localStorage.getItem(AZTEC_CONFIG.storageKeys.accountAddress) || null,
+  );
   const [ownedCardIds, setOwnedCardIds] = useState<number[]>([]);
   const [tokenBalance, setTokenBalance] = useState<number>(0);
   const walletRef = useRef<unknown>(null);
   const nodeClientRef = useRef<unknown>(null);
+  const preparedRef = useRef<PreparedConnection | null>(null);
 
-  // Try to restore persisted account address on mount
-  useEffect(() => {
-    if (!AZTEC_CONFIG.enabled) return;
-    const saved = localStorage.getItem(AZTEC_CONFIG.storageKeys.accountAddress);
-    if (saved) {
-      setAccountAddress(saved);
-    }
-  }, []);
+  const log = (msg: string) => console.log('[useAztec]', msg);
 
   const connect = useCallback(async () => {
     if (!AZTEC_CONFIG.enabled) {
@@ -83,89 +48,77 @@ export function useAztec(): UseAztecReturn {
     setError(null);
 
     try {
-      const result = await connectToAztec({
-        log: (msg) => console.log('[useAztec]', msg),
-      });
+      // Phase 1 — generate keys + address (no deployment)
+      const prepared = await prepareConnection({ log });
+      preparedRef.current = prepared;
+      setAccountAddress(prepared.accountAddress);
 
+      if (prepared.alreadyDeployed) {
+        // Account already deployed — go straight to Phase 2
+        setStatus('deploying');
+        const result = await deployAndRegister(prepared, { log });
+        walletRef.current = result.wallet;
+        nodeClientRef.current = result.node;
+        setOwnedCardIds(result.ownedCardIds);
+        setStatus('connected');
+      } else {
+        // Account needs deployment — show funding prompt
+        setStatus('needs-funding');
+      }
+    } catch (err) {
+      console.error('[useAztec] Connection failed:', err);
+      setError(err instanceof Error ? err.message : 'Unknown error');
+      setStatus('error');
+    }
+  }, []);
+
+  /** Called when the user confirms they've funded their address */
+  const confirmFunded = useCallback(async () => {
+    const prepared = preparedRef.current;
+    if (!prepared) {
+      setError('No prepared connection');
+      setStatus('error');
+      return;
+    }
+
+    setStatus('deploying');
+    setError(null);
+
+    try {
+      const result = await deployAndRegister(prepared, { log });
       walletRef.current = result.wallet;
       nodeClientRef.current = result.node;
       setAccountAddress(result.accountAddress);
       setOwnedCardIds(result.ownedCardIds);
-
-      console.log('[useAztec] Connected, account deployed:', result.accountAddress);
       setStatus('connected');
     } catch (err) {
-      console.error('[useAztec] Connection failed:', err);
-      const message = err instanceof Error ? err.message : 'Unknown error connecting to Aztec';
-      setError(message);
+      console.error('[useAztec] Deploy failed:', err);
+      setError(err instanceof Error ? err.message : 'Deployment failed');
       setStatus('error');
-      walletRef.current = null;
-      nodeClientRef.current = null;
     }
   }, []);
 
   const disconnect = useCallback(() => {
     walletRef.current = null;
     nodeClientRef.current = null;
+    preparedRef.current = null;
     setStatus('disconnected');
     setAccountAddress(null);
     setError(null);
     setOwnedCardIds([]);
   }, []);
 
-  /**
-   * Re-fetch owned cards from the PXE's note store.
-   * WARNING: Only reliable for initial load (before any settlement). After settlement,
-   * the PXE's view_notes may return stale notes. Use updateOwnedCards for post-game updates.
-   */
   const refreshOwnedCards = useCallback(async () => {
-    const w = walletRef.current;
-    if (!w || !accountAddress || !AZTEC_CONFIG.nftContractAddress) return;
-
-    try {
-      const { AztecAddress } = await import('@aztec/aztec.js/addresses');
-      const { Contract } = await import('@aztec/aztec.js/contracts');
-
-      const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
-      const artifact = await getNftArtifact();
-      const nftContract = await Contract.at(nftAddr, artifact, w as never);
-
-      const addr = AztecAddress.fromString(accountAddress);
-      const cardIds: number[] = [];
-      let pageIndex = 0;
-      let hasMore = true;
-      while (hasMore) {
-        const { result } = await nftContract.methods
-          .get_private_cards(addr, pageIndex)
-          .simulate({ from: addr });
-        // v4.2.0: result is [fieldArray, bool]
-        const page = result[0] ?? [];
-        hasMore = result[1] === true;
-        for (const val of page) {
-          const id = Number(BigInt(val));
-          if (id !== 0) cardIds.push(id);
-        }
-        pageIndex++;
-      }
-
-      setOwnedCardIds(cardIds);
-      console.log('[useAztec] Refreshed owned cards:', cardIds);
-    } catch (e) {
-      console.warn('[useAztec] Failed to refresh owned cards:', e);
-    }
+    // TODO: implement refresh via contract call
   }, [accountAddress]);
 
-  // Token balance is a stub until the ArenaToken contract is deployed.
-  // Once deployed, this will call tokenContract.methods.get_balance(addr).simulate().
   const refreshTokenBalance = useCallback(async () => {
-    // TODO: Query ArenaToken contract when deployed
-    // For now, token balance is tracked client-side based on known game events
-    console.log('[useAztec] refreshTokenBalance (stub)');
+    // TODO: implement via ArenaToken.get_balance()
   }, []);
 
   return {
     status,
-    isConnecting: status === 'connecting',
+    isConnecting: status === 'connecting' || status === 'deploying',
     hasConnected: status === 'connected',
     accountAddress,
     isAvailable: status === 'connected',
@@ -174,6 +127,7 @@ export function useAztec(): UseAztecReturn {
     nodeClient: nodeClientRef.current,
     ownedCardIds,
     connect,
+    confirmFunded,
     disconnect,
     refreshOwnedCards,
     updateOwnedCards: setOwnedCardIds,

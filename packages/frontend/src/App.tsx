@@ -9,6 +9,7 @@ import { CardPacks } from './components/CardPacks';
 import { PackOpening } from './components/PackOpening';
 import { TutorialScreen } from './components/TutorialScreen';
 import { TutorialPrompt } from './components/TutorialPrompt';
+import { FundingPrompt } from './components/FundingPrompt';
 import { GameScreen3D as GameScreen } from './components3d/GameScreen3D';
 import './App.css';
 
@@ -53,7 +54,14 @@ function AppInner() {
 
       {showMenuScene && <MenuScene />}
 
-      {showTutorialPrompt && game.screen === 'main-menu' && (
+      {aztec.status === 'needs-funding' && aztec.accountAddress && (
+        <FundingPrompt
+          accountAddress={aztec.accountAddress}
+          onConfirm={aztec.confirmFunded}
+        />
+      )}
+
+      {showTutorialPrompt && game.screen === 'main-menu' && aztec.status !== 'needs-funding' && (
         <TutorialPrompt onLearnToPlay={handleTutorial} onSkip={handlePromptSkip} />
       )}
 
@@ -64,6 +72,7 @@ function AppInner() {
           aztecReady={aztec.hasConnected}
           cardCount={aztec.ownedCardIds.length}
           tokenBalance={aztec.tokenBalance ?? 0}
+          accountAddress={aztec.accountAddress}
           hasGameInProgress={game.hasGameInProgress}
           onPlay={game.handlePlay}
           onTutorial={handleTutorial}

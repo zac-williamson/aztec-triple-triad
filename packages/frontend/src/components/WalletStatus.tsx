@@ -1,8 +1,9 @@
-import type { AztecConnectionStatus } from '../hooks/useAztec';
 import './WalletStatus.css';
 
+type WalletStatusType = 'disconnected' | 'connecting' | 'needs-funding' | 'deploying' | 'connected' | 'error' | 'unsupported';
+
 interface WalletStatusProps {
-  status: AztecConnectionStatus;
+  status: WalletStatusType;
   address: string | null;
   error: string | null;
   onConnect: () => void;

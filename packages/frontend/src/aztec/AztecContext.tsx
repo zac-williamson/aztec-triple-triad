@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef } from 'react';
 import { useAztec, type UseAztecReturn } from '../hooks/useAztec';
+export { AZTEC_CONFIG } from './config';
 
 const AztecContext = createContext<UseAztecReturn | null>(null);
 

@@ -1,21 +1,19 @@
 /**
- * Core Aztec connection logic — extracted from useAztec so it can be called
- * from both the React hook and standalone test runners (Playwright, etc.).
+ * Core Aztec connection logic — two-phase flow for testnet:
  *
- * Performs the full connection flow:
- * 1. Create EmbeddedWallet (browser → IndexedDB)
- * 2. Register SponsoredFPC
- * 3. Deploy Schnorr account
- * 4. Register NFT + Game contracts with PXE
- * 5. Mint starter cards via get_cards_for_new_player().send()
- * 6. Import notes (5x import_note().simulate())
- * 7. Fetch owned cards
+ * Phase 1 (prepareConnection):
+ *   Create EmbeddedWallet, generate/restore keys, compute account address.
+ *   Returns the address so the user can fund it with Fee Juice.
+ *
+ * Phase 2 (deployAndRegister):
+ *   Deploy the account on-chain, register contracts, mint starter cards.
+ *   Called after the user confirms they've funded the address.
  */
 
 import { AZTEC_CONFIG } from './config';
 import { importNotesFromTx, getNftArtifact } from './noteImporter';
 import { toFr } from './fieldUtils';
-import { AZTEC_TX_TIMEOUT, PXE_INITIAL_SYNC_DELAY, STARTER_CARD_IDS, STARTER_CARD_COUNT } from './gameConstants';
+import { AZTEC_TX_TIMEOUT, STARTER_CARD_IDS, STARTER_CARD_COUNT } from './gameConstants';
 
 export interface AztecConnectResult {
   wallet: unknown;
@@ -24,16 +22,27 @@ export interface AztecConnectResult {
   ownedCardIds: number[];
 }
 
-export async function connectToAztec(options?: {
-  /** Skip localStorage persistence (for tests) */
+export interface PreparedConnection {
+  wallet: any;
+  node: any;
+  accountManager: any;
+  accountAddress: string;
+  alreadyDeployed: boolean;
+}
+
+type LogFn = (msg: string) => void;
+
+/**
+ * Phase 1: Create wallet, generate keys, compute address.
+ * Does NOT deploy or send any transactions.
+ */
+export async function prepareConnection(options?: {
   skipLocalStorage?: boolean;
-  /** Log function (defaults to console.log) */
-  log?: (msg: string) => void;
-}): Promise<AztecConnectResult> {
+  log?: LogFn;
+}): Promise<PreparedConnection> {
   const log = options?.log ?? ((msg: string) => console.log('[connectToAztec]', msg));
   const useStorage = !options?.skipLocalStorage;
 
-  // Dynamically import Aztec SDK subpath modules
   const [nodeModule, walletsModule, foundationModule, fieldsModule] = await Promise.all([
     import('@aztec/aztec.js/node'),
     import('@aztec/wallets/embedded'),
@@ -46,102 +55,89 @@ export async function connectToAztec(options?: {
   const { GrumpkinScalar } = foundationModule;
   const { Fr } = fieldsModule;
 
-  // Connect to the Aztec node
   const node = createAztecNodeClient(AZTEC_CONFIG.pxeUrl);
 
   // Secret + salt (persisted or random)
-  let secretFr: typeof Fr.prototype;
-  let saltFr: typeof Fr.prototype;
+  let secretFr: InstanceType<typeof Fr>;
+  let saltFr: InstanceType<typeof Fr>;
 
   if (useStorage) {
-    let secret = localStorage.getItem(AZTEC_CONFIG.storageKeys.accountSecret);
-    try {
-      secretFr = secret ? Fr.fromHexString(secret.startsWith('0x') ? secret : '0x' + secret) : Fr.random();
-    } catch {
-      secretFr = Fr.random();
-    }
-    const secretHex = secretFr.toString();
-    if (secret !== secretHex) localStorage.setItem(AZTEC_CONFIG.storageKeys.accountSecret, secretHex);
+    const secret = localStorage.getItem(AZTEC_CONFIG.storageKeys.accountSecret);
+    try { secretFr = secret ? Fr.fromHexString(secret.startsWith('0x') ? secret : '0x' + secret) : Fr.random(); }
+    catch { secretFr = Fr.random(); }
+    localStorage.setItem(AZTEC_CONFIG.storageKeys.accountSecret, secretFr.toString());
 
-    let salt = localStorage.getItem(AZTEC_CONFIG.storageKeys.accountSalt);
-    try {
-      saltFr = salt ? Fr.fromHexString(salt.startsWith('0x') ? salt : '0x' + salt) : Fr.random();
-    } catch {
-      saltFr = Fr.random();
-    }
-    const saltHex = saltFr.toString();
-    if (salt !== saltHex) localStorage.setItem(AZTEC_CONFIG.storageKeys.accountSalt, saltHex);
+    const salt = localStorage.getItem(AZTEC_CONFIG.storageKeys.accountSalt);
+    try { saltFr = salt ? Fr.fromHexString(salt.startsWith('0x') ? salt : '0x' + salt) : Fr.random(); }
+    catch { saltFr = Fr.random(); }
+    localStorage.setItem(AZTEC_CONFIG.storageKeys.accountSalt, saltFr.toString());
   } else {
     secretFr = Fr.random();
     saltFr = Fr.random();
   }
 
-  // Create EmbeddedWallet — runs a full PXE in the browser tab
   log('Creating EmbeddedWallet...');
-  const wallet = await EmbeddedWallet.create(node, { ephemeral: true });
-
-  // Wait for PXE to sync so tx expiration timestamps are valid
-  // await new Promise(r => setTimeout(r, PXE_INITIAL_SYNC_DELAY));
-
-  // Register SponsoredFPC for fee payments
-  const [{ getContractInstanceFromInstantiationParams }, { SponsoredFPCContractArtifact }, { SPONSORED_FPC_SALT }, { SponsoredFeePaymentMethod }, { AztecAddress }] = await Promise.all([
-    import('@aztec/stdlib/contract'),
-    import('@aztec/noir-contracts.js/SponsoredFPC'),
-    import('@aztec/constants'),
-    import('@aztec/aztec.js/fee'),
-    import('@aztec/aztec.js/addresses'),
-  ]);
-
-  const sponsoredFPC = await getContractInstanceFromInstantiationParams(SponsoredFPCContractArtifact, {
-    salt: new Fr(SPONSORED_FPC_SALT),
+  const wallet = await EmbeddedWallet.create(node, {
+    ephemeral: true,
+    pxeConfig: { proverEnabled: true },
   });
-  log(`Registering SponsoredFPC at ${sponsoredFPC.address}...`);
-  await wallet.registerContract(sponsoredFPC, SponsoredFPCContractArtifact);
-  const paymentMethod = new SponsoredFeePaymentMethod(sponsoredFPC.address);
 
-  // Create a Schnorr account — persist signing key for wallet recovery
-  let signingKey: typeof GrumpkinScalar.prototype;
+  // Signing key
+  let signingKey: InstanceType<typeof GrumpkinScalar>;
   if (useStorage) {
     const storedSk = localStorage.getItem(AZTEC_CONFIG.storageKeys.signingKey);
-    if (storedSk) {
-      try {
-        signingKey = GrumpkinScalar.fromHexString(storedSk.startsWith('0x') ? storedSk : '0x' + storedSk);
-      } catch {
-        signingKey = GrumpkinScalar.random();
-      }
-    } else {
-      signingKey = GrumpkinScalar.random();
-    }
+    try { signingKey = storedSk ? GrumpkinScalar.fromHexString(storedSk.startsWith('0x') ? storedSk : '0x' + storedSk) : GrumpkinScalar.random(); }
+    catch { signingKey = GrumpkinScalar.random(); }
     localStorage.setItem(AZTEC_CONFIG.storageKeys.signingKey, signingKey.toString());
   } else {
     signingKey = GrumpkinScalar.random();
   }
 
   const accountManager = await wallet.createSchnorrAccount(secretFr, saltFr, signingKey);
-
-  // Deploy the account on-chain (skip if already deployed)
+  const accountAddress = accountManager.address.toString();
   const alreadyDeployed = useStorage && localStorage.getItem(AZTEC_CONFIG.storageKeys.deploymentStatus) === 'deployed';
+
+  log(`Account address: ${accountAddress} (deployed: ${alreadyDeployed})`);
+  if (useStorage) localStorage.setItem(AZTEC_CONFIG.storageKeys.accountAddress, accountAddress);
+
+  return { wallet, node, accountManager, accountAddress, alreadyDeployed };
+}
+
+/**
+ * Phase 2: Deploy account, register contracts, mint starter cards.
+ * Call this after the user has funded their address with Fee Juice.
+ */
+export async function deployAndRegister(
+  prepared: PreparedConnection,
+  options?: { skipLocalStorage?: boolean; log?: LogFn },
+): Promise<AztecConnectResult> {
+  const log = options?.log ?? ((msg: string) => console.log('[connectToAztec]', msg));
+  const useStorage = !options?.skipLocalStorage;
+  const { wallet, node, accountManager, accountAddress, alreadyDeployed } = prepared;
+
+  const [{ AztecAddress }, { NO_FROM }, { Fr }] = await Promise.all([
+    import('@aztec/aztec.js/addresses'),
+    import('@aztec/aztec.js/account'),
+    import('@aztec/aztec.js/fields'),
+  ]);
+
+  // Deploy account if needed
   if (alreadyDeployed) {
-    log(`Account recovered: ${accountManager.address}`);
+    log(`Account already deployed: ${accountAddress}`);
   } else {
     log('Deploying account...');
     const deployMethod = await accountManager.getDeployMethod();
     await deployMethod.send({
-      from: AztecAddress.ZERO,
-      fee: { paymentMethod },
-      skipClassPublication: true,
-      skipInstancePublication: true,
+      from: NO_FROM,
       wait: { timeout: AZTEC_TX_TIMEOUT },
     });
     if (useStorage) localStorage.setItem(AZTEC_CONFIG.storageKeys.deploymentStatus, 'deployed');
-    log(`Account deployed: ${accountManager.address}`);
+    log(`Account deployed: ${accountAddress}`);
   }
 
-  // Persist account address and register for note discovery
-  if (useStorage) localStorage.setItem(AZTEC_CONFIG.storageKeys.accountAddress, accountManager.address.toString());
   await wallet.registerSender(accountManager.address, 'player');
 
-  // Register NFT and Game contracts with the PXE
+  // Register contracts
   const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
 
   let nftArtifact: any = null;
@@ -155,9 +151,7 @@ export async function connectToAztec(options?: {
         await wallet.registerContract(nftInstance, nftArtifact);
         log('NFT contract registered');
       }
-    } catch (e) {
-      log(`Failed to register NFT contract: ${e}`);
-    }
+    } catch (e) { log(`Failed to register NFT: ${e}`); }
   }
 
   if (AZTEC_CONFIG.gameContractAddress) {
@@ -167,14 +161,10 @@ export async function connectToAztec(options?: {
       const gameInstance = await node.getContract(gameAddress);
       if (gameInstance) {
         const resp = await fetch('/contracts/triple_triad_game-TripleTriadGame.json');
-        const rawArtifact = await resp.json();
-        const gameArtifact = loadContractArtifact(rawArtifact);
-        await wallet.registerContract(gameInstance, gameArtifact);
+        await wallet.registerContract(gameInstance, loadContractArtifact(await resp.json()));
         log('Game contract registered');
       }
-    } catch (e) {
-      log(`Failed to register Game contract: ${e}`);
-    }
+    } catch (e) { log(`Failed to register Game: ${e}`); }
   }
 
   if (AZTEC_CONFIG.tokenContractAddress) {
@@ -184,19 +174,14 @@ export async function connectToAztec(options?: {
       const tokenInstance = await node.getContract(tokenAddress);
       if (tokenInstance) {
         const resp = await fetch('/contracts/arena_token-ArenaToken.json');
-        const rawArtifact = await resp.json();
-        const tokenArtifact = loadContractArtifact(rawArtifact);
-        await wallet.registerContract(tokenInstance, tokenArtifact);
+        await wallet.registerContract(tokenInstance, loadContractArtifact(await resp.json()));
         log('Token contract registered');
       }
-    } catch (e) {
-      log(`Failed to register Token contract: ${e}`);
-    }
+    } catch (e) { log(`Failed to register Token: ${e}`); }
   }
 
-  // Mint starter cards if this account hasn't claimed them yet
-  const address = accountManager.address.toString();
-  const mintKey = AZTEC_CONFIG.storageKeys.cardsMintedPrefix + address + '_' + AZTEC_CONFIG.nftContractAddress;
+  // Mint starter cards
+  const mintKey = AZTEC_CONFIG.storageKeys.cardsMintedPrefix + accountAddress + '_' + AZTEC_CONFIG.nftContractAddress;
   if (nftArtifact && AZTEC_CONFIG.nftContractAddress && (!useStorage || !localStorage.getItem(mintKey))) {
     const { Contract } = await import('@aztec/aztec.js/contracts');
     const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
@@ -205,12 +190,11 @@ export async function connectToAztec(options?: {
     log('Minting starter cards...');
     const { receipt } = await nftContract.methods
       .get_cards_for_new_player()
-      .send({ from: accountManager.address, fee: { paymentMethod }, wait: { timeout: AZTEC_TX_TIMEOUT } });
+      .send({ from: accountManager.address, wait: { timeout: AZTEC_TX_TIMEOUT } });
     if (useStorage) localStorage.setItem(mintKey, 'true');
     const txHashStr = receipt?.txHash?.toString() || '';
     log(`Starter cards minted: ${txHashStr}`);
 
-    // Import the starter card notes
     if (txHashStr) {
       try {
         const { result: randomnessResult } = await nftContract.methods
@@ -220,22 +204,19 @@ export async function connectToAztec(options?: {
           tokenId: id,
           randomness: toFr(Fr, randomnessResult[i]).toString(),
         }));
-        await importNotesFromTx(wallet, node, address, txHashStr, notes, 'Starter cards');
+        await importNotesFromTx(wallet, node, accountAddress, txHashStr, notes, 'Starter cards');
         log('Notes imported');
-      } catch (importErr) {
-        log(`Failed to import starter card notes: ${importErr}`);
-      }
+      } catch (importErr) { log(`Failed to import notes: ${importErr}`); }
     }
   }
 
-  // Fetch the player's owned cards
+  // Fetch owned cards
   let ownedCardIds: number[] = [];
   if (nftArtifact && AZTEC_CONFIG.nftContractAddress) {
     try {
       const { Contract } = await import('@aztec/aztec.js/contracts');
       const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
       const nftContract = await Contract.at(nftAddr, nftArtifact, wallet as never);
-
       let pageIndex = 0;
       let hasMore = true;
       while (hasMore) {
@@ -251,15 +232,21 @@ export async function connectToAztec(options?: {
         pageIndex++;
       }
       log(`Owned cards: ${JSON.stringify(ownedCardIds)}`);
-    } catch (e) {
-      log(`Failed to fetch owned cards: ${e}`);
-    }
+    } catch (e) { log(`Failed to fetch cards: ${e}`); }
   }
 
-  if (useStorage) {
-    localStorage.setItem(AZTEC_CONFIG.storageKeys.accountAddress, address);
-  }
+  log(`Connected: ${accountAddress}`);
+  return { wallet, node, accountAddress, ownedCardIds };
+}
 
-  log(`Connected: ${address}`);
-  return { wallet, node, accountAddress: address, ownedCardIds };
+/**
+ * Legacy single-call API — calls both phases sequentially.
+ * Used by tests and non-interactive flows.
+ */
+export async function connectToAztec(options?: {
+  skipLocalStorage?: boolean;
+  log?: LogFn;
+}): Promise<AztecConnectResult> {
+  const prepared = await prepareConnection(options);
+  return deployAndRegister(prepared, options);
 }
