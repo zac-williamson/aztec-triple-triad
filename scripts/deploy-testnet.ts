@@ -30,6 +30,7 @@ import { resolve } from 'path';
 import { createAztecNodeClient } from '@aztec/aztec.js/node';
 import { Fr } from '@aztec/aztec.js/fields';
 import { AztecAddress } from '@aztec/aztec.js/addresses';
+import { NO_FROM } from '@aztec/aztec.js/account';
 import { EmbeddedWallet } from '@aztec/wallets/embedded';
 import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
 
@@ -143,12 +144,12 @@ async function main() {
 
   // Deploy the deployer account (skip if already deployed)
   console.log('\nDeploying account on-chain...');
+  console.log(`  Address: ${deployerAddress.toString()}`);
+  console.log('  (Fund this address with Fee Juice if not already funded)');
   try {
     const deployMethod = await deployerAccount.getDeployMethod();
     await deployMethod.send({
-      from: AztecAddress.ZERO,
-      skipClassPublication: true,
-      skipInstancePublication: true,
+      from: NO_FROM,
       wait: { timeout: 600 },
     });
     console.log('Account deployed.');
@@ -197,25 +198,23 @@ async function main() {
 
   const { Contract } = await import('@aztec/aztec.js/contracts');
 
-  // 1. Deploy NFT
-  console.log('\nDeploying TripleTriadNFT...');
-  const { contract: nftContract } = await Contract.deploy(wallet, nftArtifact, [
+  // 1. Deploy NFT + Token in parallel (no interdependency)
+  console.log('\nDeploying TripleTriadNFT + ArenaToken in parallel...');
+  const nftDeploy = Contract.deploy(wallet, nftArtifact, [
     deployerAddress,
     encodeCompressedString('Axolotl Arena Cards'),
     encodeCompressedString('AXL'),
   ]).send(sendAs(deployerAddress));
-  console.log(`  NFT: ${nftContract.address}`);
-  await wallet.registerSender(nftContract.address, 'nft');
 
-  // 2. Deploy ArenaToken
-  console.log('Deploying ArenaToken...');
-  const { contract: tokenContract } = await Contract.deploy(wallet, tokenArtifact, [
+  const tokenDeploy = Contract.deploy(wallet, tokenArtifact, [
     deployerAddress,
   ]).send(sendAs(deployerAddress));
-  console.log(`  Token: ${tokenContract.address}`);
-  await wallet.registerSender(tokenContract.address, 'token');
 
-  // 3. Deploy Game
+  const [{ contract: nftContract }, { contract: tokenContract }] = await Promise.all([nftDeploy, tokenDeploy]);
+  console.log(`  NFT:   ${nftContract.address}`);
+  console.log(`  Token: ${tokenContract.address}`);
+
+  // 2. Deploy Game (needs NFT + Token addresses)
   console.log('Deploying TripleTriadGame...');
   const { contract: gameContract } = await Contract.deploy(wallet, gameArtifact, [
     nftContract.address,
@@ -223,15 +222,22 @@ async function main() {
     Fr.fromHexString(moveVkHash),
     tokenContract.address,
   ]).send(sendAs(deployerAddress));
-  console.log(`  Game: ${gameContract.address}`);
-  await wallet.registerSender(gameContract.address, 'game');
+  console.log(`  Game:  ${gameContract.address}`);
 
-  // 4. Wire contracts
+  // 3. Register senders in parallel
+  await Promise.all([
+    wallet.registerSender(nftContract.address, 'nft'),
+    wallet.registerSender(tokenContract.address, 'token'),
+    wallet.registerSender(gameContract.address, 'game'),
+  ]);
+
+  // 4. Wire contracts — send all 4 calls, then wait for all
   console.log('\nWiring contracts...');
-  await nftContract.methods.set_game_contract(gameContract.address).send(sendAs(deployerAddress));
-  await nftContract.methods.set_token_contract(tokenContract.address).send(sendAs(deployerAddress));
-  await tokenContract.methods.set_nft_contract(nftContract.address).send(sendAs(deployerAddress));
-  await tokenContract.methods.set_game_contract(gameContract.address).send(sendAs(deployerAddress));
+  const wire1 = nftContract.methods.set_game_contract(gameContract.address).send(sendAs(deployerAddress));
+  const wire2 = nftContract.methods.set_token_contract(tokenContract.address).send(sendAs(deployerAddress));
+  const wire3 = tokenContract.methods.set_nft_contract(nftContract.address).send(sendAs(deployerAddress));
+  const wire4 = tokenContract.methods.set_game_contract(gameContract.address).send(sendAs(deployerAddress));
+  await Promise.all([wire1, wire2, wire3, wire4]);
   console.log('Done.');
 
   // 5. Write .env
