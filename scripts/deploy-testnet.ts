@@ -81,6 +81,7 @@ async function computeVkHash(api: any, vkBuf: Uint8Array): Promise<string> {
 
 async function main() {
   const createAccountOnly = process.argv.includes('--create-account');
+  const skipAccount = process.argv.includes('--skip-account');
 
   // Compile contracts first
   console.log('=== Compiling Contracts ===');
@@ -142,22 +143,26 @@ async function main() {
     wait: { timeout: 600 },
   });
 
-  // Deploy the deployer account (skip if already deployed)
-  console.log('\nDeploying account on-chain...');
-  console.log(`  Address: ${deployerAddress.toString()}`);
-  console.log('  (Fund this address with Fee Juice if not already funded)');
-  try {
-    const deployMethod = await deployerAccount.getDeployMethod();
-    await deployMethod.send({
-      from: NO_FROM,
-      wait: { timeout: 600 },
-    });
-    console.log('Account deployed.');
-  } catch (err: any) {
-    if (err?.cause?.message?.includes('Existing nullifier') || err?.message?.includes('Existing nullifier')) {
-      console.log('Account already deployed, skipping.');
-    } else {
-      throw err;
+  // Deploy the deployer account (skip if already deployed or --skip-account)
+  if (skipAccount) {
+    console.log('\nSkipping account deployment (--skip-account).');
+  } else {
+    console.log('\nDeploying account on-chain...');
+    console.log(`  Address: ${deployerAddress.toString()}`);
+    console.log('  (Fund this address with Fee Juice if not already funded)');
+    try {
+      const deployMethod = await deployerAccount.getDeployMethod();
+      await deployMethod.send({
+        from: NO_FROM,
+        wait: { timeout: 600 },
+      });
+      console.log('Account deployed.');
+    } catch (err: any) {
+      if (err?.cause?.message?.includes('Existing nullifier') || err?.message?.includes('Existing nullifier')) {
+        console.log('Account already deployed, skipping.');
+      } else {
+        throw err;
+      }
     }
   }
 
