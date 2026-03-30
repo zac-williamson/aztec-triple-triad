@@ -85,7 +85,11 @@ async function main() {
   console.log(`Connecting to ${PXE_URL}...`);
 
   const node = createAztecNodeClient(PXE_URL);
-  const wallet = await EmbeddedWallet.create(node, { ephemeral: true });
+  // Testnet requires real proofs — enable the prover in the embedded PXE
+  const wallet = await EmbeddedWallet.create(node, {
+    ephemeral: true,
+    pxeConfig: { proverEnabled: true },
+  });
 
   console.log('Waiting for PXE sync...');
   await new Promise(r => setTimeout(r, 8000));
@@ -95,17 +99,14 @@ async function main() {
   let saltFr: InstanceType<typeof Fr>;
   let signingKey: InstanceType<typeof GrumpkinScalar>;
 
-  if (process.env.DEPLOYER_SECRET) {
-    secretFr = Fr.fromHexString(process.env.DEPLOYER_SECRET);
-    saltFr = Fr.fromHexString(process.env.DEPLOYER_SALT || '0x1');
-    signingKey = process.env.DEPLOYER_SIGNING_KEY
-      ? GrumpkinScalar.fromHexString(process.env.DEPLOYER_SIGNING_KEY)
-      : GrumpkinScalar.random();
-  } else {
-    secretFr = Fr.random();
-    saltFr = Fr.random();
-    signingKey = GrumpkinScalar.random();
-  }
+  // Default keys from ../account_details_do_not_commit.md (override via env vars)
+  const defaultSecret = '0x1666c6a09995cf41be384233f3d81355a99b421362806a83acdfd4a852aff30e';
+  const defaultSalt = '0x2ab7f2d2a8ea4911b714136d35c37d1ba3fca2f22124b6650330b0eaeaa98f16';
+  const defaultSigningKey = '0x12cba212b89ebfd4aa5169a31b64ce92355a4b1f19a4aeb0ac95171436258410';
+
+  secretFr = Fr.fromHexString(process.env.DEPLOYER_SECRET || defaultSecret);
+  saltFr = Fr.fromHexString(process.env.DEPLOYER_SALT || defaultSalt);
+  signingKey = GrumpkinScalar.fromHexString(process.env.DEPLOYER_SIGNING_KEY || defaultSigningKey);
 
   const deployerAccount = await wallet.createSchnorrAccount(secretFr, saltFr, signingKey);
   const deployerAddress = deployerAccount.address;
