@@ -80,45 +80,8 @@ export function useCardPacks(
     return Contract.at(nftAddr, artifact, wallet as never);
   }, [wallet, getSDK]);
 
-  const refreshCooldowns = useCallback(async () => {
-    if (!wallet || !accountAddress) return;
-    try {
-      const { AztecAddress } = await getSDK();
-      const nftContract = await getNftContract();
-      const addr = AztecAddress.fromString(accountAddress);
-      const newCooldowns: Record<number, number> = {};
-
-      for (const loc of LOCATIONS) {
-        try {
-          const { result } = await nftContract.methods
-            .get_player_cooldown(addr, loc.id)
-            .simulate({ from: addr });
-          const lastCallEpochSec = Number(result);
-          if (lastCallEpochSec === 0) {
-            newCooldowns[loc.id] = 0;
-          } else {
-            const cooldownEndMs = (lastCallEpochSec + loc.cooldownHours * 3600) * 1000;
-            newCooldowns[loc.id] = cooldownEndMs;
-          }
-        } catch {
-          newCooldowns[loc.id] = 0;
-        }
-      }
-
-      setCooldowns(newCooldowns);
-    } catch (err) {
-      console.warn('[useCardPacks] Failed to refresh cooldowns:', err);
-    }
-  }, [wallet, accountAddress, getSDK, getNftContract]);
-
-  // Auto-refresh cooldowns on mount and when wallet changes
-  const refreshedRef = useRef(false);
-  useEffect(() => {
-    if (wallet && accountAddress && !refreshedRef.current) {
-      refreshedRef.current = true;
-      refreshCooldowns();
-    }
-  }, [wallet, accountAddress, refreshCooldowns]);
+  // No cooldowns — card packs are purchased with Arena Tokens
+  const refreshCooldowns = useCallback(async () => {}, []);
 
   const hunt = useCallback(async (location: LocationInfo): Promise<HuntResult> => {
     if (!wallet || !accountAddress) throw new Error('Wallet not connected');
@@ -145,8 +108,8 @@ export function useCardPacks(
 
       setTxStatus('confirming');
 
-      // Call the generic location method with location ID
-      const { receipt } = await nftContract.methods.get_cards_from_location(location.id).send({
+      // Purchase card pack (burns 100 Arena Tokens, generates 10 cards)
+      const { receipt } = await nftContract.methods.purchase_card_pack().send({
         from: addr,
         fee: { paymentMethod },
         wait: { timeout: AZTEC_TX_TIMEOUT },

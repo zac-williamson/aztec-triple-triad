@@ -90,7 +90,14 @@ async function main() {
     cwd: resolve(ROOT_DIR, 'packages/contracts'),
     stdio: 'inherit',
   });
-  console.log('Compilation complete.\n');
+  // Copy fresh artifacts to frontend
+  const { cpSync } = await import('fs');
+  const contractsDir = resolve(ROOT_DIR, 'packages/contracts/target');
+  const frontendDir = resolve(ROOT_DIR, 'packages/frontend/public/contracts');
+  for (const name of ['arena_token-ArenaToken', 'triple_triad_nft-TripleTriadNFT', 'triple_triad_game-TripleTriadGame']) {
+    cpSync(`${contractsDir}/${name}.json`, `${frontendDir}/${name}.json`);
+  }
+  console.log('Compilation complete. Artifacts copied to frontend.\n');
 
   console.log('=== Triple Triad Testnet Deployment ===');
   console.log(`Connecting to ${PXE_URL}...`);
