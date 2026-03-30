@@ -950,17 +950,18 @@ pub contract TripleTriadNFT {
             tx_hash,
             unique_hashes_vec,
             first_nullifier,
-            recipient,
-            _compute_note_hash_and_nullifier,
+            _compute_note_hash,
+            _compute_note_nullifier,
             owner,
             storage_slot,
             randomness,
             FieldNote::get_id(),
             packed_note,
+            recipient,
         );
 
         // Validate against on-chain tree and persist to PXE
-        validate_and_store_enqueued_notes_and_events(address);
+        validate_and_store_enqueued_notes_and_events(address, recipient);
     }
 
     // --- Utility Functions ---

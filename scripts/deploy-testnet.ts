@@ -81,6 +81,15 @@ async function computeVkHash(api: any, vkBuf: Uint8Array): Promise<string> {
 async function main() {
   const createAccountOnly = process.argv.includes('--create-account');
 
+  // Compile contracts first
+  console.log('=== Compiling Contracts ===');
+  const { execSync } = await import('child_process');
+  execSync('aztec compile', {
+    cwd: resolve(ROOT_DIR, 'packages/contracts'),
+    stdio: 'inherit',
+  });
+  console.log('Compilation complete.\n');
+
   console.log('=== Triple Triad Testnet Deployment ===');
   console.log(`Connecting to ${PXE_URL}...`);
 
@@ -132,16 +141,24 @@ async function main() {
     wait: { timeout: 600 },
   });
 
-  // Deploy the deployer account
+  // Deploy the deployer account (skip if already deployed)
   console.log('\nDeploying account on-chain...');
-  const deployMethod = await deployerAccount.getDeployMethod();
-  await deployMethod.send({
-    from: AztecAddress.ZERO,
-    skipClassPublication: true,
-    skipInstancePublication: true,
-    wait: { timeout: 600 },
-  });
-  console.log('Account deployed.');
+  try {
+    const deployMethod = await deployerAccount.getDeployMethod();
+    await deployMethod.send({
+      from: AztecAddress.ZERO,
+      skipClassPublication: true,
+      skipInstancePublication: true,
+      wait: { timeout: 600 },
+    });
+    console.log('Account deployed.');
+  } catch (err: any) {
+    if (err?.cause?.message?.includes('Existing nullifier') || err?.message?.includes('Existing nullifier')) {
+      console.log('Account already deployed, skipping.');
+    } else {
+      throw err;
+    }
+  }
 
   await wallet.registerSender(deployerAddress, 'deployer');
 
