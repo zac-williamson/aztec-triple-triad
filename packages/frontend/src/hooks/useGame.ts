@@ -5,6 +5,7 @@ import type { PlayerHandData } from './useProofGeneration';
 import { useGameStorage, type PersistedGameState } from './useGameStorage';
 import { useAztecContext } from '../aztec/AztecContext';
 import { importNotesFromTx } from '../aztec/noteImporter';
+import { removeCards } from '../aztec/cardStore';
 import { ensureContracts, contractCache, warmupContracts } from '../aztec/contracts';
 import { AZTEC_CONFIG } from '../aztec/config';
 import { toFr as toFrUtil, toHexString } from '../aztec/fieldUtils';
@@ -283,6 +284,9 @@ export function useGame(wsUrl: string): UseGameReturn {
       console.warn('[useGame] create_game diagnostic failed:', diagErr);
     }
 
+    // Remove committed cards from localStorage after confirmed tx
+    if (addr) removeCards(addr, ids);
+
     return { gameId: gameIdHex, randomness: randomnessHex, blindingFactor: blindingHex, txHash };
   }, [aztec.wallet, aztec.accountAddress]);
 
@@ -328,6 +332,9 @@ export function useGame(wsUrl: string): UseGameReturn {
     const txHash = receipt?.txHash?.toString();
     if (!txHash) throw new Error('join_game tx returned no txHash');
     console.log('[useGame] join_game tx mined, txHash:', txHash);
+
+    // Remove committed cards from localStorage after confirmed tx
+    if (addr) removeCards(addr, ids);
 
     return txHash;
   }, [aztec.wallet, aztec.accountAddress]);

@@ -46,39 +46,93 @@ npm install --legacy-peer-deps
 
 > `--legacy-peer-deps` is needed due to React 18 + React Three Fiber v9 peer dependency conflicts.
 
-### 2. Start the Aztec sandbox
+## Running on Local Devnet
+
+### 1. Start the Aztec sandbox
 
 In a **separate terminal**:
 
 ```bash
-aztec start --local-network
+./start-sandbox.sh
 ```
 
-Wait until you see `Aztec Node started` before continuing.
+This starts the sandbox with `SEQ_MIN_TX_PER_BLOCK=0` so the sequencer produces empty blocks (needed for L1-to-L2 Fee Juice bridging). Wait until you see `Aztec Server listening on port 8080`.
 
-### 3. Run the dev startup script
+### 2. Deploy contracts
 
 ```bash
-./scripts/start-dev.sh
+npx tsx scripts/deploy-contracts.ts
 ```
 
-This script will:
+This deploys all three contracts (NFT, Game, Token), wires them together, and writes the addresses to `packages/frontend/.env`. Copy the generated `.env` to `.env.devnet`:
 
-1. Check that the Aztec sandbox is running
-2. Compile contracts and circuits
-3. Copy artifacts to the frontend
-4. Deploy contracts (or reuse existing deployment)
-5. Start the backend WebSocket server (ws://localhost:5174)
-6. Start the Vite frontend dev server (http://localhost:5173)
+```bash
+cp packages/frontend/.env packages/frontend/.env.devnet
+```
 
-### 4. Play
+### 3. Copy contract artifacts to frontend
 
-1. Open **http://localhost:5173** in two browser tabs
-2. In each tab, open **Card Packs** and hunt for cards (you need at least 5)
-3. Click **Play**, select 5 cards, and start the game
-4. The second tab does the same — matchmaking pairs you automatically
-5. Take turns placing cards on the 3x3 board
-6. Winner takes a card from the loser!
+```bash
+npm run copy-contracts
+cp packages/contracts/target/arena_token-ArenaToken.json packages/frontend/public/contracts/
+```
+
+### 4. Start the backend and frontend
+
+```bash
+# Backend (from repo root)
+npx tsx packages/backend/src/server.ts &
+
+# Frontend (from packages/frontend/)
+cd packages/frontend
+npm run dev:devnet
+```
+
+- Backend: `ws://localhost:5174`
+- Frontend: `http://localhost:3000`
+
+### How devnet funding works
+
+On the local devnet, accounts are automatically funded with Fee Juice via L1 bridging. The app:
+
+1. Mints Fee Juice on L1 using the default Anvil test mnemonic
+2. Bridges it to the player's L2 address via the Fee Juice Portal
+3. Uses `FeeJuicePaymentMethodWithClaim` to atomically claim the Fee Juice and pay for the account deployment in a single transaction
+
+No manual funding is needed.
+
+## Running on Testnet
+
+### 1. Start the backend and frontend
+
+```bash
+# Backend (from repo root)
+npx tsx packages/backend/src/server.ts &
+
+# Frontend (from packages/frontend/)
+cd packages/frontend
+npm run dev:testnet
+```
+
+- Backend: `ws://localhost:5174`
+- Frontend: `http://localhost:3000`
+
+### 2. Fund your account
+
+On testnet, the app will show a **"Needs Funding"** prompt with your account address. You need to send Fee Juice to this address before the account can be deployed. Use the [Aztec testnet faucet](https://docs.aztec.network) or bridge Fee Juice from L1 Sepolia.
+
+Once funded, click **Confirm Funded** and the app will deploy your account and mint starter cards.
+
+### Testnet contract addresses
+
+The testnet contracts are pre-deployed and configured in `packages/frontend/.env.testnet`:
+
+```
+VITE_AZTEC_PXE_URL=https://rpc.testnet.aztec-labs.com
+VITE_NFT_CONTRACT_ADDRESS=0x16e1dc9ea5b271ecc57c192df6ff2f1c271e0e2079b73bc5981d6d38a2c76112
+VITE_GAME_CONTRACT_ADDRESS=0x01538e90c1da710c6716bd6fbf90b91aa72082a49bfdfea6f33f5413ea80cf13
+VITE_TOKEN_CONTRACT_ADDRESS=0x1bd1df2b618e5e240ee0dc282c6639831299322701d93655f80d1758068f5e2a
+```
 
 ## Development
 

@@ -5,7 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:testnet": "vite --mode testnet",
+    "dev:devnet": "vite --mode devnet",
     "build": "vite build",
+    "build:testnet": "vite build --mode testnet",
+    "build:devnet": "vite build --mode devnet",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",

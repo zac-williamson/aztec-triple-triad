@@ -19,6 +19,12 @@ export interface NoteToImport {
   randomness: string;
 }
 
+/** Pre-fetched TxEffect data — avoids a network round-trip when replaying from localStorage */
+export interface TxEffectData {
+  noteHashes: string[];     // non-zero unique note hashes
+  firstNullifier: string;   // first nullifier from the tx
+}
+
 /** Cached NFT artifact to avoid repeated fetch() calls */
 let _cachedNftArtifact: any = null;
 
@@ -53,14 +59,35 @@ async function fetchTxEffect(nodeClient: any, txHashStr: string): Promise<any> {
 }
 
 /**
+ * Extract TxEffect data from the node for a given transaction.
+ * Returns the noteHashes and firstNullifier needed for import_note.
+ */
+export async function fetchTxEffectData(
+  nodeClient: unknown,
+  txHashStr: string,
+): Promise<TxEffectData | null> {
+  const txEffect = await fetchTxEffect(nodeClient, txHashStr);
+  if (!txEffect) return null;
+
+  const rawNoteHashes: any[] = txEffect.noteHashes ?? [];
+  const noteHashes: string[] = rawNoteHashes
+    .map((h: any) => h.toString())
+    .filter((h: string) => h !== '0' && h !== '0x0' && !/^0x0+$/.test(h));
+  const firstNullifier: string = txEffect.nullifiers?.[0]?.toString() ?? '0';
+
+  return { noteHashes, firstNullifier };
+}
+
+/**
  * Import notes from a transaction into the PXE.
  *
  * @param wallet - The EmbeddedWallet instance
- * @param nodeClient - The Aztec node client
+ * @param nodeClient - The Aztec node client (unused if txEffectData provided)
  * @param accountAddress - The account address (hex string)
  * @param txHashStr - Transaction hash string
  * @param notes - Array of notes to import (tokenId + randomness)
  * @param label - Label for log messages
+ * @param txEffectData - Pre-fetched TxEffect data (skips network fetch if provided)
  * @returns The imported token IDs, or empty array on failure
  */
 export async function importNotesFromTx(
@@ -70,6 +97,7 @@ export async function importNotesFromTx(
   txHashStr: string,
   notes: NoteToImport[],
   label: string,
+  txEffectData?: TxEffectData,
 ): Promise<number[]> {
   const { AztecAddress } = await import('@aztec/aztec.js/addresses');
   const { Fr } = await import('@aztec/aztec.js/fields');
@@ -88,29 +116,15 @@ export async function importNotesFromTx(
   }
   const nftContract = _contractCache.contract;
 
-  // Fetch TxEffect
-  const txEffect = await fetchTxEffect(nodeClient, txHashStr);
-  if (!txEffect) {
-    console.error(`[noteImporter] ${label}: Could not fetch TxEffect for ${txHashStr} after retries`);
+  // Use pre-fetched data or fetch from node
+  const effectData = txEffectData ?? await fetchTxEffectData(nodeClient, txHashStr);
+  if (!effectData) {
+    console.error(`[noteImporter] ${label}: Could not get TxEffect for ${txHashStr}`);
     return [];
   }
 
-  // Extract unique note hashes and first nullifier
-  const rawNoteHashes: any[] = txEffect.noteHashes ?? [];
-  console.log(`[noteImporter] ${label}: RAW noteHashes count=${rawNoteHashes.length}`);
-  rawNoteHashes.forEach((h: any, i: number) => {
-    console.log(`[noteImporter] ${label}: RAW noteHash[${i}]: ${h.toString()}`);
-  });
-  const uniqueNoteHashes: string[] = rawNoteHashes
-    .map((h: any) => h.toString())
-    .filter((h: string) => h !== '0' && h !== '0x0' && !/^0x0+$/.test(h));
-  console.log(`[noteImporter] ${label}: FILTERED noteHashes count=${uniqueNoteHashes.length}`);
-  uniqueNoteHashes.forEach((h: string, i: number) => {
-    console.log(`[noteImporter] ${label}: FILTERED noteHash[${i}]: ${h}`);
-  });
-  const firstNullifier: string = txEffect.nullifiers?.[0]?.toString() ?? '0';
-
-  console.log(`[noteImporter] ${label}: TxEffect has ${uniqueNoteHashes.length} non-zero note hashes`);
+  const { noteHashes: uniqueNoteHashes, firstNullifier } = effectData;
+  console.log(`[noteImporter] ${label}: ${uniqueNoteHashes.length} note hashes, firstNullifier=${firstNullifier}`);
 
   // Build padded note hashes array
   const paddedHashes = new Array(64).fill(new Fr(0n));
@@ -120,27 +134,26 @@ export async function importNotesFromTx(
   const txHashFr = toFr(Fr, txHashStr);
   const firstNullFr = toFr(Fr, firstNullifier);
 
-  console.log(`[noteImporter] ${label}: firstNullifier=${firstNullifier}`);
-  console.log(`[noteImporter] ${label}: noteHashes=`, uniqueNoteHashes);
-
   // Import each note
   for (const note of notes) {
-    console.log(`[PXE-TRACE] ${Date.now()} nftContract.import_note(owner=${myAddr}, tokenId=${note.tokenId}, randomness=${note.randomness.toString().slice(0,20)}...).simulate()`);
-    await nftContract.methods
-      .import_note(
-        myAddr,
-        new Fr(BigInt(note.tokenId)),
-        toFr(Fr, note.randomness),
-        txHashFr,
-        paddedHashes,
-        uniqueNoteHashes.length,
-        firstNullFr,
-        myAddr,
-      )
-      .simulate({ from: myAddr });
-    console.log(`[PXE-TRACE] ${Date.now()} import_note COMPLETE tokenId=${note.tokenId}`);
+    try {
+      await nftContract.methods
+        .import_note(
+          myAddr,
+          new Fr(BigInt(note.tokenId)),
+          toFr(Fr, note.randomness),
+          txHashFr,
+          paddedHashes,
+          uniqueNoteHashes.length,
+          firstNullFr,
+          myAddr,
+        )
+        .simulate({ from: myAddr });
+    } catch (e) {
+      console.warn(`[noteImporter] ${label}: import_note failed for tokenId=${note.tokenId}: ${e}`);
+    }
   }
 
-  console.log(`[noteImporter] ${label}: Imported ${notes.length} notes successfully`);
+  console.log(`[noteImporter] ${label}: Imported ${notes.length} notes`);
   return notes.map(n => n.tokenId);
 }

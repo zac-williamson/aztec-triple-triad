@@ -62,8 +62,22 @@ export function useAztec(): UseAztecReturn {
         setOwnedCardIds(result.ownedCardIds);
         setStatus('connected');
       } else {
-        // Account needs deployment — show funding prompt
-        setStatus('needs-funding');
+        const isLocalDevnet = AZTEC_CONFIG.pxeUrl.includes('localhost') || AZTEC_CONFIG.pxeUrl.includes('127.0.0.1');
+        if (isLocalDevnet) {
+          // Local devnet — auto-fund via L1 Fee Juice bridge, then deploy
+          log('Auto-funding account on local devnet...');
+          const { fundAccountOnDevnet } = await import('../aztec/fundDevnet');
+          const claim = await fundAccountOnDevnet(prepared.node, prepared.accountAddress, log);
+          setStatus('deploying');
+          const result = await deployAndRegister(prepared, { log, feeJuiceClaim: claim });
+          walletRef.current = result.wallet;
+          nodeClientRef.current = result.node;
+          setOwnedCardIds(result.ownedCardIds);
+          setStatus('connected');
+        } else {
+          // Testnet — show funding prompt, user funds manually
+          setStatus('needs-funding');
+        }
       }
     } catch (err) {
       console.error('[useAztec] Connection failed:', err);

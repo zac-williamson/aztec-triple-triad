@@ -6,7 +6,7 @@
 import { AZTEC_CONFIG } from './config';
 import { getNftArtifact } from './noteImporter';
 
-async function getSponsoredFee() {
+async function getSponsoredFee(wallet: any) {
   const [{ getContractInstanceFromInstantiationParams }, { SponsoredFPCContractArtifact }, { SPONSORED_FPC_SALT }, { SponsoredFeePaymentMethod }, { Fr }] = await Promise.all([
     import('@aztec/stdlib/contract'),
     import('@aztec/noir-contracts.js/SponsoredFPC'),
@@ -17,6 +17,10 @@ async function getSponsoredFee() {
   const sponsoredFPC = await getContractInstanceFromInstantiationParams(SponsoredFPCContractArtifact, {
     salt: new Fr(SPONSORED_FPC_SALT),
   });
+  // Register the SponsoredFPC contract with PXE so fee-paying txs don't fail
+  try {
+    await wallet.registerContract(sponsoredFPC, SponsoredFPCContractArtifact);
+  } catch { /* already registered */ }
   return new SponsoredFeePaymentMethod(sponsoredFPC.address);
 }
 
@@ -83,7 +87,7 @@ export async function ensureContracts(wallet: unknown) {
   }
 
   if (!contractCache.fee) {
-    contractCache.fee = await getSponsoredFee();
+    contractCache.fee = await getSponsoredFee(wallet);
   }
 
   return { gameContract: contractCache.gameContract, nftContract: contractCache.nftContract, fee: contractCache.fee, Fr, AztecAddress };

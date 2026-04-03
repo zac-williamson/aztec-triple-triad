@@ -11,9 +11,11 @@
  */
 
 import { AZTEC_CONFIG } from './config';
-import { importNotesFromTx, getNftArtifact } from './noteImporter';
+import { getNftArtifact, fetchTxEffectData, importNotesFromTx } from './noteImporter';
 import { toFr } from './fieldUtils';
+import { addCards, loadCards, saveCards, type StoredCard } from './cardStore';
 import { AZTEC_TX_TIMEOUT, STARTER_CARD_IDS, STARTER_CARD_COUNT } from './gameConstants';
+import type { FeeJuiceClaim } from './fundDevnet';
 
 export interface AztecConnectResult {
   wallet: unknown;
@@ -78,7 +80,7 @@ export async function prepareConnection(options?: {
 
   log('Creating EmbeddedWallet...');
   const wallet = await EmbeddedWallet.create(node, {
-    ephemeral: true,
+    ephemeral: false,
     pxeConfig: { proverEnabled: true },
   });
 
@@ -109,7 +111,7 @@ export async function prepareConnection(options?: {
  */
 export async function deployAndRegister(
   prepared: PreparedConnection,
-  options?: { skipLocalStorage?: boolean; log?: LogFn },
+  options?: { skipLocalStorage?: boolean; log?: LogFn; feeJuiceClaim?: FeeJuiceClaim },
 ): Promise<AztecConnectResult> {
   const log = options?.log ?? ((msg: string) => console.log('[connectToAztec]', msg));
   const useStorage = !options?.skipLocalStorage;
@@ -121,16 +123,36 @@ export async function deployAndRegister(
     import('@aztec/aztec.js/fields'),
   ]);
 
-  // Deploy account if needed
-  if (alreadyDeployed) {
+  // Deploy account if needed — check on-chain first (localStorage flag may be stale)
+  let deployed = alreadyDeployed;
+  if (!deployed) {
+    try {
+      const onChain = await node.getContract(accountManager.address);
+      if (onChain) {
+        deployed = true;
+        log(`Account already deployed on-chain: ${accountAddress}`);
+      }
+    } catch { /* not deployed */ }
+  }
+
+  if (deployed) {
     log(`Account already deployed: ${accountAddress}`);
+    if (useStorage) localStorage.setItem(AZTEC_CONFIG.storageKeys.deploymentStatus, 'deployed');
   } else {
     log('Deploying account...');
     const deployMethod = await accountManager.getDeployMethod();
-    await deployMethod.send({
-      from: NO_FROM,
-      wait: { timeout: AZTEC_TX_TIMEOUT },
-    });
+
+    // Build fee payment: use FeeJuicePaymentMethodWithClaim if we have a claim (devnet auto-fund),
+    // otherwise pay with existing Fee Juice balance (testnet manual fund)
+    const sendOpts: any = { from: NO_FROM, wait: { timeout: AZTEC_TX_TIMEOUT } };
+    if (options?.feeJuiceClaim) {
+      const { FeeJuicePaymentMethodWithClaim } = await import('@aztec/aztec.js/fee');
+      sendOpts.fee = {
+        paymentMethod: new FeeJuicePaymentMethodWithClaim(accountManager.address, options.feeJuiceClaim),
+      };
+    }
+
+    await deployMethod.send(sendOpts);
     if (useStorage) localStorage.setItem(AZTEC_CONFIG.storageKeys.deploymentStatus, 'deployed');
     log(`Account deployed: ${accountAddress}`);
   }
@@ -180,7 +202,7 @@ export async function deployAndRegister(
     } catch (e) { log(`Failed to register Token: ${e}`); }
   }
 
-  // Mint starter cards
+  // Mint starter cards (if not already minted)
   const mintKey = AZTEC_CONFIG.storageKeys.cardsMintedPrefix + accountAddress + '_' + AZTEC_CONFIG.nftContractAddress;
   if (nftArtifact && AZTEC_CONFIG.nftContractAddress && (!useStorage || !localStorage.getItem(mintKey))) {
     const { Contract } = await import('@aztec/aztec.js/contracts');
@@ -197,26 +219,58 @@ export async function deployAndRegister(
 
     if (txHashStr) {
       try {
+        // Compute randomness + fetch TxEffect
         const { result: randomnessResult } = await nftContract.methods
           .compute_note_randomness(0, STARTER_CARD_COUNT)
           .simulate({ from: accountManager.address });
-        const notes = STARTER_CARD_IDS.map((id, i) => ({
-          tokenId: id,
-          randomness: toFr(Fr, randomnessResult[i]).toString(),
-        }));
-        await importNotesFromTx(wallet, node, accountAddress, txHashStr, notes, 'Starter cards');
-        log('Notes imported');
-      } catch (importErr) { log(`Failed to import notes: ${importErr}`); }
+        const txEffectData = await fetchTxEffectData(node, txHashStr);
+
+        if (txEffectData) {
+          // Persist card data to localStorage
+          const storedCards: StoredCard[] = STARTER_CARD_IDS.map((id, i) => ({
+            cardId: id,
+            randomness: toFr(Fr, randomnessResult[i]).toString(),
+            txHash: txHashStr,
+            noteHashes: txEffectData.noteHashes,
+            firstNullifier: txEffectData.firstNullifier,
+          }));
+          addCards(accountAddress, storedCards);
+
+          // Import into PXE
+          const notes = storedCards.map((c) => ({ tokenId: c.cardId, randomness: c.randomness }));
+          await importNotesFromTx(wallet, node, accountAddress, txHashStr, notes, 'Starter cards', txEffectData);
+          log('Starter cards stored and imported');
+        }
+      } catch (e) { log(`Failed to import starter cards: ${e}`); }
     }
   }
 
-  // Fetch owned cards
+  // Load cards from localStorage and import into PXE
   let ownedCardIds: number[] = [];
   if (nftArtifact && AZTEC_CONFIG.nftContractAddress) {
-    try {
+    const storedCards = loadCards(accountAddress);
+    if (storedCards.length > 0) {
+      log(`Importing ${storedCards.length} cards from localStorage...`);
       const { Contract } = await import('@aztec/aztec.js/contracts');
       const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
       const nftContract = await Contract.at(nftAddr, nftArtifact, wallet as never);
+
+      // Group cards by txHash to batch imports
+      const byTx = new Map<string, StoredCard[]>();
+      for (const card of storedCards) {
+        if (!byTx.has(card.txHash)) byTx.set(card.txHash, []);
+        byTx.get(card.txHash)!.push(card);
+      }
+
+      for (const [txHash, cards] of byTx) {
+        const notes = cards.map((c) => ({ tokenId: c.cardId, randomness: c.randomness }));
+        const txEffectData = { noteHashes: cards[0].noteHashes, firstNullifier: cards[0].firstNullifier };
+        try {
+          await importNotesFromTx(wallet, node, accountAddress, txHash, notes, 'Restore', txEffectData);
+        } catch (e) { log(`Failed to import cards from tx ${txHash.slice(0, 16)}...: ${e}`); }
+      }
+
+      // Verify: get_private_cards returns only notes that exist AND are not nullified
       let pageIndex = 0;
       let hasMore = true;
       while (hasMore) {
@@ -231,8 +285,17 @@ export async function deployAndRegister(
         }
         pageIndex++;
       }
+
+      // Reconcile: remove stale cards from localStorage
+      const validSet = new Set(ownedCardIds);
+      const reconciled = storedCards.filter((c) => validSet.has(c.cardId));
+      if (reconciled.length !== storedCards.length) {
+        log(`Reconciled: ${storedCards.length} stored → ${reconciled.length} valid`);
+        saveCards(accountAddress, reconciled);
+      }
+
       log(`Owned cards: ${JSON.stringify(ownedCardIds)}`);
-    } catch (e) { log(`Failed to fetch cards: ${e}`); }
+    }
   }
 
   log(`Connected: ${accountAddress}`);
