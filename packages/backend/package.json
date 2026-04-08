@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@axolotl-arena/game-logic": "*",
+    "ioredis": "^5.6.1",
     "uuid": "^9.0.0",
     "ws": "^8.16.0"
   },

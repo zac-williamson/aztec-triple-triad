@@ -6,6 +6,7 @@ import type { ClientMessage, ServerMessage } from './types.js';
 import type { GameState } from '@axolotl-arena/game-logic';
 import type { GameStore } from './store/GameStore.js';
 import { MemoryGameStore } from './store/MemoryGameStore.js';
+import { RedisGameStore } from './store/RedisGameStore.js';
 
 const DEFAULT_PORT = 5174;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -783,8 +784,20 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
 // Start the server if run directly
 if (process.argv[1]?.endsWith('server.js') || process.argv[1]?.endsWith('server.ts')) {
   const port = parseInt(process.env.WS_PORT ?? String(DEFAULT_PORT), 10);
-  const server = createServer({ port });
-  server.httpServer.listen(port, () => {
-    console.log(`Axolotl Arena server running on port ${port}`);
-  });
+  const redisUrl = process.env.REDIS_URL;
+
+  (async () => {
+    let store: GameStore | undefined;
+    if (redisUrl) {
+      const redis = new RedisGameStore(redisUrl);
+      await redis.connect();
+      store = redis;
+      console.log(`Using Redis store at ${redisUrl}`);
+    }
+
+    const server = createServer({ port, store });
+    server.httpServer.listen(port, () => {
+      console.log(`Axolotl Arena server running on port ${port}${store ? ' (Redis)' : ' (in-memory)'}`);
+    });
+  })();
 }
