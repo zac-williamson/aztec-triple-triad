@@ -1,14 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import WebSocket from 'ws';
 import http from 'http';
-import { createServer, type TripleTriadServer } from '../src/server.js';
+import { createServer, type CardGameServer } from '../src/server.js';
 import type { ServerMessage, ClientMessage } from '../src/types.js';
 
 // Valid card IDs
 const PLAYER1_CARDS = [1, 2, 3, 4, 5];
 const PLAYER2_CARDS = [6, 7, 8, 9, 10];
 
-let server: TripleTriadServer;
+// Skip session establishment messages when filtering for game messages
+const isSessionMsg = (m: ServerMessage) => m.type === 'SESSION_ESTABLISHED';
+
+let server: CardGameServer;
 let port: number;
 
 function getUrl(): string {
@@ -19,11 +22,23 @@ function getHttpUrl(): string {
   return `http://localhost:${port}`;
 }
 
+/** Create a client and wait for SESSION_ESTABLISHED before resolving. */
 function createClient(): Promise<WebSocket> {
+  return createClientWithSession().then(r => r.ws);
+}
+
+/** Create a client and return both the WebSocket and session token. */
+function createClientWithSession(): Promise<{ ws: WebSocket; sessionToken: string; playerId: string }> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(getUrl());
-    ws.on('open', () => resolve(ws));
     ws.on('error', reject);
+    ws.on('message', function onFirst(data: WebSocket.Data) {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === 'SESSION_ESTABLISHED') {
+        ws.removeListener('message', onFirst);
+        resolve({ ws, sessionToken: msg.sessionToken, playerId: msg.playerId });
+      }
+    });
   });
 }
 
@@ -31,14 +46,22 @@ function sendMessage(ws: WebSocket, msg: ClientMessage): void {
   ws.send(JSON.stringify(msg));
 }
 
-// Buffered message collector that ensures no messages are lost
+// Buffered message collector that ensures no messages are lost.
+// Automatically skips SESSION_ESTABLISHED / OPPONENT_RECONNECTED messages.
 class MessageCollector {
   private buffer: ServerMessage[] = [];
   private waiters: { filter?: (msg: ServerMessage) => boolean; resolve: (msg: ServerMessage) => void; reject: (err: Error) => void; timeout: NodeJS.Timeout }[] = [];
+  public sessionToken: string | null = null;
 
   constructor(private ws: WebSocket) {
     ws.on('message', (data: WebSocket.Data) => {
       const msg = JSON.parse(data.toString()) as ServerMessage;
+      // Capture session token but don't buffer session messages
+      if (msg.type === 'SESSION_ESTABLISHED') {
+        this.sessionToken = (msg as any).sessionToken;
+        return;
+      }
+      if (isSessionMsg(msg)) return;
       // Check if any waiter matches
       for (let i = 0; i < this.waiters.length; i++) {
         const waiter = this.waiters[i];
@@ -69,11 +92,13 @@ class MessageCollector {
   }
 }
 
+// Wait for a single message, skipping session management messages
 function waitForMessage(ws: WebSocket, filter?: (msg: ServerMessage) => boolean): Promise<ServerMessage> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Timeout waiting for message')), 5000);
     const handler = (data: WebSocket.Data) => {
       const msg = JSON.parse(data.toString()) as ServerMessage;
+      if (isSessionMsg(msg)) return; // Skip session messages
       if (!filter || filter(msg)) {
         clearTimeout(timeout);
         ws.removeListener('message', handler);
@@ -97,9 +122,8 @@ function httpGet(path: string): Promise<{ status: number; body: any }> {
 }
 
 beforeEach(async () => {
-  // Use a random port to avoid conflicts
   port = 3100 + Math.floor(Math.random() * 900);
-  server = createServer({ port });
+  server = createServer({ port, sessionHandshakeMs: 50 }); // Fast handshake for tests
   await new Promise<void>((resolve) => {
     server.httpServer.listen(port, resolve);
   });
@@ -369,13 +393,13 @@ describe('Disconnection handling', () => {
     await waitForMessage(ws1, (m) => m.type === 'GAME_CREATED');
 
     // Wait a moment for the game to be registered
-    expect(server.gameManager.gameCount).toBe(1);
+    expect(await server.gameManager.getGameCount()).toBe(1);
 
     ws1.close();
 
     // Wait for close handler
     await new Promise((r) => setTimeout(r, 100));
-    expect(server.gameManager.gameCount).toBe(0);
+    expect(await server.gameManager.getGameCount()).toBe(0);
   });
 });
 
@@ -1053,5 +1077,177 @@ describe('moveNumber validation in messages (V7 Fix 4.3)', () => {
       expect(error.message).toContain('moveNumber');
     }
     ws.close();
+  });
+});
+
+describe('Session management', () => {
+  it('should issue SESSION_ESTABLISHED on new connection', async () => {
+    // createClient already waits for SESSION_ESTABLISHED, so this just verifies it works
+    const ws = await createClient();
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+
+  it('should resume session with valid token', async () => {
+    // Connect first client, get session token
+    const ws1 = new WebSocket(getUrl());
+    const session1 = await new Promise<{ sessionToken: string; playerId: string }>((resolve, reject) => {
+      ws1.on('error', reject);
+      ws1.on('message', (data: WebSocket.Data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'SESSION_ESTABLISHED') {
+          resolve({ sessionToken: msg.sessionToken, playerId: msg.playerId });
+        }
+      });
+    });
+
+    // Disconnect
+    ws1.close();
+    await new Promise(r => setTimeout(r, 100));
+
+    // Reconnect with RESUME
+    const ws2 = new WebSocket(getUrl());
+    const session2 = await new Promise<{ resumed: boolean; playerId: string }>((resolve, reject) => {
+      ws2.on('error', reject);
+      ws2.on('open', () => {
+        ws2.send(JSON.stringify({ type: 'RESUME', sessionToken: session1.sessionToken }));
+      });
+      ws2.on('message', (data: WebSocket.Data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'SESSION_ESTABLISHED') {
+          resolve({ resumed: msg.resumed, playerId: msg.playerId });
+        }
+      });
+    });
+
+    expect(session2.resumed).toBe(true);
+    expect(session2.playerId).toBe(session1.playerId);
+    ws2.close();
+  });
+
+  it('should create new session for invalid token', async () => {
+    const ws = new WebSocket(getUrl());
+    const session = await new Promise<{ resumed: boolean }>((resolve, reject) => {
+      ws.on('error', reject);
+      ws.on('open', () => {
+        ws.send(JSON.stringify({ type: 'RESUME', sessionToken: 'bogus-token' }));
+      });
+      ws.on('message', (data: WebSocket.Data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'SESSION_ESTABLISHED') {
+          resolve({ resumed: msg.resumed });
+        }
+      });
+    });
+
+    expect(session.resumed).toBe(false);
+    ws.close();
+  });
+});
+
+describe('Message inbox replay', () => {
+  it('should buffer and replay HAND_PROOF when recipient is offline', async () => {
+    const { ws: ws1 } = await createClientWithSession();
+    const { ws: ws2, sessionToken: p2Token } = await createClientWithSession();
+    const c1 = new MessageCollector(ws1);
+    const c2 = new MessageCollector(ws2);
+
+    // Setup game
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await c2.wait((m) => m.type === 'GAME_JOINED');
+    await c1.wait((m) => m.type === 'GAME_START');
+
+    // Disconnect player 2
+    ws2.close();
+    await new Promise(r => setTimeout(r, 100));
+
+    // Player 1 submits hand proof while player 2 is offline
+    sendMessage(ws1, {
+      type: 'SUBMIT_HAND_PROOF',
+      gameId,
+      handProof: {
+        proof: 'buffered-proof',
+        publicInputs: ['0xcommit'],
+        cardCommit: '0xcommit',
+      },
+    } as any);
+
+    // Give the server time to buffer the message
+    await new Promise(r => setTimeout(r, 100));
+
+    // Player 2 reconnects with session token
+    const ws2b = new WebSocket(getUrl());
+    const c2b = new MessageCollector(ws2b);
+    await new Promise<void>((resolve, reject) => {
+      ws2b.on('error', reject);
+      ws2b.on('open', () => {
+        ws2b.send(JSON.stringify({ type: 'RESUME', sessionToken: p2Token }));
+      });
+      ws2b.on('message', function onMsg(data: WebSocket.Data) {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'SESSION_ESTABLISHED' && msg.resumed) {
+          ws2b.removeListener('message', onMsg);
+          resolve();
+        }
+      });
+    });
+
+    // Player 2 should receive the buffered HAND_PROOF
+    const handProof = await c2b.wait((m) => m.type === 'HAND_PROOF');
+    expect(handProof.type).toBe('HAND_PROOF');
+    if (handProof.type === 'HAND_PROOF') {
+      expect(handProof.handProof.proof).toBe('buffered-proof');
+    }
+
+    ws1.close();
+    ws2b.close();
+  });
+
+  it('should notify opponent when player reconnects', async () => {
+    const { ws: ws1 } = await createClientWithSession();
+    const { ws: ws2, sessionToken: p2Token } = await createClientWithSession();
+    const c1 = new MessageCollector(ws1);
+
+    // Setup game
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
+    const gameId = created.gameId;
+
+    const c2 = new MessageCollector(ws2);
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await c2.wait((m) => m.type === 'GAME_JOINED');
+    await c1.wait((m) => m.type === 'GAME_START');
+
+    // Disconnect player 2
+    ws2.close();
+    // Player 1 gets OPPONENT_DISCONNECTED
+    await c1.wait((m) => m.type === 'OPPONENT_DISCONNECTED');
+
+    // Player 2 reconnects
+    const ws2b = new WebSocket(getUrl());
+    await new Promise<void>((resolve, reject) => {
+      ws2b.on('error', reject);
+      ws2b.on('open', () => {
+        ws2b.send(JSON.stringify({ type: 'RESUME', sessionToken: p2Token }));
+      });
+      ws2b.on('message', function onMsg(data: WebSocket.Data) {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'SESSION_ESTABLISHED' && msg.resumed) {
+          ws2b.removeListener('message', onMsg);
+          resolve();
+        }
+      });
+    });
+
+    // Player 1 should get OPPONENT_RECONNECTED
+    const reconnected = await c1.wait((m) => m.type === 'OPPONENT_RECONNECTED');
+    expect(reconnected.type).toBe('OPPONENT_RECONNECTED');
+
+    ws1.close();
+    ws2b.close();
   });
 });

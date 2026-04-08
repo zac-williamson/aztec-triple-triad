@@ -59,7 +59,9 @@ export type ClientMessage =
   // Matchmaking
   | { type: 'QUEUE_MATCHMAKING'; cardIds: number[] }
   | { type: 'CANCEL_MATCHMAKING' }
-  | { type: 'PING' };
+  | { type: 'PING' }
+  // Session resumption
+  | { type: 'RESUME'; sessionToken: string };
 
 // Server -> Client messages
 export type ServerMessage =
@@ -88,7 +90,10 @@ export type ServerMessage =
   | { type: 'MATCHMAKING_QUEUED'; position: number }
   | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState }
   | { type: 'MATCHMAKING_CANCELLED' }
-  | { type: 'PONG' };
+  | { type: 'PONG' }
+  // Session management
+  | { type: 'SESSION_ESTABLISHED'; sessionToken: string; playerId: string; resumed: boolean; gameId: string | null }
+  | { type: 'OPPONENT_RECONNECTED'; gameId: string };
 
 export interface GameListEntry {
   id: string;

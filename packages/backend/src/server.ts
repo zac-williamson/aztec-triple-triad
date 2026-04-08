@@ -4,11 +4,14 @@ import { v4 as uuidv4 } from 'uuid';
 import { GameManager } from './GameManager.js';
 import type { ClientMessage, ServerMessage } from './types.js';
 import type { GameState } from '@axolotl-arena/game-logic';
+import type { GameStore } from './store/GameStore.js';
+import { MemoryGameStore } from './store/MemoryGameStore.js';
 
 const DEFAULT_PORT = 5174;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
 const DISCONNECT_TIMEOUT_MS = 60 * 1000; // 60 seconds reconnection window
+const SESSION_HANDSHAKE_MS = 2000; // 2 seconds to send RESUME before new session
 
 // Known client message types
 const VALID_MESSAGE_TYPES = new Set([
@@ -19,34 +22,52 @@ const VALID_MESSAGE_TYPES = new Set([
   'RELAY_NOTE_DATA',
   'SETTLE_STARTED',
   'QUEUE_MATCHMAKING', 'CANCEL_MATCHMAKING', 'PING',
+  'RESUME',
+]);
+
+// Messages that are buffered to the inbox when recipient is offline
+const BUFFERED_MESSAGE_TYPES = new Set([
+  'HAND_PROOF',
+  'MOVE_PROVEN',
+  'OPPONENT_AZTEC_INFO',
+  'NOTE_DATA',
+  'OPPONENT_SETTLING',
 ]);
 
 export interface ServerOptions {
   port?: number;
   host?: string;
+  store?: GameStore;
+  /** How long to wait for a RESUME message before creating a new session. Default: 2000ms. */
+  sessionHandshakeMs?: number;
 }
 
 export interface CardGameServer {
   httpServer: http.Server;
   wss: WebSocketServer;
   gameManager: GameManager;
+  store: GameStore;
   close: () => Promise<void>;
 }
 
 export function createServer(options: ServerOptions = {}): CardGameServer {
   const port = options.port ?? DEFAULT_PORT;
   const host = options.host ?? '0.0.0.0';
-  const gameManager = new GameManager();
-  const clients = new Map<string, WebSocket>();
+  const store = options.store ?? new MemoryGameStore();
+  const sessionHandshakeMs = options.sessionHandshakeMs ?? SESSION_HANDSHAKE_MS;
+  const gameManager = new GameManager(store);
 
-  // Fix 4.4: Restrict CORS to allowed origins
+  // playerId → WebSocket (in-memory, rebuilt on reconnect)
+  const clients = new Map<string, WebSocket>();
+  // playerId → disconnect timeout (for reconnection window)
+  const disconnectTimeouts = new Map<string, NodeJS.Timeout>();
+
   const allowedOrigins = new Set([
     'http://localhost:3000',
     'http://localhost:5174',
   ]);
 
-  const httpServer = http.createServer((req, res) => {
-    // CORS headers - restrict to allowed origins
+  const httpServer = http.createServer(async (req, res) => {
     const origin = req.headers.origin;
     if (origin && allowedOrigins.has(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
@@ -61,20 +82,22 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     }
 
     if (req.method === 'GET' && req.url === '/health') {
+      const count = await gameManager.getGameCount();
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', games: gameManager.gameCount }));
+      res.end(JSON.stringify({ status: 'ok', games: count }));
       return;
     }
 
     if (req.method === 'GET' && req.url === '/games') {
+      const list = await gameManager.listGames();
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(gameManager.listGames()));
+      res.end(JSON.stringify(list));
       return;
     }
 
     if (req.method === 'GET' && req.url?.startsWith('/games/')) {
       const gameId = req.url.slice('/games/'.length);
-      const room = gameManager.getGame(gameId);
+      const room = await gameManager.getGame(gameId);
       if (room) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -98,7 +121,6 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
 
   const wss = new WebSocketServer({ server: httpServer });
 
-  // Message types to exclude from logging (too noisy)
   const QUIET_TYPES = new Set(['PING', 'PONG']);
 
   function logMsg(direction: 'IN' | 'OUT', playerId: string, msg: { type: string; [k: string]: any }): void {
@@ -108,6 +130,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     if (msg.playerNumber != null) summary.playerNumber = msg.playerNumber;
     if (msg.winner != null) summary.winner = msg.winner;
     if (msg.message) summary.message = msg.message;
+    if (msg.resumed != null) summary.resumed = msg.resumed;
     console.log(`[WS ${direction}] player=${playerId.slice(0, 8)}  ${JSON.stringify(summary)}`);
   }
 
@@ -118,26 +141,30 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     }
   }
 
-  function sendToPlayer(playerId: string, msg: ServerMessage): void {
+  /**
+   * Send a message to a player. If the player is online, send directly.
+   * If offline and the message type is critical, buffer to inbox for replay.
+   */
+  async function sendToPlayer(playerId: string, msg: ServerMessage): Promise<void> {
     const ws = clients.get(playerId);
-    if (ws) send(ws, msg, playerId);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      send(ws, msg, playerId);
+    } else if (BUFFERED_MESSAGE_TYPES.has(msg.type)) {
+      await store.pushInbox(playerId, msg);
+    }
   }
 
-  function getOpponentId(gameId: string, playerId: string): string | null {
-    const room = gameManager.getGame(gameId);
+  async function getOpponentId(gameId: string, playerId: string): Promise<string | null> {
+    const room = await gameManager.getGame(gameId);
     if (!room) return null;
     if (room.player1Id === playerId) return room.player2Id;
     if (room.player2Id === playerId) return room.player1Id;
     return null;
   }
 
-  function sanitizeGameStateForPlayer(state: GameState, playerId: string, gameId: string): GameState {
-    const room = gameManager.getGame(gameId);
-    if (!room) return state;
-
+  function sanitizeGameStateForPlayer(state: GameState, playerId: string, room: { player1Id: string }): GameState {
     const isPlayer1 = playerId === room.player1Id;
 
-    // During active game, hide the first 2 opponent cards; reveal the other 3
     if (state.status === 'playing') {
       const sanitized = { ...state };
       const hiddenCard = { id: 0, name: 'Hidden', ranks: { top: 0, right: 0, bottom: 0, left: 0 } };
@@ -152,7 +179,6 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     return state;
   }
 
-  // Fix 4.4: Validate incoming message structure before processing
   function validateMessage(msg: any): string | null {
     if (!msg || typeof msg !== 'object' || !msg.type || !VALID_MESSAGE_TYPES.has(msg.type)) {
       return 'Unknown or missing message type';
@@ -161,15 +187,15 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     switch (msg.type) {
       case 'CREATE_GAME':
         if (!Array.isArray(msg.cardIds)) return 'cardIds must be an array of numbers';
-        if (!msg.cardIds.every((id: any) => typeof id === 'number' && Number.isInteger(id) && id >= 1 && id <= 50)) {
-          return 'cardIds must contain integers between 1 and 50';
+        if (!msg.cardIds.every((id: any) => typeof id === 'number' && Number.isInteger(id) && id >= 1 && id <= 256)) {
+          return 'cardIds must contain integers between 1 and 256';
         }
         break;
       case 'JOIN_GAME':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required and must be a string';
         if (!Array.isArray(msg.cardIds)) return 'cardIds must be an array of numbers';
-        if (!msg.cardIds.every((id: any) => typeof id === 'number' && Number.isInteger(id) && id >= 1 && id <= 50)) {
-          return 'cardIds must contain integers between 1 and 50';
+        if (!msg.cardIds.every((id: any) => typeof id === 'number' && Number.isInteger(id) && id >= 1 && id <= 256)) {
+          return 'cardIds must contain integers between 1 and 256';
         }
         break;
       case 'PLACE_CARD':
@@ -232,27 +258,156 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         break;
       case 'QUEUE_MATCHMAKING':
         if (!Array.isArray(msg.cardIds)) return 'cardIds must be an array of numbers';
-        if (!msg.cardIds.every((id: any) => typeof id === 'number' && Number.isInteger(id) && id >= 1 && id <= 50)) {
-          return 'cardIds must contain integers between 1 and 50';
+        if (!msg.cardIds.every((id: any) => typeof id === 'number' && Number.isInteger(id) && id >= 1 && id <= 256)) {
+          return 'cardIds must contain integers between 1 and 256';
         }
+        break;
+      case 'RESUME':
+        if (!msg.sessionToken || typeof msg.sessionToken !== 'string') return 'sessionToken is required';
         break;
       case 'CANCEL_MATCHMAKING':
       case 'PING':
         break;
     }
-    return null; // Valid
+    return null;
   }
 
-  // Fix 4.3: Track disconnect timeouts for reconnection window
-  const disconnectTimeouts = new Map<string, NodeJS.Timeout>();
+  /**
+   * Establish a session for a new or resumed connection.
+   * Returns the playerId associated with this socket.
+   */
+  async function establishSession(ws: WebSocket): Promise<string> {
+    return new Promise<string>((resolve) => {
+      let resolved = false;
 
-  wss.on('connection', (ws: WebSocket) => {
-    const playerId = uuidv4();
-    clients.set(playerId, ws);
-    console.log(`[WS] player=${playerId.slice(0, 8)} connected`);
+      const timeout = setTimeout(async () => {
+        if (resolved) return;
+        resolved = true;
+        // No RESUME received — create new session
+        const playerId = uuidv4();
+        const sessionToken = uuidv4();
+        const now = Date.now();
+        await store.setSession(sessionToken, { playerId, createdAt: now, lastSeen: now });
+        await store.setSessionTokenByPlayer(playerId, sessionToken);
+        clients.set(playerId, ws);
+        send(ws, { type: 'SESSION_ESTABLISHED', sessionToken, playerId, resumed: false, gameId: null }, playerId);
+        console.log(`[WS] player=${playerId.slice(0, 8)} new session`);
+        resolve(playerId);
+      }, sessionHandshakeMs);
 
-    ws.on('message', (data: Buffer | string) => {
-      // Fix 4.4: Reject oversized messages
+      // Listen for a RESUME message as the first message
+      const onMessage = async (data: Buffer | string) => {
+        if (resolved) return;
+        let msg: any;
+        try {
+          msg = JSON.parse(data.toString());
+        } catch {
+          return; // Ignore malformed, wait for timeout
+        }
+
+        if (msg.type === 'RESUME' && msg.sessionToken) {
+          resolved = true;
+          clearTimeout(timeout);
+          ws.removeListener('message', onMessage);
+
+          const session = await store.getSession(msg.sessionToken);
+          if (session) {
+            const playerId = session.playerId;
+            session.lastSeen = Date.now();
+            await store.setSession(msg.sessionToken, session);
+            clients.set(playerId, ws);
+
+            // Cancel any pending disconnect timeout
+            const disconnectTimeout = disconnectTimeouts.get(playerId);
+            if (disconnectTimeout) {
+              clearTimeout(disconnectTimeout);
+              disconnectTimeouts.delete(playerId);
+            }
+
+            // Find active game for this player
+            const gameId = await store.getPlayerGame(playerId);
+
+            send(ws, { type: 'SESSION_ESTABLISHED', sessionToken: msg.sessionToken, playerId, resumed: true, gameId }, playerId);
+            console.log(`[WS] player=${playerId.slice(0, 8)} resumed session${gameId ? ` (game ${gameId.slice(0, 12)}...)` : ''}`);
+
+            // Replay buffered inbox messages
+            const inbox = await store.getInbox(playerId);
+            if (inbox.length > 0) {
+              console.log(`[WS] replaying ${inbox.length} buffered message(s) to player=${playerId.slice(0, 8)}`);
+              for (const buffered of inbox) {
+                send(ws, buffered as ServerMessage, playerId);
+              }
+              await store.clearInbox(playerId);
+            }
+
+            // If in active game, send current game state and notify opponent
+            if (gameId) {
+              const room = await gameManager.getGame(gameId);
+              if (room && room.state) {
+                const playerRole = await gameManager.getPlayerRole(gameId, playerId);
+                if (playerRole) {
+                  const playerNum = playerRole === 'player1' ? 1 : 2;
+                  send(ws, {
+                    type: 'GAME_STATE',
+                    gameId,
+                    gameState: sanitizeGameStateForPlayer(room.state, playerId, room),
+                    captures: [],
+                  }, playerId);
+                  // Also send playerNumber and gameId context
+                  send(ws, {
+                    type: room.state.status === 'finished'
+                      ? 'GAME_OVER'
+                      : (playerNum === 1 ? 'GAME_START' : 'GAME_JOINED'),
+                    gameId,
+                    ...(room.state.status === 'finished'
+                      ? { gameState: room.state, winner: room.state.winner!, player1CardIds: room.player1CardIds, player2CardIds: room.player2CardIds }
+                      : { gameState: sanitizeGameStateForPlayer(room.state, playerId, room), playerNumber: playerNum }),
+                  } as ServerMessage, playerId);
+                }
+
+                // Notify opponent of reconnection
+                const opponentId = await getOpponentId(gameId, playerId);
+                if (opponentId) {
+                  await sendToPlayer(opponentId, { type: 'OPPONENT_RECONNECTED', gameId });
+                }
+              }
+            }
+
+            resolve(playerId);
+          } else {
+            // Expired/invalid session — create new
+            const playerId = uuidv4();
+            const sessionToken = uuidv4();
+            const now = Date.now();
+            await store.setSession(sessionToken, { playerId, createdAt: now, lastSeen: now });
+            await store.setSessionTokenByPlayer(playerId, sessionToken);
+            clients.set(playerId, ws);
+            send(ws, { type: 'SESSION_ESTABLISHED', sessionToken, playerId, resumed: false, gameId: null }, playerId);
+            console.log(`[WS] player=${playerId.slice(0, 8)} new session (expired token)`);
+            resolve(playerId);
+          }
+        }
+        // If first message is not RESUME, let the timeout handle it
+      };
+
+      ws.on('message', onMessage);
+
+      // Clean up the RESUME listener once resolved
+      const checkCleanup = () => {
+        if (resolved) {
+          ws.removeListener('message', onMessage);
+        } else {
+          setTimeout(checkCleanup, 100);
+        }
+      };
+      setTimeout(checkCleanup, sessionHandshakeMs + 100);
+    });
+  }
+
+  wss.on('connection', async (ws: WebSocket) => {
+    const playerId = await establishSession(ws);
+
+    ws.on('message', async (data: Buffer | string) => {
       const rawData = data.toString();
       if (rawData.length > MAX_MESSAGE_SIZE) {
         send(ws, { type: 'ERROR', message: 'Message too large (max 1MB)' }, playerId);
@@ -267,7 +422,9 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         return;
       }
 
-      // Fix 4.4: Validate message structure
+      // Skip RESUME messages after session is established
+      if (msg.type === 'RESUME') return;
+
       const validationError = validateMessage(msg);
       if (validationError) {
         send(ws, { type: 'ERROR', message: validationError }, playerId);
@@ -275,25 +432,23 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       }
 
       logMsg('IN', playerId, msg);
-      handleMessage(playerId, ws, msg as ClientMessage);
+      await handleMessage(playerId, ws, msg as ClientMessage);
     });
 
     ws.on('close', () => {
       handleDisconnect(playerId);
-      clients.delete(playerId);
     });
 
     ws.on('error', () => {
       handleDisconnect(playerId);
-      clients.delete(playerId);
     });
   });
 
-  function handleMessage(playerId: string, ws: WebSocket, msg: ClientMessage): void {
+  async function handleMessage(playerId: string, ws: WebSocket, msg: ClientMessage): Promise<void> {
     switch (msg.type) {
       case 'CREATE_GAME': {
         try {
-          const room = gameManager.createGame(playerId, msg.cardIds);
+          const room = await gameManager.createGame(playerId, msg.cardIds);
           send(ws, { type: 'GAME_CREATED', gameId: room.id, playerNumber: 1 }, playerId);
         } catch (err: any) {
           send(ws, { type: 'ERROR', message: err.message }, playerId);
@@ -303,18 +458,17 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
 
       case 'JOIN_GAME': {
         try {
-          const room = gameManager.joinGame(msg.gameId, playerId, msg.cardIds);
+          const room = await gameManager.joinGame(msg.gameId, playerId, msg.cardIds);
           send(ws, {
             type: 'GAME_JOINED',
             gameId: room.id,
             playerNumber: 2,
-            gameState: sanitizeGameStateForPlayer(room.state, playerId, room.id),
+            gameState: sanitizeGameStateForPlayer(room.state, playerId, room),
           }, playerId);
-          // Notify player 1 that the game has started
-          sendToPlayer(room.player1Id, {
+          await sendToPlayer(room.player1Id, {
             type: 'GAME_START',
             gameId: room.id,
-            gameState: sanitizeGameStateForPlayer(room.state, room.player1Id, room.id),
+            gameState: sanitizeGameStateForPlayer(room.state, room.player1Id, room),
           });
         } catch (err: any) {
           send(ws, { type: 'ERROR', message: err.message }, playerId);
@@ -324,29 +478,27 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
 
       case 'PLACE_CARD': {
         try {
-          const result = gameManager.placeCard(msg.gameId, playerId, msg.handIndex, msg.row, msg.col, msg.moveNumber);
+          const result = await gameManager.placeCard(msg.gameId, playerId, msg.handIndex, msg.row, msg.col, msg.moveNumber);
+          const room = await gameManager.getGame(msg.gameId);
 
-          // Send sanitized state to current player
           send(ws, {
             type: 'GAME_STATE',
             gameId: msg.gameId,
-            gameState: sanitizeGameStateForPlayer(result.newState, playerId, msg.gameId),
+            gameState: room ? sanitizeGameStateForPlayer(result.newState, playerId, room) : result.newState,
             captures: result.captures,
           }, playerId);
-          // Send sanitized state to opponent
-          const opponentId = getOpponentId(msg.gameId, playerId);
-          if (opponentId) {
-            sendToPlayer(opponentId, {
+
+          const opponentId = await getOpponentId(msg.gameId, playerId);
+          if (opponentId && room) {
+            await sendToPlayer(opponentId, {
               type: 'GAME_STATE',
               gameId: msg.gameId,
-              gameState: sanitizeGameStateForPlayer(result.newState, opponentId, msg.gameId),
+              gameState: sanitizeGameStateForPlayer(result.newState, opponentId, room),
               captures: result.captures,
             });
           }
 
-          // Check if game is over (finished games reveal all hands)
           if (result.newState.status === 'finished') {
-            const room = gameManager.getGame(msg.gameId);
             const overMsg: ServerMessage = {
               type: 'GAME_OVER',
               gameId: msg.gameId,
@@ -356,11 +508,8 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
               player2CardIds: room?.player2CardIds ?? [],
             };
             send(ws, overMsg, playerId);
-            if (opponentId) sendToPlayer(opponentId, overMsg);
-            // Release players from active-game tracking so they can re-queue.
-            // The room stays alive for post-game relay (RELAY_NOTE_DATA, etc.)
-            // and will be cleaned up by the stale game timer.
-            gameManager.releasePlayersFromGame(msg.gameId);
+            if (opponentId) await sendToPlayer(opponentId, overMsg);
+            await gameManager.releasePlayersFromGame(msg.gameId);
           }
         } catch (err: any) {
           send(ws, { type: 'ERROR', message: err.message }, playerId);
@@ -369,18 +518,19 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       }
 
       case 'LIST_GAMES': {
-        send(ws, { type: 'GAME_LIST', games: gameManager.listGames() }, playerId);
+        const list = await gameManager.listGames();
+        send(ws, { type: 'GAME_LIST', games: list }, playerId);
         break;
       }
 
       case 'GET_GAME': {
-        const room = gameManager.getGame(msg.gameId);
+        const room = await gameManager.getGame(msg.gameId);
         if (room) {
           send(ws, {
             type: 'GAME_INFO',
             game: {
               id: room.id,
-              status: room.state?.status ?? 'waiting',
+              status: (room.state?.status ?? 'waiting') as 'waiting' | 'playing' | 'finished',
               player1Connected: clients.has(room.player1Id),
               player2Connected: room.player2Id ? clients.has(room.player2Id) : false,
               currentTurn: room.state?.currentTurn,
@@ -395,20 +545,20 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
 
       case 'SUBMIT_HAND_PROOF': {
         try {
-          const room = gameManager.getGame(msg.gameId);
+          const room = await gameManager.getGame(msg.gameId);
           if (!room) {
             send(ws, { type: 'ERROR', message: 'Game not found' }, playerId);
             break;
           }
-          const playerRole = gameManager.getPlayerRole(msg.gameId, playerId);
+          const playerRole = await gameManager.getPlayerRole(msg.gameId, playerId);
           if (!playerRole) {
             send(ws, { type: 'ERROR', message: 'Not in this game' }, playerId);
             break;
           }
           const fromPlayer = playerRole === 'player1' ? 1 : 2;
-          const opponentId = getOpponentId(msg.gameId, playerId);
+          const opponentId = await getOpponentId(msg.gameId, playerId);
           if (opponentId) {
-            sendToPlayer(opponentId, {
+            await sendToPlayer(opponentId, {
               type: 'HAND_PROOF',
               gameId: msg.gameId,
               handProof: msg.handProof,
@@ -423,20 +573,18 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
 
       case 'SUBMIT_MOVE_PROOF': {
         try {
-          // The move was already applied by PLACE_CARD. This message
-          // only relays the proof to the opponent for settlement collection.
-          const room = gameManager.getGame(msg.gameId);
+          const room = await gameManager.getGame(msg.gameId);
           if (!room || !room.state) {
             send(ws, { type: 'ERROR', message: 'Game not found' }, playerId);
             break;
           }
 
-          const opponentId = getOpponentId(msg.gameId, playerId);
+          const opponentId = await getOpponentId(msg.gameId, playerId);
           if (opponentId) {
-            sendToPlayer(opponentId, {
+            await sendToPlayer(opponentId, {
               type: 'MOVE_PROVEN',
               gameId: msg.gameId,
-              gameState: sanitizeGameStateForPlayer(room.state, opponentId, msg.gameId),
+              gameState: sanitizeGameStateForPlayer(room.state, opponentId, room),
               captures: [],
               moveProof: msg.moveProof,
               handIndex: msg.handIndex,
@@ -451,14 +599,13 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       }
 
       case 'TX_CONFIRMED': {
-        const status = gameManager.updateTxStatus(msg.gameId, playerId, 'confirmed');
+        const status = await gameManager.updateTxStatus(msg.gameId, playerId, 'confirmed');
         if (status) {
-          // Broadcast updated on-chain status to both players
-          const room = gameManager.getGame(msg.gameId);
+          const room = await gameManager.getGame(msg.gameId);
           if (room) {
             const statusMsg: ServerMessage = { type: 'ON_CHAIN_STATUS', gameId: msg.gameId, status };
-            sendToPlayer(room.player1Id, statusMsg);
-            if (room.player2Id) sendToPlayer(room.player2Id, statusMsg);
+            await sendToPlayer(room.player1Id, statusMsg);
+            if (room.player2Id) await sendToPlayer(room.player2Id, statusMsg);
           }
         } else {
           send(ws, { type: 'ERROR', message: 'Game not found or player not in game' }, playerId);
@@ -467,13 +614,13 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       }
 
       case 'TX_FAILED': {
-        const status = gameManager.updateTxStatus(msg.gameId, playerId, 'failed');
+        const status = await gameManager.updateTxStatus(msg.gameId, playerId, 'failed');
         if (status) {
-          const room = gameManager.getGame(msg.gameId);
+          const room = await gameManager.getGame(msg.gameId);
           if (room) {
             const statusMsg: ServerMessage = { type: 'ON_CHAIN_STATUS', gameId: msg.gameId, status };
-            sendToPlayer(room.player1Id, statusMsg);
-            if (room.player2Id) sendToPlayer(room.player2Id, statusMsg);
+            await sendToPlayer(room.player1Id, statusMsg);
+            if (room.player2Id) await sendToPlayer(room.player2Id, statusMsg);
           }
         } else {
           send(ws, { type: 'ERROR', message: 'Game not found or player not in game' }, playerId);
@@ -483,7 +630,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
 
       case 'CANCEL_GAME': {
         try {
-          gameManager.cancelGame(msg.gameId, playerId);
+          await gameManager.cancelGame(msg.gameId, playerId);
           send(ws, { type: 'GAME_CANCELLED', gameId: msg.gameId, reason: 'Cancelled by creator' }, playerId);
         } catch (err: any) {
           send(ws, { type: 'ERROR', message: err.message }, playerId);
@@ -492,9 +639,9 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       }
 
       case 'SHARE_AZTEC_INFO': {
-        const opponentId = getOpponentId(msg.gameId, playerId);
+        const opponentId = await getOpponentId(msg.gameId, playerId);
         if (opponentId) {
-          sendToPlayer(opponentId, {
+          await sendToPlayer(opponentId, {
             type: 'OPPONENT_AZTEC_INFO',
             gameId: msg.gameId,
             aztecAddress: msg.aztecAddress,
@@ -506,9 +653,9 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       }
 
       case 'RELAY_NOTE_DATA': {
-        const opponentId = getOpponentId(msg.gameId, playerId);
+        const opponentId = await getOpponentId(msg.gameId, playerId);
         if (opponentId) {
-          sendToPlayer(opponentId, {
+          await sendToPlayer(opponentId, {
             type: 'NOTE_DATA',
             gameId: msg.gameId,
             txHash: msg.txHash,
@@ -519,9 +666,9 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       }
 
       case 'SETTLE_STARTED': {
-        const opponentId = getOpponentId(msg.gameId, playerId);
+        const opponentId = await getOpponentId(msg.gameId, playerId);
         if (opponentId) {
-          sendToPlayer(opponentId, {
+          await sendToPlayer(opponentId, {
             type: 'OPPONENT_SETTLING',
             gameId: msg.gameId,
             selectedCardId: msg.selectedCardId,
@@ -532,24 +679,23 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
 
       case 'QUEUE_MATCHMAKING': {
         try {
-          const position = gameManager.queuePlayer(playerId, msg.cardIds);
+          const position = await gameManager.queuePlayer(playerId, msg.cardIds);
           send(ws, { type: 'MATCHMAKING_QUEUED', position }, playerId);
 
-          // Try to match immediately
-          const match = gameManager.tryMatch();
+          const match = await gameManager.tryMatch();
           if (match) {
             const { entry1, entry2, room } = match;
-            sendToPlayer(entry1.playerId, {
+            await sendToPlayer(entry1.playerId, {
               type: 'MATCH_FOUND',
               gameId: room.id,
               playerNumber: 1,
-              gameState: sanitizeGameStateForPlayer(room.state, entry1.playerId, room.id),
+              gameState: sanitizeGameStateForPlayer(room.state, entry1.playerId, room),
             });
-            sendToPlayer(entry2.playerId, {
+            await sendToPlayer(entry2.playerId, {
               type: 'MATCH_FOUND',
               gameId: room.id,
               playerNumber: 2,
-              gameState: sanitizeGameStateForPlayer(room.state, entry2.playerId, room.id),
+              gameState: sanitizeGameStateForPlayer(room.state, entry2.playerId, room),
             });
           }
         } catch (err: any) {
@@ -559,73 +705,69 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       }
 
       case 'CANCEL_MATCHMAKING': {
-        gameManager.dequeuePlayer(playerId);
+        await gameManager.dequeuePlayer(playerId);
         send(ws, { type: 'MATCHMAKING_CANCELLED' }, playerId);
         break;
       }
 
       case 'PING': {
-        gameManager.updatePing(playerId);
+        await gameManager.updatePing(playerId);
         send(ws, { type: 'PONG' }, playerId);
         break;
       }
+
+      // RESUME is handled during session establishment, skip here
+      case 'RESUME':
+        break;
     }
   }
 
-  function handleDisconnect(playerId: string): void {
+  async function handleDisconnect(playerId: string): Promise<void> {
     console.log(`[WS] player=${playerId.slice(0, 8)} disconnected`);
-    // Remove from matchmaking queue if present
-    gameManager.dequeuePlayer(playerId);
+    clients.delete(playerId);
 
-    // Fix 4.3: Check if player is in a game and handle cleanup with timeout
-    const gameId = gameManager.getPlayerGame(playerId);
+    await gameManager.dequeuePlayer(playerId);
+
+    const gameId = await gameManager.getPlayerGame(playerId);
     if (gameId) {
-      const room = gameManager.getGame(gameId);
+      const room = await gameManager.getGame(gameId);
       if (room && room.player2Id !== null) {
-        // Active game: notify opponent and set cleanup timeout
         const opponentId = room.player1Id === playerId ? room.player2Id : room.player1Id;
         if (opponentId) {
-          sendToPlayer(opponentId, { type: 'OPPONENT_DISCONNECTED', gameId });
+          await sendToPlayer(opponentId, { type: 'OPPONENT_DISCONNECTED', gameId });
         }
 
-        // Set a timeout for reconnection; if no reconnection, keep room alive
-        // for the remaining player to complete the abandoned game claim/settle flow.
-        const timeout = setTimeout(() => {
-          disconnectTimeouts.delete(gameId);
-          // Don't remove the game immediately -- the remaining player needs the
-          // room alive for the on-chain abandoned game recovery flow.
-          // Set a longer cleanup timeout (10 minutes).
-          setTimeout(() => {
-            gameManager.removeGame(gameId);
-          }, 10 * 60 * 1000);
+        // Set a reconnection window timeout
+        const timeout = setTimeout(async () => {
+          disconnectTimeouts.delete(playerId);
+          // Don't remove the game — keep it for abandoned game recovery.
+          // The stale game cleanup timer handles eventual removal.
         }, DISCONNECT_TIMEOUT_MS);
-        disconnectTimeouts.set(gameId, timeout);
+        disconnectTimeouts.set(playerId, timeout);
+      } else {
+        // Waiting game with no opponent — clean up immediately
+        await gameManager.removePlayer(playerId);
       }
     }
-
-    // Always remove the player (this handles waiting-game cleanup too)
-    gameManager.removePlayer(playerId);
   }
 
-  // Periodic cleanup of stale games and queue entries
-  const cleanupInterval = setInterval(() => {
-    gameManager.cleanupStaleGames();
-    gameManager.cleanupStaleQueue();
+  const cleanupInterval = setInterval(async () => {
+    await gameManager.cleanupStaleGames();
+    await gameManager.cleanupStaleQueue();
   }, CLEANUP_INTERVAL_MS);
 
-  function close(): Promise<void> {
+  async function close(): Promise<void> {
+    clearInterval(cleanupInterval);
+    for (const timeout of disconnectTimeouts.values()) {
+      clearTimeout(timeout);
+    }
+    disconnectTimeouts.clear();
+    for (const ws of clients.values()) {
+      ws.close();
+    }
+    clients.clear();
+    await store.close();
     return new Promise((resolve, reject) => {
-      clearInterval(cleanupInterval);
-      // Clear disconnect timeouts
-      for (const timeout of disconnectTimeouts.values()) {
-        clearTimeout(timeout);
-      }
-      disconnectTimeouts.clear();
-      // Close all WebSocket connections
-      for (const ws of clients.values()) {
-        ws.close();
-      }
-      clients.clear();
       wss.close(() => {
         httpServer.close((err) => {
           if (err) reject(err);
@@ -635,7 +777,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     });
   }
 
-  return { httpServer, wss, gameManager, close };
+  return { httpServer, wss, gameManager, store, close };
 }
 
 // Start the server if run directly

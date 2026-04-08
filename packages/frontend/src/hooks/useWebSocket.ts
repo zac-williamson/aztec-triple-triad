@@ -2,6 +2,9 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import type { ClientMessage, ServerMessage, GameState, Player, GameListEntry, HandProofData, MoveProofData, PlaintextNoteData } from '../types';
 
 const DEFAULT_WS_URL = 'ws://localhost:3001';
+const SESSION_TOKEN_KEY = 'aztec_tt_ws_session_token';
+const MAX_RECONNECT_DELAY_MS = 30_000;
+const INITIAL_RECONNECT_DELAY_MS = 1000;
 
 export interface UseWebSocketReturn {
   connected: boolean;
@@ -55,6 +58,9 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const messageListenersRef = useRef<Set<(msg: ServerMessage) => void>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
   const playerNumberRef = useRef<1 | 2 | null>(null);
+  const intentionalCloseRef = useRef(false);
+  const reconnectDelayRef = useRef(INITIAL_RECONNECT_DELAY_MS);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [connected, setConnected] = useState(false);
   const [gameId, setGameId] = useState<string | null>(null);
   const [playerNumber, setPlayerNumber] = useState<1 | 2 | null>(null);
@@ -82,155 +88,193 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     }
   }, []);
 
+  const connect = useCallback(() => {
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return; // Already connected or connecting
+    }
+
+    const ws = new WebSocket(url);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      // Send RESUME if we have a session token
+      const sessionToken = localStorage.getItem(SESSION_TOKEN_KEY);
+      if (sessionToken) {
+        ws.send(JSON.stringify({ type: 'RESUME', sessionToken }));
+      }
+      // Don't set connected=true yet — wait for SESSION_ESTABLISHED
+    };
+
+    ws.onclose = () => {
+      setConnected(false);
+      wsRef.current = null;
+
+      // Auto-reconnect unless intentionally closed
+      if (!intentionalCloseRef.current) {
+        const delay = reconnectDelayRef.current;
+        reconnectDelayRef.current = Math.min(delay * 2, MAX_RECONNECT_DELAY_MS);
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectTimerRef.current = null;
+          connect();
+        }, delay);
+      }
+    };
+
+    ws.onerror = () => {
+      setError('Connection failed');
+      // onclose will fire after onerror, triggering reconnect
+    };
+
+    ws.onmessage = (event) => {
+      let msg: ServerMessage;
+      try {
+        msg = JSON.parse(event.data) as ServerMessage;
+      } catch {
+        console.warn('[useWebSocket] Received malformed JSON, ignoring:', event.data);
+        return;
+      }
+      switch (msg.type) {
+        case 'SESSION_ESTABLISHED': {
+          const se = msg as { sessionToken: string; playerId: string; resumed: boolean; gameId: string | null };
+          localStorage.setItem(SESSION_TOKEN_KEY, se.sessionToken);
+          setConnected(true);
+          setError(null);
+          // Reset reconnect backoff on successful connection
+          reconnectDelayRef.current = INITIAL_RECONNECT_DELAY_MS;
+          // If resumed into a game, restore context
+          if (se.resumed && se.gameId) {
+            setGameId(se.gameId);
+          }
+          break;
+        }
+        case 'OPPONENT_RECONNECTED':
+          setOpponentDisconnected(false);
+          break;
+        case 'GAME_CREATED':
+          setGameId(msg.gameId);
+          setPlayerNumber(msg.playerNumber);
+          playerNumberRef.current = msg.playerNumber;
+          setError(null);
+          break;
+        case 'GAME_JOINED':
+          setGameId(msg.gameId);
+          setPlayerNumber(msg.playerNumber);
+          playerNumberRef.current = msg.playerNumber;
+          setGameState(msg.gameState);
+          setError(null);
+          break;
+        case 'GAME_START':
+          setGameState(msg.gameState);
+          break;
+        case 'GAME_STATE':
+          setGameState(msg.gameState);
+          setLastCaptures(msg.captures);
+          break;
+        case 'GAME_OVER':
+          setGameState(msg.gameState);
+          setGameOver({ winner: msg.winner });
+          if (playerNumberRef.current) {
+            const oppIds = playerNumberRef.current === 1 ? msg.player2CardIds : msg.player1CardIds;
+            if (oppIds && oppIds.length > 0) setOpponentCardIds(oppIds);
+          }
+          break;
+        case 'GAME_LIST':
+          setGameList(msg.games);
+          break;
+        case 'OPPONENT_DISCONNECTED':
+          setOpponentDisconnected(true);
+          break;
+        case 'HAND_PROOF':
+          setOpponentHandProof(msg.handProof);
+          break;
+        case 'MOVE_PROVEN':
+          setGameState(msg.gameState);
+          setLastCaptures(msg.captures);
+          setLastMoveProof({
+            moveProof: msg.moveProof,
+            handIndex: msg.handIndex,
+            row: msg.row,
+            col: msg.col,
+          });
+          break;
+        case 'OPPONENT_AZTEC_INFO':
+          setOpponentAztecAddress(msg.aztecAddress);
+          if (msg.onChainGameId) setOpponentOnChainGameId(msg.onChainGameId);
+          if (msg.gameRandomness) setOpponentGameRandomness(msg.gameRandomness);
+          break;
+        case 'NOTE_DATA':
+          setIncomingNoteData({ txHash: msg.txHash, notes: msg.notes });
+          break;
+        case 'OPPONENT_SETTLING':
+          setOpponentSettling({ selectedCardId: msg.selectedCardId });
+          break;
+        case 'ON_CHAIN_STATUS': {
+          const s = msg.status;
+          const myRole = playerNumberRef.current;
+          if (myRole === 2 && s.player1Tx === 'confirmed') {
+            setOpponentTxConfirmed(true);
+          } else if (myRole === 1 && s.player2Tx === 'confirmed') {
+            setOpponentTxConfirmed(true);
+          }
+          break;
+        }
+        case 'MATCHMAKING_QUEUED':
+          setMatchmakingStatus('queued');
+          setQueuePosition(msg.position);
+          break;
+        case 'MATCH_FOUND':
+          setMatchmakingStatus('matched');
+          setQueuePosition(null);
+          setGameId(msg.gameId);
+          setPlayerNumber(msg.playerNumber);
+          playerNumberRef.current = msg.playerNumber;
+          setGameState(msg.gameState);
+          setError(null);
+          break;
+        case 'MATCHMAKING_CANCELLED':
+          setMatchmakingStatus('idle');
+          setQueuePosition(null);
+          break;
+        case 'PONG':
+          break;
+        case 'ERROR':
+          setError(msg.message);
+          break;
+      }
+      // Invoke synchronous listeners (runs in the same event loop tick)
+      for (const cb of messageListenersRef.current) cb(msg);
+    };
+  }, [url]);
+
   useEffect(() => {
     let cancelled = false;
-    let ws: WebSocket | null = null;
 
     // Delay connection slightly to survive React StrictMode's
     // mount → unmount → remount cycle without wasting a connection.
     const timer = setTimeout(() => {
       if (cancelled) return;
-
-      ws = new WebSocket(url);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        if (cancelled) { ws?.close(); return; }
-        setConnected(true);
-        setError(null);
-      };
-
-      ws.onclose = () => {
-        if (!cancelled) setConnected(false);
-      };
-
-      ws.onerror = () => {
-        if (cancelled) return;
-        setError('Connection failed');
-        setConnected(false);
-      };
-
-      ws.onmessage = (event) => {
-        if (cancelled) return;
-        let msg: ServerMessage;
-        try {
-          msg = JSON.parse(event.data) as ServerMessage;
-        } catch {
-          console.warn('[useWebSocket] Received malformed JSON, ignoring:', event.data);
-          return;
-        }
-        switch (msg.type) {
-          case 'GAME_CREATED':
-            setGameId(msg.gameId);
-            setPlayerNumber(msg.playerNumber);
-            playerNumberRef.current = msg.playerNumber;
-            setError(null);
-            break;
-          case 'GAME_JOINED':
-            setGameId(msg.gameId);
-            setPlayerNumber(msg.playerNumber);
-            playerNumberRef.current = msg.playerNumber;
-            setGameState(msg.gameState);
-            setError(null);
-            break;
-          case 'GAME_START':
-            setGameState(msg.gameState);
-            break;
-          case 'GAME_STATE':
-            setGameState(msg.gameState);
-            setLastCaptures(msg.captures);
-            break;
-          case 'GAME_OVER':
-            setGameState(msg.gameState);
-            setGameOver({ winner: msg.winner });
-            // Extract opponent card IDs from GAME_OVER message
-            if (playerNumberRef.current) {
-              const oppIds = playerNumberRef.current === 1 ? msg.player2CardIds : msg.player1CardIds;
-              if (oppIds && oppIds.length > 0) setOpponentCardIds(oppIds);
-            }
-            break;
-          case 'GAME_LIST':
-            setGameList(msg.games);
-            break;
-          case 'OPPONENT_DISCONNECTED':
-            setOpponentDisconnected(true);
-            break;
-          case 'HAND_PROOF':
-            setOpponentHandProof(msg.handProof);
-            break;
-          case 'MOVE_PROVEN':
-            setGameState(msg.gameState);
-            setLastCaptures(msg.captures);
-            setLastMoveProof({
-              moveProof: msg.moveProof,
-              handIndex: msg.handIndex,
-              row: msg.row,
-              col: msg.col,
-            });
-            break;
-          case 'OPPONENT_AZTEC_INFO':
-            setOpponentAztecAddress(msg.aztecAddress);
-            if (msg.onChainGameId) setOpponentOnChainGameId(msg.onChainGameId);
-            if (msg.gameRandomness) setOpponentGameRandomness(msg.gameRandomness);
-            break;
-          case 'NOTE_DATA':
-            setIncomingNoteData({ txHash: msg.txHash, notes: msg.notes });
-            break;
-          case 'OPPONENT_SETTLING':
-            setOpponentSettling({ selectedCardId: msg.selectedCardId });
-            break;
-          case 'ON_CHAIN_STATUS': {
-            const s = msg.status;
-            const myRole = playerNumberRef.current;
-            if (myRole === 2 && s.player1Tx === 'confirmed') {
-              setOpponentTxConfirmed(true);
-            } else if (myRole === 1 && s.player2Tx === 'confirmed') {
-              setOpponentTxConfirmed(true);
-            }
-            break;
-          }
-          case 'MATCHMAKING_QUEUED':
-            setMatchmakingStatus('queued');
-            setQueuePosition(msg.position);
-            break;
-          case 'MATCH_FOUND':
-            setMatchmakingStatus('matched');
-            setQueuePosition(null);
-            setGameId(msg.gameId);
-            setPlayerNumber(msg.playerNumber);
-            playerNumberRef.current = msg.playerNumber;
-            setGameState(msg.gameState);
-            setError(null);
-            break;
-          case 'MATCHMAKING_CANCELLED':
-            setMatchmakingStatus('idle');
-            setQueuePosition(null);
-            break;
-          case 'PONG':
-            // Keep-alive acknowledged
-            break;
-          case 'ERROR':
-            setError(msg.message);
-            break;
-        }
-        // Invoke synchronous listeners (runs in the same event loop tick)
-        for (const cb of messageListenersRef.current) cb(msg);
-      };
+      intentionalCloseRef.current = false;
+      connect();
     }, 50);
 
     return () => {
       cancelled = true;
       clearTimeout(timer);
-      if (ws) {
-        ws.onopen = null;
-        ws.onclose = null;
-        ws.onerror = null;
-        ws.onmessage = null;
-        ws.close();
+      intentionalCloseRef.current = true;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.onopen = null;
+        wsRef.current.onclose = null;
+        wsRef.current.onerror = null;
+        wsRef.current.onmessage = null;
+        wsRef.current.close();
       }
       wsRef.current = null;
     };
-  }, [url]);
+  }, [connect]);
 
   const createGame = useCallback((cardIds: number[]) => {
     setError(null);
@@ -341,6 +385,12 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   }, []);
 
   const disconnect = useCallback(() => {
+    intentionalCloseRef.current = true;
+    localStorage.removeItem(SESSION_TOKEN_KEY);
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     wsRef.current?.close();
     leaveGame();
   }, [leaveGame]);

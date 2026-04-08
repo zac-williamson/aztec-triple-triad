@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import {
   createGame,
   placeCard,
@@ -8,31 +7,16 @@ import {
   type PlaceCardResult,
   type Player,
 } from '@axolotl-arena/game-logic';
-import type { GameRoom, GameListEntry, OnChainGameStatus, TxStatus } from './types.js';
-
-/**
- * Generate a game ID that is a valid BN254 field element.
- * Uses 31 random bytes (248 bits of entropy) which is always < BN254 modulus (~254 bits).
- * Returns a 0x-prefixed hex string.
- */
-export function generateGameId(): string {
-  return '0x' + crypto.randomBytes(31).toString('hex');
-}
+import type { GameStore, StoredGameRoom, QueueEntryData } from './store/GameStore.js';
+import type { GameListEntry, OnChainGameStatus, TxStatus } from './types.js';
+import { generateGameId } from './gameId.js';
 
 const GAME_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const QUEUE_STALE_MS = 30 * 1000; // 30 seconds without ping
-
-interface QueueEntry {
-  playerId: string;
-  cardIds: number[];
-  queuedAt: number;
-  lastPing: number;
-}
+const LOCK_TTL_MS = 5000; // 5-second deadlock guard
 
 export class GameManager {
-  private games = new Map<string, GameRoom>();
-  private playerToGame = new Map<string, string>();
-  private matchmakingQueue: QueueEntry[] = [];
+  constructor(private store: GameStore) {}
 
   private validateCardIds(cardIds: number[]): void {
     if (cardIds.length !== 5) {
@@ -42,22 +26,20 @@ export class GameManager {
     if (uniqueIds.size !== cardIds.length) {
       throw new Error('Duplicate card IDs not allowed');
     }
-    // Validate card IDs exist in database
     getCardsByIds(cardIds);
   }
 
-  createGame(playerId: string, cardIds: number[]): GameRoom {
+  async createGame(playerId: string, cardIds: number[]): Promise<StoredGameRoom> {
     this.validateCardIds(cardIds);
 
-    // Fix 4.2: Prevent game overwrite - reject if player already in active game
-    if (this.playerToGame.has(playerId)) {
+    if (await this.store.getPlayerGame(playerId)) {
       throw new Error('You are already in an active game. Leave it first.');
     }
 
     const gameId = generateGameId();
-    const room: GameRoom = {
+    const room: StoredGameRoom = {
       id: gameId,
-      state: null as unknown as GameState, // Will be initialized when player 2 joins
+      state: null as unknown as GameState,
       player1Id: playerId,
       player2Id: null,
       player1CardIds: cardIds,
@@ -65,17 +47,16 @@ export class GameManager {
       createdAt: Date.now(),
       lastActivity: Date.now(),
       expectedMoveNumber: 0,
-      processing: false,
       onChainStatus: { player1Tx: 'idle', player2Tx: 'idle', canSettle: false },
     };
 
-    this.games.set(gameId, room);
-    this.playerToGame.set(playerId, gameId);
+    await this.store.setGame(gameId, room);
+    await this.store.setPlayerGame(playerId, gameId);
     return room;
   }
 
-  joinGame(gameId: string, playerId: string, cardIds: number[]): GameRoom {
-    const room = this.games.get(gameId);
+  async joinGame(gameId: string, playerId: string, cardIds: number[]): Promise<StoredGameRoom> {
+    const room = await this.store.getGame(gameId);
     if (!room) {
       throw new Error('Game not found');
     }
@@ -85,9 +66,7 @@ export class GameManager {
     if (room.player1Id === playerId) {
       throw new Error('Cannot join your own game');
     }
-
-    // Fix 4.2: Prevent game overwrite - reject if player already in active game
-    if (this.playerToGame.has(playerId)) {
+    if (await this.store.getPlayerGame(playerId)) {
       throw new Error('You are already in an active game. Leave it first.');
     }
 
@@ -96,161 +75,144 @@ export class GameManager {
     room.player2Id = playerId;
     room.player2CardIds = cardIds;
 
-    // Initialize game state
     const player1Hand = getCardsByIds(room.player1CardIds);
     const player2Hand = getCardsByIds(cardIds);
     room.state = createGame(player1Hand, player2Hand);
     room.lastActivity = Date.now();
 
-    this.playerToGame.set(playerId, gameId);
+    await this.store.setGame(gameId, room);
+    await this.store.setPlayerGame(playerId, gameId);
     return room;
   }
 
-  placeCard(
+  async placeCard(
     gameId: string,
     playerId: string,
     handIndex: number,
     row: number,
     col: number,
     moveNumber?: number,
-  ): PlaceCardResult {
-    const room = this.games.get(gameId);
-    if (!room) {
-      throw new Error('Game not found');
-    }
-    if (!room.state) {
-      throw new Error('Game has not started');
-    }
-
-    // Fix 4.2: Atomic turn checking - reject concurrent processing
-    if (room.processing) {
+  ): Promise<PlaceCardResult> {
+    const acquired = await this.store.acquireGameLock(gameId, LOCK_TTL_MS);
+    if (!acquired) {
       throw new Error('Game is currently processing another move');
     }
 
-    const player = this.getPlayerRole(gameId, playerId);
-    if (!player) {
-      throw new Error('Player not in this game');
-    }
-    if (room.state.currentTurn !== player) {
-      throw new Error('Not your turn');
-    }
-
-    // Fix 4.1: Move nonce validation for replay prevention
-    if (moveNumber !== undefined) {
-      if (moveNumber !== room.expectedMoveNumber) {
-        throw new Error(`Invalid move number: expected ${room.expectedMoveNumber}, got ${moveNumber}`);
-      }
-    }
-
-    room.processing = true;
     try {
+      const room = await this.store.getGame(gameId);
+      if (!room) {
+        throw new Error('Game not found');
+      }
+      if (!room.state) {
+        throw new Error('Game has not started');
+      }
+
+      const player = await this.getPlayerRole(gameId, playerId);
+      if (!player) {
+        throw new Error('Player not in this game');
+      }
+      if (room.state.currentTurn !== player) {
+        throw new Error('Not your turn');
+      }
+
+      if (moveNumber !== undefined) {
+        if (moveNumber !== room.expectedMoveNumber) {
+          throw new Error(`Invalid move number: expected ${room.expectedMoveNumber}, got ${moveNumber}`);
+        }
+      }
+
       const result = placeCard(room.state, player, handIndex, row, col);
       room.state = result.newState;
       room.lastActivity = Date.now();
       room.expectedMoveNumber++;
+
+      await this.store.setGame(gameId, room);
       return result;
     } finally {
-      room.processing = false;
+      await this.store.releaseGameLock(gameId);
     }
   }
 
-  getGame(gameId: string): GameRoom | undefined {
-    return this.games.get(gameId);
+  async getGame(gameId: string): Promise<StoredGameRoom | null> {
+    return this.store.getGame(gameId);
   }
 
-  getPlayerRole(gameId: string, playerId: string): Player | null {
-    const room = this.games.get(gameId);
+  async getPlayerRole(gameId: string, playerId: string): Promise<Player | null> {
+    const room = await this.store.getGame(gameId);
     if (!room) return null;
     if (room.player1Id === playerId) return 'player1';
     if (room.player2Id === playerId) return 'player2';
     return null;
   }
 
-  getPlayerGame(playerId: string): string | undefined {
-    return this.playerToGame.get(playerId);
+  async getPlayerGame(playerId: string): Promise<string | null> {
+    return this.store.getPlayerGame(playerId);
   }
 
-  listGames(): GameListEntry[] {
-    const entries: GameListEntry[] = [];
-    for (const [id, room] of this.games) {
-      entries.push({
-        id,
-        status: room.state?.status ?? 'waiting',
-        player1Connected: true, // Connection tracking is done by the server
-        player2Connected: room.player2Id !== null,
-        currentTurn: room.state?.currentTurn,
-        winner: room.state?.winner,
-      });
-    }
-    return entries;
+  async listGames(): Promise<GameListEntry[]> {
+    const rooms = await this.store.listGames();
+    return rooms.map(room => ({
+      id: room.id,
+      status: (room.state?.status ?? 'waiting') as 'waiting' | 'playing' | 'finished',
+      player1Connected: true,
+      player2Connected: room.player2Id !== null,
+      currentTurn: room.state?.currentTurn,
+      winner: room.state?.winner,
+    }));
   }
 
-  removePlayer(playerId: string): { gameId: string; room: GameRoom } | null {
-    const gameId = this.playerToGame.get(playerId);
+  async removePlayer(playerId: string): Promise<{ gameId: string; room: StoredGameRoom } | null> {
+    const gameId = await this.store.getPlayerGame(playerId);
     if (!gameId) return null;
 
-    const room = this.games.get(gameId);
+    const room = await this.store.getGame(gameId);
     if (!room) {
-      this.playerToGame.delete(playerId);
+      await this.store.deletePlayerGame(playerId);
       return null;
     }
 
-    this.playerToGame.delete(playerId);
+    await this.store.deletePlayerGame(playerId);
 
     // If game hasn't started and the creator leaves, remove the game
     if (room.player2Id === null) {
-      this.games.delete(gameId);
+      await this.store.deleteGame(gameId);
       return null;
     }
 
     return { gameId, room };
   }
 
-  /** Release players from active-game tracking without removing the room.
-   *  The room stays for post-game message relay and is cleaned up by stale timer. */
-  releasePlayersFromGame(gameId: string): void {
-    const room = this.games.get(gameId);
+  async releasePlayersFromGame(gameId: string): Promise<void> {
+    const room = await this.store.getGame(gameId);
     if (room) {
-      this.playerToGame.delete(room.player1Id);
+      await this.store.deletePlayerGame(room.player1Id);
       if (room.player2Id) {
-        this.playerToGame.delete(room.player2Id);
+        await this.store.deletePlayerGame(room.player2Id);
       }
     }
   }
 
-  removeGame(gameId: string): void {
-    const room = this.games.get(gameId);
+  async removeGame(gameId: string): Promise<void> {
+    const room = await this.store.getGame(gameId);
     if (room) {
-      this.playerToGame.delete(room.player1Id);
+      await this.store.deletePlayerGame(room.player1Id);
       if (room.player2Id) {
-        this.playerToGame.delete(room.player2Id);
+        await this.store.deletePlayerGame(room.player2Id);
       }
-      this.games.delete(gameId);
+      await this.store.deleteGame(gameId);
     }
   }
 
-  cleanupStaleGames(): number {
-    const now = Date.now();
-    let cleaned = 0;
-    for (const [id, room] of this.games) {
-      if (now - room.lastActivity > GAME_TIMEOUT_MS) {
-        this.removeGame(id);
-        cleaned++;
-      }
-    }
-    return cleaned;
+  async cleanupStaleGames(): Promise<number> {
+    return this.store.cleanupStaleGames(GAME_TIMEOUT_MS);
   }
 
-  /**
-   * Update the on-chain transaction status for a player in a game.
-   * Returns the updated OnChainGameStatus, or null if the game is not found.
-   */
-  updateTxStatus(
+  async updateTxStatus(
     gameId: string,
     playerId: string,
     txStatus: TxStatus,
-  ): OnChainGameStatus | null {
-    const room = this.games.get(gameId);
+  ): Promise<OnChainGameStatus | null> {
+    const room = await this.store.getGame(gameId);
     if (!room) return null;
 
     if (room.player1Id === playerId) {
@@ -258,7 +220,7 @@ export class GameManager {
     } else if (room.player2Id === playerId) {
       room.onChainStatus.player2Tx = txStatus;
     } else {
-      return null; // Player not in this game
+      return null;
     }
 
     room.onChainStatus.canSettle =
@@ -266,87 +228,66 @@ export class GameManager {
       room.onChainStatus.player2Tx === 'confirmed';
 
     room.lastActivity = Date.now();
+    await this.store.setGame(gameId, room);
     return room.onChainStatus;
   }
 
-  /**
-   * Cancel a game that hasn't started yet. Only the creator can cancel.
-   * Returns true if cancelled, throws if invalid.
-   */
-  cancelGame(gameId: string, playerId: string): void {
-    const room = this.games.get(gameId);
+  async cancelGame(gameId: string, playerId: string): Promise<void> {
+    const room = await this.store.getGame(gameId);
     if (!room) throw new Error('Game not found');
     if (room.player1Id !== playerId) throw new Error('Only the game creator can cancel');
     if (room.player2Id !== null) throw new Error('Cannot cancel a game that has started');
 
-    this.removeGame(gameId);
+    await this.removeGame(gameId);
   }
 
-  /**
-   * Get the on-chain status for a game.
-   */
-  getOnChainStatus(gameId: string): OnChainGameStatus | null {
-    const room = this.games.get(gameId);
+  async getOnChainStatus(gameId: string): Promise<OnChainGameStatus | null> {
+    const room = await this.store.getGame(gameId);
     return room?.onChainStatus ?? null;
   }
 
   // --- Matchmaking Queue ---
 
-  queuePlayer(playerId: string, cardIds: number[]): number {
+  async queuePlayer(playerId: string, cardIds: number[]): Promise<number> {
     this.validateCardIds(cardIds);
 
-    // Check player isn't already in a game or queue
-    if (this.playerToGame.has(playerId)) {
+    if (await this.store.getPlayerGame(playerId)) {
       throw new Error('You are already in an active game');
     }
-    if (this.matchmakingQueue.some(e => e.playerId === playerId)) {
+    if (await this.store.isInQueue(playerId)) {
       throw new Error('You are already in the matchmaking queue');
     }
 
     const now = Date.now();
-    this.matchmakingQueue.push({ playerId, cardIds, queuedAt: now, lastPing: now });
-    return this.matchmakingQueue.length;
+    await this.store.pushQueue({ playerId, cardIds, queuedAt: now, lastPing: now });
+    return await this.store.getQueueLength();
   }
 
-  dequeuePlayer(playerId: string): boolean {
-    const idx = this.matchmakingQueue.findIndex(e => e.playerId === playerId);
-    if (idx === -1) return false;
-    this.matchmakingQueue.splice(idx, 1);
-    return true;
+  async dequeuePlayer(playerId: string): Promise<boolean> {
+    return this.store.removeFromQueue(playerId);
   }
 
-  tryMatch(): { entry1: QueueEntry; entry2: QueueEntry; room: GameRoom } | null {
-    if (this.matchmakingQueue.length < 2) return null;
+  async tryMatch(): Promise<{ entry1: QueueEntryData; entry2: QueueEntryData; room: StoredGameRoom } | null> {
+    const pair = await this.store.popQueuePair();
+    if (!pair) return null;
 
-    const entry1 = this.matchmakingQueue.shift()!;
-    const entry2 = this.matchmakingQueue.shift()!;
+    const [entry1, entry2] = pair;
+    const room = await this.createGame(entry1.playerId, entry1.cardIds);
+    await this.joinGame(room.id, entry2.playerId, entry2.cardIds);
 
-    // Create a game room using existing createGame + joinGame flow
-    const room = this.createGame(entry1.playerId, entry1.cardIds);
-    this.joinGame(room.id, entry2.playerId, entry2.cardIds);
-
-    // Re-fetch to get updated state
-    const updatedRoom = this.games.get(room.id)!;
-    return { entry1, entry2, room: updatedRoom };
+    const updatedRoom = await this.store.getGame(room.id);
+    return { entry1, entry2, room: updatedRoom! };
   }
 
-  updatePing(playerId: string): boolean {
-    const entry = this.matchmakingQueue.find(e => e.playerId === playerId);
-    if (!entry) return false;
-    entry.lastPing = Date.now();
-    return true;
+  async updatePing(playerId: string): Promise<boolean> {
+    return this.store.updateQueuePing(playerId);
   }
 
-  cleanupStaleQueue(): number {
-    const now = Date.now();
-    const stale = this.matchmakingQueue.filter(e => now - e.lastPing > QUEUE_STALE_MS);
-    for (const entry of stale) {
-      this.dequeuePlayer(entry.playerId);
-    }
-    return stale.length;
+  async cleanupStaleQueue(): Promise<number> {
+    return this.store.cleanupStaleQueue(QUEUE_STALE_MS);
   }
 
-  get gameCount(): number {
-    return this.games.size;
+  async getGameCount(): Promise<number> {
+    return this.store.getGameCount();
   }
 }
