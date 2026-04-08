@@ -20,6 +20,8 @@ interface GameHUDProps {
   canSettle?: boolean;
   onSettle?: (selectedCardId: number) => void;
   settleTxStatus?: SettleTxStatus;
+  opponentSettled?: boolean;
+  takenCardId?: number | null;
 }
 
 function getProofStatusLabel(status: string): string {
@@ -62,6 +64,8 @@ export function GameHUD({
   canSettle,
   onSettle,
   settleTxStatus = 'idle',
+  opponentSettled = false,
+  takenCardId = null,
 }: GameHUDProps) {
   const opponentPlayer: Player = myPlayer === 'player1' ? 'player2' : 'player1';
 
@@ -158,12 +162,29 @@ export function GameHUD({
             <div style={{ fontFamily: "'Cinzel', serif", fontSize: 20, color: '#5a4a34' }}>
               {myScore} - {opponentScore}
             </div>
-            <div style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#c8a860', margin: '12px 0' }}>
+            <div style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#2e6b1e', margin: '12px 0' }}>
               +20 Arena Tokens earned!
             </div>
-            <button className="parchment-dialog__btn" onClick={onBackToLobby}>
-              Back to Lobby
-            </button>
+            {gameOver.winner === 'draw' ? (
+              <button className="parchment-dialog__btn" onClick={onBackToLobby}>
+                Back to Lobby
+              </button>
+            ) : !opponentSettled ? (
+              <div style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#5a4a34', margin: '12px 0' }}>
+                Opponent is selecting a card to take...
+              </div>
+            ) : (
+              <>
+                {takenCardId != null && takenCardId > 0 && (
+                  <div style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#8a3020', margin: '8px 0' }}>
+                    Your opponent took card #{takenCardId}
+                  </div>
+                )}
+                <button className="parchment-dialog__btn" onClick={onBackToLobby}>
+                  Back to Lobby
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}

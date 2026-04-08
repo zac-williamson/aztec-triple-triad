@@ -28,6 +28,7 @@ export const contractCache: {
   wallet: unknown | null;
   gameContract: any;
   nftContract: any;
+  tokenContract: any;
   fee: any;
   Fr: any;
   AztecAddress: any;
@@ -37,6 +38,7 @@ export const contractCache: {
   wallet: null,
   gameContract: null,
   nftContract: null,
+  tokenContract: null,
   fee: null,
   Fr: null,
   AztecAddress: null,
@@ -50,6 +52,7 @@ export async function ensureContracts(wallet: unknown) {
     contractCache.wallet = wallet;
     contractCache.gameContract = null;
     contractCache.nftContract = null;
+    contractCache.tokenContract = null;
     contractCache.fee = null;
   }
 
@@ -86,23 +89,39 @@ export async function ensureContracts(wallet: unknown) {
     contractCache.nftContract = await Contract.at(nftAddr, nftArtifact, wallet as never);
   }
 
+  if (!contractCache.tokenContract && AZTEC_CONFIG.tokenContractAddress) {
+    const tokenAddr = AztecAddress.fromString(AZTEC_CONFIG.tokenContractAddress);
+    const tokenResp = await fetch('/contracts/arena_token-ArenaToken.json');
+    if (tokenResp.ok) {
+      const tokenArtifact = loadContractArtifact(await tokenResp.json());
+      contractCache.tokenContract = await Contract.at(tokenAddr, tokenArtifact, wallet as never);
+    }
+  }
+
   if (!contractCache.fee) {
     contractCache.fee = await getSponsoredFee(wallet);
   }
 
-  return { gameContract: contractCache.gameContract, nftContract: contractCache.nftContract, fee: contractCache.fee, Fr, AztecAddress };
+  return { gameContract: contractCache.gameContract, nftContract: contractCache.nftContract, tokenContract: contractCache.tokenContract, fee: contractCache.fee, Fr, AztecAddress };
 }
 
 /** Pre-warm contract cache so first game operation is fast. */
 let warmupStarted = false;
+let warmupPromise: Promise<void> | null = null;
 export function warmupContracts(wallet: unknown): void {
   if (warmupStarted) return;
   warmupStarted = true;
-  ensureContracts(wallet).then(
-    () => console.log('[contracts] Contracts pre-warmed'),
+  warmupPromise = ensureContracts(wallet).then(
+    () => { console.log('[contracts] Contracts pre-warmed'); },
     (err) => {
       warmupStarted = false;
+      warmupPromise = null;
       console.error('[contracts] Contract warmup failed:', err);
     },
   );
+}
+
+/** Wait for warmup to complete (no-op if already done or never started). */
+export function waitForWarmup(): Promise<void> {
+  return warmupPromise ?? Promise.resolve();
 }

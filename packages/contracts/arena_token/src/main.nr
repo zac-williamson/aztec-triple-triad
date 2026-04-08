@@ -1,6 +1,6 @@
 use aztec::macros::aztec;
 
-/// Arena Token - private fungible token for the Triple Triad game.
+/// Arena Token - private fungible token for the Aztec Arena game.
 ///
 /// Minting authority is shared between admin, NFT contract, and game contract.
 /// - NFT contract mints 100 tokens during new player onboarding

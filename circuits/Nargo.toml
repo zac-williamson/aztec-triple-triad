@@ -3,4 +3,5 @@ members = [
     "card_data",
     "prove_hand",
     "game_move",
+    "dummy_move",
 ]

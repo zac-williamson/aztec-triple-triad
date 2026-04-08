@@ -28,6 +28,8 @@ interface GameScreenProps {
   onSettle?: (selectedCardId: number) => void;
   settleTxStatus?: SettleTxStatus;
   settleProgress?: { myHand: boolean; oppHand: boolean; moves: number };
+  opponentSettled?: boolean;
+  takenCardId?: number | null;
   // Tutorial optional
   tutorialHighlightCells?: { row: number; col: number }[];
   tutorialPulseHandIndex?: number | null;
@@ -49,6 +51,8 @@ export function GameScreen3D({
   onSettle,
   settleTxStatus,
   settleProgress,
+  opponentSettled,
+  takenCardId,
   tutorialHighlightCells,
   tutorialPulseHandIndex,
   xochitlRevealCount,
@@ -265,6 +269,8 @@ export function GameScreen3D({
         canSettle={canSettle}
         onSettle={onSettle}
         settleTxStatus={settleTxStatus}
+        opponentSettled={opponentSettled}
+        takenCardId={takenCardId}
       />
     </div>
   );

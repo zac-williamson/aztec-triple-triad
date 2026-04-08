@@ -6,7 +6,8 @@ import { useGameStorage, type PersistedGameState } from './useGameStorage';
 import { useAztecContext } from '../aztec/AztecContext';
 import { importNotesFromTx } from '../aztec/noteImporter';
 import { removeCards } from '../aztec/cardStore';
-import { ensureContracts, contractCache, warmupContracts } from '../aztec/contracts';
+import txManager from '../aztec/txManager';
+import { ensureContracts, contractCache, warmupContracts, waitForWarmup } from '../aztec/contracts';
 import { AZTEC_CONFIG } from '../aztec/config';
 import { toFr as toFrUtil, toHexString } from '../aztec/fieldUtils';
 import { AZTEC_TX_TIMEOUT, AZTEC_SETTLE_TX_TIMEOUT, CARDS_PER_HAND, TOTAL_MOVES, MOVE_PROOF_WAIT_TIMEOUT, HAND_PROOF_WAIT_TIMEOUT } from '../aztec/gameConstants';
@@ -47,6 +48,15 @@ export interface UseGameReturn {
   cardIds: number[];
   packResult: { location: string; cardIds: number[] } | null;
   hasGameInProgress: boolean;
+
+  // Settlement info (for loser UX)
+  opponentSettled: boolean;
+  takenCardId: number | null;
+
+  // Abandoned game
+  isClaimingAbandoned: boolean;
+  abandonedDisputeCountdown: number | null;
+  canGoBack: boolean;
 
   // Actions
   handlePlay: () => void;
@@ -106,6 +116,15 @@ export function useGame(wsUrl: string): UseGameReturn {
   const [settleError, setSettleError] = useState<string | null>(null);
   const [onChainError, setOnChainError] = useState<string | null>(null);
 
+  // --- Abandoned game state ---
+  const [isClaimingAbandoned, setIsClaimingAbandoned] = useState(false);
+  const [abandonedDisputeCountdown, setAbandonedDisputeCountdown] = useState<number | null>(null);
+  const abandonedClaimStartedRef = useRef(false);
+
+  // --- Opponent settlement tracking (for loser UX) ---
+  const [opponentSettled, setOpponentSettled] = useState(false);
+  const [takenCardId, setTakenCardId] = useState<number | null>(null);
+
   // --- Proof state ---
   const [myHandProof, setMyHandProof] = useState<HandProofData | null>(null);
   const [opponentHandProof, setOpponentHandProof] = useState<HandProofData | null>(null);
@@ -124,6 +143,16 @@ export function useGame(wsUrl: string): UseGameReturn {
   // Ref to always access latest move proofs (avoids stale closure in handleSettle)
   const moveProofsRef = useRef(collectedMoveProofs);
   moveProofsRef.current = collectedMoveProofs;
+
+  // Persistent ref for pipeline-dependent values that settle_game needs.
+  // Populated by pipeline postEffects and WebSocket effects. NOT cleared
+  // by handleBackToMenu or ws.leaveGame(), so settlement survives navigation.
+  const settlementInfoRef = useRef<{
+    onChainGameId: string;
+    gameRandomness: string[];
+    opponentAddress: string;
+    opponentRandomness: string[];
+  } | null>(null);
 
   // --- Refs ---
   // Idempotency guards (kept)
@@ -198,6 +227,10 @@ export function useGame(wsUrl: string): UseGameReturn {
     const w = requireWallet();
     const addr = requireAccountAddress();
 
+    // Wait for warmup to complete before touching PXE — warmup runs
+    // outside the txManager queue and its registerContract/Contract.at
+    // calls race with ours on IDB if we don't wait.
+    await waitForWarmup();
     const { gameContract, nftContract, fee, Fr, AztecAddress } = await ensureContracts(w);
     const senderAddr = AztecAddress.fromString(addr);
 
@@ -240,9 +273,9 @@ export function useGame(wsUrl: string): UseGameReturn {
 
     // Diagnostic: check what notes the PXE thinks are available
     try {
-      console.log(`[PXE-TRACE] ${Date.now()} nftContract.get_private_cards(${senderAddr}, 0).simulate() [diagnostic]`);
-      const { result: pxeCards } = await nftContract.methods.get_private_cards(senderAddr, 0).simulate({ from: senderAddr });
-      console.log(`[PXE-TRACE] ${Date.now()} get_private_cards COMPLETE [diagnostic]`);
+      console.log(`[PXE-TRACE] ${Date.now()} nftContract.get_nfts_for_user(${senderAddr}, 0).simulate() [diagnostic]`);
+      const { result: pxeCards } = await nftContract.methods.get_nfts_for_user(senderAddr, 0).simulate({ from: senderAddr });
+      console.log(`[PXE-TRACE] ${Date.now()} get_nfts_for_user COMPLETE [diagnostic]`);
       // simulate() returns tuple as nested array: [fieldArray, hasMore]
       const page = pxeCards[0] ?? pxeCards;
       const cardList = Array.isArray(page) ? page.map((c: any) => Number(c)) : page;
@@ -636,37 +669,71 @@ export function useGame(wsUrl: string): UseGameReturn {
     console.log('[useGame] Preview data shared with opponent (early, via effect)');
   }, [ws.gameId, gameRandomness, onChainGameId, ws.opponentOnChainGameId, aztec.accountAddress, ws.shareAztecInfo]);
 
+  // Merge opponent info into settlementInfoRef synchronously when it arrives
+  // via WebSocket. Uses addMessageListener (not useEffect) so the ref is
+  // updated in the same event loop tick as the message — async functions in
+  // txManager can read it immediately without yielding to React's render cycle.
+  useEffect(() => {
+    return ws.addMessageListener((msg) => {
+      if (msg.type === 'OPPONENT_AZTEC_INFO' && settlementInfoRef.current) {
+        if (msg.aztecAddress) {
+          settlementInfoRef.current.opponentAddress = msg.aztecAddress;
+        }
+        if (msg.gameRandomness && msg.gameRandomness.length === 6) {
+          settlementInfoRef.current.opponentRandomness = [...msg.gameRandomness];
+        }
+      }
+    });
+  }, [ws.addMessageListener]);
+
   // Consolidated on-chain pipeline (replaces 3 separate effects + dead fallback)
   useEffect(() => {
+    if (screen === 'main-menu') return; // Never start pipeline during navigation
     if (!ws.gameId || !ws.gameState) return;
     if (ws.gameState.status !== 'playing' && ws.gameState.status !== 'finished') return;
     if (!isContractAvailable) return;
 
     const phase = onChainPhaseRef.current;
 
-    // P1: create game
+    // P1: create game — runs through txManager
     if (ws.playerNumber === 1 && phase === 'idle') {
       onChainPhaseRef.current = 'creating';
-      (async () => {
-        // Clear previous settle tx hash — no need to wait for PXE sync here.
-        // The PXE syncs automatically when the next .simulate() or .send() runs
-        // (via blockStateSynchronizer.sync() inside executeUtility/proveTx).
-        // Polling getSyncedBlockHeader() does NOT trigger a sync and will spin
-        // forever if the PXE hasn't had a job to process.
-        if (lastSettleTxHashRef.current) {
-          console.log(`[useGame] P1: clearing previous settle tx ref: ${lastSettleTxHashRef.current}`);
-          lastSettleTxHashRef.current = null;
-        }
-        console.log('[useGame] P1: starting on-chain game creation...');
-        console.log('[useGame] P1: ownedCards=', aztec.ownedCardIds, 'selectedCardIds=', cardIds);
-        const result = await createGameOnChain(cardIds);
-        ws.shareAztecInfo(ws.gameId!, aztec.accountAddress!, result.gameId, result.randomness);
-        aztec.updateOwnedCards(prev => removeOneOfEach(prev, cardIds));
-        ws.notifyTxConfirmed(ws.gameId!, 'create_game', result.txHash);
-        console.log('[useGame] P1: create_game mined, notified backend');
-        onChainPhaseRef.current = 'done';
-        if (pipelineDoneResolveRef.current) { pipelineDoneResolveRef.current(); pipelineDoneResolveRef.current = null; }
-      })().catch(err => {
+      const capturedGameId = ws.gameId!;
+      const capturedAddr = aztec.accountAddress!;
+      const capturedCardIds = [...cardIds];
+      const capturedShareInfo = ws.shareAztecInfo;
+      const capturedNotifyTx = ws.notifyTxConfirmed;
+
+      if (lastSettleTxHashRef.current) {
+        lastSettleTxHashRef.current = null;
+      }
+
+      txManager.runTx({
+        type: 'create_game',
+        label: 'Creating game...',
+        gameId: capturedGameId,
+        execute: async (setPhase) => {
+          setPhase('simulating');
+          const result = await createGameOnChain(capturedCardIds);
+          return result;
+        },
+        postEffects: async (result) => {
+          capturedShareInfo(capturedGameId, capturedAddr, result.gameId, result.randomness);
+          aztec.updateOwnedCards(prev => removeOneOfEach(prev, capturedCardIds));
+          capturedNotifyTx(capturedGameId, 'create_game', result.txHash);
+          console.log('[useGame] P1: create_game mined, notified backend');
+          // Seed settlementInfoRef with our own values (opponent values added
+          // when OPPONENT_AZTEC_INFO arrives). This ref is NOT cleared by navigation.
+          settlementInfoRef.current = {
+            onChainGameId: result.gameId,
+            gameRandomness: result.randomness,
+            opponentAddress: '',
+            opponentRandomness: [],
+          };
+          onChainPhaseRef.current = 'done';
+          if (pipelineDoneResolveRef.current) { pipelineDoneResolveRef.current(); pipelineDoneResolveRef.current = null; }
+        },
+      }).catch(err => {
         console.error('[useGame] On-chain game creation failed:', err);
         setOnChainError(err instanceof Error ? err.message : 'Create game failed');
         onChainPhaseRef.current = 'idle';
@@ -674,21 +741,42 @@ export function useGame(wsUrl: string): UseGameReturn {
       return;
     }
 
-    // P2 phase 1: prepare preview
+    // P2 phase 1: prepare preview — runs through txManager PXE queue
     if (ws.playerNumber === 2 && phase === 'idle' && ws.opponentOnChainGameId) {
       onChainPhaseRef.current = 'preparing';
-      (async () => {
-        if (lastSettleTxHashRef.current) {
-          console.log(`[useGame] P2: clearing previous settle tx ref: ${lastSettleTxHashRef.current}`);
-          lastSettleTxHashRef.current = null;
-        }
-        console.log('[useGame] P2: preparing join preview data...');
-        const result = await prepareJoinGame(ws.opponentOnChainGameId!, cardIds);
-        ws.shareAztecInfo(ws.gameId!, aztec.accountAddress!, ws.opponentOnChainGameId!, result.randomness);
-        aztec.updateOwnedCards(prev => removeOneOfEach(prev, cardIds));
-        console.log('[useGame] P2: preview data shared, waiting for P1 tx confirmation...');
-        onChainPhaseRef.current = 'awaiting_p1_tx';
-      })().catch(err => {
+      const capturedGameId = ws.gameId!;
+      const capturedAddr = aztec.accountAddress!;
+      const capturedChainGameId = ws.opponentOnChainGameId!;
+      const capturedCardIds = [...cardIds];
+      const capturedShareInfo = ws.shareAztecInfo;
+
+      if (lastSettleTxHashRef.current) {
+        lastSettleTxHashRef.current = null;
+      }
+
+      txManager.runTx({
+        type: 'join_game',
+        label: 'Preparing to join...',
+        gameId: capturedGameId,
+        execute: async (setPhase) => {
+          setPhase('simulating');
+          const result = await prepareJoinGame(capturedChainGameId, capturedCardIds);
+          return result;
+        },
+        postEffects: async (result) => {
+          capturedShareInfo(capturedGameId, capturedAddr, capturedChainGameId, result.randomness);
+          aztec.updateOwnedCards(prev => removeOneOfEach(prev, capturedCardIds));
+          console.log('[useGame] P2: preview data shared, waiting for P1 tx confirmation...');
+          // Seed settlementInfoRef for P2 (opponent values added when they arrive)
+          settlementInfoRef.current = {
+            onChainGameId: capturedChainGameId,
+            gameRandomness: result.randomness,
+            opponentAddress: '',
+            opponentRandomness: [],
+          };
+          onChainPhaseRef.current = 'awaiting_p1_tx';
+        },
+      }).catch(err => {
         console.error('[useGame] P2 prepare failed:', err);
         setOnChainError(err instanceof Error ? err.message : 'Prepare join failed');
         onChainPhaseRef.current = 'idle';
@@ -696,23 +784,36 @@ export function useGame(wsUrl: string): UseGameReturn {
       return;
     }
 
-    // P2 phase 2: join after P1 confirmed
+    // P2 phase 2: join after P1 confirmed — runs through txManager
     if (ws.playerNumber === 2 && phase === 'awaiting_p1_tx' && ws.opponentTxConfirmed && onChainGameId) {
       onChainPhaseRef.current = 'joining';
-      (async () => {
-        console.log('[useGame] P2: P1 tx confirmed, sending join_game...');
-        const txHash = await sendJoinGameTx(ws.opponentOnChainGameId!, cardIds);
-        ws.notifyTxConfirmed(ws.gameId!, 'join_game', txHash);
-        console.log('[useGame] P2: join_game mined, notified backend');
-        onChainPhaseRef.current = 'done';
-        if (pipelineDoneResolveRef.current) { pipelineDoneResolveRef.current(); pipelineDoneResolveRef.current = null; }
-      })().catch(err => {
+      const capturedGameId = ws.gameId!;
+      const capturedChainGameId = ws.opponentOnChainGameId!;
+      const capturedCardIds = [...cardIds];
+      const capturedNotifyTx = ws.notifyTxConfirmed;
+
+      txManager.runTx({
+        type: 'join_game',
+        label: 'Joining game...',
+        gameId: capturedGameId,
+        execute: async (setPhase) => {
+          setPhase('sending');
+          const txHash = await sendJoinGameTx(capturedChainGameId, capturedCardIds);
+          return txHash;
+        },
+        postEffects: async (txHash) => {
+          capturedNotifyTx(capturedGameId, 'join_game', txHash);
+          console.log('[useGame] P2: join_game mined, notified backend');
+          onChainPhaseRef.current = 'done';
+          if (pipelineDoneResolveRef.current) { pipelineDoneResolveRef.current(); pipelineDoneResolveRef.current = null; }
+        },
+      }).catch(err => {
         console.error('[useGame] P2 join_game tx failed:', err);
         setOnChainError(err instanceof Error ? err.message : 'Join game failed');
         onChainPhaseRef.current = 'awaiting_p1_tx';
       });
     }
-  }, [ws.playerNumber, ws.gameId, ws.gameState, ws.opponentOnChainGameId,
+  }, [screen, ws.playerNumber, ws.gameId, ws.gameState, ws.opponentOnChainGameId,
       ws.opponentTxConfirmed, isContractAvailable, onChainGameId, cardIds,
       createGameOnChain, prepareJoinGame, sendJoinGameTx,
       aztec.accountAddress, aztec.wallet, aztec.nodeClient, aztec.updateOwnedCards,
@@ -725,7 +826,11 @@ export function useGame(wsUrl: string): UseGameReturn {
       pendingMovesRef.current = [];
       noteImportProcessedRef.current = null;
       handProofGeneratedRef.current = false;
-      onChainPhaseRef.current = 'idle';
+      // Note: onChainPhaseRef is NOT reset here — it's managed by txManager
+      // postEffects (settlement sets it to 'idle' when the game lifecycle ends).
+      // Resetting it here causes a race: the pipeline effect re-fires with
+      // phase='idle' while ws.gameId is still set (deferred leave), triggering
+      // a spurious create_game.
       gameStateHistoryRef.current = new Map();
       moveProofsCompleteRef.current = null;
       handProofsCompleteRef.current = null;
@@ -744,6 +849,10 @@ export function useGame(wsUrl: string): UseGameReturn {
       setCollectedMoveProofs([]);
       setHandProofStatus('idle');
       setMoveProofStatus('idle');
+      setOpponentSettled(false);
+      setTakenCardId(null);
+      opponentSettleTxIdRef.current = null;
+      opponentSettleResolveRef.current = null;
       cardIdsRef.current = [];
       proofs.reset();
     }
@@ -776,8 +885,71 @@ export function useGame(wsUrl: string): UseGameReturn {
     if (noteImportProcessedRef.current === txHash) return;
     noteImportProcessedRef.current = txHash;
     lastSettleTxHashRef.current = txHash;
+
+    // Determine which card was taken by comparing returned cards vs original hand
+    const returnedIds = new Set(notes.map(n => n.tokenId));
+    const taken = cardIds.find(id => !returnedIds.has(id));
+    setTakenCardId(taken ?? null);
+    setOpponentSettled(true);
+
     importNotes(txHash, notes, 'Loser import');
-  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, aztec.nodeClient, importNotes]);
+
+    // Settlement complete on loser side — release the game lifecycle
+    onChainPhaseRef.current = 'idle';
+  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, aztec.nodeClient, importNotes, cardIds]);
+
+  // Track opponent's settlement on the loser's side via txManager.
+  // When the winner starts settling, the loser receives OPPONENT_SETTLING via WS.
+  // This creates a txManager entry so onChainPhaseRef stays non-idle and the
+  // "Back to Lobby" guard works correctly.
+  const opponentSettleTxIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ws.opponentSettling) return;
+    if (opponentSettleTxIdRef.current) return; // Already tracking
+
+    setTakenCardId(ws.opponentSettling.selectedCardId);
+
+    // Create a txManager entry for the opponent's settlement
+    const txId = txManager.runTx({
+      type: 'settle_game',
+      label: 'Opponent is settling...',
+      gameId: ws.gameId ?? undefined,
+      execute: async () => {
+        // The loser doesn't execute anything — just wait for NOTE_DATA
+        await new Promise<void>((resolve) => {
+          // Store the resolve so the incomingNoteData effect can call it
+          opponentSettleResolveRef.current = resolve;
+        });
+        return 'opponent-settled';
+      },
+      postEffects: async () => {
+        setOpponentSettled(true);
+        onChainPhaseRef.current = 'idle';
+        // Wait for PXE to sync the block containing the settlement tx
+        // before querying token balance (token notes use ONCHAIN_CONSTRAINED
+        // delivery which requires PXE block sync to discover).
+        await new Promise(r => setTimeout(r, 5000));
+        aztec.refreshTokenBalance().catch(() => {});
+      },
+    });
+
+    txId.catch(() => {
+      // If something goes wrong, still release the game lifecycle
+      onChainPhaseRef.current = 'idle';
+    });
+
+    opponentSettleTxIdRef.current = 'tracking';
+  }, [ws.opponentSettling, ws.gameId]);
+
+  // Resolve the opponent's settlement wait when NOTE_DATA arrives
+  const opponentSettleResolveRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (!ws.incomingNoteData) return;
+    if (opponentSettleResolveRef.current) {
+      opponentSettleResolveRef.current();
+      opponentSettleResolveRef.current = null;
+    }
+  }, [ws.incomingNoteData]);
 
   // --- User actions ---
 
@@ -832,6 +1004,8 @@ export function useGame(wsUrl: string): UseGameReturn {
       }
       return null;
     });
+    // Refresh token balance after purchase (tokens were burned)
+    aztec.refreshTokenBalance().catch(() => {});
     setScreen('card-packs');
   }, [aztec]);
 
@@ -891,280 +1065,585 @@ export function useGame(wsUrl: string): UseGameReturn {
     if (!ws.gameId) throw new Error('No game ID for settlement');
     if (!ws.playerNumber) throw new Error('No player number for settlement');
 
-    // Wait for the on-chain pipeline to finish before touching PXE.
-    // The pipeline runs create_game/join_game as fire-and-forget async IIFEs,
-    // and those .send() calls use the same PXE instance. Running settlement's
-    // .send() concurrently causes IDB TransactionInactiveError.
-    if (onChainPhaseRef.current !== 'done' && onChainPhaseRef.current !== 'idle') {
-      console.log('[useGame] On-chain pipeline still running (phase:', onChainPhaseRef.current, ') — waiting...');
-      setSettleTxStatus('preparing');
-      await new Promise<void>((resolve, reject) => {
-        if (onChainPhaseRef.current === 'done') { resolve(); return; }
-        pipelineDoneResolveRef.current = resolve;
-        setTimeout(() => {
-          pipelineDoneResolveRef.current = null;
-          reject(new Error(`Timed out waiting for on-chain pipeline (phase: ${onChainPhaseRef.current})`));
-        }, AZTEC_SETTLE_TX_TIMEOUT);
-      });
-      console.log('[useGame] On-chain pipeline complete — proceeding with settlement');
-    }
-
-    // Wait for hand proofs if they're not ready yet (on-chain pipeline may still be running)
-    if (!myHandProofRef.current || !opponentHandProofRef.current) {
-      console.log('[useGame] Hand proofs not ready yet — waiting (my:',
-        !!myHandProofRef.current, 'opponent:', !!opponentHandProofRef.current, ')');
-      setSettleTxStatus('preparing');
-      await new Promise<void>((resolve, reject) => {
-        // Check if they arrived between the check and the promise setup
-        if (myHandProofRef.current && opponentHandProofRef.current) { resolve(); return; }
-        handProofsCompleteRef.current = resolve;
-        setTimeout(() => {
-          handProofsCompleteRef.current = null;
-          reject(new Error(
-            `Timed out waiting for hand proofs (${HAND_PROOF_WAIT_TIMEOUT / 1000}s). ` +
-            `my: ${!!myHandProofRef.current}, opponent: ${!!opponentHandProofRef.current}`,
-          ));
-        }, HAND_PROOF_WAIT_TIMEOUT);
-      });
-      console.log('[useGame] Hand proofs now ready — proceeding with settlement');
-    }
-
-    // Re-read from refs after the wait (closured state values are stale)
-    const myProof = myHandProofRef.current;
-    const oppProof = opponentHandProofRef.current;
-    if (!myProof || !oppProof) throw new Error('Hand proofs not ready after wait');
-
-    if (!ws.opponentAztecAddress) throw new Error('No opponent Aztec address');
-    if (ws.opponentCardIds.length === 0) throw new Error('No opponent card IDs');
-    if (!gameRandomness || gameRandomness.length !== 6) throw new Error('Game randomness not available');
-    if (!ws.opponentGameRandomness || ws.opponentGameRandomness.length !== 6) throw new Error('Opponent randomness not available');
-    if (!onChainGameId) throw new Error('No on-chain game ID for settlement');
-
-    // Verify the game is fully set up on-chain (both create_game AND join_game have landed).
-    // Without this check, Player 1 might settle before Player 2's join_game tx is mined,
-    // causing settle_game's public assertions to fail (card_commit_2 not set, player2 not set).
-    {
-      const { gameContract, Fr, AztecAddress: AztecAddr } = await ensureContracts(requireWallet());
-      const gameIdFr = toFrUtil(Fr, onChainGameId);
-      const senderForCheck = AztecAddr.fromString(requireAccountAddress());
-      const { result: gameStatus } = await gameContract.methods
-        .get_game_status(gameIdFr)
-        .simulate({ from: senderForCheck });
-      const status = Number(gameStatus);
-      if (status !== 2) {
-        // Game is not in "active" state (status 2 = both players joined)
-        // Poll until it reaches status 2
-        console.log(`[useGame] Game status is ${status}, waiting for opponent to join on-chain...`);
-        setSettleTxStatus('preparing');
-        for (let poll = 0; poll < 60; poll++) {
-          await new Promise(r => setTimeout(r, 2000));
-          const { result: s } = await gameContract.methods
-            .get_game_status(gameIdFr)
-            .simulate({ from: senderForCheck });
-          if (Number(s) === 2) {
-            console.log('[useGame] Opponent join_game confirmed on-chain');
-            break;
-          }
-          if (poll === 59) throw new Error('Timed out waiting for opponent to join game on-chain');
-        }
-      }
-    }
-
-    // Wait for all move proofs (bug #4 fix: promise-based, not busy-polling)
-    if (moveProofsRef.current.length < TOTAL_MOVES) {
-      await new Promise<void>((resolve, reject) => {
-        if (moveProofsRef.current.length >= TOTAL_MOVES) { resolve(); return; }
-        moveProofsCompleteRef.current = resolve;
-        setTimeout(() => {
-          moveProofsCompleteRef.current = null;
-          reject(new Error(`Timed out waiting for move proofs: have ${moveProofsRef.current.length}/${TOTAL_MOVES}`));
-        }, MOVE_PROOF_WAIT_TIMEOUT);
-      });
-    }
-
-    // --- Settlement logic (from useGameSession.settleGame) ---
+    // Capture values available NOW (stable across navigation).
+    // Pipeline-dependent values (opponent address, randomness, on-chain game ID)
+    // are read from settlementInfoRef inside execute — that ref persists across navigation.
+    const capturedGameId = ws.gameId;
+    const capturedPlayerNumber = ws.playerNumber;
+    const capturedOpponentCardIds = [...ws.opponentCardIds];
+    const capturedCardIds = [...cardIds];
     const w = requireWallet();
     const addr = requireAccountAddress();
+    const capturedImportNotes = importNotes;
+    const capturedRelayNoteData = (txHash: string, notes: PlaintextNoteData[]) =>
+      ws.relayNoteData(capturedGameId, txHash, notes);
+    const capturedNotifySettle = (gId: string, cardId: number) =>
+      ws.notifySettleStarted(gId, cardId);
 
     setSettleTxStatus('preparing');
     setSettleError(null);
     setSettleTxHash(null);
 
-    try {
-      const { fee, Fr, AztecAddress } = await ensureContracts(w);
+    txManager.runTx({
+      type: 'settle_game',
+      label: 'Settling game...',
+      gameId: capturedGameId,
 
-      setSettleTxStatus('proving');
-
-      const { loadProveHandCircuit, loadGameMoveCircuit } = await import('../aztec/circuitLoader');
-      const { UltraHonkBackend } = await import('@aztec/bb.js');
-      const { getBarretenberg } = await import('../aztec/proofBackend');
-
-      const [handArtifact, moveArtifact] = await Promise.all([
-        loadProveHandCircuit(),
-        loadGameMoveCircuit(),
-      ]);
-
-      const api = await getBarretenberg();
-      const handBackend = new UltraHonkBackend(handArtifact.bytecode, api);
-      const moveBackend = new UltraHonkBackend(moveArtifact.bytecode, api);
-
-      const [handVk, moveVk] = await Promise.all([
-        handBackend.getVerificationKey(),
-        moveBackend.getVerificationKey(),
-      ]);
-
-      function bytesToFrArray(bytes: Uint8Array): InstanceType<typeof Fr>[] {
-        const fields: InstanceType<typeof Fr>[] = [];
-        for (let i = 0; i < bytes.length; i += 32) {
-          const chunk = bytes.slice(i, i + 32);
-          const hex = '0x' + Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join('');
-          fields.push(Fr.fromHexString(hex));
+      execute: async (setPhase) => {
+        // ── Wait for the on-chain pipeline (create_game/join_game) ──────
+        // The priority queue ensures join_game runs before settle_game when
+        // both are pending in the queue, preventing deadlocks.
+        if (onChainPhaseRef.current !== 'done' && onChainPhaseRef.current !== 'idle') {
+          console.log('[useGame] On-chain pipeline still running (phase:', onChainPhaseRef.current, ') — waiting...');
+          setPhase('queued');
+          await new Promise<void>((resolve, reject) => {
+            if (onChainPhaseRef.current === 'done') { resolve(); return; }
+            pipelineDoneResolveRef.current = resolve;
+            setTimeout(() => {
+              pipelineDoneResolveRef.current = null;
+              reject(new Error(`Timed out waiting for on-chain pipeline (phase: ${onChainPhaseRef.current})`));
+            }, AZTEC_SETTLE_TX_TIMEOUT);
+          });
+          console.log('[useGame] On-chain pipeline complete — proceeding with settlement');
         }
-        return fields;
-      }
 
-      function base64ToFrArray(b64: string): InstanceType<typeof Fr>[] {
-        const binary = atob(b64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        return bytesToFrArray(bytes);
-      }
+        // ── Wait for hand proofs ───────────────────────────────────────
+        if (!myHandProofRef.current || !opponentHandProofRef.current) {
+          console.log('[useGame] Hand proofs not ready yet — waiting (my:',
+            !!myHandProofRef.current, 'opponent:', !!opponentHandProofRef.current, ')');
+          setPhase('queued');
+          await new Promise<void>((resolve, reject) => {
+            if (myHandProofRef.current && opponentHandProofRef.current) { resolve(); return; }
+            handProofsCompleteRef.current = resolve;
+            setTimeout(() => {
+              handProofsCompleteRef.current = null;
+              reject(new Error(
+                `Timed out waiting for hand proofs (${HAND_PROOF_WAIT_TIMEOUT / 1000}s). ` +
+                `my: ${!!myHandProofRef.current}, opponent: ${!!opponentHandProofRef.current}`,
+              ));
+            }, HAND_PROOF_WAIT_TIMEOUT);
+          });
+          console.log('[useGame] Hand proofs now ready — proceeding with settlement');
+        }
 
-      const hexToFr = (hex: string) => Fr.fromHexString(hex.startsWith('0x') ? hex : '0x' + hex);
+        const myProof = myHandProofRef.current;
+        const oppProof = opponentHandProofRef.current;
+        if (!myProof || !oppProof) throw new Error('Hand proofs not ready after wait');
 
-      const handVkFields = bytesToFrArray(handVk);
-      const moveVkFields = bytesToFrArray(moveVk);
+        // ── Read pipeline-dependent values from persistent ref ──────────
+        const sInfo = settlementInfoRef.current;
+        if (!sInfo) throw new Error('Settlement info not available (pipeline incomplete)');
 
-      // Sort move proofs into chain
-      const { computeBoardStateHash } = await import('../aztec/proofWorker');
-      const emptyBoard = Array(18).fill('0');
-      const canonicalInitial = await computeBoardStateHash(emptyBoard, [CARDS_PER_HAND, CARDS_PER_HAND], 1);
-
-      const currentMoveProofs = moveProofsRef.current;
-      const byStart = new Map<string, typeof currentMoveProofs[0]>();
-      for (const p of currentMoveProofs) {
-        byStart.set(p.startStateHash, p);
-      }
-
-      const sorted: typeof currentMoveProofs = [];
-      let nextHash = canonicalInitial;
-      for (let i = 0; i < TOTAL_MOVES; i++) {
-        const p = byStart.get(nextHash);
-        if (!p) throw new Error(`Proof chain broken at step ${i}`);
-        sorted.push(p);
-        nextHash = p.endStateHash;
-      }
-
-      const mp: InstanceType<typeof Fr>[][] = [];
-      const mi: InstanceType<typeof Fr>[][] = [];
-      for (const m of sorted) {
-        mp.push(base64ToFrArray(m.proof));
-        mi.push(m.publicInputs.map(hexToFr));
-      }
-
-      setSettleTxStatus('sending');
-
-      const contract = contractCache.gameContract;
-      if (!contract) throw new Error('Game contract not initialized');
-
-      const senderAddr = AztecAddress.fromString(addr);
-      const opponent = AztecAddress.fromString(ws.opponentAztecAddress!);
-
-      const padTo5 = (ids: number[]): InstanceType<typeof Fr>[] => {
-        const padded = [...ids];
-        while (padded.length < CARDS_PER_HAND) padded.push(0);
-        return padded.slice(0, CARDS_PER_HAND).map(id => new Fr(BigInt(id)));
-      };
-
-      const callerRandomness = gameRandomness.map(v => toFrUtil(Fr, v));
-      const opponentRandomness = ws.opponentGameRandomness!.map(v => toFrUtil(Fr, v));
-
-      console.log('callerRandomness = ', callerRandomness);
-      console.log('opponentRandomness = ', opponentRandomness);
-      const handProof1 = ws.playerNumber === 1 ? myProof : oppProof;
-      const handProof2 = ws.playerNumber === 2 ? myProof : oppProof;
-      const hp1ProofData = base64ToFrArray(handProof1.proof);
-      const hp1InputData = handProof1.publicInputs.map(hexToFr);
-      const hp2ProofData = base64ToFrArray(handProof2.proof);
-      const hp2InputData = handProof2.publicInputs.map(hexToFr);
-
-      const { receipt } = await contract.methods
-        .process_game(
-          toFrUtil(Fr, onChainGameId),
-          handVkFields,
-          moveVkFields,
-          hp1ProofData, hp1InputData,
-          hp2ProofData, hp2InputData,
-          mp[0], mi[0], mp[1], mi[1], mp[2], mi[2],
-          mp[3], mi[3], mp[4], mi[4], mp[5], mi[5],
-          mp[6], mi[6], mp[7], mi[7], mp[8], mi[8],
-          opponent,
-          new Fr(BigInt(selectedCardId)),
-          padTo5(cardIds),
-          padTo5(ws.opponentCardIds),
-          callerRandomness,
-          opponentRandomness,
-        )
-        .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_SETTLE_TX_TIMEOUT } });
-
-      const hash = receipt?.txHash?.toString();
-      if (!hash) throw new Error('Settlement tx returned no txHash');
-      setSettleTxHash(hash);
-      lastSettleTxHashRef.current = hash;
-      setSettleTxStatus('confirmed');
-      console.log('[useGame] Game settled on-chain, txHash:', hash);
-
-      // Build note data
-      const isWinnerLoser = selectedCardId !== 0;
-
-      const callerNotes: PlaintextNoteData[] = [];
-      for (let i = 0; i < cardIds.length && i < 5; i++) {
-        callerNotes.push({ tokenId: cardIds[i], randomness: toHexString(callerRandomness[i]) });
-      }
-      if (isWinnerLoser) {
-        callerNotes.push({ tokenId: selectedCardId, randomness: toHexString(callerRandomness[5]) });
-      }
-
-      const opponentNotes: PlaintextNoteData[] = [];
-      if (isWinnerLoser) {
-        let removed = false;
-        for (let i = 0; i < ws.opponentCardIds.length && i < 5; i++) {
-          if (ws.opponentCardIds[i] === selectedCardId && !removed) {
-            removed = true;
-          } else {
-            opponentNotes.push({ tokenId: ws.opponentCardIds[i], randomness: toHexString(opponentRandomness[i]) });
+        // ── Verify game is active on-chain (status 2 = both joined) ────
+        const { fee, Fr, AztecAddress } = await ensureContracts(w);
+        const liveOnChainGameId = sInfo.onChainGameId;
+        {
+          const gameIdFr = toFrUtil(Fr, liveOnChainGameId);
+          const senderForCheck = AztecAddress.fromString(addr);
+          const { gameContract } = await ensureContracts(w);
+          const { result: gameStatus } = await gameContract.methods
+            .get_game_status(gameIdFr)
+            .simulate({ from: senderForCheck });
+          const status = Number(gameStatus);
+          if (status !== 2) {
+            console.log(`[useGame] Game status is ${status}, waiting for opponent to join on-chain...`);
+            for (let poll = 0; poll < 60; poll++) {
+              await new Promise(r => setTimeout(r, 2000));
+              const { result: s } = await gameContract.methods
+                .get_game_status(gameIdFr)
+                .simulate({ from: senderForCheck });
+              if (Number(s) === 2) {
+                console.log('[useGame] Opponent join_game confirmed on-chain');
+                break;
+              }
+              if (poll === 59) throw new Error('Timed out waiting for opponent to join game on-chain');
+            }
           }
         }
-      } else {
-        for (let i = 0; i < ws.opponentCardIds.length && i < 5; i++) {
-          opponentNotes.push({ tokenId: ws.opponentCardIds[i], randomness: toHexString(opponentRandomness[i]) });
-        }
-      }
 
-      console.log('callerNotes = ', callerNotes);
-      console.log('opponentNotes = ', opponentNotes);
-      ws.relayNoteData(ws.gameId!, hash, opponentNotes);
-      await importNotes(hash, callerNotes, 'Winner import');
-      // PXE will sync automatically on the next .simulate() or .send() call
-    } catch (err) {
+        // ── Wait for all move proofs ───────────────────────────────────
+        if (moveProofsRef.current.length < TOTAL_MOVES) {
+          await new Promise<void>((resolve, reject) => {
+            if (moveProofsRef.current.length >= TOTAL_MOVES) { resolve(); return; }
+            moveProofsCompleteRef.current = resolve;
+            setTimeout(() => {
+              moveProofsCompleteRef.current = null;
+              reject(new Error(`Timed out waiting for move proofs: have ${moveProofsRef.current.length}/${TOTAL_MOVES}`));
+            }, MOVE_PROOF_WAIT_TIMEOUT);
+          });
+        }
+
+        // ── All waits complete — read from persistent ref + closures ────
+        const capturedOpponentAddress = sInfo.opponentAddress;
+        const capturedOpponentRandomness = sInfo.opponentRandomness;
+        const capturedGameRandomness = sInfo.gameRandomness;
+
+        if (capturedOpponentCardIds.length === 0) throw new Error('No opponent card IDs');
+
+        // Notify opponent NOW — settlement will actually proceed.
+        // Uses captured function ref that binds to the game's WebSocket send().
+        capturedNotifySettle(capturedGameId, selectedCardId);
+
+        const capturedMoveProofs = [...moveProofsRef.current];
+
+        setPhase('proving');
+
+        const { loadProveHandCircuit, loadGameMoveCircuit } = await import('../aztec/circuitLoader');
+        const { UltraHonkBackend } = await import('@aztec/bb.js');
+        const { getBarretenberg } = await import('../aztec/proofBackend');
+
+        const [handArtifact, moveArtifact] = await Promise.all([
+          loadProveHandCircuit(),
+          loadGameMoveCircuit(),
+        ]);
+
+        const api = await getBarretenberg();
+        const handBackend = new UltraHonkBackend(handArtifact.bytecode, api);
+        const moveBackend = new UltraHonkBackend(moveArtifact.bytecode, api);
+
+        const [handVk, moveVk] = await Promise.all([
+          handBackend.getVerificationKey(),
+          moveBackend.getVerificationKey(),
+        ]);
+
+        function bytesToFrArray(bytes: Uint8Array): InstanceType<typeof Fr>[] {
+          const fields: InstanceType<typeof Fr>[] = [];
+          for (let i = 0; i < bytes.length; i += 32) {
+            const chunk = bytes.slice(i, i + 32);
+            const hex = '0x' + Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join('');
+            fields.push(Fr.fromHexString(hex));
+          }
+          return fields;
+        }
+
+        function base64ToFrArray(b64: string): InstanceType<typeof Fr>[] {
+          const binary = atob(b64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          return bytesToFrArray(bytes);
+        }
+
+        const hexToFr = (hex: string) => Fr.fromHexString(hex.startsWith('0x') ? hex : '0x' + hex);
+
+        const handVkFields = bytesToFrArray(handVk);
+        const moveVkFields = bytesToFrArray(moveVk);
+
+        // Sort move proofs into chain
+        const { computeBoardStateHash } = await import('../aztec/proofWorker');
+        const emptyBoard = Array(18).fill('0');
+        const canonicalInitial = await computeBoardStateHash(emptyBoard, [CARDS_PER_HAND, CARDS_PER_HAND], 1);
+
+        const byStart = new Map<string, typeof capturedMoveProofs[0]>();
+        for (const p of capturedMoveProofs) {
+          byStart.set(p.startStateHash, p);
+        }
+
+        const sorted: typeof capturedMoveProofs = [];
+        let nextHash = canonicalInitial;
+        for (let i = 0; i < TOTAL_MOVES; i++) {
+          const p = byStart.get(nextHash);
+          if (!p) throw new Error(`Proof chain broken at step ${i}`);
+          sorted.push(p);
+          nextHash = p.endStateHash;
+        }
+
+        const mp: InstanceType<typeof Fr>[][] = [];
+        const mi: InstanceType<typeof Fr>[][] = [];
+        for (const m of sorted) {
+          mp.push(base64ToFrArray(m.proof));
+          mi.push(m.publicInputs.map(hexToFr));
+        }
+
+        setPhase('sending');
+
+        const contract = contractCache.gameContract;
+        if (!contract) throw new Error('Game contract not initialized');
+
+        const senderAddr = AztecAddress.fromString(addr);
+        const opponent = AztecAddress.fromString(capturedOpponentAddress);
+
+        const padTo5 = (ids: number[]): InstanceType<typeof Fr>[] => {
+          const padded = [...ids];
+          while (padded.length < CARDS_PER_HAND) padded.push(0);
+          return padded.slice(0, CARDS_PER_HAND).map(id => new Fr(BigInt(id)));
+        };
+
+        const callerRandomness = capturedGameRandomness.map(v => toFrUtil(Fr, v));
+        const opponentRandomness = capturedOpponentRandomness.map(v => toFrUtil(Fr, v));
+
+        const handProof1 = capturedPlayerNumber === 1 ? myProof : oppProof;
+        const handProof2 = capturedPlayerNumber === 2 ? myProof : oppProof;
+        const hp1ProofData = base64ToFrArray(handProof1.proof);
+        const hp1InputData = handProof1.publicInputs.map(hexToFr);
+        const hp2ProofData = base64ToFrArray(handProof2.proof);
+        const hp2InputData = handProof2.publicInputs.map(hexToFr);
+
+        const { receipt } = await contract.methods
+          .process_game(
+            toFrUtil(Fr, liveOnChainGameId),
+            handVkFields,
+            moveVkFields,
+            hp1ProofData, hp1InputData,
+            hp2ProofData, hp2InputData,
+            mp[0], mi[0], mp[1], mi[1], mp[2], mi[2],
+            mp[3], mi[3], mp[4], mi[4], mp[5], mi[5],
+            mp[6], mi[6], mp[7], mi[7], mp[8], mi[8],
+            opponent,
+            new Fr(BigInt(selectedCardId)),
+            padTo5(capturedCardIds),
+            padTo5(capturedOpponentCardIds),
+            callerRandomness,
+            opponentRandomness,
+          )
+          .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_SETTLE_TX_TIMEOUT } });
+
+        const hash = receipt?.txHash?.toString();
+        if (!hash) throw new Error('Settlement tx returned no txHash');
+        return { hash, callerRandomness, opponentRandomness };
+      },
+
+      postEffects: async (result) => {
+        const { hash, callerRandomness, opponentRandomness } = result;
+        setSettleTxHash(hash);
+        lastSettleTxHashRef.current = hash;
+        setSettleTxStatus('confirmed');
+        console.log('[useGame] Game settled on-chain, txHash:', hash);
+
+        // Build note data
+        const isWinnerLoser = selectedCardId !== 0;
+
+        const callerNotes: PlaintextNoteData[] = [];
+        for (let i = 0; i < capturedCardIds.length && i < 5; i++) {
+          callerNotes.push({ tokenId: capturedCardIds[i], randomness: toHexString(callerRandomness[i]) });
+        }
+        if (isWinnerLoser) {
+          callerNotes.push({ tokenId: selectedCardId, randomness: toHexString(callerRandomness[5]) });
+        }
+
+        const opponentNotes: PlaintextNoteData[] = [];
+        if (isWinnerLoser) {
+          let removed = false;
+          for (let i = 0; i < capturedOpponentCardIds.length && i < 5; i++) {
+            if (capturedOpponentCardIds[i] === selectedCardId && !removed) {
+              removed = true;
+            } else {
+              opponentNotes.push({ tokenId: capturedOpponentCardIds[i], randomness: toHexString(opponentRandomness[i]) });
+            }
+          }
+        } else {
+          for (let i = 0; i < capturedOpponentCardIds.length && i < 5; i++) {
+            opponentNotes.push({ tokenId: capturedOpponentCardIds[i], randomness: toHexString(opponentRandomness[i]) });
+          }
+        }
+
+        capturedRelayNoteData(hash, opponentNotes);
+        await capturedImportNotes(hash, callerNotes, 'Winner import');
+
+        // Refresh token balance (settlement mints 20 Arena Tokens to winner).
+        // Small delay to ensure PXE has synced the block with the token notes.
+        await new Promise(r => setTimeout(r, 3000));
+        aztec.refreshTokenBalance().catch(() => {});
+
+        // Game's on-chain lifecycle is complete — mark idle so the pipeline
+        // effect won't re-trigger a spurious create_game on navigation.
+        onChainPhaseRef.current = 'idle';
+        settlementInfoRef.current = null;
+      },
+    }).catch((err) => {
       const message = err instanceof Error ? err.message : 'Transaction failed';
       console.error('[useGame] settleGame error:', err);
       setSettleError(message);
       setSettleTxStatus('error');
-      throw err;
-    }
-  // Note: myHandProof/opponentHandProof are accessed via refs (myHandProofRef/opponentHandProofRef)
-  // to avoid stale closures when waiting for proofs asynchronously
-  }, [ws, cardIds, gameRandomness, onChainGameId,
-      aztec.wallet, aztec.accountAddress, aztec.nodeClient, importNotes]);
+      onChainPhaseRef.current = 'idle';
+      settlementInfoRef.current = null;
+    });
+  }, [ws.gameId, ws.playerNumber, ws.opponentCardIds, cardIds,
+      aztec.wallet, aztec.accountAddress, importNotes, ws.relayNoteData, ws.notifySettleStarted]);
+
+  // canGoBack: winner can leave after picking a card (settlement runs in background via txManager).
+  // Loser must wait until their settlement flow completes (opponentSettled).
+  // Before the game ends or before the winner picks a card, navigation is blocked
+  // while on-chain lifecycle is active.
+  const winnerSettleInitiated = settleTxStatus !== 'idle';
+  const canGoBack = screen === 'main-menu'
+    || winnerSettleInitiated
+    || (onChainPhaseRef.current === 'idle' && !txManager.hasInFlightForGame(ws.gameId ?? ''));
 
   const handleBackToMenu = useCallback(() => {
+    // Winner can leave once they've picked a card (settlement continues in txManager)
+    const settleStarted = settleTxStatus !== 'idle';
+    // Guard: block navigation while game is in-flight (unless winner has initiated settlement)
+    if (!settleStarted && ws.gameId && (onChainPhaseRef.current !== 'idle' || txManager.hasInFlightForGame(ws.gameId))) {
+      console.log('[useGame] Back to menu blocked: game in-flight');
+      return;
+    }
+
     ws.leaveGame();
     setCardIds([]);
     storage.clearGame();
     setHasGameInProgress(false);
+    setIsClaimingAbandoned(false);
+    setAbandonedDisputeCountdown(null);
+    abandonedClaimStartedRef.current = false;
     setScreen('main-menu');
   }, [ws, storage]);
+
+  // --- Abandoned game handler ---
+  const handleAbandonedGame = useCallback(async () => {
+    if (abandonedClaimStartedRef.current) return;
+    abandonedClaimStartedRef.current = true;
+    setIsClaimingAbandoned(true);
+
+    const w = requireWallet();
+    const addr = requireAccountAddress();
+    const capturedCardIds = [...cardIds];
+    const capturedGameRandomness = gameRandomness ? [...gameRandomness] : null;
+    const capturedOnChainGameId = onChainGameId;
+    const capturedOpponentAddress = ws.opponentAztecAddress;
+    const capturedOpponentCardIds = ws.opponentCardIds ? [...ws.opponentCardIds] : [];
+    const capturedPlayerNumber = ws.playerNumber;
+    const validMoveProofs = [...moveProofsRef.current];
+
+    if (!capturedOnChainGameId || !capturedGameRandomness || !capturedOpponentAddress) {
+      console.error('[useGame] Cannot claim abandoned game: missing game data');
+      setIsClaimingAbandoned(false);
+      abandonedClaimStartedRef.current = false;
+      return;
+    }
+
+    try {
+      // Step 1: claim_abandoned_game
+      await txManager.runTx<string>({
+        type: 'claim_abandoned_game',
+        label: 'Claiming abandoned game...',
+        gameId: ws.gameId ?? undefined,
+        execute: async (setPhase) => {
+          setPhase('proving');
+
+          const { loadProveHandCircuit, loadGameMoveCircuit, loadDummyMoveCircuit } = await import('../aztec/circuitLoader');
+          const { UltraHonkBackend } = await import('@aztec/bb.js');
+          const { getBarretenberg } = await import('../aztec/proofBackend');
+          const { ensureContracts } = await import('../aztec/contracts');
+
+          const [handArtifact, moveArtifact, dummyArtifact] = await Promise.all([
+            loadProveHandCircuit(),
+            loadGameMoveCircuit(),
+            loadDummyMoveCircuit(),
+          ]);
+
+          const api = await getBarretenberg();
+          const handBackend = new UltraHonkBackend(handArtifact.bytecode, api);
+          const moveBackend = new UltraHonkBackend(moveArtifact.bytecode, api);
+          const dummyBackend = new UltraHonkBackend(dummyArtifact.bytecode, api);
+
+          const [handVk, moveVk, dummyVk] = await Promise.all([
+            handBackend.getVerificationKey(),
+            moveBackend.getVerificationKey(),
+            dummyBackend.getVerificationKey(),
+          ]);
+
+          const { Fr, AztecAddress } = await ensureContracts(w);
+
+          function bytesToFrArray(bytes: Uint8Array): InstanceType<typeof Fr>[] {
+            const fields: InstanceType<typeof Fr>[] = [];
+            for (let i = 0; i < bytes.length; i += 32) {
+              const chunk = bytes.slice(i, i + 32);
+              const hex = '0x' + Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join('');
+              fields.push(Fr.fromHexString(hex));
+            }
+            return fields;
+          }
+
+          function base64ToFrArray(b64: string): InstanceType<typeof Fr>[] {
+            const binary = atob(b64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return bytesToFrArray(bytes);
+          }
+
+          const hexToFr = (hex: string) => Fr.fromHexString(hex.startsWith('0x') ? hex : '0x' + hex);
+
+          // Generate dummy proofs for padding
+          const { Noir } = await import('@noir-lang/noir_js');
+          const numValid = validMoveProofs.length;
+          const dummyProofs: { proof: string; publicInputs: string[] }[] = [];
+          for (let i = numValid; i < 9; i++) {
+            const dummyNoir = new Noir(dummyArtifact as any);
+            const { witness } = await dummyNoir.execute({
+              card_commit_1: '0', card_commit_2: '0',
+              start_state_hash: '0', end_state_hash: '0',
+              game_ended: '0', winner_id: '0',
+            });
+            const proofData = await dummyBackend.generateProof(witness);
+            const proofB64 = btoa(String.fromCharCode(...proofData.proof));
+            dummyProofs.push({
+              proof: proofB64,
+              publicInputs: ['0x0', '0x0', '0x0', '0x0', '0x0', '0x0'],
+            });
+          }
+
+          // Sort valid move proofs by chain order
+          const { computeBoardStateHash } = await import('../aztec/proofWorker');
+          const emptyBoard = Array(18).fill('0');
+          const CARDS_PER_HAND = 5;
+          const canonicalInitial = await computeBoardStateHash(emptyBoard, [CARDS_PER_HAND, CARDS_PER_HAND], 1);
+
+          const byStart = new Map<string, typeof validMoveProofs[0]>();
+          for (const p of validMoveProofs) byStart.set(p.startStateHash, p);
+
+          const sorted: typeof validMoveProofs = [];
+          let nextHash = canonicalInitial;
+          for (let i = 0; i < numValid; i++) {
+            const p = byStart.get(nextHash);
+            if (!p) throw new Error(`Proof chain broken at step ${i}`);
+            sorted.push(p);
+            nextHash = p.endStateHash;
+          }
+
+          // Build all 9 proof+inputs arrays (sorted valid + dummy padding)
+          const allProofs: InstanceType<typeof Fr>[][] = [];
+          const allInputs: InstanceType<typeof Fr>[][] = [];
+          for (const m of sorted) {
+            allProofs.push(base64ToFrArray(m.proof));
+            allInputs.push(m.publicInputs.map(hexToFr));
+          }
+          for (const d of dummyProofs) {
+            allProofs.push(base64ToFrArray(d.proof));
+            allInputs.push(d.publicInputs.map(hexToFr));
+          }
+
+          // Build hand proof data
+          const myProof = myHandProofRef.current;
+          const oppProof = opponentHandProofRef.current;
+          if (!myProof || !oppProof) throw new Error('Hand proofs not ready');
+          const handProof1 = capturedPlayerNumber === 1 ? myProof : oppProof;
+          const handProof2 = capturedPlayerNumber === 2 ? myProof : oppProof;
+
+          setPhase('sending');
+
+          const contract = contractCache.gameContract;
+          if (!contract) throw new Error('Game contract not initialized');
+
+          const senderAddr = AztecAddress.fromString(addr);
+          const { fee } = await ensureContracts(w);
+
+          const { receipt } = await contract.methods
+            .claim_abandoned_game(
+              toFrUtil(Fr, capturedOnChainGameId),
+              new Fr(BigInt(numValid)),
+              capturedPlayerNumber === 1,
+              bytesToFrArray(handVk),
+              bytesToFrArray(moveVk),
+              bytesToFrArray(dummyVk),
+              base64ToFrArray(handProof1.proof), handProof1.publicInputs.map(hexToFr),
+              base64ToFrArray(handProof2.proof), handProof2.publicInputs.map(hexToFr),
+              allProofs[0], allInputs[0], allProofs[1], allInputs[1],
+              allProofs[2], allInputs[2], allProofs[3], allInputs[3],
+              allProofs[4], allInputs[4], allProofs[5], allInputs[5],
+              allProofs[6], allInputs[6], allProofs[7], allInputs[7],
+              allProofs[8], allInputs[8],
+            )
+            .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_TX_TIMEOUT } });
+
+          return receipt?.txHash?.toString() ?? '';
+        },
+      });
+
+      console.log('[useGame] claim_abandoned_game mined, waiting for dispute window...');
+
+      // Step 2: Wait for dispute window (65 seconds to ensure 5 blocks)
+      const DISPUTE_SECONDS = 65;
+      setAbandonedDisputeCountdown(DISPUTE_SECONDS);
+      for (let i = DISPUTE_SECONDS; i > 0; i--) {
+        setAbandonedDisputeCountdown(i);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      setAbandonedDisputeCountdown(0);
+
+      // Step 3: settle_abandoned_game
+      await txManager.runTx<{ hash: string; callerRandomness: any[] }>({
+        type: 'settle_abandoned_game',
+        label: 'Settling abandoned game...',
+        gameId: ws.gameId ?? undefined,
+        execute: async (setPhase) => {
+          setPhase('sending');
+
+          const { ensureContracts } = await import('../aztec/contracts');
+          const { Fr, AztecAddress, fee } = await ensureContracts(w);
+
+          const contract = contractCache.gameContract;
+          if (!contract) throw new Error('Game contract not initialized');
+
+          const senderAddr = AztecAddress.fromString(addr);
+          const opponent = AztecAddress.fromString(capturedOpponentAddress);
+          const callerRandomness = capturedGameRandomness!.map(v => toFrUtil(Fr, v));
+          const padTo5 = (ids: number[]): InstanceType<typeof Fr>[] => {
+            const padded = [...ids];
+            while (padded.length < 5) padded.push(0);
+            return padded.slice(0, 5).map(id => new Fr(BigInt(id)));
+          };
+
+          // Determine which card to claim (first opponent card placed on board, if any)
+          // For now claim the first opponent card if any moves were played by opponent
+          const numValid = validMoveProofs.length;
+          const opponentPlayedCards = numValid >= 2; // Opponent played at least 1 card (move index 1)
+          const claimedCardId = opponentPlayedCards && capturedOpponentCardIds.length > 0
+            ? capturedOpponentCardIds[0]
+            : 0;
+
+          const { receipt } = await contract.methods
+            .settle_abandoned_game(
+              toFrUtil(Fr, capturedOnChainGameId!),
+              padTo5(capturedCardIds),
+              callerRandomness,
+              padTo5(capturedOpponentCardIds),
+              new Fr(BigInt(claimedCardId)),
+              opponent,
+            )
+            .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_TX_TIMEOUT } });
+
+          const hash = receipt?.txHash?.toString();
+          if (!hash) throw new Error('Settlement tx returned no txHash');
+          return { hash, callerRandomness };
+        },
+        postEffects: async (result) => {
+          const { hash, callerRandomness } = result;
+          console.log('[useGame] Abandoned game settled, txHash:', hash);
+
+          // Import caller's returned cards
+          const callerNotes: PlaintextNoteData[] = [];
+          for (let i = 0; i < capturedCardIds.length && i < 5; i++) {
+            callerNotes.push({ tokenId: capturedCardIds[i], randomness: toHexString(callerRandomness[i]) });
+          }
+          await importNotes(hash, callerNotes, 'Abandoned game recovery');
+
+          // Refresh token balance (abandoned game settlement may mint tokens)
+          aztec.refreshTokenBalance().catch(() => {});
+
+          onChainPhaseRef.current = 'idle';
+          setIsClaimingAbandoned(false);
+          setAbandonedDisputeCountdown(null);
+        },
+      });
+    } catch (err) {
+      console.error('[useGame] Abandoned game flow failed:', err);
+      setIsClaimingAbandoned(false);
+      setAbandonedDisputeCountdown(null);
+      abandonedClaimStartedRef.current = false;
+      onChainPhaseRef.current = 'idle';
+    }
+  }, [ws, cardIds, gameRandomness, onChainGameId,
+      aztec.wallet, aztec.accountAddress, importNotes]);
+
+  // Auto-trigger abandoned game flow when opponent disconnects
+  useEffect(() => {
+    if (!ws.opponentDisconnected) return;
+    if (abandonedClaimStartedRef.current) return;
+    if (onChainPhaseRef.current !== 'done') return;
+    if (moveProofsRef.current.length === 0) return;
+    console.log('[useGame] Opponent disconnected with moves played, starting abandoned game flow...');
+    handleAbandonedGame();
+  }, [ws.opponentDisconnected, handleAbandonedGame]);
 
   return {
     screen, setScreen,
@@ -1176,6 +1655,8 @@ export function useGame(wsUrl: string): UseGameReturn {
     settleTxStatus,
     onChainError,
     cardIds, packResult, hasGameInProgress,
+    opponentSettled, takenCardId,
+    isClaimingAbandoned, abandonedDisputeCountdown, canGoBack,
     handlePlay, handleCardPacks, handleHandSelected,
     handleCancelMatchmaking, handlePackOpened, handlePackOpenComplete,
     handlePlaceCard, handleSettle, handleBackToMenu,

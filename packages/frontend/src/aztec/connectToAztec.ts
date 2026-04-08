@@ -79,6 +79,23 @@ export async function prepareConnection(options?: {
   }
 
   log('Creating EmbeddedWallet...');
+  // Store the rollup address so the "Clear All State" button can
+  // delete the correct IndexedDB databases (Safari can't enumerate them).
+  try {
+    const l1Contracts = await node.getL1ContractAddresses();
+    const rollupAddr = l1Contracts.rollupAddress?.toString();
+    if (rollupAddr) {
+      const prev = JSON.parse(localStorage.getItem('aztec_idb_names') ?? '[]') as string[];
+      // The SDK creates IDB databases with directory-style names:
+      // "pxe_data_0x.../pxe_data" and "wallet_data_0x.../wallet_data"
+      const pxeBase = `pxe_data_${rollupAddr}`;
+      const walletBase = `wallet_data_${rollupAddr}`;
+      const names = [pxeBase, walletBase, `${pxeBase}/pxe_data`, `${walletBase}/wallet_data`];
+      const merged = [...new Set([...prev, ...names])];
+      localStorage.setItem('aztec_idb_names', JSON.stringify(merged));
+    }
+  } catch { /* best effort */ }
+
   const wallet = await EmbeddedWallet.create(node, {
     ephemeral: false,
     pxeConfig: { proverEnabled: true },
@@ -123,43 +140,9 @@ export async function deployAndRegister(
     import('@aztec/aztec.js/fields'),
   ]);
 
-  // Deploy account if needed — check on-chain first (localStorage flag may be stale)
-  let deployed = alreadyDeployed;
-  if (!deployed) {
-    try {
-      const onChain = await node.getContract(accountManager.address);
-      if (onChain) {
-        deployed = true;
-        log(`Account already deployed on-chain: ${accountAddress}`);
-      }
-    } catch { /* not deployed */ }
-  }
-
-  if (deployed) {
-    log(`Account already deployed: ${accountAddress}`);
-    if (useStorage) localStorage.setItem(AZTEC_CONFIG.storageKeys.deploymentStatus, 'deployed');
-  } else {
-    log('Deploying account...');
-    const deployMethod = await accountManager.getDeployMethod();
-
-    // Build fee payment: use FeeJuicePaymentMethodWithClaim if we have a claim (devnet auto-fund),
-    // otherwise pay with existing Fee Juice balance (testnet manual fund)
-    const sendOpts: any = { from: NO_FROM, wait: { timeout: AZTEC_TX_TIMEOUT } };
-    if (options?.feeJuiceClaim) {
-      const { FeeJuicePaymentMethodWithClaim } = await import('@aztec/aztec.js/fee');
-      sendOpts.fee = {
-        paymentMethod: new FeeJuicePaymentMethodWithClaim(accountManager.address, options.feeJuiceClaim),
-      };
-    }
-
-    await deployMethod.send(sendOpts);
-    if (useStorage) localStorage.setItem(AZTEC_CONFIG.storageKeys.deploymentStatus, 'deployed');
-    log(`Account deployed: ${accountAddress}`);
-  }
-
   await wallet.registerSender(accountManager.address, 'player');
 
-  // Register contracts
+  // Register contracts (must happen before deploy+mint batch so NFT contract is available)
   const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
 
   let nftArtifact: any = null;
@@ -202,9 +185,108 @@ export async function deployAndRegister(
     } catch (e) { log(`Failed to register Token: ${e}`); }
   }
 
-  // Mint starter cards (if not already minted)
+  // Check deployment status — on-chain first (localStorage flag may be stale)
+  let deployed = alreadyDeployed;
+  if (!deployed) {
+    try {
+      const onChain = await node.getContract(accountManager.address);
+      if (onChain) {
+        deployed = true;
+        log(`Account already deployed on-chain: ${accountAddress}`);
+      }
+    } catch { /* not deployed */ }
+  }
+
   const mintKey = AZTEC_CONFIG.storageKeys.cardsMintedPrefix + accountAddress + '_' + AZTEC_CONFIG.nftContractAddress;
-  if (nftArtifact && AZTEC_CONFIG.nftContractAddress && (!useStorage || !localStorage.getItem(mintKey))) {
+  const needsMint = nftArtifact && AZTEC_CONFIG.nftContractAddress && (!useStorage || !localStorage.getItem(mintKey));
+
+  if (deployed) {
+    log(`Account already deployed: ${accountAddress}`);
+    if (useStorage) localStorage.setItem(AZTEC_CONFIG.storageKeys.deploymentStatus, 'deployed');
+  }
+
+  // Deploy + mint in a single tx when both are needed (one proof, one block).
+  // The mint call is injected into the fee payment method's payload so it gets
+  // wrapped through the account's entrypoint alongside the fee claim by
+  // DeployAccountMethod's internal multicall entrypoint wrapping.
+  if (!deployed && needsMint && options?.feeJuiceClaim) {
+    const { Contract } = await import('@aztec/aztec.js/contracts');
+    const { FeeJuicePaymentMethodWithClaim } = await import('@aztec/aztec.js/fee');
+    const { mergeExecutionPayloads } = await import('@aztec/stdlib/tx');
+
+    const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
+    const nftContract = await Contract.at(nftAddr, nftArtifact, wallet as never);
+
+    log('Deploying account + minting starter cards (single tx)...');
+    const deployMethod = await accountManager.getDeployMethod();
+
+    // Build a combined fee payment method: fee claim + mint call merged into one payload.
+    // DeployAccountMethod wraps this through the account entrypoint + multicall entrypoint,
+    // producing: MultiCall([deploy, accountEntrypoint([claimFeeJuice, mintCards])])
+    const feeJuiceClaim = new FeeJuicePaymentMethodWithClaim(accountManager.address, options.feeJuiceClaim);
+    const feePayload = await feeJuiceClaim.getExecutionPayload();
+    const mintPayload = await nftContract.methods.get_cards_for_new_player().request();
+    const mergedPayload = mergeExecutionPayloads([feePayload, mintPayload]);
+
+    const combinedPaymentMethod = {
+      getExecutionPayload: async () => mergedPayload,
+      getAsset: () => feeJuiceClaim.getAsset(),
+      getFeePayer: () => feeJuiceClaim.getFeePayer(),
+      getGasSettings: () => feeJuiceClaim.getGasSettings(),
+    };
+
+    const { receipt } = await deployMethod.send({
+      from: NO_FROM,
+      fee: { paymentMethod: combinedPaymentMethod },
+      wait: { timeout: AZTEC_TX_TIMEOUT },
+    });
+    if (useStorage) {
+      localStorage.setItem(AZTEC_CONFIG.storageKeys.deploymentStatus, 'deployed');
+      localStorage.setItem(mintKey, 'true');
+    }
+    const txHashStr = receipt?.txHash?.toString() || '';
+    log(`Account deployed + cards minted: ${txHashStr}`);
+
+    // Import minted card notes
+    if (txHashStr) {
+      try {
+        const { result: randomnessResult } = await nftContract.methods
+          .compute_note_randomness(0, STARTER_CARD_COUNT)
+          .simulate({ from: accountManager.address });
+        const txEffectData = await fetchTxEffectData(node, txHashStr);
+
+        if (txEffectData) {
+          const storedCards: StoredCard[] = STARTER_CARD_IDS.map((id, i) => ({
+            cardId: id,
+            randomness: toFr(Fr, randomnessResult[i]).toString(),
+            txHash: txHashStr,
+            noteHashes: txEffectData.noteHashes,
+            firstNullifier: txEffectData.firstNullifier,
+          }));
+          addCards(accountAddress, storedCards);
+
+          const notes = storedCards.map((c) => ({ tokenId: c.cardId, randomness: c.randomness }));
+          await importNotesFromTx(wallet, node, accountAddress, txHashStr, notes, 'Starter cards', txEffectData);
+          log('Starter cards stored and imported');
+        }
+      } catch (e) { log(`Failed to import starter cards: ${e}`); }
+    }
+  } else if (!deployed) {
+    // Deploy only (no mint needed — cards already minted)
+    log('Deploying account...');
+    const deployMethod = await accountManager.getDeployMethod();
+    const sendOpts: any = { from: NO_FROM, wait: { timeout: AZTEC_TX_TIMEOUT } };
+    if (options?.feeJuiceClaim) {
+      const { FeeJuicePaymentMethodWithClaim } = await import('@aztec/aztec.js/fee');
+      sendOpts.fee = {
+        paymentMethod: new FeeJuicePaymentMethodWithClaim(accountManager.address, options.feeJuiceClaim),
+      };
+    }
+    await deployMethod.send(sendOpts);
+    if (useStorage) localStorage.setItem(AZTEC_CONFIG.storageKeys.deploymentStatus, 'deployed');
+    log(`Account deployed: ${accountAddress}`);
+  } else if (needsMint) {
+    // Mint only (account already deployed)
     const { Contract } = await import('@aztec/aztec.js/contracts');
     const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
     const nftContract = await Contract.at(nftAddr, nftArtifact, wallet as never);
@@ -219,14 +301,12 @@ export async function deployAndRegister(
 
     if (txHashStr) {
       try {
-        // Compute randomness + fetch TxEffect
         const { result: randomnessResult } = await nftContract.methods
           .compute_note_randomness(0, STARTER_CARD_COUNT)
           .simulate({ from: accountManager.address });
         const txEffectData = await fetchTxEffectData(node, txHashStr);
 
         if (txEffectData) {
-          // Persist card data to localStorage
           const storedCards: StoredCard[] = STARTER_CARD_IDS.map((id, i) => ({
             cardId: id,
             randomness: toFr(Fr, randomnessResult[i]).toString(),
@@ -236,7 +316,6 @@ export async function deployAndRegister(
           }));
           addCards(accountAddress, storedCards);
 
-          // Import into PXE
           const notes = storedCards.map((c) => ({ tokenId: c.cardId, randomness: c.randomness }));
           await importNotesFromTx(wallet, node, accountAddress, txHashStr, notes, 'Starter cards', txEffectData);
           log('Starter cards stored and imported');
@@ -270,12 +349,12 @@ export async function deployAndRegister(
         } catch (e) { log(`Failed to import cards from tx ${txHash.slice(0, 16)}...: ${e}`); }
       }
 
-      // Verify: get_private_cards returns only notes that exist AND are not nullified
+      // Verify: get_nfts_for_user returns only notes that exist AND are not nullified
       let pageIndex = 0;
       let hasMore = true;
       while (hasMore) {
         const { result: flatResult } = await nftContract.methods
-          .get_private_cards(accountManager.address, pageIndex)
+          .get_nfts_for_user(accountManager.address, pageIndex)
           .simulate({ from: accountManager.address });
         const page = flatResult[0] ?? [];
         hasMore = flatResult[1] === true;

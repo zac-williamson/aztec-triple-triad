@@ -10,6 +10,7 @@ import { PackOpening } from './components/PackOpening';
 import { TutorialScreen } from './components/TutorialScreen';
 import { TutorialPrompt } from './components/TutorialPrompt';
 import { FundingPrompt } from './components/FundingPrompt';
+import { TxStatusOverlay } from './components/TxStatusOverlay';
 import { GameScreen3D as GameScreen } from './components3d/GameScreen3D';
 import './App.css';
 
@@ -134,6 +135,8 @@ function AppInner() {
           }
           onSettle={game.handleSettle}
           settleTxStatus={game.settleTxStatus}
+          opponentSettled={game.opponentSettled}
+          takenCardId={game.takenCardId}
         />
       )}
       {game.screen === 'game' && !game.ws.gameState && (
@@ -145,6 +148,7 @@ function AppInner() {
           </button>
         </div>
       )}
+      <TxStatusOverlay />
     </div>
   );
 }

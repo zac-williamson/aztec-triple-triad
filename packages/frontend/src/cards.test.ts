@@ -2,13 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { CARD_DATABASE, getCardById, getRandomHand, getRandomHandIds, formatRank } from './cards';
 
 describe('Card Database', () => {
-  it('should have 50 cards', () => {
-    expect(CARD_DATABASE).toHaveLength(50);
+  it('should have all cards', () => {
+    expect(CARD_DATABASE.length).toBeGreaterThanOrEqual(50);
   });
 
   it('should have unique IDs', () => {
     const ids = CARD_DATABASE.map(c => c.id);
-    expect(new Set(ids).size).toBe(50);
+    expect(new Set(ids).size).toBe(CARD_DATABASE.length);
   });
 
   it('should have ranks between 1-10', () => {

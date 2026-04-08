@@ -56,7 +56,7 @@ export function MainMenu({
             maxWidth: 400,
             textAlign: 'center',
           }}>
-            {accountAddress.slice(0, 10)}...{accountAddress.slice(-8)}
+            {accountAddress}
           </div>
         )}
         {connected && (
@@ -106,12 +106,32 @@ export function MainMenu({
 
       <button
         className="main-menu__btn-clear"
-        onClick={() => {
+        onClick={async () => {
+          // Read stored IDB names BEFORE clearing localStorage
+          const idbNames = JSON.parse(localStorage.getItem('aztec_idb_names') ?? '[]') as string[];
           localStorage.clear();
+          sessionStorage.clear();
+
+          // Delete known Aztec IndexedDB databases by name (works in Safari
+          // which lacks indexedDB.databases())
+          for (const name of idbNames) {
+            indexedDB.deleteDatabase(name);
+          }
+
+          // Chrome/Firefox: enumerate and delete ALL IndexedDB databases
+          if (typeof indexedDB.databases === 'function') {
+            try {
+              const dbs = await indexedDB.databases();
+              for (const db of dbs) {
+                if (db.name) indexedDB.deleteDatabase(db.name);
+              }
+            } catch { /* ignore */ }
+          }
+
           window.location.reload();
         }}
       >
-        Clear Local Storage
+        Clear All State
       </button>
 
       {showNotEnoughCards && (

@@ -54,6 +54,8 @@ export type ClientMessage =
   | { type: 'SHARE_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string; gameRandomness?: string[] }
   // Note relay (offchain settlement delivery)
   | { type: 'RELAY_NOTE_DATA'; gameId: string; txHash: string; notes: PlaintextNoteData[] }
+  // Settlement lifecycle
+  | { type: 'SETTLE_STARTED'; gameId: string; selectedCardId: number }
   // Matchmaking
   | { type: 'QUEUE_MATCHMAKING'; cardIds: number[] }
   | { type: 'CANCEL_MATCHMAKING' }
@@ -80,6 +82,8 @@ export type ServerMessage =
   | { type: 'OPPONENT_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string; gameRandomness?: string[] }
   // Note relay (offchain settlement delivery)
   | { type: 'NOTE_DATA'; gameId: string; txHash: string; notes: PlaintextNoteData[] }
+  // Settlement lifecycle
+  | { type: 'OPPONENT_SETTLING'; gameId: string; selectedCardId: number }
   // Matchmaking
   | { type: 'MATCHMAKING_QUEUED'; position: number }
   | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState }

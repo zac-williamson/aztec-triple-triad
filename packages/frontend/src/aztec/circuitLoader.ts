@@ -36,3 +36,15 @@ export async function loadGameMoveCircuit(): Promise<CircuitArtifact> {
   return gameMoveArtifact!;
 }
 
+let dummyMoveArtifact: CircuitArtifact | null = null;
+export async function loadDummyMoveCircuit(): Promise<CircuitArtifact> {
+  if (!dummyMoveArtifact) {
+    const resp = await fetch('/circuits/dummy_move.json');
+    if (!resp.ok) {
+      throw new Error(`Failed to load dummy_move circuit: ${resp.status} ${resp.statusText}`);
+    }
+    dummyMoveArtifact = await resp.json();
+  }
+  return dummyMoveArtifact!;
+}
+

@@ -32,16 +32,17 @@ export default defineConfig({
     port: 3000,
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
-      // 'credentialless' enables SharedArrayBuffer (needed for WASM multithreading)
-      // while allowing same-origin workers to load without explicit CORP headers.
-      // 'require-corp' is stricter and blocks workers on WebKit/Safari.
-      'Cross-Origin-Embedder-Policy': 'credentialless',
+      // 'require-corp' enables SharedArrayBuffer in all browsers including Safari.
+      // All cross-origin fetches must use CORS mode with valid CORS response headers.
+      // Verified: testnet RPC returns access-control-allow-origin: * and all app
+      // resources (models, textures, contracts) are same-origin.
+      'Cross-Origin-Embedder-Policy': 'require-corp',
     },
   },
   preview: {
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'credentialless',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
     },
   },
   assetsInclude: ['**/*.glb', '**/*.gltf', '**/*.fbx'],

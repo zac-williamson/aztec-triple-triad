@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { toFr as toFrUtil } from '../aztec/fieldUtils';
-import { importNotesFromTx, getNftArtifact } from '../aztec/noteImporter';
+import { importNotesFromTx, fetchTxEffectData, getNftArtifact } from '../aztec/noteImporter';
+import { addCards, type StoredCard } from '../aztec/cardStore';
+import txManager from '../aztec/txManager';
 import { AZTEC_TX_TIMEOUT, CARDS_PER_PACK } from '../aztec/gameConstants';
 
 export interface LocationInfo {
@@ -86,59 +88,80 @@ export function useCardPacks(
   const hunt = useCallback(async (location: LocationInfo): Promise<HuntResult> => {
     if (!wallet || !accountAddress) throw new Error('Wallet not connected');
 
+    // Capture values upfront
+    const capturedWallet = wallet;
+    const capturedNodeClient = nodeClient;
+    const capturedAccountAddress = accountAddress;
+
     setTxStatus('sending');
     setActiveLocation(location.name);
     setError(null);
 
     try {
-      const { AztecAddress, paymentMethod, Fr } = await getSDK();
-      const nftContract = await getNftContract();
-      const addr = AztecAddress.fromString(accountAddress);
+      const result = await txManager.runTx<{ cardIds: number[]; txHash: string | null }>({
+        type: 'purchase_card_pack',
+        label: `Hunting at ${location.name}...`,
 
-      // Get current note nonce (deterministic counter for card generation)
-      const { result: nonceValue } = await nftContract.methods
-        .get_note_nonce(addr)
-        .simulate({ from: addr });
+        execute: async (setPhase) => {
+          setPhase('simulating');
+          const { AztecAddress, paymentMethod, Fr } = await getSDK();
+          const nftContract = await getNftContract();
+          const addr = AztecAddress.fromString(capturedAccountAddress);
 
-      // Preview which card IDs will be generated (runs client-side via simulate)
-      const { result: previewResult } = await nftContract.methods
-        .preview_card_ids(nonceValue)
-        .simulate({ from: addr });
-      const cardIds: number[] = Array.from({ length: CARDS_PER_PACK }, (_, i) => Number(previewResult[i]));
+          const { result: nonceValue } = await nftContract.methods
+            .get_note_nonce(addr)
+            .simulate({ from: addr });
 
-      setTxStatus('confirming');
+          const { result: previewResult } = await nftContract.methods
+            .preview_card_ids(nonceValue)
+            .simulate({ from: addr });
+          const cardIds: number[] = Array.from({ length: CARDS_PER_PACK }, (_, i) => Number(previewResult[i]));
 
-      // Purchase card pack (burns 100 Arena Tokens, generates 10 cards)
-      const { receipt } = await nftContract.methods.purchase_card_pack().send({
-        from: addr,
-        fee: { paymentMethod },
-        wait: { timeout: AZTEC_TX_TIMEOUT },
+          setPhase('sending');
+          const { receipt } = await nftContract.methods.purchase_card_pack().send({
+            from: addr,
+            fee: { paymentMethod },
+            wait: { timeout: AZTEC_TX_TIMEOUT },
+          });
+
+          const txHash = receipt?.txHash?.toString() ?? null;
+
+          // Import notes and persist to localStorage
+          if (txHash && capturedNodeClient) {
+            try {
+              const { result: randomnessResult } = await nftContract.methods
+                .compute_note_randomness(nonceValue, CARDS_PER_PACK)
+                .simulate({ from: addr });
+              const notes = cardIds.map((id, i) => ({
+                tokenId: id,
+                randomness: toFrUtil(Fr, randomnessResult[i]).toString(),
+              }));
+
+              // Fetch TxEffect data for localStorage persistence
+              const txEffectData = await fetchTxEffectData(capturedNodeClient, txHash);
+              if (txEffectData) {
+                const storedCards: StoredCard[] = notes.map((n) => ({
+                  cardId: n.tokenId,
+                  randomness: n.randomness,
+                  txHash,
+                  noteHashes: txEffectData.noteHashes,
+                  firstNullifier: txEffectData.firstNullifier,
+                }));
+                addCards(capturedAccountAddress, storedCards);
+              }
+
+              await importNotesFromTx(capturedWallet, capturedNodeClient, capturedAccountAddress, txHash, notes, 'Card pack', txEffectData ?? undefined);
+            } catch (importErr) {
+              console.warn('[useCardPacks] Failed to import card notes:', importErr);
+            }
+          }
+
+          return { cardIds, txHash };
+        },
       });
 
-      const txHash = receipt?.txHash?.toString() ?? null;
-
-      // Import the card notes (create_and_push_note skips tagging)
-      if (txHash && nodeClient) {
-        try {
-          const { result: randomnessResult } = await nftContract.methods
-            .compute_note_randomness(nonceValue, CARDS_PER_PACK)
-            .simulate({ from: addr });
-          const notes = cardIds.map((id, i) => ({
-            tokenId: id,
-            randomness: toFrUtil(Fr, randomnessResult[i]).toString(),
-          }));
-          await importNotesFromTx(wallet, nodeClient, accountAddress, txHash, notes, 'Card pack');
-        } catch (importErr) {
-          console.warn('[useCardPacks] Failed to import card notes:', importErr);
-        }
-      }
-
       setTxStatus('done');
-
-      // Refresh cooldowns after successful hunt
-      await refreshCooldowns();
-
-      return { cardIds, txHash };
+      return result;
     } catch (err: any) {
       console.error('[useCardPacks] Hunt failed:', err);
       setTxStatus('error');
@@ -147,7 +170,7 @@ export function useCardPacks(
     } finally {
       setActiveLocation(null);
     }
-  }, [wallet, nodeClient, accountAddress, getSDK, getNftContract, refreshCooldowns]);
+  }, [wallet, nodeClient, accountAddress, getSDK, getNftContract]);
 
   return {
     cooldowns,

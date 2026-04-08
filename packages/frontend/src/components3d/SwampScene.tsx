@@ -219,11 +219,7 @@ function SceneContent(props: SwampSceneProps) {
         revealCount={xochitlRevealCount}
       />
 
-      {/* Player nameplates — left side, billboard toward camera.
-          P2 is ~28% farther from camera so scale=1.28 equalises apparent size.
-          P2 Y adjusted down by 50% of its visual height (0.45 * 1.28 * 0.5 ≈ 0.29). */}
-      <Nameplate3D name={myName}  cardImageSrc={myCardImg}  position={[-1.35, 0.65, 1.4]}  meshScale={1}    score={myScore} />
-      <Nameplate3D name={oppName} cardImageSrc={oppCardImg} position={[-1.9,  0.76, -0.9]} meshScale={1.28} score={opponentScore} />
+      {/* Nameplates removed */}
 
       {/* Flying card animation — uses world-space coords bridging hand → tilted board */}
       {flyingCard && flyFrom && flyTo && (

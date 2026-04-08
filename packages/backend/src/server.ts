@@ -17,6 +17,7 @@ const VALID_MESSAGE_TYPES = new Set([
   'TX_CONFIRMED', 'TX_FAILED', 'CANCEL_GAME',
   'SHARE_AZTEC_INFO',
   'RELAY_NOTE_DATA',
+  'SETTLE_STARTED',
   'QUEUE_MATCHMAKING', 'CANCEL_MATCHMAKING', 'PING',
 ]);
 
@@ -224,6 +225,10 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
         if (!msg.txHash || typeof msg.txHash !== 'string') return 'txHash is required';
         if (!Array.isArray(msg.notes)) return 'notes must be an array';
+        break;
+      case 'SETTLE_STARTED':
+        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
+        if (typeof msg.selectedCardId !== 'number') return 'selectedCardId must be a number';
         break;
       case 'QUEUE_MATCHMAKING':
         if (!Array.isArray(msg.cardIds)) return 'cardIds must be an array of numbers';
@@ -513,6 +518,18 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         break;
       }
 
+      case 'SETTLE_STARTED': {
+        const opponentId = getOpponentId(msg.gameId, playerId);
+        if (opponentId) {
+          sendToPlayer(opponentId, {
+            type: 'OPPONENT_SETTLING',
+            gameId: msg.gameId,
+            selectedCardId: msg.selectedCardId,
+          });
+        }
+        break;
+      }
+
       case 'QUEUE_MATCHMAKING': {
         try {
           const position = gameManager.queuePlayer(playerId, msg.cardIds);
@@ -571,10 +588,16 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
           sendToPlayer(opponentId, { type: 'OPPONENT_DISCONNECTED', gameId });
         }
 
-        // Set a timeout for reconnection; if no reconnection, clean up game
+        // Set a timeout for reconnection; if no reconnection, keep room alive
+        // for the remaining player to complete the abandoned game claim/settle flow.
         const timeout = setTimeout(() => {
           disconnectTimeouts.delete(gameId);
-          gameManager.removeGame(gameId);
+          // Don't remove the game immediately -- the remaining player needs the
+          // room alive for the on-chain abandoned game recovery flow.
+          // Set a longer cleanup timeout (10 minutes).
+          setTimeout(() => {
+            gameManager.removeGame(gameId);
+          }, 10 * 60 * 1000);
         }, DISCONNECT_TIMEOUT_MS);
         disconnectTimeouts.set(gameId, timeout);
       }

@@ -64,8 +64,22 @@ pub contract TripleTriadGame {
         game_id: Field,
     }
 
+    #[event]
+    struct GameAbandoned {
+        game_id: Field,
+        claimant: AztecAddress,
+        num_valid_moves: Field,
+    }
+
+    #[event]
+    struct AbandonedGameSettled {
+        game_id: Field,
+        claimant: AztecAddress,
+        claimed_card_id: Field,
+    }
+
     // --- Storage ---
-    // Game status values: 0=none, 1=created, 2=active, 3=settled, 4=cancelled
+    // Game status values: 0=none, 1=created, 2=active, 3=settled, 4=cancelled, 5=abandoned_claimed
 
     #[storage]
     struct Storage<Context> {
@@ -81,6 +95,9 @@ pub contract TripleTriadGame {
         game_player_state_1: Map<Field, PublicMutable<Field, Context>, Context>,
         game_player_state_2: Map<Field, PublicMutable<Field, Context>, Context>,
         token_contract: PublicImmutable<AztecAddress, Context>,
+        dummy_vk_hash: PublicImmutable<Field, Context>,
+        game_claim_player: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
+        game_claim_block: Map<Field, PublicMutable<Field, Context>, Context>,
     }
 
     // --- Constructor ---
@@ -92,11 +109,13 @@ pub contract TripleTriadGame {
         hand_vk_hash: Field,
         move_vk_hash: Field,
         token_address: AztecAddress,
+        dummy_vk_hash: Field,
     ) {
         self.storage.nft_contract.initialize(nft_address);
         self.storage.hand_vk_hash.initialize(hand_vk_hash);
         self.storage.move_vk_hash.initialize(move_vk_hash);
         self.storage.token_contract.initialize(token_address);
+        self.storage.dummy_vk_hash.initialize(dummy_vk_hash);
     }
 
     // --- Create Game ---
@@ -198,6 +217,301 @@ pub contract TripleTriadGame {
         self.storage.game_status.at(game_id).write(4); // cancelled
 
         self.emit(GameCancelled { game_id });
+    }
+
+    // --- Abandoned Game ---
+
+    /// Claim that the opponent abandoned an active game.
+    ///
+    /// The claiming player provides a partial proof chain (1-8 valid moves) padded
+    /// with dummy proofs to fill all 9 slots. The contract verifies valid moves with
+    /// the real move VK and dummy moves with the dummy VK.
+    ///
+    /// The last valid move must show it's the opponent's turn (they quit).
+    /// This does NOT settle the game -- it opens a 1-minute dispute window.
+    #[external("private")]
+    fn claim_abandoned_game(
+        game_id: Field,
+        num_valid_moves: Field,
+        caller_is_player1: bool,
+        // Verification keys
+        hand_vk: UltraHonkVerificationKey,
+        move_vk: UltraHonkVerificationKey,
+        dummy_vk: UltraHonkVerificationKey,
+        // Hand proofs (2)
+        hand_proof_1: UltraHonkZKProof,
+        hand_proof_1_inputs: [Field; 2],
+        hand_proof_2: UltraHonkZKProof,
+        hand_proof_2_inputs: [Field; 2],
+        // Move proofs (9) -- mix of real and dummy
+        move_proof_1: UltraHonkZKProof,
+        move_inputs_1: [Field; 6],
+        move_proof_2: UltraHonkZKProof,
+        move_inputs_2: [Field; 6],
+        move_proof_3: UltraHonkZKProof,
+        move_inputs_3: [Field; 6],
+        move_proof_4: UltraHonkZKProof,
+        move_inputs_4: [Field; 6],
+        move_proof_5: UltraHonkZKProof,
+        move_inputs_5: [Field; 6],
+        move_proof_6: UltraHonkZKProof,
+        move_inputs_6: [Field; 6],
+        move_proof_7: UltraHonkZKProof,
+        move_inputs_7: [Field; 6],
+        move_proof_8: UltraHonkZKProof,
+        move_inputs_8: [Field; 6],
+        move_proof_9: UltraHonkZKProof,
+        move_inputs_9: [Field; 6],
+    ) {
+        // Read stored VK hashes
+        let stored_hand_vk_hash = self.storage.hand_vk_hash.read();
+        let stored_move_vk_hash = self.storage.move_vk_hash.read();
+        let stored_dummy_vk_hash = self.storage.dummy_vk_hash.read();
+
+        // Bounds check
+        let n = num_valid_moves as u32;
+        assert(n >= 1, "At least one move must have been played");
+        assert(n <= 8, "Use process_game for complete games");
+
+        // ===== 1. Verify both hand proofs =====
+        verify_honk_proof(hand_vk, hand_proof_1, hand_proof_1_inputs, stored_hand_vk_hash);
+        verify_honk_proof(hand_vk, hand_proof_2, hand_proof_2_inputs, stored_hand_vk_hash);
+
+        // ===== 2. Verify all 9 move proofs (real or dummy VK) =====
+        // Each proof is verified unconditionally. For slots beyond num_valid_moves,
+        // the dummy VK is used instead of the real move VK.
+        let vk_1 = if n > 0 { move_vk } else { dummy_vk };
+        let hash_1 = if n > 0 { stored_move_vk_hash } else { stored_dummy_vk_hash };
+        verify_honk_proof(vk_1, move_proof_1, move_inputs_1, hash_1);
+
+        let vk_2 = if n > 1 { move_vk } else { dummy_vk };
+        let hash_2 = if n > 1 { stored_move_vk_hash } else { stored_dummy_vk_hash };
+        verify_honk_proof(vk_2, move_proof_2, move_inputs_2, hash_2);
+
+        let vk_3 = if n > 2 { move_vk } else { dummy_vk };
+        let hash_3 = if n > 2 { stored_move_vk_hash } else { stored_dummy_vk_hash };
+        verify_honk_proof(vk_3, move_proof_3, move_inputs_3, hash_3);
+
+        let vk_4 = if n > 3 { move_vk } else { dummy_vk };
+        let hash_4 = if n > 3 { stored_move_vk_hash } else { stored_dummy_vk_hash };
+        verify_honk_proof(vk_4, move_proof_4, move_inputs_4, hash_4);
+
+        let vk_5 = if n > 4 { move_vk } else { dummy_vk };
+        let hash_5 = if n > 4 { stored_move_vk_hash } else { stored_dummy_vk_hash };
+        verify_honk_proof(vk_5, move_proof_5, move_inputs_5, hash_5);
+
+        let vk_6 = if n > 5 { move_vk } else { dummy_vk };
+        let hash_6 = if n > 5 { stored_move_vk_hash } else { stored_dummy_vk_hash };
+        verify_honk_proof(vk_6, move_proof_6, move_inputs_6, hash_6);
+
+        let vk_7 = if n > 6 { move_vk } else { dummy_vk };
+        let hash_7 = if n > 6 { stored_move_vk_hash } else { stored_dummy_vk_hash };
+        verify_honk_proof(vk_7, move_proof_7, move_inputs_7, hash_7);
+
+        let vk_8 = if n > 7 { move_vk } else { dummy_vk };
+        let hash_8 = if n > 7 { stored_move_vk_hash } else { stored_dummy_vk_hash };
+        verify_honk_proof(vk_8, move_proof_8, move_inputs_8, hash_8);
+
+        // Move 9 is always dummy (max valid is 8)
+        verify_honk_proof(dummy_vk, move_proof_9, move_inputs_9, stored_dummy_vk_hash);
+
+        // ===== 3. Extract card commits from hand proofs =====
+        let card_commit_1 = hand_proof_1_inputs[0];
+        let card_commit_2 = hand_proof_2_inputs[0];
+
+        // ===== 4. Validate card_commit consistency for valid moves =====
+        let move_inputs: [[Field; 6]; 9] = [
+            move_inputs_1, move_inputs_2, move_inputs_3,
+            move_inputs_4, move_inputs_5, move_inputs_6,
+            move_inputs_7, move_inputs_8, move_inputs_9,
+        ];
+
+        for i in 0..9 {
+            if (i as u32) < n {
+                assert(move_inputs[i][0] == card_commit_1, "Move proof card_commit_1 mismatch");
+                assert(move_inputs[i][1] == card_commit_2, "Move proof card_commit_2 mismatch");
+            }
+        }
+
+        // ===== 5. Validate proof chaining for valid moves =====
+        for i in 0..8 {
+            if ((i + 1) as u32) < n {
+                assert(
+                    move_inputs[i][3] == move_inputs[i + 1][2],
+                    "Proof chaining failed: end_state != next start_state",
+                );
+            }
+        }
+
+        // ===== 6. Validate initial state =====
+        let mut initial_inputs: [Field; 21] = [0; 21];
+        initial_inputs[18] = 5;
+        initial_inputs[19] = 5;
+        initial_inputs[20] = 1;
+        let canonical_initial = std::hash::pedersen_hash(initial_inputs);
+        assert(
+            move_inputs[0][2] == canonical_initial,
+            "First move start_state does not match initial state",
+        );
+
+        // ===== 7. Validate game NOT ended for all valid moves =====
+        for i in 0..9 {
+            if (i as u32) < n {
+                assert(move_inputs[i][4] == 0, "Valid move should not end game");
+                assert(move_inputs[i][5] == 0, "Valid move should not have a winner");
+            }
+        }
+
+        // ===== 8. Validate it's the opponent's turn =====
+        // P1 plays turns 0, 2, 4, 6, 8. P2 plays turns 1, 3, 5, 7.
+        // After N moves, the next player is: if N is even -> P1, if N is odd -> P2.
+        // The claimant must NOT be the next player (they didn't abandon).
+        if caller_is_player1 {
+            // P1 is claiming -> must be P2's turn -> N must be odd
+            assert(n % 2 == 1, "It must be opponent's turn to claim abandonment");
+        } else {
+            // P2 is claiming -> must be P1's turn -> N must be even
+            assert(n % 2 == 0, "It must be opponent's turn to claim abandonment");
+        }
+
+        // ===== 9. Enqueue public claim =====
+        let caller = self.msg_sender();
+        self.enqueue_self.claim_abandoned_game_public(game_id, caller, num_valid_moves);
+    }
+
+    #[external("public")]
+    #[only_self]
+    fn claim_abandoned_game_public(game_id: Field, claimant: AztecAddress, num_valid_moves: Field) {
+        let status = self.storage.game_status.at(game_id).read();
+        assert(status == 2, "Game must be in active state to claim abandonment");
+
+        let p1 = self.storage.game_player1.at(game_id).read();
+        let p2 = self.storage.game_player2.at(game_id).read();
+        assert((claimant == p1) | (claimant == p2), "Claimant must be a player in this game");
+
+        self.storage.game_claim_player.at(game_id).write(claimant);
+        self.storage.game_claim_block.at(game_id).write(self.context.block_number() as Field);
+        self.storage.game_status.at(game_id).write(5); // abandoned_claimed
+
+        self.emit(GameAbandoned { game_id, claimant, num_valid_moves });
+    }
+
+    // --- Settle Abandoned Game ---
+
+    /// Settle an abandoned game after the dispute window has elapsed.
+    ///
+    /// The claiming player gets their 5 cards back privately.
+    /// If they specify a claimed_card_id (nonzero), they also get one opponent card
+    /// and the opponent gets 4 cards to public ownership.
+    /// If claimed_card_id is 0, the opponent gets all 5 cards to public ownership.
+    #[external("private")]
+    fn settle_abandoned_game(
+        game_id: Field,
+        caller_card_ids: [Field; 5],
+        caller_randomness: [Field; 6],
+        opponent_card_ids: [Field; 5],
+        claimed_card_id: Field,
+        opponent: AztecAddress,
+    ) {
+        let caller = self.msg_sender();
+        let nft_address = self.storage.nft_contract.read();
+
+        // Re-mint caller's 5 cards privately
+        let mut caller_rand_5: [Field; 5] = [0; 5];
+        for i in 0..5 { caller_rand_5[i] = caller_randomness[i]; }
+
+        TripleTriadNFT::at(nft_address)
+            .mint_for_game_draw_offchain(caller_card_ids, caller, caller_rand_5)
+            .call(self.context);
+
+        if claimed_card_id != 0 {
+            // Validate claimed card is in opponent's hand
+            let mut card_found = false;
+            for i in 0..5 {
+                if opponent_card_ids[i] == claimed_card_id {
+                    card_found = true;
+                }
+            }
+            assert(card_found, "Claimed card not in opponent's hand");
+
+            // Mint claimed card privately to caller
+            TripleTriadNFT::at(nft_address)
+                .mint_single_card_private(claimed_card_id, caller, caller_randomness[5])
+                .call(self.context);
+
+            // Build opponent's remaining 4 cards (minus claimed one)
+            let mut opp_return: [Field; 4] = [0; 4];
+            let mut idx: u32 = 0;
+            let mut removed = false;
+            for i in 0..5 {
+                if (opponent_card_ids[i] == claimed_card_id) & (!removed) {
+                    removed = true;
+                } else {
+                    opp_return[idx] = opponent_card_ids[i];
+                    idx += 1;
+                }
+            }
+
+            // Mint opponent's remaining cards to public ownership
+            TripleTriadNFT::at(nft_address)
+                .mint_to_public_batch_4(opp_return, opponent)
+                .call(self.context);
+
+            // Reward only the claiming player (opponent abandoned)
+            let token_addr = self.storage.token_contract.read();
+            ArenaToken::at(token_addr).mint_private(caller, 20).call(self.context);
+        } else {
+            // No card claim -- return all opponent cards to public ownership
+            TripleTriadNFT::at(nft_address)
+                .mint_to_public_batch_5(opponent_card_ids, opponent)
+                .call(self.context);
+        }
+
+        let caller_state_hash = poseidon2_hash(caller_randomness);
+        self.enqueue_self.settle_abandoned_game_public(
+            game_id, caller, opponent, claimed_card_id, caller_state_hash,
+        );
+    }
+
+    #[external("public")]
+    #[only_self]
+    fn settle_abandoned_game_public(
+        game_id: Field,
+        claimant: AztecAddress,
+        opponent: AztecAddress,
+        claimed_card_id: Field,
+        caller_state_hash: Field,
+    ) {
+        let status = self.storage.game_status.at(game_id).read();
+        assert(status == 5, "Game must be in abandoned_claimed state");
+
+        let stored_claimant = self.storage.game_claim_player.at(game_id).read();
+        assert(claimant == stored_claimant, "Only the claimant can settle an abandoned game");
+
+        // Check dispute window: at least 5 blocks (~60 seconds)
+        let claim_block = self.storage.game_claim_block.at(game_id).read() as u32;
+        let current_block = self.context.block_number() as u32;
+        assert(current_block - claim_block >= 5, "Dispute window not elapsed (wait ~1 minute)");
+
+        let settled = self.storage.game_settled.at(game_id).read();
+        assert(!settled, "Game already settled");
+
+        // Verify claimant is a player and opponent matches
+        let p1 = self.storage.game_player1.at(game_id).read();
+        let p2 = self.storage.game_player2.at(game_id).read();
+        if claimant == p1 {
+            assert(opponent == p2, "Opponent address mismatch");
+            assert(caller_state_hash == self.storage.game_player_state_1.at(game_id).read(), "Player state hash mismatch");
+        } else {
+            assert(claimant == p2, "Claimant must be a player");
+            assert(opponent == p1, "Opponent address mismatch");
+            assert(caller_state_hash == self.storage.game_player_state_2.at(game_id).read(), "Player state hash mismatch");
+        }
+
+        self.storage.game_settled.at(game_id).write(true);
+        self.storage.game_status.at(game_id).write(3); // settled
+
+        self.emit(AbandonedGameSettled { game_id, claimant, claimed_card_id });
     }
 
     // --- Process Game ---
@@ -426,6 +740,7 @@ pub contract TripleTriadGame {
         }
     }
 
+
     // --- Public Settlement ---
 
     #[external("public")]
@@ -591,3 +906,5 @@ pub contract TripleTriadGame {
         self.storage.game_player_state_2.at(game_id).read()
     }
 }
+
+mod test;

@@ -181,12 +181,15 @@ async function main() {
 
   const proveHandCircuit = loadCircuitArtifact('prove_hand');
   const gameMoveCircuit = loadCircuitArtifact('game_move');
+  const dummyMoveCircuit = loadCircuitArtifact('dummy_move');
 
   const handVkHash = await computeVkHash(api, proveHandCircuit.bytecode);
   const moveVkHash = await computeVkHash(api, gameMoveCircuit.bytecode);
+  const dummyVkHash = await computeVkHash(api, dummyMoveCircuit.bytecode);
 
   console.log(`  hand_vk_hash: ${handVkHash}`);
   console.log(`  move_vk_hash: ${moveVkHash}`);
+  console.log(`  dummy_vk_hash: ${dummyVkHash}`);
 
   await api.destroy();
 
@@ -236,12 +239,13 @@ async function main() {
 
   // 7. Deploy Game contract
   console.log('\nDeploying TripleTriadGame...');
-  // Constructor: (nft_address, hand_vk_hash, move_vk_hash, token_address)
+  // Constructor: (nft_address, hand_vk_hash, move_vk_hash, token_address, dummy_vk_hash)
   const { contract: gameContract } = await Contract.deploy(wallet, gameArtifact, [
     nftAddress,
     Fr.fromHexString(handVkHash),
     Fr.fromHexString(moveVkHash),
     tokenAddress,
+    Fr.fromHexString(dummyVkHash),
   ])
     .send(sendAs(deployerAddress));
 
@@ -298,8 +302,9 @@ VITE_WS_URL=ws://localhost:${wsPort}
   console.log(`Token Contract: ${tokenAddress.toString()}`);
   console.log(`Deployer:       ${deployerAddress.toString()}`);
   console.log(`\nVK Hashes:`);
-  console.log(`  hand: ${handVkHash}`);
-  console.log(`  move: ${moveVkHash}`);
+  console.log(`  hand:  ${handVkHash}`);
+  console.log(`  move:  ${moveVkHash}`);
+  console.log(`  dummy: ${dummyVkHash}`);
   console.log(`\nCard minting happens in-app via get_cards_for_new_player()`);
 }
 

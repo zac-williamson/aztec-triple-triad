@@ -46,7 +46,7 @@ export function SettlementCardPicker({
         {resultScore && (
           <div className="settle-score">{resultScore}</div>
         )}
-        <div style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#c8a860', margin: '8px 0' }}>
+        <div style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#2e6b1e', margin: '8px 0' }}>
           +20 Arena Tokens earned!
         </div>
 

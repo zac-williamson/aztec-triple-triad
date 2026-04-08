@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { AZTEC_CONFIG } from '../aztec/AztecContext';
 import { prepareConnection, deployAndRegister, type PreparedConnection } from '../aztec/connectToAztec';
-
+import txManager from '../aztec/txManager';
 type ConnectionStatus = 'disconnected' | 'connecting' | 'needs-funding' | 'deploying' | 'connected' | 'error' | 'unsupported';
 
 export interface UseAztecReturn {
@@ -56,7 +56,14 @@ export function useAztec(): UseAztecReturn {
       if (prepared.alreadyDeployed) {
         // Account already deployed — go straight to Phase 2
         setStatus('deploying');
-        const result = await deployAndRegister(prepared, { log });
+        const result = await txManager.runTx({
+          type: 'deploy_account',
+          label: 'Restoring account...',
+          execute: async (setPhase) => {
+            setPhase('sending');
+            return deployAndRegister(prepared, { log });
+          },
+        });
         walletRef.current = result.wallet;
         nodeClientRef.current = result.node;
         setOwnedCardIds(result.ownedCardIds);
@@ -69,7 +76,14 @@ export function useAztec(): UseAztecReturn {
           const { fundAccountOnDevnet } = await import('../aztec/fundDevnet');
           const claim = await fundAccountOnDevnet(prepared.node, prepared.accountAddress, log);
           setStatus('deploying');
-          const result = await deployAndRegister(prepared, { log, feeJuiceClaim: claim });
+          const result = await txManager.runTx({
+            type: 'deploy_account',
+            label: 'Deploying account & minting starter cards...',
+            execute: async (setPhase) => {
+              setPhase('sending');
+              return deployAndRegister(prepared, { log, feeJuiceClaim: claim });
+            },
+          });
           walletRef.current = result.wallet;
           nodeClientRef.current = result.node;
           setOwnedCardIds(result.ownedCardIds);
@@ -99,7 +113,14 @@ export function useAztec(): UseAztecReturn {
     setError(null);
 
     try {
-      const result = await deployAndRegister(prepared, { log });
+      const result = await txManager.runTx({
+        type: 'deploy_account',
+        label: 'Deploying account & minting starter cards...',
+        execute: async (setPhase) => {
+          setPhase('sending');
+          return deployAndRegister(prepared, { log });
+        },
+      });
       walletRef.current = result.wallet;
       nodeClientRef.current = result.node;
       setAccountAddress(result.accountAddress);
@@ -127,8 +148,29 @@ export function useAztec(): UseAztecReturn {
   }, [accountAddress]);
 
   const refreshTokenBalance = useCallback(async () => {
-    // TODO: implement via ArenaToken.get_balance()
-  }, []);
+    if (!walletRef.current || !accountAddress || !AZTEC_CONFIG.tokenContractAddress) return;
+    try {
+      // Wait for warmup to finish so we reuse the cached Contract.at() instances
+      // rather than creating new ones that race on IDB (Safari IDB is strict).
+      const { waitForWarmup, contractCache } = await import('../aztec/contracts');
+      await waitForWarmup();
+      const tokenContract = contractCache.tokenContract;
+      const AztecAddress = contractCache.AztecAddress;
+      if (!tokenContract || !AztecAddress) return;
+      const ownerAddr = AztecAddress.fromString(accountAddress);
+      const { result } = await tokenContract.methods.get_balance(ownerAddr).simulate({ from: ownerAddr });
+      setTokenBalance(Number(BigInt(result.toString())));
+    } catch (e) {
+      console.warn('[useAztec] Failed to fetch token balance:', e);
+    }
+  }, [accountAddress]);
+
+  // Auto-fetch token balance when connected
+  useEffect(() => {
+    if (status === 'connected') {
+      refreshTokenBalance();
+    }
+  }, [status, refreshTokenBalance]);
 
   return {
     status,
