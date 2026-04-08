@@ -9,7 +9,7 @@ import { removeCards } from '../aztec/cardStore';
 import txManager from '../aztec/txManager';
 import { ensureContracts, contractCache, warmupContracts, waitForWarmup } from '../aztec/contracts';
 import { AZTEC_CONFIG } from '../aztec/config';
-import { toFr as toFrUtil, toHexString } from '../aztec/fieldUtils';
+import { toFr as toFrUtil, toHexString, bytesToFrArray, base64ToFrArray, hexToFr } from '../aztec/fieldUtils';
 import { AZTEC_TX_TIMEOUT, AZTEC_SETTLE_TX_TIMEOUT, CARDS_PER_HAND, TOTAL_MOVES, MOVE_PROOF_WAIT_TIMEOUT, HAND_PROOF_WAIT_TIMEOUT } from '../aztec/gameConstants';
 import type { Screen, GameState, Player, Card, HandProofData, MoveProofData, PlaintextNoteData } from '../types';
 
@@ -85,8 +85,69 @@ function removeOneOfEach(source: number[], toRemove: number[]): number[] {
   });
 }
 
-// --- On-chain pipeline phase ---
-type OnChainPhase = 'idle' | 'creating' | 'preparing' | 'awaiting_p1_tx' | 'joining' | 'done';
+/**
+ * ## Ref vs State design
+ *
+ * This hook uses both React state (useState) and refs (useRef) for game data.
+ * The split is intentional:
+ *
+ * **React state** — values that the UI needs to render:
+ *   screen, cardIds, handProofStatus, moveProofStatus, settleTxStatus, etc.
+ *   Changes trigger re-renders, which update the UI.
+ *
+ * **Refs** — values consumed by async closures or that must survive navigation:
+ *   settlementInfoRef:  Pipeline-derived data (gameId, randomness, card IDs,
+ *                        opponent address/randomness). Populated by pipeline
+ *                        postEffects and WS listener. NOT cleared on navigation
+ *                        — settlement may run after the user leaves the game screen.
+ *   onChainPhaseRef:    State machine for the on-chain lifecycle. Managed by
+ *                        transitionPhase(). NOT reset on menu navigation to avoid
+ *                        re-triggering spurious create_game.
+ *   cardIdsRef:          Snapshot of card IDs for proof generation closures.
+ *   moveProofsRef:       Always-current move proof array (avoids stale closure
+ *                        in handleSettle's execute callback).
+ *   myHandProofRef,
+ *   opponentHandProofRef: Same pattern — latest proof values for settlement.
+ *   pendingMovesRef:     Moves queued before hand proofs are ready.
+ *   gameStateHistoryRef: Board snapshots indexed by move number, for deferred
+ *                        proof generation after hand proofs arrive.
+ *   handProofSubmittedRef,
+ *   handProofGeneratedRef,
+ *   noteImportProcessedRef: Idempotency guards preventing duplicate operations.
+ *   pipelineDoneResolveRef,
+ *   activePhaseResolveRef,
+ *   moveProofsCompleteRef,
+ *   handProofsCompleteRef: Promise resolvers for cross-concern synchronization.
+ *
+ * The general rule: if a value is read inside a txManager.execute() callback
+ * or needs to survive screen transitions, it's a ref. If the UI renders it,
+ * it's state. Some values exist as both (e.g., myHandProof is state for the
+ * UI status indicator AND a ref for the settlement closure).
+ */
+
+// --- On-chain lifecycle phase ---
+type OnChainPhase =
+  | 'idle'                  // No game lifecycle in progress. Safe to create a new game.
+  | 'creating'              // P1: sending create_game tx via txManager.
+  | 'awaiting_join'         // P1: create_game mined. Waiting for P2's join_game to mine.
+  | 'preparing'             // P2: read-only PXE simulations before sending any tx.
+  | 'awaiting_create'       // P2: preview data shared. Waiting for P1's create_game to confirm.
+  | 'joining'               // P2: sending join_game tx via txManager.
+  | 'active'                // Both players joined on-chain. Game in progress.
+  | 'settling'              // Winner: actively sending process_game / claim_abandoned_game.
+  | 'awaiting_settlement';  // Loser: waiting for opponent's settlement + NOTE_DATA.
+
+const VALID_TRANSITIONS: Record<OnChainPhase, OnChainPhase[]> = {
+  idle:                 ['creating', 'preparing'],
+  creating:             ['awaiting_join', 'idle'],
+  awaiting_join:        ['active', 'settling', 'idle'],
+  preparing:            ['awaiting_create', 'idle'],
+  awaiting_create:      ['joining', 'idle'],
+  joining:              ['active', 'awaiting_create', 'idle'],
+  active:               ['settling', 'awaiting_settlement', 'idle'],
+  settling:             ['idle'],
+  awaiting_settlement:  ['idle'],
+};
 
 /**
  * Merged game hook — replaces useGameOrchestrator + useGameSession.
@@ -152,6 +213,8 @@ export function useGame(wsUrl: string): UseGameReturn {
     gameRandomness: string[];
     opponentAddress: string;
     opponentRandomness: string[];
+    callerCardIds: number[];
+    opponentCardIds: number[];
   } | null>(null);
 
   // --- Refs ---
@@ -162,6 +225,27 @@ export function useGame(wsUrl: string): UseGameReturn {
 
   // Typed phase ref (replaces 4 boolean guards)
   const onChainPhaseRef = useRef<OnChainPhase>('idle');
+
+  // Promise resolver for awaiting_join → active transition (P1 waiting for P2 join)
+  const activePhaseResolveRef = useRef<(() => void) | null>(null);
+
+  function transitionPhase(to: OnChainPhase): void {
+    const from = onChainPhaseRef.current;
+    if (from === to) return;
+    const allowed = VALID_TRANSITIONS[from];
+    if (!allowed.includes(to)) {
+      console.error(`[useGame] Invalid phase transition: ${from} → ${to}`);
+      return;
+    }
+    console.log(`[useGame] Phase: ${from} → ${to}`);
+    onChainPhaseRef.current = to;
+
+    // Resolve any waiters on the 'active' phase
+    if (to === 'active' && activePhaseResolveRef.current) {
+      activePhaseResolveRef.current();
+      activePhaseResolveRef.current = null;
+    }
+  }
 
   // Board state history — indexed by occupied cell count (move number)
   const gameStateHistoryRef = useRef<Map<number, {
@@ -683,8 +767,30 @@ export function useGame(wsUrl: string): UseGameReturn {
           settlementInfoRef.current.opponentRandomness = [...msg.gameRandomness];
         }
       }
+      // Capture opponent card IDs from GAME_OVER into the persistent ref.
+      // We identify "our" cards by matching against callerCardIds (already stored),
+      // and the remaining set is the opponent's.
+      if (msg.type === 'GAME_OVER' && settlementInfoRef.current) {
+        const m = msg as any;
+        const p1Ids: number[] = m.player1CardIds ?? [];
+        const p2Ids: number[] = m.player2CardIds ?? [];
+        const callerIds = settlementInfoRef.current.callerCardIds;
+        // Match: if our caller cards are P1's cards, opponent is P2 (and vice versa)
+        const callerIsP1 = callerIds.length > 0 && callerIds.every((id: number) => p1Ids.includes(id));
+        const oppIds = callerIsP1 ? p2Ids : p1Ids;
+        if (oppIds.length > 0) {
+          settlementInfoRef.current.opponentCardIds = [...oppIds];
+        }
+      }
     });
   }, [ws.addMessageListener]);
+
+  // P1: transition awaiting_join → active when P2's join_game tx is confirmed
+  useEffect(() => {
+    if (onChainPhaseRef.current === 'awaiting_join' && ws.opponentTxConfirmed) {
+      transitionPhase('active');
+    }
+  }, [ws.opponentTxConfirmed]);
 
   // Consolidated on-chain pipeline (replaces 3 separate effects + dead fallback)
   useEffect(() => {
@@ -697,7 +803,7 @@ export function useGame(wsUrl: string): UseGameReturn {
 
     // P1: create game — runs through txManager
     if (ws.playerNumber === 1 && phase === 'idle') {
-      onChainPhaseRef.current = 'creating';
+      transitionPhase('creating');
       const capturedGameId = ws.gameId!;
       const capturedAddr = aztec.accountAddress!;
       const capturedCardIds = [...cardIds];
@@ -729,21 +835,23 @@ export function useGame(wsUrl: string): UseGameReturn {
             gameRandomness: result.randomness,
             opponentAddress: '',
             opponentRandomness: [],
+            callerCardIds: capturedCardIds,
+            opponentCardIds: [],
           };
-          onChainPhaseRef.current = 'done';
+          transitionPhase('awaiting_join');
           if (pipelineDoneResolveRef.current) { pipelineDoneResolveRef.current(); pipelineDoneResolveRef.current = null; }
         },
       }).catch(err => {
         console.error('[useGame] On-chain game creation failed:', err);
         setOnChainError(err instanceof Error ? err.message : 'Create game failed');
-        onChainPhaseRef.current = 'idle';
+        transitionPhase('idle');
       });
       return;
     }
 
     // P2 phase 1: prepare preview — runs through txManager PXE queue
     if (ws.playerNumber === 2 && phase === 'idle' && ws.opponentOnChainGameId) {
-      onChainPhaseRef.current = 'preparing';
+      transitionPhase('preparing');
       const capturedGameId = ws.gameId!;
       const capturedAddr = aztec.accountAddress!;
       const capturedChainGameId = ws.opponentOnChainGameId!;
@@ -773,20 +881,22 @@ export function useGame(wsUrl: string): UseGameReturn {
             gameRandomness: result.randomness,
             opponentAddress: '',
             opponentRandomness: [],
+            callerCardIds: capturedCardIds,
+            opponentCardIds: [],
           };
-          onChainPhaseRef.current = 'awaiting_p1_tx';
+          transitionPhase('awaiting_create');
         },
       }).catch(err => {
         console.error('[useGame] P2 prepare failed:', err);
         setOnChainError(err instanceof Error ? err.message : 'Prepare join failed');
-        onChainPhaseRef.current = 'idle';
+        transitionPhase('idle');
       });
       return;
     }
 
     // P2 phase 2: join after P1 confirmed — runs through txManager
-    if (ws.playerNumber === 2 && phase === 'awaiting_p1_tx' && ws.opponentTxConfirmed && onChainGameId) {
-      onChainPhaseRef.current = 'joining';
+    if (ws.playerNumber === 2 && phase === 'awaiting_create' && ws.opponentTxConfirmed && onChainGameId) {
+      transitionPhase('joining');
       const capturedGameId = ws.gameId!;
       const capturedChainGameId = ws.opponentOnChainGameId!;
       const capturedCardIds = [...cardIds];
@@ -804,13 +914,13 @@ export function useGame(wsUrl: string): UseGameReturn {
         postEffects: async (txHash) => {
           capturedNotifyTx(capturedGameId, 'join_game', txHash);
           console.log('[useGame] P2: join_game mined, notified backend');
-          onChainPhaseRef.current = 'done';
+          transitionPhase('active');
           if (pipelineDoneResolveRef.current) { pipelineDoneResolveRef.current(); pipelineDoneResolveRef.current = null; }
         },
       }).catch(err => {
         console.error('[useGame] P2 join_game tx failed:', err);
         setOnChainError(err instanceof Error ? err.message : 'Join game failed');
-        onChainPhaseRef.current = 'awaiting_p1_tx';
+        transitionPhase('awaiting_create');
       });
     }
   }, [screen, ws.playerNumber, ws.gameId, ws.gameState, ws.opponentOnChainGameId,
@@ -836,6 +946,7 @@ export function useGame(wsUrl: string): UseGameReturn {
       handProofsCompleteRef.current = null;
       previewSharedRef.current = false;
       pipelineDoneResolveRef.current = null;
+      activePhaseResolveRef.current = null;
       // Reset session state
       setOnChainGameId(null);
       setGameRandomness(null);
@@ -895,7 +1006,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     importNotes(txHash, notes, 'Loser import');
 
     // Settlement complete on loser side — release the game lifecycle
-    onChainPhaseRef.current = 'idle';
+    transitionPhase('idle');
   }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, aztec.nodeClient, importNotes, cardIds]);
 
   // Track opponent's settlement on the loser's side via txManager.
@@ -907,6 +1018,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     if (!ws.opponentSettling) return;
     if (opponentSettleTxIdRef.current) return; // Already tracking
 
+    transitionPhase('awaiting_settlement');
     setTakenCardId(ws.opponentSettling.selectedCardId);
 
     // Create a txManager entry for the opponent's settlement
@@ -924,7 +1036,7 @@ export function useGame(wsUrl: string): UseGameReturn {
       },
       postEffects: async () => {
         setOpponentSettled(true);
-        onChainPhaseRef.current = 'idle';
+        transitionPhase('idle');
         // Wait for PXE to sync the block containing the settlement tx
         // before querying token balance (token notes use ONCHAIN_CONSTRAINED
         // delivery which requires PXE block sync to discover).
@@ -935,7 +1047,7 @@ export function useGame(wsUrl: string): UseGameReturn {
 
     txId.catch(() => {
       // If something goes wrong, still release the game lifecycle
-      onChainPhaseRef.current = 'idle';
+      transitionPhase('idle');
     });
 
     opponentSettleTxIdRef.current = 'tracking';
@@ -1070,8 +1182,6 @@ export function useGame(wsUrl: string): UseGameReturn {
     // are read from settlementInfoRef inside execute — that ref persists across navigation.
     const capturedGameId = ws.gameId;
     const capturedPlayerNumber = ws.playerNumber;
-    const capturedOpponentCardIds = [...ws.opponentCardIds];
-    const capturedCardIds = [...cardIds];
     const w = requireWallet();
     const addr = requireAccountAddress();
     const capturedImportNotes = importNotes;
@@ -1080,6 +1190,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     const capturedNotifySettle = (gId: string, cardId: number) =>
       ws.notifySettleStarted(gId, cardId);
 
+    transitionPhase('settling');
     setSettleTxStatus('preparing');
     setSettleError(null);
     setSettleTxHash(null);
@@ -1090,21 +1201,20 @@ export function useGame(wsUrl: string): UseGameReturn {
       gameId: capturedGameId,
 
       execute: async (setPhase) => {
-        // ── Wait for the on-chain pipeline (create_game/join_game) ──────
-        // The priority queue ensures join_game runs before settle_game when
-        // both are pending in the queue, preventing deadlocks.
-        if (onChainPhaseRef.current !== 'done' && onChainPhaseRef.current !== 'idle') {
-          console.log('[useGame] On-chain pipeline still running (phase:', onChainPhaseRef.current, ') — waiting...');
+        // ── Wait for both players to be on-chain (phase: active) ──────
+        const currentPhase = onChainPhaseRef.current;
+        if (currentPhase !== 'active' && currentPhase !== 'settling') {
+          console.log('[useGame] Game not yet active on-chain (phase:', currentPhase, ') — waiting...');
           setPhase('queued');
           await new Promise<void>((resolve, reject) => {
-            if (onChainPhaseRef.current === 'done') { resolve(); return; }
-            pipelineDoneResolveRef.current = resolve;
+            if (onChainPhaseRef.current === 'active') { resolve(); return; }
+            activePhaseResolveRef.current = resolve;
             setTimeout(() => {
-              pipelineDoneResolveRef.current = null;
-              reject(new Error(`Timed out waiting for on-chain pipeline (phase: ${onChainPhaseRef.current})`));
+              activePhaseResolveRef.current = null;
+              reject(new Error(`Timed out waiting for game to become active (phase: ${onChainPhaseRef.current})`));
             }, AZTEC_SETTLE_TX_TIMEOUT);
           });
-          console.log('[useGame] On-chain pipeline complete — proceeding with settlement');
+          console.log('[useGame] Game active on-chain — proceeding with settlement');
         }
 
         // ── Wait for hand proofs ───────────────────────────────────────
@@ -1134,32 +1244,9 @@ export function useGame(wsUrl: string): UseGameReturn {
         const sInfo = settlementInfoRef.current;
         if (!sInfo) throw new Error('Settlement info not available (pipeline incomplete)');
 
-        // ── Verify game is active on-chain (status 2 = both joined) ────
+        // Both players are on-chain (guaranteed by active phase wait above).
         const { fee, Fr, AztecAddress } = await ensureContracts(w);
         const liveOnChainGameId = sInfo.onChainGameId;
-        {
-          const gameIdFr = toFrUtil(Fr, liveOnChainGameId);
-          const senderForCheck = AztecAddress.fromString(addr);
-          const { gameContract } = await ensureContracts(w);
-          const { result: gameStatus } = await gameContract.methods
-            .get_game_status(gameIdFr)
-            .simulate({ from: senderForCheck });
-          const status = Number(gameStatus);
-          if (status !== 2) {
-            console.log(`[useGame] Game status is ${status}, waiting for opponent to join on-chain...`);
-            for (let poll = 0; poll < 60; poll++) {
-              await new Promise(r => setTimeout(r, 2000));
-              const { result: s } = await gameContract.methods
-                .get_game_status(gameIdFr)
-                .simulate({ from: senderForCheck });
-              if (Number(s) === 2) {
-                console.log('[useGame] Opponent join_game confirmed on-chain');
-                break;
-              }
-              if (poll === 59) throw new Error('Timed out waiting for opponent to join game on-chain');
-            }
-          }
-        }
 
         // ── Wait for all move proofs ───────────────────────────────────
         if (moveProofsRef.current.length < TOTAL_MOVES) {
@@ -1173,12 +1260,15 @@ export function useGame(wsUrl: string): UseGameReturn {
           });
         }
 
-        // ── All waits complete — read from persistent ref + closures ────
+        // ── All waits complete — read from persistent ref ────
         const capturedOpponentAddress = sInfo.opponentAddress;
         const capturedOpponentRandomness = sInfo.opponentRandomness;
         const capturedGameRandomness = sInfo.gameRandomness;
+        const capturedCardIds = sInfo.callerCardIds;
+        const capturedOpponentCardIds = sInfo.opponentCardIds;
 
-        if (capturedOpponentCardIds.length === 0) throw new Error('No opponent card IDs');
+        if (capturedCardIds.length === 0) throw new Error('No caller card IDs (settlement info incomplete)');
+        if (capturedOpponentCardIds.length === 0) throw new Error('No opponent card IDs (settlement info incomplete)');
 
         // Notify opponent NOW — settlement will actually proceed.
         // Uses captured function ref that binds to the game's WebSocket send().
@@ -1206,27 +1296,10 @@ export function useGame(wsUrl: string): UseGameReturn {
           moveBackend.getVerificationKey(),
         ]);
 
-        function bytesToFrArray(bytes: Uint8Array): InstanceType<typeof Fr>[] {
-          const fields: InstanceType<typeof Fr>[] = [];
-          for (let i = 0; i < bytes.length; i += 32) {
-            const chunk = bytes.slice(i, i + 32);
-            const hex = '0x' + Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join('');
-            fields.push(Fr.fromHexString(hex));
-          }
-          return fields;
-        }
-
-        function base64ToFrArray(b64: string): InstanceType<typeof Fr>[] {
-          const binary = atob(b64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          return bytesToFrArray(bytes);
-        }
-
-        const hexToFr = (hex: string) => Fr.fromHexString(hex.startsWith('0x') ? hex : '0x' + hex);
-
-        const handVkFields = bytesToFrArray(handVk);
-        const moveVkFields = bytesToFrArray(moveVk);
+        const handVkFields = bytesToFrArray(Fr, handVk);
+        const moveVkFields = bytesToFrArray(Fr, moveVk);
+        const toFrArr = (b64: string) => base64ToFrArray(Fr, b64);
+        const toFrHex = (hex: string) => hexToFr(Fr, hex);
 
         // Sort move proofs into chain
         const { computeBoardStateHash } = await import('../aztec/proofWorker');
@@ -1250,8 +1323,8 @@ export function useGame(wsUrl: string): UseGameReturn {
         const mp: InstanceType<typeof Fr>[][] = [];
         const mi: InstanceType<typeof Fr>[][] = [];
         for (const m of sorted) {
-          mp.push(base64ToFrArray(m.proof));
-          mi.push(m.publicInputs.map(hexToFr));
+          mp.push(toFrArr(m.proof));
+          mi.push(m.publicInputs.map(toFrHex));
         }
 
         setPhase('sending');
@@ -1273,10 +1346,10 @@ export function useGame(wsUrl: string): UseGameReturn {
 
         const handProof1 = capturedPlayerNumber === 1 ? myProof : oppProof;
         const handProof2 = capturedPlayerNumber === 2 ? myProof : oppProof;
-        const hp1ProofData = base64ToFrArray(handProof1.proof);
-        const hp1InputData = handProof1.publicInputs.map(hexToFr);
-        const hp2ProofData = base64ToFrArray(handProof2.proof);
-        const hp2InputData = handProof2.publicInputs.map(hexToFr);
+        const hp1ProofData = toFrArr(handProof1.proof);
+        const hp1InputData = handProof1.publicInputs.map(toFrHex);
+        const hp2ProofData = toFrArr(handProof2.proof);
+        const hp2InputData = handProof2.publicInputs.map(toFrHex);
 
         const { receipt } = await contract.methods
           .process_game(
@@ -1299,11 +1372,11 @@ export function useGame(wsUrl: string): UseGameReturn {
 
         const hash = receipt?.txHash?.toString();
         if (!hash) throw new Error('Settlement tx returned no txHash');
-        return { hash, callerRandomness, opponentRandomness };
+        return { hash, callerRandomness, opponentRandomness, capturedCardIds, capturedOpponentCardIds };
       },
 
       postEffects: async (result) => {
-        const { hash, callerRandomness, opponentRandomness } = result;
+        const { hash, callerRandomness, opponentRandomness, capturedCardIds, capturedOpponentCardIds } = result;
         setSettleTxHash(hash);
         lastSettleTxHashRef.current = hash;
         setSettleTxStatus('confirmed');
@@ -1346,7 +1419,7 @@ export function useGame(wsUrl: string): UseGameReturn {
 
         // Game's on-chain lifecycle is complete — mark idle so the pipeline
         // effect won't re-trigger a spurious create_game on navigation.
-        onChainPhaseRef.current = 'idle';
+        transitionPhase('idle');
         settlementInfoRef.current = null;
       },
     }).catch((err) => {
@@ -1354,27 +1427,24 @@ export function useGame(wsUrl: string): UseGameReturn {
       console.error('[useGame] settleGame error:', err);
       setSettleError(message);
       setSettleTxStatus('error');
-      onChainPhaseRef.current = 'idle';
+      transitionPhase('idle');
       settlementInfoRef.current = null;
     });
-  }, [ws.gameId, ws.playerNumber, ws.opponentCardIds, cardIds,
+  }, [ws.gameId, ws.playerNumber,
       aztec.wallet, aztec.accountAddress, importNotes, ws.relayNoteData, ws.notifySettleStarted]);
 
   // canGoBack: winner can leave after picking a card (settlement runs in background via txManager).
-  // Loser must wait until their settlement flow completes (opponentSettled).
-  // Before the game ends or before the winner picks a card, navigation is blocked
-  // while on-chain lifecycle is active.
-  const winnerSettleInitiated = settleTxStatus !== 'idle';
+  // Winner can leave once settlement started (txManager runs in background).
+  // Loser must wait for NOTE_DATA (awaiting_settlement blocks navigation).
+  const phase = onChainPhaseRef.current;
   const canGoBack = screen === 'main-menu'
-    || winnerSettleInitiated
-    || (onChainPhaseRef.current === 'idle' && !txManager.hasInFlightForGame(ws.gameId ?? ''));
+    || phase === 'settling'   // winner: settlement in progress, can leave
+    || phase === 'idle';      // no lifecycle active
 
   const handleBackToMenu = useCallback(() => {
-    // Winner can leave once they've picked a card (settlement continues in txManager)
-    const settleStarted = settleTxStatus !== 'idle';
-    // Guard: block navigation while game is in-flight (unless winner has initiated settlement)
-    if (!settleStarted && ws.gameId && (onChainPhaseRef.current !== 'idle' || txManager.hasInFlightForGame(ws.gameId))) {
-      console.log('[useGame] Back to menu blocked: game in-flight');
+    const currentPhase = onChainPhaseRef.current;
+    if (currentPhase !== 'idle' && currentPhase !== 'settling') {
+      console.log('[useGame] Back to menu blocked: game in-flight (phase:', currentPhase, ')');
       return;
     }
 
@@ -1392,24 +1462,35 @@ export function useGame(wsUrl: string): UseGameReturn {
   const handleAbandonedGame = useCallback(async () => {
     if (abandonedClaimStartedRef.current) return;
     abandonedClaimStartedRef.current = true;
+    transitionPhase('settling');
     setIsClaimingAbandoned(true);
 
     const w = requireWallet();
     const addr = requireAccountAddress();
-    const capturedCardIds = [...cardIds];
-    const capturedGameRandomness = gameRandomness ? [...gameRandomness] : null;
-    const capturedOnChainGameId = onChainGameId;
-    const capturedOpponentAddress = ws.opponentAztecAddress;
-    const capturedOpponentCardIds = ws.opponentCardIds ? [...ws.opponentCardIds] : [];
+    const sInfo = settlementInfoRef.current;
     const capturedPlayerNumber = ws.playerNumber;
     const validMoveProofs = [...moveProofsRef.current];
 
-    if (!capturedOnChainGameId || !capturedGameRandomness || !capturedOpponentAddress) {
-      console.error('[useGame] Cannot claim abandoned game: missing game data');
+    if (!sInfo || !sInfo.onChainGameId || !sInfo.gameRandomness.length || !sInfo.opponentAddress) {
+      console.error('[useGame] Cannot claim abandoned game: missing settlement info');
       setIsClaimingAbandoned(false);
       abandonedClaimStartedRef.current = false;
+      transitionPhase('idle');
       return;
     }
+    if (sInfo.callerCardIds.length === 0) {
+      console.error('[useGame] Cannot claim abandoned game: missing own card IDs');
+      setIsClaimingAbandoned(false);
+      abandonedClaimStartedRef.current = false;
+      transitionPhase('idle');
+      return;
+    }
+
+    const capturedCardIds = sInfo.callerCardIds;
+    const capturedGameRandomness = sInfo.gameRandomness;
+    const capturedOnChainGameId = sInfo.onChainGameId;
+    const capturedOpponentAddress = sInfo.opponentAddress;
+    const capturedOpponentCardIds = sInfo.opponentCardIds;
 
     try {
       // Step 1: claim_abandoned_game
@@ -1444,24 +1525,8 @@ export function useGame(wsUrl: string): UseGameReturn {
 
           const { Fr, AztecAddress } = await ensureContracts(w);
 
-          function bytesToFrArray(bytes: Uint8Array): InstanceType<typeof Fr>[] {
-            const fields: InstanceType<typeof Fr>[] = [];
-            for (let i = 0; i < bytes.length; i += 32) {
-              const chunk = bytes.slice(i, i + 32);
-              const hex = '0x' + Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join('');
-              fields.push(Fr.fromHexString(hex));
-            }
-            return fields;
-          }
-
-          function base64ToFrArray(b64: string): InstanceType<typeof Fr>[] {
-            const binary = atob(b64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            return bytesToFrArray(bytes);
-          }
-
-          const hexToFr = (hex: string) => Fr.fromHexString(hex.startsWith('0x') ? hex : '0x' + hex);
+          const toFrArr = (b64: string) => base64ToFrArray(Fr, b64);
+          const toFrHex = (hex: string) => hexToFr(Fr, hex);
 
           // Generate dummy proofs for padding
           const { Noir } = await import('@noir-lang/noir_js');
@@ -1504,12 +1569,12 @@ export function useGame(wsUrl: string): UseGameReturn {
           const allProofs: InstanceType<typeof Fr>[][] = [];
           const allInputs: InstanceType<typeof Fr>[][] = [];
           for (const m of sorted) {
-            allProofs.push(base64ToFrArray(m.proof));
-            allInputs.push(m.publicInputs.map(hexToFr));
+            allProofs.push(toFrArr(m.proof));
+            allInputs.push(m.publicInputs.map(toFrHex));
           }
           for (const d of dummyProofs) {
-            allProofs.push(base64ToFrArray(d.proof));
-            allInputs.push(d.publicInputs.map(hexToFr));
+            allProofs.push(toFrArr(d.proof));
+            allInputs.push(d.publicInputs.map(toFrHex));
           }
 
           // Build hand proof data
@@ -1532,11 +1597,11 @@ export function useGame(wsUrl: string): UseGameReturn {
               toFrUtil(Fr, capturedOnChainGameId),
               new Fr(BigInt(numValid)),
               capturedPlayerNumber === 1,
-              bytesToFrArray(handVk),
-              bytesToFrArray(moveVk),
-              bytesToFrArray(dummyVk),
-              base64ToFrArray(handProof1.proof), handProof1.publicInputs.map(hexToFr),
-              base64ToFrArray(handProof2.proof), handProof2.publicInputs.map(hexToFr),
+              bytesToFrArray(Fr, handVk),
+              bytesToFrArray(Fr, moveVk),
+              bytesToFrArray(Fr, dummyVk),
+              toFrArr(handProof1.proof), handProof1.publicInputs.map(toFrHex),
+              toFrArr(handProof2.proof), handProof2.publicInputs.map(toFrHex),
               allProofs[0], allInputs[0], allProofs[1], allInputs[1],
               allProofs[2], allInputs[2], allProofs[3], allInputs[3],
               allProofs[4], allInputs[4], allProofs[5], allInputs[5],
@@ -1620,7 +1685,7 @@ export function useGame(wsUrl: string): UseGameReturn {
           // Refresh token balance (abandoned game settlement may mint tokens)
           aztec.refreshTokenBalance().catch(() => {});
 
-          onChainPhaseRef.current = 'idle';
+          transitionPhase('idle');
           setIsClaimingAbandoned(false);
           setAbandonedDisputeCountdown(null);
         },
@@ -1630,16 +1695,15 @@ export function useGame(wsUrl: string): UseGameReturn {
       setIsClaimingAbandoned(false);
       setAbandonedDisputeCountdown(null);
       abandonedClaimStartedRef.current = false;
-      onChainPhaseRef.current = 'idle';
+      transitionPhase('idle');
     }
-  }, [ws, cardIds, gameRandomness, onChainGameId,
-      aztec.wallet, aztec.accountAddress, importNotes]);
+  }, [ws, aztec.wallet, aztec.accountAddress, importNotes]);
 
   // Auto-trigger abandoned game flow when opponent disconnects
   useEffect(() => {
     if (!ws.opponentDisconnected) return;
     if (abandonedClaimStartedRef.current) return;
-    if (onChainPhaseRef.current !== 'done') return;
+    if (onChainPhaseRef.current !== 'active' && onChainPhaseRef.current !== 'awaiting_join') return;
     if (moveProofsRef.current.length === 0) return;
     console.log('[useGame] Opponent disconnected with moves played, starting abandoned game flow...');
     handleAbandonedGame();

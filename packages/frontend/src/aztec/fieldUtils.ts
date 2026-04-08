@@ -36,3 +36,34 @@ export function toHexString(v: any): string {
   if (s.startsWith('0x') || s.startsWith('0X')) return s;
   return '0x' + BigInt(s).toString(16);
 }
+
+/**
+ * Convert raw bytes to Fr[] (32 bytes per field element).
+ * Used for verification key and proof serialization.
+ */
+export function bytesToFrArray(Fr: any, bytes: Uint8Array): any[] {
+  const fields: any[] = [];
+  for (let i = 0; i < bytes.length; i += 32) {
+    const chunk = bytes.slice(i, i + 32);
+    const hex = '0x' + Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join('');
+    fields.push(Fr.fromHexString(hex));
+  }
+  return fields;
+}
+
+/**
+ * Convert a base64-encoded proof to Fr[].
+ */
+export function base64ToFrArray(Fr: any, b64: string): any[] {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytesToFrArray(Fr, bytes);
+}
+
+/**
+ * Convert a hex string to Fr (auto-prefixes 0x if missing).
+ */
+export function hexToFr(Fr: any, hex: string): any {
+  return Fr.fromHexString(hex.startsWith('0x') ? hex : '0x' + hex);
+}
