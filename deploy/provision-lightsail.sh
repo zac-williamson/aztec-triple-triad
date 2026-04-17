@@ -16,8 +16,9 @@
 
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/YOURUSER/aztec-triple-triad.git}"
-REPO_DIR="$HOME/aztec-triple-triad"
+REPO_URL="${REPO_URL:-https://github.com/zac-williamson/aztec-triple-triad.git}"
+REPO_BRANCH="${REPO_BRANCH:-testnet}"
+REPO_DIR="${REPO_DIR:-$HOME/axolotl-arena-server}"
 
 echo "=== 1. System packages ==="
 sudo apt-get update
@@ -38,14 +39,20 @@ redis-cli ping  # expect PONG
 
 echo "=== 2. Clone / pull repo ==="
 if [[ ! -d "$REPO_DIR/.git" ]]; then
-  git clone "$REPO_URL" "$REPO_DIR"
+  git clone --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR"
 else
-  git -C "$REPO_DIR" pull --ff-only
+  git -C "$REPO_DIR" fetch origin "$REPO_BRANCH"
+  git -C "$REPO_DIR" checkout "$REPO_BRANCH"
+  git -C "$REPO_DIR" reset --hard "origin/$REPO_BRANCH"
 fi
 cd "$REPO_DIR"
 
 echo "=== 3. npm install ==="
 npm install --legacy-peer-deps
+
+echo "=== 3b. build backend (compiled JS for systemd ExecStart) ==="
+npm run build --workspace=@axolotl-arena/game-logic
+npm run build --workspace=@axolotl-arena/backend
 
 echo "=== 4. Install systemd unit ==="
 sudo cp deploy/triad-backend.service /etc/systemd/system/triad-backend.service

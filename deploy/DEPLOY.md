@@ -13,7 +13,7 @@ Aztec testnet.
    (static Vite)                │    Nginx     │  :443 TLS
          │                     │      │       │
          │                     │      │       │  :5174 internal
-         │ ◄──── wss:// ─────► │  Node (tsx)  │
+         │ ◄──── wss:// ─────► │     Node     │
          │                     │      │       │
          │                     │   Redis      │  :6379 localhost
          │                     └──────────────┘
@@ -87,8 +87,11 @@ Copy those three addresses — you'll paste them into Vercel in step 3.
 ssh -i ~/.ssh/lightsail-default.pem ubuntu@<STATIC_IP>
 
 # Inside the box:
-curl -sL https://raw.githubusercontent.com/YOURUSER/aztec-triple-triad/main/deploy/provision-lightsail.sh \
-  | REPO_URL=https://github.com/YOURUSER/aztec-triple-triad.git bash
+curl -sL https://raw.githubusercontent.com/zac-williamson/aztec-triple-triad/testnet/deploy/provision-lightsail.sh \
+  | bash
+
+# Override defaults if needed:
+#   REPO_URL=...  REPO_BRANCH=main  REPO_DIR=/home/ubuntu/custom-dir  bash
 ```
 
 The script installs Node 22, Redis, Nginx, certbot, clones the repo, runs
@@ -112,7 +115,7 @@ the Lightsail IP) before the next step, otherwise certbot will fail.
 Still SSHed into the box:
 
 ```bash
-sudo cp ~/aztec-triple-triad/deploy/triad-backend.env.example /etc/triad-backend.env
+sudo cp ~/axolotl-arena-server/deploy/triad-backend.env.example /etc/triad-backend.env
 sudo nano /etc/triad-backend.env
 # Set ALLOWED_ORIGINS=https://play.YOURDOMAIN.com
 sudo chmod 600 /etc/triad-backend.env
@@ -220,7 +223,7 @@ git push
 
 # SSH to Lightsail and run the update script
 ssh ubuntu@ws.YOURDOMAIN.com
-bash ~/aztec-triple-triad/deploy/update-backend.sh
+bash ~/axolotl-arena-server/deploy/update-backend.sh
 ```
 
 ### Poke around Redis
@@ -251,7 +254,7 @@ sudo systemctl restart triad-backend
 ### Run an ad-hoc script on the box
 
 ```bash
-cd ~/aztec-triple-triad
+cd ~/axolotl-arena-server
 REDIS_URL=redis://localhost:6379 npx tsx scripts/your-script.ts
 ```
 

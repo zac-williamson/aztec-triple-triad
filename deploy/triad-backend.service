@@ -12,10 +12,14 @@ WorkingDirectory=/home/ubuntu/aztec-triple-triad/packages/backend
 # See deploy/triad-backend.env.example for the template.
 EnvironmentFile=/etc/triad-backend.env
 
-# tsx is the TypeScript runner already used in dev. For production we point
-# it at the same entrypoint so there's no separate build step to manage.
-# (If you prefer, run `npm run build` and swap this for `node dist/server.js`.)
-ExecStart=/usr/bin/env npx tsx src/server.ts
+# Runs the compiled JS produced by `npm run build --workspace=@axolotl-arena/backend`.
+# We use plain node (not tsx) because:
+#   1. tsx is not in any package.json — it's only available via `npx tsx` in dev
+#      scripts, which tries to fetch the package at runtime.
+#   2. With ProtectHome=read-only, npm's cache in ~/.npm is read-only, so npx
+#      cannot write there and the service crashes on start.
+# The deploy/update-backend.sh script rebuilds before restarting.
+ExecStart=/usr/bin/node dist/server.js
 
 Restart=on-failure
 RestartSec=5
