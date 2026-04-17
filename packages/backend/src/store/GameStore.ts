@@ -81,6 +81,12 @@ export interface GameStore {
   isInQueue(playerId: string): Promise<boolean>;
   updateQueuePing(playerId: string): Promise<boolean>;
   cleanupStaleQueue(staleMs: number): Promise<number>;
+  /**
+   * Remove queue entries whose playerId is NOT in the live set.
+   * Returns the number of entries removed. Used before tryMatch to
+   * prevent pairing live players with stale/disconnected entries.
+   */
+  removeDisconnectedQueueEntries(livePlayerIds: Set<string>): Promise<number>;
 
   // --- Cleanup ---
   cleanupStaleGames(timeoutMs: number): Promise<number>;

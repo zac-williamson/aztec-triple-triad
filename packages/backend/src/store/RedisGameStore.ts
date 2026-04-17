@@ -206,6 +206,19 @@ export class RedisGameStore implements GameStore {
     return cleaned;
   }
 
+  async removeDisconnectedQueueEntries(livePlayerIds: Set<string>): Promise<number> {
+    const raw = await this.redis.lrange('queue', 0, -1);
+    let cleaned = 0;
+    for (const item of raw) {
+      const entry = JSON.parse(item) as QueueEntryData;
+      if (!livePlayerIds.has(entry.playerId)) {
+        const removed = await this.redis.lrem('queue', 1, item);
+        if (removed > 0) cleaned++;
+      }
+    }
+    return cleaned;
+  }
+
   // --- Cleanup ---
 
   async cleanupStaleGames(timeoutMs: number): Promise<number> {

@@ -63,9 +63,18 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
   // playerId → disconnect timeout (for reconnection window)
   const disconnectTimeouts = new Map<string, NodeJS.Timeout>();
 
-  const allowedOrigins = new Set([
+  // Allowed origins for CORS and WebSocket connections.
+  // Set ALLOWED_ORIGINS env var to a comma-separated list in production
+  // (e.g. "https://play.example.com,https://www.example.com").
+  // Localhost defaults are kept so dev doesn't need the env var.
+  const envOrigins = (process.env.ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map(o => o.trim())
+    .filter(o => o.length > 0);
+  const allowedOrigins = new Set<string>([
     'http://localhost:3000',
     'http://localhost:5174',
+    ...envOrigins,
   ]);
 
   const httpServer = http.createServer(async (req, res) => {
@@ -120,7 +129,20 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     res.end(JSON.stringify({ error: 'Not found' }));
   });
 
-  const wss = new WebSocketServer({ server: httpServer });
+  const wss = new WebSocketServer({
+    server: httpServer,
+    verifyClient: (info, done) => {
+      const origin = info.origin;
+      // Accept connections with no Origin header (e.g. non-browser clients
+      // like tests) OR whose Origin is in the allowed set.
+      if (!origin || allowedOrigins.has(origin)) {
+        done(true);
+      } else {
+        console.warn(`[WS] rejecting connection from disallowed origin: ${origin}`);
+        done(false, 403, 'Origin not allowed');
+      }
+    },
+  });
 
   const QUIET_TYPES = new Set(['PING', 'PONG']);
 
@@ -325,8 +347,11 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
               disconnectTimeouts.delete(playerId);
             }
 
-            // Find active game for this player
-            const gameId = await store.getPlayerGame(playerId);
+            // Find active game for this player. Use getValidPlayerGame so that
+            // a stale player→game mapping pointing to a deleted game is cleaned
+            // up here instead of causing "already in a game" errors later.
+            const validRoom = await gameManager.getValidPlayerGame(playerId);
+            const gameId = validRoom?.id ?? null;
 
             send(ws, { type: 'SESSION_ESTABLISHED', sessionToken: msg.sessionToken, playerId, resumed: true, gameId }, playerId);
             console.log(`[WS] player=${playerId.slice(0, 8)} resumed session${gameId ? ` (game ${gameId.slice(0, 12)}...)` : ''}`);
@@ -683,7 +708,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
           const position = await gameManager.queuePlayer(playerId, msg.cardIds);
           send(ws, { type: 'MATCHMAKING_QUEUED', position }, playerId);
 
-          const match = await gameManager.tryMatch();
+          const match = await gameManager.tryMatch(new Set(clients.keys()));
           if (match) {
             const { entry1, entry2, room } = match;
             await sendToPlayer(entry1.playerId, {

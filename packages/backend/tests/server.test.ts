@@ -528,13 +528,16 @@ describe('Hand sanitization (S3 fix)', () => {
       // Player 2 should see their own hand
       expect(joined.gameState.player2Hand.length).toBe(5);
       expect(joined.gameState.player2Hand[0].id).not.toBe(0);
-      // Player 1's hand should be hidden
+      // Player 1's hand: first 3 visible, last 2 hidden (HIDDEN_COUNT = 2)
       expect(joined.gameState.player1Hand.length).toBe(5);
-      joined.gameState.player1Hand.forEach((card: any) => {
-        expect(card.id).toBe(0);
-        expect(card.name).toBe('Hidden');
-        expect(card.ranks.top).toBe(0);
-      });
+      for (let i = 0; i < 3; i++) {
+        expect(joined.gameState.player1Hand[i].id).not.toBe(0);
+      }
+      for (let i = 3; i < 5; i++) {
+        expect(joined.gameState.player1Hand[i].id).toBe(0);
+        expect(joined.gameState.player1Hand[i].name).toBe('Hidden');
+        expect(joined.gameState.player1Hand[i].ranks.top).toBe(0);
+      }
     }
 
     ws1.close();
@@ -557,12 +560,15 @@ describe('Hand sanitization (S3 fix)', () => {
       // Player 1 should see their own hand
       expect(start.gameState.player1Hand.length).toBe(5);
       expect(start.gameState.player1Hand[0].id).not.toBe(0);
-      // Player 2's hand should be hidden
+      // Player 2's hand: first 3 visible, last 2 hidden (HIDDEN_COUNT = 2)
       expect(start.gameState.player2Hand.length).toBe(5);
-      start.gameState.player2Hand.forEach((card: any) => {
-        expect(card.id).toBe(0);
-        expect(card.name).toBe('Hidden');
-      });
+      for (let i = 0; i < 3; i++) {
+        expect(start.gameState.player2Hand[i].id).not.toBe(0);
+      }
+      for (let i = 3; i < 5; i++) {
+        expect(start.gameState.player2Hand[i].id).toBe(0);
+        expect(start.gameState.player2Hand[i].name).toBe('Hidden');
+      }
     }
 
     ws1.close();
@@ -586,22 +592,30 @@ describe('Hand sanitization (S3 fix)', () => {
     // Player 1 places a card
     sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0, moveNumber: 0 });
 
-    // Player 1 gets GAME_STATE with player2 hand hidden
+    // Player 1 gets GAME_STATE with player2 hand partially hidden
     const state1 = await c1.wait((m) => m.type === 'GAME_STATE') as any;
     expect(state1.gameState.player1Hand.length).toBe(4); // played one card
-    state1.gameState.player2Hand.forEach((card: any) => {
-      expect(card.id).toBe(0);
-      expect(card.name).toBe('Hidden');
-    });
+    // Player 2 still has 5 cards: first 3 visible, last 2 hidden
+    for (let i = 0; i < 3; i++) {
+      expect(state1.gameState.player2Hand[i].id).not.toBe(0);
+    }
+    for (let i = 3; i < 5; i++) {
+      expect(state1.gameState.player2Hand[i].id).toBe(0);
+      expect(state1.gameState.player2Hand[i].name).toBe('Hidden');
+    }
 
-    // Player 2 gets GAME_STATE with player1 hand hidden
+    // Player 2 gets GAME_STATE with player1 hand partially hidden
     const state2 = await c2.wait((m) => m.type === 'GAME_STATE') as any;
     expect(state2.gameState.player2Hand.length).toBe(5);
     expect(state2.gameState.player2Hand[0].id).not.toBe(0);
-    state2.gameState.player1Hand.forEach((card: any) => {
-      expect(card.id).toBe(0);
-      expect(card.name).toBe('Hidden');
-    });
+    // Player 1 has 4 cards after playing one: first 2 visible, last 2 hidden
+    for (let i = 0; i < 2; i++) {
+      expect(state2.gameState.player1Hand[i].id).not.toBe(0);
+    }
+    for (let i = 2; i < 4; i++) {
+      expect(state2.gameState.player1Hand[i].id).toBe(0);
+      expect(state2.gameState.player1Hand[i].name).toBe('Hidden');
+    }
 
     ws1.close();
     ws2.close();
@@ -1249,5 +1263,261 @@ describe('Message inbox replay', () => {
 
     ws1.close();
     ws2b.close();
+  });
+});
+
+describe('Matchmaking', () => {
+  it('should match two queued players', async () => {
+    const { ws: ws1 } = await createClientWithSession();
+    const { ws: ws2 } = await createClientWithSession();
+    const c1 = new MessageCollector(ws1);
+    const c2 = new MessageCollector(ws2);
+
+    // P1 queues
+    sendMessage(ws1, { type: 'QUEUE_MATCHMAKING', cardIds: PLAYER1_CARDS } as any);
+    const queued = await c1.wait((m) => m.type === 'MATCHMAKING_QUEUED');
+    expect(queued.type).toBe('MATCHMAKING_QUEUED');
+
+    // P2 queues — both should get MATCH_FOUND
+    sendMessage(ws2, { type: 'QUEUE_MATCHMAKING', cardIds: PLAYER2_CARDS } as any);
+
+    const match1 = await c1.wait((m) => m.type === 'MATCH_FOUND') as any;
+    const match2 = await c2.wait((m) => m.type === 'MATCH_FOUND') as any;
+
+    expect(match1.type).toBe('MATCH_FOUND');
+    expect(match2.type).toBe('MATCH_FOUND');
+    expect(match1.gameId).toBe(match2.gameId);
+    expect(match1.playerNumber).toBe(1);
+    expect(match2.playerNumber).toBe(2);
+    expect(match1.gameState).toBeDefined();
+    expect(match2.gameState).toBeDefined();
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it('should cancel matchmaking', async () => {
+    const ws = await createClient();
+
+    sendMessage(ws, { type: 'QUEUE_MATCHMAKING', cardIds: PLAYER1_CARDS } as any);
+    await waitForMessage(ws, (m) => m.type === 'MATCHMAKING_QUEUED');
+
+    sendMessage(ws, { type: 'CANCEL_MATCHMAKING' } as any);
+    const cancelled = await waitForMessage(ws, (m) => m.type === 'MATCHMAKING_CANCELLED');
+    expect(cancelled.type).toBe('MATCHMAKING_CANCELLED');
+
+    ws.close();
+  });
+
+  it('should skip stale queue entry and match two live players', async () => {
+    // Inject a stale queue entry directly into the store (simulates a server
+    // restart where the entry persisted but the player disconnected).
+    await server.store.pushQueue({
+      playerId: 'stale-ghost-player',
+      cardIds: [1, 2, 3, 4, 5],
+      queuedAt: Date.now() - 60_000,
+      lastPing: Date.now() - 60_000,
+    });
+
+    const { ws: ws1 } = await createClientWithSession();
+    const { ws: ws2 } = await createClientWithSession();
+    const c1 = new MessageCollector(ws1);
+    const c2 = new MessageCollector(ws2);
+
+    // P1 queues — should NOT be paired with the stale entry
+    sendMessage(ws1, { type: 'QUEUE_MATCHMAKING', cardIds: PLAYER1_CARDS } as any);
+    await c1.wait((m) => m.type === 'MATCHMAKING_QUEUED');
+
+    // P2 queues — both live players should be matched together
+    sendMessage(ws2, { type: 'QUEUE_MATCHMAKING', cardIds: PLAYER2_CARDS } as any);
+
+    const match1 = await c1.wait((m) => m.type === 'MATCH_FOUND') as any;
+    const match2 = await c2.wait((m) => m.type === 'MATCH_FOUND') as any;
+
+    expect(match1.gameId).toBe(match2.gameId);
+    expect(match1.playerNumber).toBe(1);
+    expect(match2.playerNumber).toBe(2);
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it('should skip multiple stale entries and match live players', async () => {
+    // Three stale entries — none should pair with live players
+    for (let i = 0; i < 3; i++) {
+      await server.store.pushQueue({
+        playerId: `stale-ghost-${i}`,
+        cardIds: [1, 2, 3, 4, 5],
+        queuedAt: Date.now() - 60_000,
+        lastPing: Date.now() - 60_000,
+      });
+    }
+
+    const { ws: ws1 } = await createClientWithSession();
+    const { ws: ws2 } = await createClientWithSession();
+    const c1 = new MessageCollector(ws1);
+    const c2 = new MessageCollector(ws2);
+
+    sendMessage(ws1, { type: 'QUEUE_MATCHMAKING', cardIds: PLAYER1_CARDS } as any);
+    await c1.wait((m) => m.type === 'MATCHMAKING_QUEUED');
+
+    sendMessage(ws2, { type: 'QUEUE_MATCHMAKING', cardIds: PLAYER2_CARDS } as any);
+
+    const match1 = await c1.wait((m) => m.type === 'MATCH_FOUND') as any;
+    const match2 = await c2.wait((m) => m.type === 'MATCH_FOUND') as any;
+
+    expect(match1.gameId).toBe(match2.gameId);
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it('should allow queueing when player has a stale game mapping to a nonexistent game', async () => {
+    // Simulate: player had a game mapping, but the game was cleaned up/deleted
+    // while the mapping remained (can happen on server restart or crash).
+    const { ws, playerId } = await createClientWithSession();
+
+    // Manually insert a stale player→game mapping pointing to a nonexistent game
+    await server.store.setPlayerGame(playerId, 'nonexistent-game-id');
+
+    // Player tries to queue — should succeed (stale mapping cleaned up)
+    sendMessage(ws, { type: 'QUEUE_MATCHMAKING', cardIds: PLAYER1_CARDS } as any);
+
+    const msg = await waitForMessage(ws, (m) =>
+      m.type === 'MATCHMAKING_QUEUED' || m.type === 'ERROR'
+    );
+    expect(msg.type).toBe('MATCHMAKING_QUEUED');
+
+    ws.close();
+  });
+
+  it('session RESUME with stale game mapping returns gameId=null', async () => {
+    // Create a session, then manually add a stale player→game mapping
+    const { ws, sessionToken, playerId } = await createClientWithSession();
+    await server.store.setPlayerGame(playerId, 'nonexistent-game-id');
+    ws.close();
+    await new Promise(r => setTimeout(r, 50));
+
+    // Resume with the same token — SESSION_ESTABLISHED should have gameId=null
+    // because the referenced game no longer exists.
+    const ws2 = new WebSocket(getUrl());
+    const sessionMsg: any = await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('timeout')), 3000);
+      ws2.on('error', reject);
+      ws2.on('open', () => {
+        ws2.send(JSON.stringify({ type: 'RESUME', sessionToken }));
+      });
+      ws2.on('message', function onMsg(data: WebSocket.Data) {
+        const m = JSON.parse(data.toString());
+        if (m.type === 'SESSION_ESTABLISHED') {
+          clearTimeout(t);
+          ws2.removeListener('message', onMsg);
+          resolve(m);
+        }
+      });
+    });
+
+    expect(sessionMsg.resumed).toBe(true);
+    expect(sessionMsg.gameId).toBeNull();
+
+    ws2.close();
+  });
+
+  it('should deliver MATCH_FOUND to both players even after first matchmaking attempt with stale data', async () => {
+    // Even more adversarial: 2 stale entries present when P1 queues.
+    // First tryMatch would pop both stale entries together (bad outcome
+    // without the fix: game created for 2 dead players).
+    // After the fix: stale entries are discarded before matching.
+    await server.store.pushQueue({
+      playerId: 'stale-A',
+      cardIds: [1, 2, 3, 4, 5],
+      queuedAt: Date.now() - 60_000,
+      lastPing: Date.now() - 60_000,
+    });
+    await server.store.pushQueue({
+      playerId: 'stale-B',
+      cardIds: [6, 7, 8, 9, 10],
+      queuedAt: Date.now() - 60_000,
+      lastPing: Date.now() - 60_000,
+    });
+
+    const { ws: ws1 } = await createClientWithSession();
+    const c1 = new MessageCollector(ws1);
+    sendMessage(ws1, { type: 'QUEUE_MATCHMAKING', cardIds: PLAYER1_CARDS } as any);
+    await c1.wait((m) => m.type === 'MATCHMAKING_QUEUED');
+
+    // Give time for any incorrect early match to occur (it shouldn't)
+    await new Promise(r => setTimeout(r, 200));
+
+    // Now P2 queues → live pair [P1, P2] should match
+    const { ws: ws2 } = await createClientWithSession();
+    const c2 = new MessageCollector(ws2);
+    sendMessage(ws2, { type: 'QUEUE_MATCHMAKING', cardIds: PLAYER2_CARDS } as any);
+
+    const match1 = await c1.wait((m) => m.type === 'MATCH_FOUND') as any;
+    const match2 = await c2.wait((m) => m.type === 'MATCH_FOUND') as any;
+
+    expect(match1.gameId).toBe(match2.gameId);
+    expect(match1.playerNumber).toBe(1);
+    expect(match2.playerNumber).toBe(2);
+
+    ws1.close();
+    ws2.close();
+  });
+});
+
+describe('Disconnect-reconnect game continuation', () => {
+  it('should restore game state after reconnect and continue play', async () => {
+    // Setup: P1 creates, P2 joins, P1 places a card
+    const { ws: ws1, sessionToken: p1Token } = await createClientWithSession();
+    const { ws: ws2, sessionToken: p2Token } = await createClientWithSession();
+    const c1 = new MessageCollector(ws1);
+    const c2 = new MessageCollector(ws2);
+
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await c2.wait((m) => m.type === 'GAME_JOINED');
+    await c1.wait((m) => m.type === 'GAME_START');
+
+    // P1 places a card
+    sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0, moveNumber: 0 });
+    await c1.wait((m) => m.type === 'GAME_STATE');
+    await c2.wait((m) => m.type === 'GAME_STATE');
+
+    // P1 disconnects
+    ws1.close();
+    await c2.wait((m) => m.type === 'OPPONENT_DISCONNECTED');
+
+    // P1 reconnects with session token — collect all messages
+    const ws1b = new WebSocket(getUrl());
+    const c1b = new MessageCollector(ws1b);
+    await new Promise<void>((resolve, reject) => {
+      ws1b.on('error', reject);
+      ws1b.on('open', () => {
+        ws1b.send(JSON.stringify({ type: 'RESUME', sessionToken: p1Token }));
+        // MessageCollector captures session token automatically; wait a bit for messages to arrive
+        setTimeout(resolve, 200);
+      });
+    });
+
+    // P1 gets GAME_STATE restore (may be from inbox replay)
+    const restored = await c1b.wait((m) => m.type === 'GAME_STATE') as any;
+    expect(restored.gameState).toBeDefined();
+    expect(restored.gameState.board[0][0].card).not.toBeNull(); // P1's card is still there
+
+    // P2 gets OPPONENT_RECONNECTED
+    const reconnected = await c2.wait((m) => m.type === 'OPPONENT_RECONNECTED');
+    expect(reconnected.type).toBe('OPPONENT_RECONNECTED');
+
+    // Game continues: P2 places a card
+    sendMessage(ws2, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 1, col: 1, moveNumber: 1 });
+    const p2State = await c2.wait((m) => m.type === 'GAME_STATE') as any;
+    expect(p2State.gameState.board[1][1].card).not.toBeNull();
+
+    ws1b.close();
+    ws2.close();
   });
 });

@@ -651,3 +651,188 @@ describe('isGameOver', () => {
     expect(isGameOver(state)).toBe(true);
   });
 });
+
+describe('Chain captures', () => {
+  it('2-deep chain: placing A captures B, then B captures C', () => {
+    // Card layout for chain: P1 places strong card that captures P2's card,
+    // and the captured card then chain-captures another P2 card.
+    //
+    // Board (column 0):
+    //   (0,0) = P2 card with bottom=1 (weak)
+    //   (1,0) = P2 card with top=5 (strong top, weak bottom=1)
+    //   (2,0) = P1 places [10,1,1,1] here
+    //
+    // Step 1: P1 at (2,0) top=10 > P2 at (1,0) bottom=1 → capture (1,0)
+    // Step 2: Captured (1,0) now P1, top=5 > P2 at (0,0) bottom=1 → chain capture (0,0)
+    const p1Hand = [
+      makeCard(105, 10, 1, 1, 1), // strong card — placed at (2,0)
+      makeCard(101, 1, 1, 1, 1),
+      makeCard(102, 1, 1, 1, 1),
+      makeCard(103, 1, 1, 1, 1),
+      makeCard(104, 1, 1, 1, 1),
+    ];
+    const p2Hand = [
+      makeCard(201, 1, 1, 1, 1), // weak (bottom=1), placed at (0,0)
+      makeCard(202, 5, 1, 1, 1), // strong top=5, weak bottom=1, placed at (1,0)
+      makeCard(203, 1, 1, 1, 1),
+      makeCard(204, 1, 1, 1, 1),
+      makeCard(205, 1, 1, 1, 1),
+    ];
+    let state = createGame(p1Hand, p2Hand);
+
+    // P1 places filler at (2,2)
+    state = placeCard(state, 'player1', 1, 2, 2).newState;
+    // P2 places at (0,0)
+    state = placeCard(state, 'player2', 0, 0, 0).newState;
+    // P1 places filler at (2,1)
+    state = placeCard(state, 'player1', 1, 2, 1).newState;
+    // P2 places at (1,0)
+    state = placeCard(state, 'player2', 0, 1, 0).newState;
+
+    // P1 places strong card [10,1,1,1] at (2,0) — index 0 in remaining hand
+    const result = placeCard(state, 'player1', 0, 2, 0);
+    expect(result.captures).toContainEqual({ row: 1, col: 0 }); // direct capture
+    expect(result.captures).toContainEqual({ row: 0, col: 0 }); // chain capture
+    expect(result.captures.length).toBe(2);
+    expect(result.newState.board[1][0].owner).toBe('player1');
+    expect(result.newState.board[0][0].owner).toBe('player1');
+  });
+
+  it('chain capture propagates across 3 cells in a row', () => {
+    // Board row 0: P1 places at (0,2), captures (0,1), chain captures (0,0)
+    //   (0,0) = P2[1,1,1,5]  right=5 (will be attacked from right by chain-captured (0,1)'s left)
+    //   (0,1) = P2[1,1,1,8]  right=8, left=1 (captured directly by P1 at (0,2), then attacks (0,0))
+    //   Wait, attacking card at (0,2) attacks (0,1) via left. attackerRank=left, defenderRank=right.
+    //   So P1(0,2).left=10 > P2(0,1).right=8 → capture.
+    //   Then (0,1) now P1, attacks (0,0) via left. (0,1).left=1 vs (0,0).right=5. 1 < 5 → no capture.
+    //   Need: captured (0,1) must have left > (0,0).right.
+    //
+    // Corrected:
+    //   (0,0) = P2[1,1,1,1]  right=1
+    //   (0,1) = P2[1,5,1,1]  right=1, left=5 (after capture, left=5 > right=1 of (0,0) → chain!)
+    //   (0,2) = P1[1,1,1,10] left=10 > (0,1).right=1 → direct capture
+    //   Then (0,1) now P1[1,5,1,1] left is at attackerRank when attacking left neighbor.
+    //   Direction left: dr=0,dc=-1, attackerRank=left, defenderRank=right.
+    //   (0,1).left=1 vs (0,0).right=1 → NOT captured (not strictly greater)
+    //   Wait, I have the card wrong. Let me use: (0,1).left=5.
+    //   But the card is makeCard(202, 1, 5, 1, 1) → top=1, right=5, bottom=1, left=1. No!
+    //   makeCard(id, top, right, bottom, left). So left is the 4th param.
+    //   (0,1) = makeCard(202, 1, 1, 1, 5) → left=5
+    //   After capture, (0,1) as P1 attacks (0,0): left=5 > (0,0).right=1 → chain capture!
+
+    const p1Hand = [
+      makeCard(105, 1, 1, 1, 10), // left=10, placed at (0,2)
+      makeCard(101, 1, 1, 1, 1),
+      makeCard(102, 1, 1, 1, 1),
+      makeCard(103, 1, 1, 1, 1),
+      makeCard(104, 1, 1, 1, 1),
+    ];
+    const p2Hand = [
+      makeCard(201, 1, 1, 1, 1), // right=1, placed at (0,0)
+      makeCard(202, 1, 1, 1, 5), // right=1 (captured), left=5 (chains to (0,0)), placed at (0,1)
+      makeCard(203, 1, 1, 1, 1),
+      makeCard(204, 1, 1, 1, 1),
+      makeCard(205, 1, 1, 1, 1),
+    ];
+    let state = createGame(p1Hand, p2Hand);
+
+    // P1 filler at (2,2)
+    state = placeCard(state, 'player1', 1, 2, 2).newState;
+    // P2 at (0,0)
+    state = placeCard(state, 'player2', 0, 0, 0).newState;
+    // P1 filler at (2,1)
+    state = placeCard(state, 'player1', 1, 2, 1).newState;
+    // P2 at (0,1)
+    state = placeCard(state, 'player2', 0, 0, 1).newState;
+
+    // P1 places at (0,2): left=10 > (0,1).right=1 → capture (0,1)
+    // (0,1) now P1 with left=5 > (0,0).right=1 → chain capture (0,0)
+    const result = placeCard(state, 'player1', 0, 0, 2);
+    expect(result.captures).toContainEqual({ row: 0, col: 1 }); // direct
+    expect(result.captures).toContainEqual({ row: 0, col: 0 }); // chain
+    expect(result.captures.length).toBe(2);
+    expect(result.newState.board[0][0].owner).toBe('player1');
+    expect(result.newState.board[0][1].owner).toBe('player1');
+  });
+
+  it('no infinite loop: board with all opponent cards in a circle', () => {
+    // Place P2 cards in a ring and P1 places a strong card in the center
+    // The BFS uses a `captured` set, so it should not loop
+    const p1Hand = [
+      makeCard(101, 1, 1, 1, 1),
+      makeCard(102, 1, 1, 1, 1),
+      makeCard(103, 1, 1, 1, 1),
+      makeCard(104, 1, 1, 1, 1),
+      makeCard(105, 10, 10, 10, 10), // center card
+    ];
+    const p2Hand = [
+      makeCard(201, 1, 1, 1, 1),
+      makeCard(202, 1, 1, 1, 1),
+      makeCard(203, 1, 1, 1, 1),
+      makeCard(204, 1, 1, 1, 1),
+      makeCard(205, 1, 1, 1, 1),
+    ];
+    let state = createGame(p1Hand, p2Hand);
+
+    // Place P2 cards around the center, alternating turns
+    // P1 turn, place filler at (0,0)
+    state = placeCard(state, 'player1', 0, 0, 0).newState;
+    // P2 at (0,1)
+    state = placeCard(state, 'player2', 0, 0, 1).newState;
+    // P1 filler at (0,2)
+    state = placeCard(state, 'player1', 0, 0, 2).newState;
+    // P2 at (1,0)
+    state = placeCard(state, 'player2', 0, 1, 0).newState;
+    // P1 filler at (2,0)
+    state = placeCard(state, 'player1', 0, 2, 0).newState;
+    // P2 at (1,2)
+    state = placeCard(state, 'player2', 0, 1, 2).newState;
+    // P1 filler at (2,2)
+    state = placeCard(state, 'player1', 0, 2, 2).newState;
+    // P2 at (2,1)
+    state = placeCard(state, 'player2', 0, 2, 1).newState;
+
+    // Now P1 places strong card at center (1,1) — should capture all 4 adjacent P2 cards
+    const result = placeCard(state, 'player1', 0, 1, 1);
+    // Completes without hanging (no infinite loop)
+    expect(result.captures.length).toBeGreaterThan(0);
+  });
+
+  it('score consistency after chain capture: total cards = 10', () => {
+    const p1Hand = [
+      makeCard(101, 1, 1, 1, 1),
+      makeCard(102, 1, 1, 1, 1),
+      makeCard(103, 1, 1, 1, 1),
+      makeCard(104, 1, 1, 1, 1),
+      makeCard(105, 10, 10, 10, 10),
+    ];
+    const p2Hand = [
+      makeCard(201, 1, 1, 1, 1),
+      makeCard(202, 1, 1, 1, 1),
+      makeCard(203, 1, 1, 1, 1),
+      makeCard(204, 1, 1, 1, 1),
+      makeCard(205, 1, 1, 1, 1),
+    ];
+    let state = createGame(p1Hand, p2Hand);
+
+    // After every move, p1Score + p2Score should equal 10 (total cards)
+    const moves: [string, number, number, number][] = [
+      ['player1', 0, 0, 0],
+      ['player2', 0, 0, 1],
+      ['player1', 0, 1, 0],
+      ['player2', 0, 1, 1],
+      ['player1', 0, 2, 0],
+      ['player2', 0, 0, 2],
+      ['player1', 0, 2, 2],
+      ['player2', 0, 1, 2],
+      ['player1', 0, 2, 1], // final move — strong card
+    ];
+
+    for (const [player, handIndex, row, col] of moves) {
+      const result = placeCard(state, player as 'player1' | 'player2', handIndex, row, col);
+      state = result.newState;
+      const scores = calculateScores(state);
+      expect(scores.player1 + scores.player2).toBe(10);
+    }
+  });
+});

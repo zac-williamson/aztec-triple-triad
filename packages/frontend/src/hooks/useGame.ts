@@ -126,7 +126,7 @@ function removeOneOfEach(source: number[], toRemove: number[]): number[] {
  */
 
 // --- On-chain lifecycle phase ---
-type OnChainPhase =
+export type OnChainPhase =
   | 'idle'                  // No game lifecycle in progress. Safe to create a new game.
   | 'creating'              // P1: sending create_game tx via txManager.
   | 'awaiting_join'         // P1: create_game mined. Waiting for P2's join_game to mine.
@@ -137,10 +137,10 @@ type OnChainPhase =
   | 'settling'              // Winner: actively sending process_game / claim_abandoned_game.
   | 'awaiting_settlement';  // Loser: waiting for opponent's settlement + NOTE_DATA.
 
-const VALID_TRANSITIONS: Record<OnChainPhase, OnChainPhase[]> = {
+export const VALID_TRANSITIONS: Record<OnChainPhase, OnChainPhase[]> = {
   idle:                 ['creating', 'preparing'],
   creating:             ['awaiting_join', 'idle'],
-  awaiting_join:        ['active', 'settling', 'idle'],
+  awaiting_join:        ['active', 'idle'],
   preparing:            ['awaiting_create', 'idle'],
   awaiting_create:      ['joining', 'idle'],
   joining:              ['active', 'awaiting_create', 'idle'],
@@ -262,6 +262,20 @@ export function useGame(wsUrl: string): UseGameReturn {
   myHandProofRef.current = myHandProof;
   const opponentHandProofRef = useRef(opponentHandProof);
   opponentHandProofRef.current = opponentHandProof;
+
+  // Refs mirroring ws state that handleSettle reads as backfill for
+  // settlementInfoRef. handleSettle is a useCallback whose dependency
+  // array does NOT include these ws fields (they'd re-create the callback
+  // every time a field updates, breaking in-flight settlement). So the
+  // callback's closure captures a stale `ws` object from an earlier render.
+  // These refs are updated on every render so the callback always reads
+  // the current value regardless of closure staleness.
+  const wsOpponentCardIdsRef = useRef(ws.opponentCardIds);
+  wsOpponentCardIdsRef.current = ws.opponentCardIds;
+  const wsOpponentAztecAddressRef = useRef(ws.opponentAztecAddress);
+  wsOpponentAztecAddressRef.current = ws.opponentAztecAddress;
+  const wsOpponentGameRandomnessRef = useRef(ws.opponentGameRandomness);
+  wsOpponentGameRandomnessRef.current = ws.opponentGameRandomness;
 
   // Promise-based hand proof wait (same pattern as moveProofsCompleteRef)
   const handProofsCompleteRef = useRef<(() => void) | null>(null);
@@ -830,13 +844,16 @@ export function useGame(wsUrl: string): UseGameReturn {
           console.log('[useGame] P1: create_game mined, notified backend');
           // Seed settlementInfoRef with our own values (opponent values added
           // when OPPONENT_AZTEC_INFO arrives). This ref is NOT cleared by navigation.
+          // Read opponent values from refs (NOT `ws.*`) because the outer
+          // useEffect closes over a stale `ws` object; the refs are updated
+          // every render and always hold the latest values.
           settlementInfoRef.current = {
             onChainGameId: result.gameId,
             gameRandomness: result.randomness,
-            opponentAddress: '',
-            opponentRandomness: [],
+            opponentAddress: wsOpponentAztecAddressRef.current ?? '',
+            opponentRandomness: wsOpponentGameRandomnessRef.current ? [...wsOpponentGameRandomnessRef.current] : [],
             callerCardIds: capturedCardIds,
-            opponentCardIds: [],
+            opponentCardIds: wsOpponentCardIdsRef.current.length > 0 ? [...wsOpponentCardIdsRef.current] : [],
           };
           transitionPhase('awaiting_join');
           if (pipelineDoneResolveRef.current) { pipelineDoneResolveRef.current(); pipelineDoneResolveRef.current = null; }
@@ -875,14 +892,15 @@ export function useGame(wsUrl: string): UseGameReturn {
           capturedShareInfo(capturedGameId, capturedAddr, capturedChainGameId, result.randomness);
           aztec.updateOwnedCards(prev => removeOneOfEach(prev, capturedCardIds));
           console.log('[useGame] P2: preview data shared, waiting for P1 tx confirmation...');
-          // Seed settlementInfoRef for P2 (opponent values added when they arrive)
+          // Seed settlementInfoRef for P2. Read opponent values from refs
+          // (see P1 create_game above for why we can't use `ws.*` here).
           settlementInfoRef.current = {
             onChainGameId: capturedChainGameId,
             gameRandomness: result.randomness,
-            opponentAddress: '',
-            opponentRandomness: [],
+            opponentAddress: wsOpponentAztecAddressRef.current ?? '',
+            opponentRandomness: wsOpponentGameRandomnessRef.current ? [...wsOpponentGameRandomnessRef.current] : [],
             callerCardIds: capturedCardIds,
-            opponentCardIds: [],
+            opponentCardIds: wsOpponentCardIdsRef.current.length > 0 ? [...wsOpponentCardIdsRef.current] : [],
           };
           transitionPhase('awaiting_create');
         },
@@ -1190,7 +1208,9 @@ export function useGame(wsUrl: string): UseGameReturn {
     const capturedNotifySettle = (gId: string, cardId: number) =>
       ws.notifySettleStarted(gId, cardId);
 
-    transitionPhase('settling');
+    // Don't transition to 'settling' yet — the on-chain pipeline may still be in
+    // awaiting_join (P2 hasn't joined). Transitioning now would block the natural
+    // awaiting_join → active transition. We transition inside execute after active.
     setSettleTxStatus('preparing');
     setSettleError(null);
     setSettleTxHash(null);
@@ -1202,9 +1222,8 @@ export function useGame(wsUrl: string): UseGameReturn {
 
       execute: async (setPhase) => {
         // ── Wait for both players to be on-chain (phase: active) ──────
-        const currentPhase = onChainPhaseRef.current;
-        if (currentPhase !== 'active' && currentPhase !== 'settling') {
-          console.log('[useGame] Game not yet active on-chain (phase:', currentPhase, ') — waiting...');
+        if (onChainPhaseRef.current !== 'active') {
+          console.log('[useGame] Game not yet active on-chain (phase:', onChainPhaseRef.current, ') — waiting...');
           setPhase('queued');
           await new Promise<void>((resolve, reject) => {
             if (onChainPhaseRef.current === 'active') { resolve(); return; }
@@ -1212,10 +1231,13 @@ export function useGame(wsUrl: string): UseGameReturn {
             setTimeout(() => {
               activePhaseResolveRef.current = null;
               reject(new Error(`Timed out waiting for game to become active (phase: ${onChainPhaseRef.current})`));
-            }, AZTEC_SETTLE_TX_TIMEOUT);
+            }, AZTEC_SETTLE_TX_TIMEOUT * 1000);
           });
           console.log('[useGame] Game active on-chain — proceeding with settlement');
         }
+
+        // NOW transition to settling (from 'active', which is a valid transition)
+        transitionPhase('settling');
 
         // ── Wait for hand proofs ───────────────────────────────────────
         if (!myHandProofRef.current || !opponentHandProofRef.current) {
@@ -1261,6 +1283,29 @@ export function useGame(wsUrl: string): UseGameReturn {
         }
 
         // ── All waits complete — read from persistent ref ────
+        // Backfill from WS state refs if the message listener missed the update
+        // (race: message arrived before settlementInfoRef was initialized).
+        // We read via refs (NOT `ws.*` directly) because handleSettle is a
+        // useCallback whose closure captures a stale `ws` object from an
+        // earlier render. The refs are updated on every render so they always
+        // hold the latest values.
+        const liveWsOpponentAddress = wsOpponentAztecAddressRef.current;
+        const liveWsOpponentRandomness = wsOpponentGameRandomnessRef.current;
+        const liveWsOpponentCardIds = wsOpponentCardIdsRef.current;
+
+        if (!sInfo.opponentAddress && liveWsOpponentAddress) {
+          console.log('[useGame] Backfilling opponentAddress from ws state');
+          sInfo.opponentAddress = liveWsOpponentAddress;
+        }
+        if (sInfo.opponentRandomness.length === 0 && liveWsOpponentRandomness?.length === 6) {
+          console.log('[useGame] Backfilling opponentRandomness from ws state');
+          sInfo.opponentRandomness = [...liveWsOpponentRandomness];
+        }
+        if (sInfo.opponentCardIds.length === 0 && liveWsOpponentCardIds.length > 0) {
+          console.log('[useGame] Backfilling opponentCardIds from ws state');
+          sInfo.opponentCardIds = [...liveWsOpponentCardIds];
+        }
+
         const capturedOpponentAddress = sInfo.opponentAddress;
         const capturedOpponentRandomness = sInfo.opponentRandomness;
         const capturedGameRandomness = sInfo.gameRandomness;
@@ -1268,7 +1313,21 @@ export function useGame(wsUrl: string): UseGameReturn {
         const capturedOpponentCardIds = sInfo.opponentCardIds;
 
         if (capturedCardIds.length === 0) throw new Error('No caller card IDs (settlement info incomplete)');
-        if (capturedOpponentCardIds.length === 0) throw new Error('No opponent card IDs (settlement info incomplete)');
+        if (capturedOpponentCardIds.length === 0) {
+          console.error('[useGame] Settlement failed: opponentCardIds is empty.',
+            { sInfo, liveWsOpponentCardIds });
+          throw new Error('No opponent card IDs (settlement info incomplete)');
+        }
+        if (!capturedOpponentAddress) {
+          console.error('[useGame] Settlement failed: opponentAddress is empty.',
+            'OPPONENT_AZTEC_INFO was not received via WS or ref.',
+            { sInfo, liveWsOpponentAddress });
+          throw new Error('No opponent address (OPPONENT_AZTEC_INFO not received)');
+        }
+        if (capturedOpponentRandomness.length === 0) {
+          console.error('[useGame] Settlement failed: opponentRandomness is empty.', { sInfo });
+          throw new Error('No opponent randomness (OPPONENT_AZTEC_INFO incomplete)');
+        }
 
         // Notify opponent NOW — settlement will actually proceed.
         // Uses captured function ref that binds to the game's WebSocket send().
@@ -1471,8 +1530,19 @@ export function useGame(wsUrl: string): UseGameReturn {
     const capturedPlayerNumber = ws.playerNumber;
     const validMoveProofs = [...moveProofsRef.current];
 
+    // Backfill from ws state refs (same stale closure issue as handleSettle)
+    if (sInfo && !sInfo.opponentAddress && wsOpponentAztecAddressRef.current) {
+      sInfo.opponentAddress = wsOpponentAztecAddressRef.current;
+    }
+    if (sInfo && sInfo.opponentRandomness.length === 0 && wsOpponentGameRandomnessRef.current?.length === 6) {
+      sInfo.opponentRandomness = [...wsOpponentGameRandomnessRef.current];
+    }
+    if (sInfo && sInfo.opponentCardIds.length === 0 && wsOpponentCardIdsRef.current.length > 0) {
+      sInfo.opponentCardIds = [...wsOpponentCardIdsRef.current];
+    }
+
     if (!sInfo || !sInfo.onChainGameId || !sInfo.gameRandomness.length || !sInfo.opponentAddress) {
-      console.error('[useGame] Cannot claim abandoned game: missing settlement info');
+      console.error('[useGame] Cannot claim abandoned game: missing settlement info', { sInfo, wsOpponentAddr: ws.opponentAztecAddress });
       setIsClaimingAbandoned(false);
       abandonedClaimStartedRef.current = false;
       transitionPhase('idle');

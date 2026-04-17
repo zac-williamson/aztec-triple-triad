@@ -156,8 +156,8 @@ describe('proof generation integration', () => {
       await expect(noir.execute(inputs as never)).rejects.toThrow();
     }, 120000);
 
-    it('rejects card ID 51 (above valid range)', async () => {
-      const badIds = [1n, 2n, 3n, 4n, 51n];
+    it('rejects card ID 257 (above valid range)', async () => {
+      const badIds = [1n, 2n, 3n, 4n, 257n];
       const inputs = await makeHandInputs(badIds, blindingFactor);
 
       const noir = new Noir(proveHandArtifact as never);

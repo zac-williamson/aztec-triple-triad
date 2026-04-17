@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useWebSocket } from './useWebSocket';
 
-// Mock WebSocket with controllable message dispatch
+const SESSION_TOKEN_KEY = 'aztec_tt_ws_session_token';
+
+// --- Mock WebSocket with full session protocol support ---
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
   static readonly CONNECTING = 0;
@@ -21,8 +23,10 @@ class MockWebSocket {
   onerror: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   sentMessages: string[] = [];
+  url: string;
 
-  constructor(_url: string) {
+  constructor(url: string) {
+    this.url = url;
     MockWebSocket.instances.push(this);
     // Auto-connect on next tick
     setTimeout(() => this.onopen?.(), 0);
@@ -33,161 +37,517 @@ class MockWebSocket {
   }
 
   close() {
+    this.readyState = MockWebSocket.CLOSED;
     this.onclose?.();
   }
 
-  // Helper to simulate receiving a message
-  simulateMessage(data: string) {
-    this.onmessage?.({ data });
+  simulateMessage(data: any) {
+    this.onmessage?.({ data: typeof data === 'string' ? data : JSON.stringify(data) });
   }
+
+  simulateSessionEstablished(opts: Partial<{ sessionToken: string; playerId: string; resumed: boolean; gameId: string | null }> = {}) {
+    this.simulateMessage({
+      type: 'SESSION_ESTABLISHED',
+      sessionToken: opts.sessionToken ?? 'tok_abc',
+      playerId: opts.playerId ?? 'player-1',
+      resumed: opts.resumed ?? false,
+      gameId: opts.gameId ?? null,
+    });
+  }
+}
+
+/** Wait for hook to connect (50ms StrictMode delay + next tick for onopen). */
+async function waitForConnect() {
+  await new Promise(r => setTimeout(r, 100));
+}
+
+/** Get the latest MockWebSocket instance. */
+function latestWs(): MockWebSocket {
+  return MockWebSocket.instances[MockWebSocket.instances.length - 1];
 }
 
 describe('useWebSocket', () => {
   let originalWebSocket: typeof WebSocket;
 
   beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     MockWebSocket.instances = [];
+    localStorage.clear();
     originalWebSocket = globalThis.WebSocket;
     globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     globalThis.WebSocket = originalWebSocket;
   });
 
-  it('should handle malformed JSON messages without crashing', async () => {
-    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  // --- Session flow ---
 
-    const { result } = renderHook(() => useWebSocket('ws://localhost:3001'));
+  describe('session management', () => {
+    it('sends RESUME if session token exists in localStorage', async () => {
+      localStorage.setItem(SESSION_TOKEN_KEY, 'old_token');
+      const { result } = renderHook(() => useWebSocket('ws://test'));
 
-    // Wait for connection
-    await act(async () => {
-      await new Promise(r => setTimeout(r, 100));
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      const resumeMsg = ws.sentMessages.find(m => JSON.parse(m).type === 'RESUME');
+      expect(resumeMsg).toBeDefined();
+      expect(JSON.parse(resumeMsg!).sessionToken).toBe('old_token');
     });
 
-    const ws = MockWebSocket.instances[0];
-    expect(ws).toBeDefined();
+    it('does not send RESUME when no token exists', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
 
-    // Send malformed JSON — should not throw
-    act(() => {
-      ws.simulateMessage('this is not json{{{');
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      expect(ws.sentMessages.length).toBe(0);
     });
 
-    // App should still be functional (no crash)
-    expect(result.current.error).toBeNull();
-    expect(consoleSpy).toHaveBeenCalledWith(
-      expect.stringContaining('malformed JSON'),
-      expect.any(String),
-    );
+    it('stores session token from SESSION_ESTABLISHED', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
 
-    consoleSpy.mockRestore();
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+
+      act(() => {
+        ws.simulateSessionEstablished({ sessionToken: 'new_tok_123' });
+      });
+
+      expect(localStorage.getItem(SESSION_TOKEN_KEY)).toBe('new_tok_123');
+      expect(result.current.connected).toBe(true);
+    });
+
+    it('restores gameId on resumed session', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
+
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+
+      act(() => {
+        ws.simulateSessionEstablished({ resumed: true, gameId: 'game-xyz' });
+      });
+
+      expect(result.current.gameId).toBe('game-xyz');
+    });
+
+    it('new session (not resumed) does not set gameId', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
+
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+
+      act(() => {
+        ws.simulateSessionEstablished({ resumed: false, gameId: null });
+      });
+
+      expect(result.current.gameId).toBeNull();
+    });
   });
 
-  it('should handle empty message data without crashing', async () => {
-    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  // --- Reconnect ---
 
-    const { result } = renderHook(() => useWebSocket('ws://localhost:3001'));
+  describe('auto-reconnect', () => {
+    it('reconnects with exponential backoff on unexpected close', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
 
-    await act(async () => {
-      await new Promise(r => setTimeout(r, 100));
+      await act(async () => { await waitForConnect(); });
+      const ws1 = latestWs();
+      act(() => { ws1.simulateSessionEstablished(); });
+      expect(result.current.connected).toBe(true);
+
+      // Simulate unexpected close
+      act(() => { ws1.close(); });
+      expect(result.current.connected).toBe(false);
+      const instancesBeforeReconnect = MockWebSocket.instances.length;
+
+      // Advance 1s — first reconnect
+      await act(async () => { vi.advanceTimersByTime(1000); });
+      expect(MockWebSocket.instances.length).toBe(instancesBeforeReconnect + 1);
+
+      // Close again
+      const ws2 = latestWs();
+      act(() => { ws2.close(); });
+
+      // Next reconnect at 2s
+      await act(async () => { vi.advanceTimersByTime(1500); });
+      expect(MockWebSocket.instances.length).toBe(instancesBeforeReconnect + 1); // not yet
+      await act(async () => { vi.advanceTimersByTime(600); });
+      expect(MockWebSocket.instances.length).toBe(instancesBeforeReconnect + 2);
     });
 
-    const ws = MockWebSocket.instances[0];
+    it('does not reconnect after intentional disconnect', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
 
-    act(() => {
-      ws.simulateMessage('');
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      act(() => { ws.simulateSessionEstablished(); });
+
+      const instancesBefore = MockWebSocket.instances.length;
+
+      // Intentional disconnect
+      act(() => { result.current.disconnect(); });
+
+      // Advance time — no reconnect
+      await act(async () => { vi.advanceTimersByTime(5000); });
+      expect(MockWebSocket.instances.length).toBe(instancesBefore);
     });
 
-    expect(result.current.error).toBeNull();
-    consoleSpy.mockRestore();
+    it('disconnect clears session token', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
+
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      act(() => { ws.simulateSessionEstablished({ sessionToken: 'my_token' }); });
+      expect(localStorage.getItem(SESSION_TOKEN_KEY)).toBe('my_token');
+
+      act(() => { result.current.disconnect(); });
+      expect(localStorage.getItem(SESSION_TOKEN_KEY)).toBeNull();
+    });
+
+    it('resets backoff after successful session', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
+
+      await act(async () => { await waitForConnect(); });
+      const ws1 = latestWs();
+
+      // Close and reconnect twice to increase backoff
+      act(() => { ws1.close(); });
+      await act(async () => { vi.advanceTimersByTime(1000); }); // 1st reconnect at 1s
+      act(() => { latestWs().close(); });
+      await act(async () => { vi.advanceTimersByTime(2000); }); // 2nd reconnect at 2s
+
+      // Establish session — resets backoff
+      const ws3 = latestWs();
+      act(() => { ws3.simulateSessionEstablished(); });
+
+      // Close and check next reconnect is at 1s (not 4s)
+      act(() => { ws3.close(); });
+      const beforeReconnect = MockWebSocket.instances.length;
+      await act(async () => { vi.advanceTimersByTime(1000); });
+      expect(MockWebSocket.instances.length).toBe(beforeReconnect + 1);
+    });
   });
 
-  it('should process valid GAME_CREATED messages correctly', async () => {
-    const { result } = renderHook(() => useWebSocket('ws://localhost:3001'));
+  // --- OPPONENT_RECONNECTED ---
 
-    await act(async () => {
-      await new Promise(r => setTimeout(r, 100));
+  describe('opponent reconnection', () => {
+    it('clears opponentDisconnected on OPPONENT_RECONNECTED', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
+
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      act(() => { ws.simulateSessionEstablished(); });
+
+      // Opponent disconnects
+      act(() => { ws.simulateMessage({ type: 'OPPONENT_DISCONNECTED' }); });
+      expect(result.current.opponentDisconnected).toBe(true);
+
+      // Opponent reconnects
+      act(() => { ws.simulateMessage({ type: 'OPPONENT_RECONNECTED', gameId: 'g1' }); });
+      expect(result.current.opponentDisconnected).toBe(false);
     });
-
-    const ws = MockWebSocket.instances[0];
-
-    act(() => {
-      ws.simulateMessage(JSON.stringify({
-        type: 'GAME_CREATED',
-        gameId: '0xabc123',
-        playerNumber: 1,
-      }));
-    });
-
-    expect(result.current.gameId).toBe('0xabc123');
-    expect(result.current.playerNumber).toBe(1);
   });
 
-  it('should process valid ERROR messages', async () => {
-    const { result } = renderHook(() => useWebSocket('ws://localhost:3001'));
+  // --- All message types ---
 
-    await act(async () => {
-      await new Promise(r => setTimeout(r, 100));
+  describe('message handling', () => {
+    async function setupConnectedHook() {
+      const hook = renderHook(() => useWebSocket('ws://test'));
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      act(() => { ws.simulateSessionEstablished(); });
+      return { result: hook.result, ws };
+    }
+
+    it('GAME_CREATED sets gameId and playerNumber', async () => {
+      const { result, ws } = await setupConnectedHook();
+      act(() => { ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 }); });
+      expect(result.current.gameId).toBe('g1');
+      expect(result.current.playerNumber).toBe(1);
     });
 
-    const ws = MockWebSocket.instances[0];
-
-    act(() => {
-      ws.simulateMessage(JSON.stringify({
-        type: 'ERROR',
-        message: 'Game not found',
-      }));
+    it('GAME_JOINED sets gameId, playerNumber, and gameState', async () => {
+      const { result, ws } = await setupConnectedHook();
+      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
+      act(() => { ws.simulateMessage({ type: 'GAME_JOINED', gameId: 'g1', playerNumber: 2, gameState: state }); });
+      expect(result.current.gameId).toBe('g1');
+      expect(result.current.playerNumber).toBe(2);
+      expect(result.current.gameState).toEqual(state);
     });
 
-    expect(result.current.error).toBe('Game not found');
+    it('GAME_START sets gameState', async () => {
+      const { result, ws } = await setupConnectedHook();
+      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
+      act(() => { ws.simulateMessage({ type: 'GAME_START', gameState: state }); });
+      expect(result.current.gameState).toEqual(state);
+    });
+
+    it('GAME_STATE sets gameState and captures', async () => {
+      const { result, ws } = await setupConnectedHook();
+      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player2', player1Score: 6, player2Score: 4, status: 'playing', winner: null };
+      const captures = [{ row: 0, col: 1 }];
+      act(() => { ws.simulateMessage({ type: 'GAME_STATE', gameState: state, captures }); });
+      expect(result.current.gameState).toEqual(state);
+      expect(result.current.lastCaptures).toEqual(captures);
+    });
+
+    it('GAME_OVER sets gameOver, gameState, and opponentCardIds', async () => {
+      const { result, ws } = await setupConnectedHook();
+      // Set player number first
+      act(() => { ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 }); });
+      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 6, player2Score: 4, status: 'finished', winner: 'player1' };
+      act(() => {
+        ws.simulateMessage({
+          type: 'GAME_OVER', gameState: state, winner: 'player1',
+          player1CardIds: [1, 2, 3, 4, 5], player2CardIds: [6, 7, 8, 9, 10],
+        });
+      });
+      expect(result.current.gameOver).toEqual({ winner: 'player1' });
+      expect(result.current.opponentCardIds).toEqual([6, 7, 8, 9, 10]);
+    });
+
+    it('HAND_PROOF sets opponentHandProof', async () => {
+      const { result, ws } = await setupConnectedHook();
+      const handProof = { proof: 'abc', cardCommit: '0x1' };
+      act(() => { ws.simulateMessage({ type: 'HAND_PROOF', handProof }); });
+      expect(result.current.opponentHandProof).toEqual(handProof);
+    });
+
+    it('MOVE_PROVEN sets gameState, captures, and lastMoveProof', async () => {
+      const { result, ws } = await setupConnectedHook();
+      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player2', player1Score: 6, player2Score: 4, status: 'playing', winner: null };
+      const moveProof = { proof: 'xyz' };
+      act(() => {
+        ws.simulateMessage({
+          type: 'MOVE_PROVEN', gameState: state, captures: [{ row: 1, col: 1 }],
+          moveProof, handIndex: 0, row: 0, col: 0,
+        });
+      });
+      expect(result.current.gameState).toEqual(state);
+      expect(result.current.lastMoveProof).toEqual({ moveProof, handIndex: 0, row: 0, col: 0 });
+    });
+
+    it('OPPONENT_AZTEC_INFO sets address, onChainGameId, and randomness', async () => {
+      const { result, ws } = await setupConnectedHook();
+      act(() => {
+        ws.simulateMessage({
+          type: 'OPPONENT_AZTEC_INFO',
+          aztecAddress: '0xABC', onChainGameId: '0xGAME',
+          gameRandomness: ['0x1', '0x2', '0x3', '0x4', '0x5', '0x6'],
+        });
+      });
+      expect(result.current.opponentAztecAddress).toBe('0xABC');
+      expect(result.current.opponentOnChainGameId).toBe('0xGAME');
+      expect(result.current.opponentGameRandomness).toEqual(['0x1', '0x2', '0x3', '0x4', '0x5', '0x6']);
+    });
+
+    it('NOTE_DATA sets incomingNoteData', async () => {
+      const { result, ws } = await setupConnectedHook();
+      const notes = [{ noteHash: '0x1', tokenId: 1, randomness: '0xr' }];
+      act(() => { ws.simulateMessage({ type: 'NOTE_DATA', txHash: '0xTX', notes }); });
+      expect(result.current.incomingNoteData).toEqual({ txHash: '0xTX', notes });
+    });
+
+    it('OPPONENT_SETTLING sets opponentSettling', async () => {
+      const { result, ws } = await setupConnectedHook();
+      act(() => { ws.simulateMessage({ type: 'OPPONENT_SETTLING', selectedCardId: 42 }); });
+      expect(result.current.opponentSettling).toEqual({ selectedCardId: 42 });
+    });
+
+    it('ON_CHAIN_STATUS sets opponentTxConfirmed for P2 when P1 confirmed', async () => {
+      const { result, ws } = await setupConnectedHook();
+      // Set as player 2
+      act(() => { ws.simulateMessage({ type: 'GAME_JOINED', gameId: 'g1', playerNumber: 2, gameState: null }); });
+      act(() => {
+        ws.simulateMessage({
+          type: 'ON_CHAIN_STATUS',
+          status: { player1Tx: 'confirmed', player2Tx: 'pending' },
+        });
+      });
+      expect(result.current.opponentTxConfirmed).toBe(true);
+    });
+
+    it('MATCHMAKING_QUEUED sets status and position', async () => {
+      const { result, ws } = await setupConnectedHook();
+      act(() => { ws.simulateMessage({ type: 'MATCHMAKING_QUEUED', position: 3 }); });
+      expect(result.current.matchmakingStatus).toBe('queued');
+      expect(result.current.queuePosition).toBe(3);
+    });
+
+    it('MATCH_FOUND sets game state', async () => {
+      const { result, ws } = await setupConnectedHook();
+      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
+      act(() => {
+        ws.simulateMessage({ type: 'MATCH_FOUND', gameId: 'match-1', playerNumber: 1, gameState: state });
+      });
+      expect(result.current.matchmakingStatus).toBe('matched');
+      expect(result.current.gameId).toBe('match-1');
+      expect(result.current.playerNumber).toBe(1);
+    });
+
+    it('MATCHMAKING_CANCELLED resets matchmaking state', async () => {
+      const { result, ws } = await setupConnectedHook();
+      act(() => { ws.simulateMessage({ type: 'MATCHMAKING_QUEUED', position: 1 }); });
+      act(() => { ws.simulateMessage({ type: 'MATCHMAKING_CANCELLED' }); });
+      expect(result.current.matchmakingStatus).toBe('idle');
+      expect(result.current.queuePosition).toBeNull();
+    });
+
+    it('PONG is handled without error', async () => {
+      const { ws } = await setupConnectedHook();
+      act(() => { ws.simulateMessage({ type: 'PONG' }); });
+      // No crash = success
+    });
+
+    it('ERROR sets error message', async () => {
+      const { result, ws } = await setupConnectedHook();
+      act(() => { ws.simulateMessage({ type: 'ERROR', message: 'Something broke' }); });
+      expect(result.current.error).toBe('Something broke');
+    });
   });
 
-  it('should send CREATE_GAME message on createGame', async () => {
-    const { result } = renderHook(() => useWebSocket('ws://localhost:3001'));
+  // --- addMessageListener ---
 
-    await act(async () => {
-      await new Promise(r => setTimeout(r, 100));
+  describe('addMessageListener', () => {
+    it('fires synchronously in the same tick as onmessage', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      act(() => { ws.simulateSessionEstablished(); });
+
+      const received: any[] = [];
+      act(() => {
+        result.current.addMessageListener((msg) => received.push(msg));
+      });
+
+      act(() => {
+        ws.simulateMessage({ type: 'PONG' });
+      });
+      expect(received).toHaveLength(1);
+      expect(received[0].type).toBe('PONG');
     });
 
-    const ws = MockWebSocket.instances[0];
+    it('returns cleanup function that removes listener', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      act(() => { ws.simulateSessionEstablished(); });
 
-    act(() => {
-      result.current.createGame([1, 2, 3, 4, 5]);
+      const received: any[] = [];
+      let cleanup: () => void;
+      act(() => {
+        cleanup = result.current.addMessageListener((msg) => received.push(msg));
+      });
+
+      act(() => { ws.simulateMessage({ type: 'PONG' }); });
+      expect(received).toHaveLength(1);
+
+      act(() => { cleanup(); });
+      act(() => { ws.simulateMessage({ type: 'PONG' }); });
+      expect(received).toHaveLength(1); // No new messages
     });
-
-    expect(ws.sentMessages).toHaveLength(1);
-    const parsed = JSON.parse(ws.sentMessages[0]);
-    expect(parsed.type).toBe('CREATE_GAME');
-    expect(parsed.cardIds).toEqual([1, 2, 3, 4, 5]);
   });
 
-  it('should reset all state on disconnect', async () => {
-    const { result } = renderHook(() => useWebSocket('ws://localhost:3001'));
+  // --- placeCard ---
 
-    await act(async () => {
-      await new Promise(r => setTimeout(r, 100));
+  describe('placeCard', () => {
+    it('derives moveNumber from occupied board cells', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      act(() => { ws.simulateSessionEstablished(); });
+
+      // Set up game with 2 cards on board
+      const board = [
+        [{ card: { id: 1 }, owner: 'player1' }, { card: null, owner: null }, { card: null, owner: null }],
+        [{ card: null, owner: null }, { card: { id: 2 }, owner: 'player2' }, { card: null, owner: null }],
+        [{ card: null, owner: null }, { card: null, owner: null }, { card: null, owner: null }],
+      ];
+      act(() => {
+        ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 });
+      });
+      act(() => {
+        ws.simulateMessage({ type: 'GAME_STATE', gameState: { board, player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 1, player2Score: 1, status: 'playing', winner: null }, captures: [] });
+      });
+
+      act(() => { result.current.placeCard(0, 0, 1); });
+
+      const sent = JSON.parse(ws.sentMessages[ws.sentMessages.length - 1]);
+      expect(sent.type).toBe('PLACE_CARD');
+      expect(sent.moveNumber).toBe(2); // 2 cells occupied
+    });
+  });
+
+  // --- Malformed JSON ---
+
+  describe('error resilience', () => {
+    it('handles malformed JSON without crashing', async () => {
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { result } = renderHook(() => useWebSocket('ws://test'));
+
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+
+      act(() => { ws.simulateMessage('this is not json{{{'); });
+      expect(result.current.error).toBeNull();
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('malformed JSON'),
+        expect.any(String),
+      );
+      consoleSpy.mockRestore();
     });
 
-    const ws = MockWebSocket.instances[0];
+    it('handles empty message data without crashing', async () => {
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { result } = renderHook(() => useWebSocket('ws://test'));
 
-    // Set some state
-    act(() => {
-      ws.simulateMessage(JSON.stringify({
-        type: 'GAME_CREATED',
-        gameId: '0xabc123',
-        playerNumber: 1,
-      }));
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+
+      act(() => { ws.simulateMessage(''); });
+      expect(result.current.error).toBeNull();
+      consoleSpy.mockRestore();
     });
 
-    expect(result.current.gameId).toBe('0xabc123');
+    it('send while disconnected does not crash', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
 
-    // Disconnect
-    act(() => {
-      result.current.disconnect();
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      act(() => { ws.simulateSessionEstablished(); });
+      act(() => { result.current.disconnect(); });
+
+      // These should not throw
+      act(() => {
+        result.current.createGame([1, 2, 3, 4, 5]);
+        result.current.ping();
+        result.current.refreshGameList();
+      });
     });
+  });
 
-    expect(result.current.gameId).toBeNull();
-    expect(result.current.playerNumber).toBeNull();
-    expect(result.current.gameState).toBeNull();
+  // --- disconnect ---
+
+  describe('disconnect', () => {
+    it('resets all game state', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
+
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      act(() => { ws.simulateSessionEstablished(); });
+
+      act(() => {
+        ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 });
+      });
+      expect(result.current.gameId).toBe('g1');
+
+      act(() => { result.current.disconnect(); });
+
+      expect(result.current.gameId).toBeNull();
+      expect(result.current.playerNumber).toBeNull();
+      expect(result.current.gameState).toBeNull();
+      expect(result.current.connected).toBe(false);
+    });
   });
 });

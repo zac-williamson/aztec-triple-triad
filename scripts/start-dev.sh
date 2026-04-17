@@ -11,6 +11,23 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
+# Parse flags
+FRESH=0
+for arg in "$@"; do
+  case "$arg" in
+    --fresh|-f)
+      FRESH=1
+      ;;
+    --help|-h)
+      echo "Usage: $0 [--fresh|-f]"
+      echo ""
+      echo "  --fresh, -f   Wipe Redis data (games, sessions, queue, inboxes)"
+      echo "                before starting the backend. Use for a clean slate."
+      exit 0
+      ;;
+  esac
+done
+
 echo -e "${CYAN}=== Axolotl Arena — Dev Startup ===${NC}"
 echo ""
 
@@ -77,16 +94,67 @@ fi
 cp packages/frontend/.env packages/frontend/.env.devnet
 echo -e "${GREEN}  ✓ .env.devnet synced${NC}"
 
-# ─── Step 5: Start backend WebSocket server ───
+# ─── Step 5: Start Redis ───
+echo ""
+REDIS_PORT=6379
+REDIS_STARTED=""
+if /opt/homebrew/bin/redis-cli -p "$REDIS_PORT" ping >/dev/null 2>&1; then
+  echo -e "${GREEN}  ✓ Redis already running on port $REDIS_PORT${NC}"
+else
+  echo -e "${YELLOW}Starting Redis on port $REDIS_PORT...${NC}"
+  if [ -x /opt/homebrew/opt/redis/bin/redis-server ]; then
+    /opt/homebrew/opt/redis/bin/redis-server --daemonize yes --port "$REDIS_PORT" --loglevel warning
+    REDIS_STARTED=1
+    sleep 1
+    if /opt/homebrew/bin/redis-cli -p "$REDIS_PORT" ping >/dev/null 2>&1; then
+      echo -e "${GREEN}  ✓ Redis started${NC}"
+    else
+      echo -e "${RED}  ✗ Redis failed to start — backend will use in-memory store${NC}"
+      REDIS_STARTED=""
+    fi
+  else
+    echo -e "${RED}  ✗ Redis not installed (brew install redis) — backend will use in-memory store${NC}"
+    REDIS_PORT=""
+  fi
+fi
+if /opt/homebrew/bin/redis-cli -p "${REDIS_PORT:-6379}" ping >/dev/null 2>&1; then
+  export REDIS_URL="redis://localhost:$REDIS_PORT"
+else
+  export REDIS_URL=""
+fi
+
+# ─── Step 5b: Wipe Redis data if --fresh flag was passed ───
+if [[ "$FRESH" == "1" ]]; then
+  if [[ -n "$REDIS_URL" ]]; then
+    echo ""
+    echo -e "${YELLOW}--fresh flag: wiping Redis data (games, sessions, queue, inboxes)...${NC}"
+    # Target every key pattern the backend writes (see RedisGameStore header).
+    # Use xargs so the del call is skipped when the pattern matches nothing.
+    for pattern in 'game:*' 'player:*' 'session:*' 'inbox:*' 'queue'; do
+      keys=$(/opt/homebrew/bin/redis-cli -p "$REDIS_PORT" --no-raw keys "$pattern" | tr -d '"')
+      if [[ -n "$keys" ]]; then
+        count=$(echo "$keys" | wc -l | tr -d ' ')
+        echo "$keys" | xargs /opt/homebrew/bin/redis-cli -p "$REDIS_PORT" del >/dev/null
+        echo -e "${GREEN}  ✓ Deleted $count key(s) matching '$pattern'${NC}"
+      fi
+    done
+    echo -e "${GREEN}  ✓ Redis wiped${NC}"
+  else
+    echo ""
+    echo -e "${YELLOW}  --fresh flag ignored: Redis not available${NC}"
+  fi
+fi
+
+# ─── Step 6: Start backend WebSocket server ───
 echo ""
 echo -e "${YELLOW}Starting backend WebSocket server...${NC}"
 cd "$ROOT_DIR/packages/backend"
-npx tsx src/server.ts &
+REDIS_URL="$REDIS_URL" npx tsx src/server.ts &
 BACKEND_PID=$!
 cd "$ROOT_DIR"
 echo -e "${GREEN}  ✓ Backend started (PID: $BACKEND_PID) on ws://localhost:5174${NC}"
 
-# ─── Step 6: Start frontend Vite dev server (devnet mode) ───
+# ─── Step 7: Start frontend Vite dev server (devnet mode) ───
 echo ""
 echo -e "${YELLOW}Starting frontend Vite dev server (devnet mode)...${NC}"
 cd "$ROOT_DIR/packages/frontend"
@@ -100,7 +168,13 @@ echo ""
 echo -e "${CYAN}=== All services running ===${NC}"
 echo ""
 echo -e "  Aztec sandbox:  ${GREEN}http://localhost:8080${NC}"
-echo -e "  Backend WS:     ${GREEN}ws://localhost:5174${NC}"
+if [[ -n "$REDIS_URL" ]]; then
+  echo -e "  Redis:          ${GREEN}${REDIS_URL}${NC}"
+  echo -e "  Backend WS:     ${GREEN}ws://localhost:5174${NC} (Redis-backed)"
+else
+  echo -e "  Redis:          ${RED}not running${NC}"
+  echo -e "  Backend WS:     ${GREEN}ws://localhost:5174${NC} (in-memory)"
+fi
 echo -e "  Frontend:       ${GREEN}http://localhost:3000${NC}"
 echo ""
 echo -e "${YELLOW}To play:${NC}"
@@ -118,6 +192,9 @@ cleanup() {
   echo -e "${YELLOW}Shutting down...${NC}"
   kill $BACKEND_PID 2>/dev/null && echo "  Backend stopped"
   kill $FRONTEND_PID 2>/dev/null && echo "  Frontend stopped"
+  if [[ "${REDIS_STARTED:-}" == "1" ]]; then
+    /opt/homebrew/bin/redis-cli -p "$REDIS_PORT" shutdown 2>/dev/null && echo "  Redis stopped"
+  fi
   exit 0
 }
 trap cleanup SIGINT SIGTERM

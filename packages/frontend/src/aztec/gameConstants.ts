@@ -1,7 +1,9 @@
 /** Aztec transaction timeout in seconds */
 export const AZTEC_TX_TIMEOUT = 300;
 
-/** Settlement transaction timeout (longer due to proof verification) */
+/** Settlement transaction timeout in seconds (longer due to proof verification).
+ * Used as seconds in Aztec SDK .send({ wait: { timeout } }).
+ * Multiply by 1000 when using with setTimeout. */
 export const AZTEC_SETTLE_TX_TIMEOUT = 600;
 
 /** Time to wait for PXE initial sync after wallet creation (ms) */

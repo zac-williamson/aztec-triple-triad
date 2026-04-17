@@ -242,15 +242,20 @@ class TxManager {
     const priority = TX_PRIORITY[type] ?? 2;
 
     try {
+      // Run execute AND postEffects inside the same PXE queue item so that
+      // a queued settle_game doesn't start before create_game's postEffects
+      // (which sets the on-chain phase) have completed.
       const result = await this.enqueuePxe(async () => {
         const setPhase = (phase: TxPhase) => this.setPhase(id, phase);
-        return execute(setPhase);
-      }, PXE_OP_TIMEOUT, priority, gameId);
+        const execResult = await execute(setPhase);
 
-      if (postEffects) {
-        this.setPhase(id, 'post_effects');
-        await postEffects(result);
-      }
+        if (postEffects) {
+          this.setPhase(id, 'post_effects');
+          await postEffects(execResult);
+        }
+
+        return execResult;
+      }, PXE_OP_TIMEOUT, priority, gameId);
 
       this.setPhase(id, 'completed');
       this.finalize(id, gameId);

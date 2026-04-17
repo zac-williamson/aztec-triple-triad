@@ -29,10 +29,28 @@ export class GameManager {
     getCardsByIds(cardIds);
   }
 
+  /**
+   * Returns the player's active game if it exists.
+   * If the player→game mapping points to a nonexistent game, the stale
+   * mapping is cleaned up and null is returned. This prevents "phantom"
+   * game state from blocking new game creation after a crash/restart.
+   */
+  async getValidPlayerGame(playerId: string): Promise<StoredGameRoom | null> {
+    const gameId = await this.store.getPlayerGame(playerId);
+    if (!gameId) return null;
+    const game = await this.store.getGame(gameId);
+    if (!game) {
+      // Stale mapping — clean it up
+      await this.store.deletePlayerGame(playerId);
+      return null;
+    }
+    return game;
+  }
+
   async createGame(playerId: string, cardIds: number[]): Promise<StoredGameRoom> {
     this.validateCardIds(cardIds);
 
-    if (await this.store.getPlayerGame(playerId)) {
+    if (await this.getValidPlayerGame(playerId)) {
       throw new Error('You are already in an active game. Leave it first.');
     }
 
@@ -66,7 +84,7 @@ export class GameManager {
     if (room.player1Id === playerId) {
       throw new Error('Cannot join your own game');
     }
-    if (await this.store.getPlayerGame(playerId)) {
+    if (await this.getValidPlayerGame(playerId)) {
       throw new Error('You are already in an active game. Leave it first.');
     }
 
@@ -251,7 +269,7 @@ export class GameManager {
   async queuePlayer(playerId: string, cardIds: number[]): Promise<number> {
     this.validateCardIds(cardIds);
 
-    if (await this.store.getPlayerGame(playerId)) {
+    if (await this.getValidPlayerGame(playerId)) {
       throw new Error('You are already in an active game');
     }
     if (await this.store.isInQueue(playerId)) {
@@ -267,11 +285,38 @@ export class GameManager {
     return this.store.removeFromQueue(playerId);
   }
 
-  async tryMatch(): Promise<{ entry1: QueueEntryData; entry2: QueueEntryData; room: StoredGameRoom } | null> {
+  /**
+   * Attempt to form a match from the queue.
+   *
+   * `livePlayerIds` is the set of currently-connected playerIds. Stale
+   * entries (queued by players who have since disconnected or whose
+   * sessions were lost across a server restart) are removed before
+   * popping the pair. This prevents the bug where a live player is
+   * paired with a ghost entry, orphaning the game and leaving the other
+   * live player stuck in the queue.
+   */
+  async tryMatch(livePlayerIds: Set<string>): Promise<{ entry1: QueueEntryData; entry2: QueueEntryData; room: StoredGameRoom } | null> {
+    // Strip any stale entries before matching
+    await this.store.removeDisconnectedQueueEntries(livePlayerIds);
+
     const pair = await this.store.popQueuePair();
     if (!pair) return null;
 
     const [entry1, entry2] = pair;
+
+    // Defensive: verify both entries are still live (race with cleanup).
+    // If either is not, re-queue the live one(s) at the back of the queue
+    // so they can match with the next player who joins.
+    if (!livePlayerIds.has(entry1.playerId) || !livePlayerIds.has(entry2.playerId)) {
+      if (livePlayerIds.has(entry1.playerId)) {
+        await this.store.pushQueue(entry1);
+      }
+      if (livePlayerIds.has(entry2.playerId)) {
+        await this.store.pushQueue(entry2);
+      }
+      return null;
+    }
+
     const room = await this.createGame(entry1.playerId, entry1.cardIds);
     await this.joinGame(room.id, entry2.playerId, entry2.cardIds);
 

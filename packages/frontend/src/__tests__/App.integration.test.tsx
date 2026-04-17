@@ -74,6 +74,9 @@ vi.mock('../hooks/useWebSocket', () => ({
     queueMatchmaking: vi.fn(),
     cancelMatchmaking: vi.fn(),
     ping: vi.fn(),
+    addMessageListener: vi.fn(() => () => {}),
+    opponentSettling: null,
+    notifySettleStarted: vi.fn(),
   }),
 }));
 
@@ -91,6 +94,7 @@ vi.mock('../aztec/contracts', () => ({
   ensureContracts: vi.fn(),
   contractCache: { gameContract: null },
   warmupContracts: vi.fn(),
+  waitForWarmup: vi.fn(),
 }));
 
 describe('App Integration', () => {

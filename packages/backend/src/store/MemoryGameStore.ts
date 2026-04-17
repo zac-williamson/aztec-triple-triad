@@ -149,6 +149,12 @@ export class MemoryGameStore implements GameStore {
     return stale.length;
   }
 
+  async removeDisconnectedQueueEntries(livePlayerIds: Set<string>): Promise<number> {
+    const before = this.queue.length;
+    this.queue = this.queue.filter(e => livePlayerIds.has(e.playerId));
+    return before - this.queue.length;
+  }
+
   // --- Cleanup ---
 
   async cleanupStaleGames(timeoutMs: number): Promise<number> {
