@@ -9,3 +9,4 @@ aztec = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v4.2.
 bb_proof_verification = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v4.2.0-aztecnr-rc.2", directory = "barretenberg/noir/bb_proof_verification" }
 triple_triad_nft = { path = "../triple_triad_nft" }
 arena_token = { path = "../arena_token" }
+compressed_string = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v4.2.0-aztecnr-rc.2", directory = "noir-projects/aztec-nr/compressed-string" }

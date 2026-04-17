@@ -1,3 +1,5 @@
+mod test;
+
 use aztec::macros::aztec;
 
 /// Arena Token - private fungible token for the Aztec Arena game.
