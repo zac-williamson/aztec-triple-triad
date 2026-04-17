@@ -21,3 +21,10 @@ aztec-triple-triad-deploy-key.pub
 bb_patched
 glibc_shim.so
 bb_wrapper.sh
+
+# Redis persistence files — should not be committed
+dump.rdb
+*.rdb
+
+# Contract compilation backup artifacts
+packages/contracts/target/*.bak

@@ -1,0 +1,33 @@
+[Unit]
+Description=Axolotl Arena WebSocket backend
+After=network.target redis-server.service
+Requires=redis-server.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/aztec-triple-triad/packages/backend
+
+# Environment file holds REDIS_URL, WS_PORT, ALLOWED_ORIGINS, NODE_ENV.
+# See deploy/triad-backend.env.example for the template.
+EnvironmentFile=/etc/triad-backend.env
+
+# tsx is the TypeScript runner already used in dev. For production we point
+# it at the same entrypoint so there's no separate build step to manage.
+# (If you prefer, run `npm run build` and swap this for `node dist/server.js`.)
+ExecStart=/usr/bin/env npx tsx src/server.ts
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=triad-backend
+
+# Basic hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
