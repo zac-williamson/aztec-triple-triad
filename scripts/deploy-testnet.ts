@@ -175,23 +175,29 @@ async function main() {
 
   await wallet.registerSender(deployerAddress, 'deployer');
 
-  // Compute VK hashes for circuits
+  // Compute VK hashes for circuits (including dummy_move — required by
+  // TripleTriadGame constructor since the abandoned-game flow was added).
   console.log('\nComputing VK hashes...');
   const api = await Barretenberg.new();
   const handArtifact = loadCircuitArtifact('prove_hand');
   const moveArtifact = loadCircuitArtifact('game_move');
+  const dummyMoveArtifact = loadCircuitArtifact('dummy_move');
 
   const handBackend = new UltraHonkBackend(handArtifact.bytecode, api);
   const moveBackend = new UltraHonkBackend(moveArtifact.bytecode, api);
+  const dummyMoveBackend = new UltraHonkBackend(dummyMoveArtifact.bytecode, api);
 
-  const [handVkBuf, moveVkBuf] = await Promise.all([
+  const [handVkBuf, moveVkBuf, dummyVkBuf] = await Promise.all([
     handBackend.getVerificationKey(),
     moveBackend.getVerificationKey(),
+    dummyMoveBackend.getVerificationKey(),
   ]);
   const handVkHash = await computeVkHash(api, handVkBuf);
   const moveVkHash = await computeVkHash(api, moveVkBuf);
-  console.log(`  hand VK hash: ${handVkHash}`);
-  console.log(`  move VK hash: ${moveVkHash}`);
+  const dummyVkHash = await computeVkHash(api, dummyVkBuf);
+  console.log(`  hand VK hash:  ${handVkHash}`);
+  console.log(`  move VK hash:  ${moveVkHash}`);
+  console.log(`  dummy VK hash: ${dummyVkHash}`);
 
   // Load artifacts
   const nftArtifact = await loadContractArtifact('triple_triad_nft-TripleTriadNFT');
@@ -210,31 +216,59 @@ async function main() {
 
   const { Contract } = await import('@aztec/aztec.js/contracts');
 
-  // 1. Deploy NFT + Token in parallel (no interdependency)
-  console.log('\nDeploying TripleTriadNFT + ArenaToken in parallel...');
-  const nftDeploy = Contract.deploy(wallet, nftArtifact, [
-    deployerAddress,
-    encodeCompressedString('Axolotl Arena Cards'),
-    encodeCompressedString('AXL'),
-  ]).send(sendAs(deployerAddress));
+  // 1. Deploy NFT + Token in parallel (or resume from env vars if a prior
+  //    deploy attempt left them on-chain). Set NFT_ADDRESS and TOKEN_ADDRESS
+  //    env vars to skip — the script will `Contract.at(...)` them instead.
+  let nftContract: any;
+  let tokenContract: any;
+  const nftEnvAddr = process.env.NFT_ADDRESS;
+  const tokenEnvAddr = process.env.TOKEN_ADDRESS;
 
-  const tokenDeploy = Contract.deploy(wallet, tokenArtifact, [
-    deployerAddress,
-  ]).send(sendAs(deployerAddress));
+  if (nftEnvAddr && tokenEnvAddr) {
+    console.log('\nReusing existing NFT + Token from env vars...');
+    nftContract = await Contract.at(AztecAddress.fromString(nftEnvAddr), nftArtifact, wallet as never);
+    tokenContract = await Contract.at(AztecAddress.fromString(tokenEnvAddr), tokenArtifact, wallet as never);
+    console.log(`  NFT:   ${nftContract.address}`);
+    console.log(`  Token: ${tokenContract.address}`);
+  } else {
+    console.log('\nDeploying TripleTriadNFT + ArenaToken in parallel...');
+    const nftDeploy = Contract.deploy(wallet, nftArtifact, [
+      deployerAddress,
+      encodeCompressedString('Axolotl Arena Cards'),
+      encodeCompressedString('AXL'),
+    ]).send(sendAs(deployerAddress));
 
-  const [{ contract: nftContract }, { contract: tokenContract }] = await Promise.all([nftDeploy, tokenDeploy]);
-  console.log(`  NFT:   ${nftContract.address}`);
-  console.log(`  Token: ${tokenContract.address}`);
+    const tokenDeploy = Contract.deploy(wallet, tokenArtifact, [
+      deployerAddress,
+    ]).send(sendAs(deployerAddress));
 
-  // 2. Deploy Game (needs NFT + Token addresses)
-  console.log('Deploying TripleTriadGame...');
-  const { contract: gameContract } = await Contract.deploy(wallet, gameArtifact, [
-    nftContract.address,
-    Fr.fromHexString(handVkHash),
-    Fr.fromHexString(moveVkHash),
-    tokenContract.address,
-  ]).send(sendAs(deployerAddress));
-  console.log(`  Game:  ${gameContract.address}`);
+    const [nftRes, tokenRes] = await Promise.all([nftDeploy, tokenDeploy]);
+    nftContract = nftRes.contract;
+    tokenContract = tokenRes.contract;
+    console.log(`  NFT:   ${nftContract.address}`);
+    console.log(`  Token: ${tokenContract.address}`);
+  }
+
+  // 2. Deploy Game (needs NFT + Token addresses + all three VK hashes).
+  //    Or resume if GAME_ADDRESS is set.
+  let gameContract: any;
+  const gameEnvAddr = process.env.GAME_ADDRESS;
+  if (gameEnvAddr) {
+    console.log('Reusing existing Game from env var...');
+    gameContract = await Contract.at(AztecAddress.fromString(gameEnvAddr), gameArtifact, wallet as never);
+    console.log(`  Game:  ${gameContract.address}`);
+  } else {
+    console.log('Deploying TripleTriadGame...');
+    const gameRes = await Contract.deploy(wallet, gameArtifact, [
+      nftContract.address,
+      Fr.fromHexString(handVkHash),
+      Fr.fromHexString(moveVkHash),
+      tokenContract.address,
+      Fr.fromHexString(dummyVkHash),
+    ]).send(sendAs(deployerAddress));
+    gameContract = gameRes.contract;
+    console.log(`  Game:  ${gameContract.address}`);
+  }
 
   // 3. Register senders in parallel
   await Promise.all([
