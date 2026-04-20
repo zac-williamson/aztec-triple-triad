@@ -45,15 +45,15 @@ export async function prepareConnection(options?: {
   const log = options?.log ?? ((msg: string) => console.log('[connectToAztec]', msg));
   const useStorage = !options?.skipLocalStorage;
 
-  const [nodeModule, walletsModule, foundationModule, fieldsModule] = await Promise.all([
+  const [nodeModule, instrumentedModule, foundationModule, fieldsModule] = await Promise.all([
     import('@aztec/aztec.js/node'),
-    import('@aztec/wallets/embedded'),
+    import('./instrumentedWallet'),
     import('@aztec/foundation/curves/grumpkin'),
     import('@aztec/aztec.js/fields'),
   ]);
 
   const { createAztecNodeClient } = nodeModule;
-  const { EmbeddedWallet } = walletsModule;
+  const { InstrumentedWallet: EmbeddedWallet } = instrumentedModule;
   const { GrumpkinScalar } = foundationModule;
   const { Fr } = fieldsModule;
 

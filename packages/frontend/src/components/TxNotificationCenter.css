@@ -1,0 +1,256 @@
+/* TxNotificationCenter — ported from gregojuice with equivalent styling.
+ * Bottom-right toast stack with per-phase timeline bar, breakdowns, legend.
+ */
+
+.txnc-root {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 1400;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+.txnc-root > * {
+  pointer-events: auto;
+}
+
+.txnc-toast {
+  width: 340px;
+  overflow: hidden;
+  border: 1px solid rgba(212, 255, 40, 0.3);
+  background: #1a1d24;
+  color: #e8eaed;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  border-radius: 4px;
+  transition: border-color 0.3s ease;
+}
+.txnc-toast--error { border-color: rgba(211, 47, 47, 0.4); }
+.txnc-toast--complete { border-color: rgba(76, 175, 80, 0.4); }
+
+.txnc-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  gap: 8px;
+  background: rgba(212, 255, 40, 0.05);
+}
+.txnc-toast--error .txnc-header { background: rgba(211, 47, 47, 0.08); }
+.txnc-toast--complete .txnc-header { background: rgba(76, 175, 80, 0.08); }
+
+.txnc-status-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+}
+.txnc-status-icon--complete { color: #4caf50; }
+.txnc-status-icon--error { color: #f44336; }
+
+.txnc-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-top-color: #90caf9;
+  border-radius: 50%;
+  animation: txnc-spin 0.9s linear infinite;
+}
+@keyframes txnc-spin { to { transform: rotate(360deg); } }
+
+.txnc-label-col {
+  flex: 1;
+  min-width: 0;
+}
+.txnc-label {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.txnc-phase-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: rgba(232, 234, 237, 0.7);
+}
+
+.txnc-dots {
+  display: flex;
+  gap: 2px;
+  margin-left: 4px;
+}
+.txnc-dots span {
+  display: block;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #90caf9;
+  animation: txnc-pulse 1.5s ease-in-out infinite;
+}
+.txnc-dots span:nth-child(2) { animation-delay: 0.2s; }
+.txnc-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes txnc-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+.txnc-elapsed {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: rgba(232, 234, 237, 0.7);
+  flex-shrink: 0;
+}
+
+.txnc-btn {
+  background: transparent;
+  border: none;
+  color: rgba(232, 234, 237, 0.7);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.txnc-btn:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+.txnc-btn svg { width: 14px; height: 14px; }
+
+.txnc-body {
+  padding: 8px 12px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.txnc-body__closed { display: none; }
+
+.txnc-chips {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.txnc-chip {
+  height: 18px;
+  padding: 0 8px;
+  border-radius: 9px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 18px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8eaed;
+}
+.txnc-chip--preparing { background: #1565c0; color: #fff; }
+.txnc-chip--mining { background: #4caf50; color: #fff; }
+
+.txnc-bar {
+  display: flex;
+  width: 100%;
+  height: 14px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.06);
+}
+.txnc-bar__seg {
+  height: 100%;
+  cursor: pointer;
+  transition: filter 0.2s ease;
+  position: relative;
+}
+.txnc-bar__seg:hover { filter: brightness(1.2); }
+.txnc-bar__seg + .txnc-bar__seg { border-left: 1px solid rgba(255, 255, 255, 0.3); }
+.txnc-bar__seg--live {
+  flex: 1;
+  min-width: 40px;
+  background-size: 400px 100%;
+  animation: txnc-shimmer 1.5s infinite linear;
+}
+@keyframes txnc-shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+.txnc-legend {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+.txnc-legend__item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  color: rgba(232, 234, 237, 0.6);
+}
+.txnc-legend__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.txnc-legend__dot--live { animation: txnc-pulse 1.2s ease-in-out infinite; }
+
+.txnc-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #0d1117;
+  color: #e8eaed;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1500;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+  min-width: 180px;
+  max-width: 360px;
+  white-space: normal;
+}
+.txnc-tooltip__title { font-weight: 600; margin-bottom: 2px; }
+.txnc-tooltip__duration { font-size: 11px; opacity: 0.9; }
+.txnc-tooltip__row {
+  display: block;
+  font-size: 10px;
+  line-height: 1.35;
+}
+.txnc-tooltip__row--parent { padding-left: 8px; font-weight: 600; }
+.txnc-tooltip__row--child { padding-left: 20px; color: rgba(232, 234, 237, 0.7); }
+.txnc-tooltip__detail {
+  display: block;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  margin-top: 4px;
+  opacity: 0.7;
+}
+
+.txnc-error {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #f48fb1;
+  word-break: break-word;
+}
+
+.txnc-collapse-btn {
+  background: #1a1d24;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: rgba(232, 234, 237, 0.85);
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-family: system-ui, sans-serif;
+}
+.txnc-collapse-btn--active { border-color: rgba(212, 255, 40, 0.35); }
+.txnc-collapse-btn:hover { background: #22262e; }
+.txnc-collapse-btn svg { width: 14px; height: 14px; }

@@ -10,7 +10,7 @@ import { PackOpening } from './components/PackOpening';
 import { TutorialScreen } from './components/TutorialScreen';
 import { TutorialPrompt } from './components/TutorialPrompt';
 import { FundingPrompt } from './components/FundingPrompt';
-import { TxStatusOverlay } from './components/TxStatusOverlay';
+import { TxNotificationCenter } from './components/TxNotificationCenter';
 import { GameScreen3D as GameScreen } from './components3d/GameScreen3D';
 import './App.css';
 
@@ -148,7 +148,7 @@ function AppInner() {
           </button>
         </div>
       )}
-      <TxStatusOverlay />
+      <TxNotificationCenter account={aztec.accountAddress} />
     </div>
   );
 }

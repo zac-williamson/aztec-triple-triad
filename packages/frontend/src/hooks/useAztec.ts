@@ -31,6 +31,7 @@ export function useAztec(): UseAztecReturn {
   );
   const [ownedCardIds, setOwnedCardIds] = useState<number[]>([]);
   const [tokenBalance, setTokenBalance] = useState<number>(0);
+  const tokenBalanceRef = useRef<number>(0);
   const walletRef = useRef<unknown>(null);
   const nodeClientRef = useRef<unknown>(null);
   const preparedRef = useRef<PreparedConnection | null>(null);
@@ -159,17 +160,42 @@ export function useAztec(): UseAztecReturn {
       if (!tokenContract || !AztecAddress) return;
       const ownerAddr = AztecAddress.fromString(accountAddress);
       const { result } = await tokenContract.methods.get_balance(ownerAddr).simulate({ from: ownerAddr });
-      setTokenBalance(Number(BigInt(result.toString())));
+      const balance = Number(BigInt(result.toString()));
+      tokenBalanceRef.current = balance;
+      setTokenBalance(balance);
     } catch (e) {
       console.warn('[useAztec] Failed to fetch token balance:', e);
     }
   }, [accountAddress]);
 
-  // Auto-fetch token balance when connected
+  // Auto-fetch token balance when connected.
+  // Settlement mints tokens to the *opponent* (loser) on-chain and the note
+  // is tagged for their PXE to discover via block scanning. If the page is
+  // refreshed before/while PXE finishes syncing the block containing the
+  // mint, get_balance will transiently read a stale value. Poll for ~30s
+  // on each connect and stop once the balance stabilizes.
   useEffect(() => {
-    if (status === 'connected') {
-      refreshTokenBalance();
-    }
+    if (status !== 'connected') return;
+    let cancelled = false;
+    let previousBalance: number | null = null;
+    let unchangedReads = 0;
+    (async () => {
+      for (let i = 0; i < 15; i++) {
+        if (cancelled) return;
+        await refreshTokenBalance();
+        if (cancelled) return;
+        const now = tokenBalanceRef.current;
+        if (previousBalance !== null && now === previousBalance) {
+          unchangedReads++;
+          if (unchangedReads >= 2) return; // two consecutive identical reads — assume synced
+        } else {
+          unchangedReads = 0;
+        }
+        previousBalance = now;
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    })();
+    return () => { cancelled = true; };
   }, [status, refreshTokenBalance]);
 
   return {

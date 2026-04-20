@@ -4,8 +4,8 @@ import { useProofGeneration } from './useProofGeneration';
 import type { PlayerHandData } from './useProofGeneration';
 import { useGameStorage, type PersistedGameState } from './useGameStorage';
 import { useAztecContext } from '../aztec/AztecContext';
-import { importNotesFromTx } from '../aztec/noteImporter';
-import { removeCards } from '../aztec/cardStore';
+import { importNotesFromTx, fetchTxEffectData } from '../aztec/noteImporter';
+import { addCards, removeCards, type StoredCard } from '../aztec/cardStore';
 import txManager from '../aztec/txManager';
 import { ensureContracts, contractCache, warmupContracts, waitForWarmup } from '../aztec/contracts';
 import { AZTEC_CONFIG } from '../aztec/config';
@@ -987,17 +987,42 @@ export function useGame(wsUrl: string): UseGameReturn {
     }
   }, [screen]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Import notes helper
+  // Import notes helper — imports into PXE AND persists the tx-effect aux
+  // data to localStorage so a fresh wallet can re-import on restart.
+  // Mirrors the pattern in useCardPacks.ts (pack purchases) so settlement,
+  // loser note-relay, and abandoned-game recovery all persist consistently.
   const importNotes = useCallback(async (
     txHashStr: string,
     notes: { tokenId: number; randomness: string }[],
     label: string,
   ) => {
     if (!aztec.wallet || !aztec.accountAddress || !aztec.nodeClient) return;
+    const accountAddress = aztec.accountAddress;
     try {
+      // Fetch TxEffect first so we can persist before (and reuse during) import.
+      const txEffectData = await fetchTxEffectData(aztec.nodeClient, txHashStr);
+
+      if (txEffectData) {
+        const storedCards: StoredCard[] = notes.map((n) => ({
+          cardId: n.tokenId,
+          randomness: n.randomness,
+          txHash: txHashStr,
+          noteHashes: txEffectData.noteHashes,
+          firstNullifier: txEffectData.firstNullifier,
+        }));
+        try {
+          addCards(accountAddress, storedCards);
+        } catch (persistErr) {
+          console.error(`[useGame] ${label}: failed to persist cards to localStorage (continuing with PXE import):`, persistErr);
+        }
+      } else {
+        console.warn(`[useGame] ${label}: TxEffect unavailable — cards will import to PXE but won't survive a refresh`);
+      }
+
       const importedIds = await importNotesFromTx(
-        aztec.wallet, aztec.nodeClient, aztec.accountAddress,
+        aztec.wallet, aztec.nodeClient, accountAddress,
         txHashStr, notes, label,
+        txEffectData ?? undefined,
       );
       if (importedIds.length > 0) {
         aztec.updateOwnedCards(prev => [...prev, ...importedIds]);
@@ -1021,11 +1046,22 @@ export function useGame(wsUrl: string): UseGameReturn {
     setTakenCardId(taken ?? null);
     setOpponentSettled(true);
 
-    importNotes(txHash, notes, 'Loser import');
+    (async () => {
+      await importNotes(txHash, notes, 'Loser import');
+      // Settlement mints 20 Arena Tokens to BOTH players (see game contract
+      // main.nr:703-706). The loser's PXE may not have finished scanning
+      // the settlement block's tagged logs, so poll a few times until the
+      // balance reflects the reward.
+      await aztec.refreshTokenBalance().catch(() => {});
+      for (let i = 0; i < 5; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try { await aztec.refreshTokenBalance(); } catch {}
+      }
+    })();
 
     // Settlement complete on loser side — release the game lifecycle
     transitionPhase('idle');
-  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, aztec.nodeClient, importNotes, cardIds]);
+  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, aztec.nodeClient, importNotes, cardIds, aztec.refreshTokenBalance]);
 
   // Track opponent's settlement on the loser's side via txManager.
   // When the winner starts settling, the loser receives OPPONENT_SETTLING via WS.
