@@ -7,10 +7,15 @@
  * wall-clock durations and — where the SDK exposes them — per-function
  * witgen breakdowns and proving stats.
  *
- * Ported from gregojuice/packages/embedded-wallet/src/embedded-wallet.ts.
- * Unchanged flow: completeFeeOptions → simulate → collect authwits →
- * prove → send → optionally wait. Timings and emits were added;
- * functional behavior is identical to the base class.
+ * Port of gregojuice/packages/embedded-wallet/src/embedded-wallet.ts
+ * adapted to the v4.2.0-nightly.20260323 SDK shape:
+ *   - completeFeeOptionsForEstimation(from, feePayer, gasSettings) for the
+ *     pre-simulation gas estimation pass
+ *   - simulateViaEntrypoint takes `scopes` (computed via scopesFrom),
+ *     not `additionalScopes`
+ *   - completeFeeOptions(from, feePayer, gasSettings) is called a second
+ *     time after authwit collection + gas estimation to produce the
+ *     production fee options that proveTx uses
  */
 
 import { EmbeddedWallet as EmbeddedWalletBase, type EmbeddedWalletOptions } from '@aztec/wallets/embedded';
@@ -49,6 +54,7 @@ export class InstrumentedWallet extends EmbeddedWalletBase {
     const txId = crypto.randomUUID();
     const startTime = Date.now();
     const phases: PhaseTiming[] = [];
+    const self = this as unknown as Record<string, any>;
 
     const fnName = (executionPayload.calls?.[0] as { name?: string })?.name ?? 'Transaction';
     const label = fnName.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -69,35 +75,31 @@ export class InstrumentedWallet extends EmbeddedWalletBase {
     };
 
     try {
-      const feeOptions = await (this as any).completeFeeOptions({
-        from: opts.from,
-        feePayer: executionPayload.feePayer,
-        gasSettings: opts.fee?.gasSettings,
-        forEstimation: true,
-      });
+      // ── Pre-simulation gas estimation fee options ───────────────────
+      const estFeeOptions = await self.completeFeeOptionsForEstimation(
+        opts.from,
+        executionPayload.feePayer,
+        opts.fee?.gasSettings,
+      );
 
       emit('simulating');
       const simStart = Date.now();
-      const simulationResult = await (this as any).simulateViaEntrypoint(
-        executionPayload,
-        {
-          from: opts.from,
-          feeOptions,
-          additionalScopes: opts.additionalScopes,
-          skipTxValidation: true,
-          skipFeeEnforcement: true,
-        },
-      );
+      const simulationResult = await self.simulateViaEntrypoint(executionPayload, {
+        from: opts.from,
+        feeOptions: estFeeOptions,
+        scopes: self.scopesFrom(opts.from, opts.additionalScopes),
+        skipTxValidation: true,
+        skipFeeEnforcement: true,
+      });
       const simElapsed = Date.now() - simStart;
 
-      const offchainEffects = collectOffchainEffects(simulationResult.privateExecutionResult);
-
+      const offchainEffects = collectOffchainEffects(simulationResult.privateExecutionResult) ?? [];
       const authWitStart = Date.now();
       const authWitnesses = await Promise.all(
         offchainEffects.map(async (effect) => {
           try {
             const authRequest = await CallAuthorizationRequest.fromFields(effect.data);
-            return (this as any).createAuthWit(authRequest.onBehalfOf, {
+            return self.createAuthWit(authRequest.onBehalfOf, {
               consumer: effect.contractAddress,
               innerHash: authRequest.innerHash,
             });
@@ -108,20 +110,22 @@ export class InstrumentedWallet extends EmbeddedWalletBase {
       );
       const authWitDuration = Date.now() - authWitStart;
       for (const wit of authWitnesses) {
-        if (wit) (executionPayload as any).authWitnesses.push(wit);
+        if (wit && (executionPayload as any).authWitnesses) {
+          (executionPayload as any).authWitnesses.push(wit);
+        }
       }
       const simulationDuration = simElapsed + authWitDuration;
 
-      // ── Build simulation-phase breakdown from SDK stats ──────────────
+      // ── Build sim-phase breakdown from SDK stats ────────────────────
       const simStats = simulationResult.stats;
       const breakdown: Array<{ label: string; duration: number }> = [];
       const details: string[] = [];
       if (simStats?.timings) {
         const t = simStats.timings;
-        const prepareDuration = simElapsed - t.total;
+        const prepareDuration = simElapsed - (t.total ?? 0);
         if (prepareDuration > 10) breakdown.push({ label: 'Prepare', duration: prepareDuration });
-        if (t.sync > 0) breakdown.push({ label: 'Sync', duration: t.sync });
-        if (t.perFunction.length > 0) {
+        if (t.sync && t.sync > 0) breakdown.push({ label: 'Sync', duration: t.sync });
+        if (Array.isArray(t.perFunction) && t.perFunction.length > 0) {
           const witgenTotal = t.perFunction.reduce(
             (sum: number, fn: { time: number }) => sum + fn.time, 0,
           );
@@ -132,7 +136,7 @@ export class InstrumentedWallet extends EmbeddedWalletBase {
           }
         }
         if (t.publicSimulation) breakdown.push({ label: 'Public simulation', duration: t.publicSimulation });
-        if (t.unaccounted > 0) breakdown.push({ label: 'Other', duration: t.unaccounted });
+        if (t.unaccounted && t.unaccounted > 0) breakdown.push({ label: 'Other', duration: t.unaccounted });
       }
       if (authWitDuration > 0) breakdown.push({ label: 'Auth witnesses', duration: authWitDuration });
       if (simStats?.nodeRPCCalls?.roundTrips) {
@@ -148,25 +152,32 @@ export class InstrumentedWallet extends EmbeddedWalletBase {
         ...(details.length > 0 && { details }),
       });
 
-      // ── Prove ────────────────────────────────────────────────────────
-      emit('proving');
-      const provingStart = Date.now();
-      const estimated = getGasLimits(simulationResult, (this as any).estimatedGasPadding);
+      // ── Compute production gas settings + fee options ────────────────
+      const estimated = getGasLimits(simulationResult, self.estimatedGasPadding ?? 0.1);
       const gasSettings = GasSettings.from({
         ...opts.fee?.gasSettings,
-        maxFeesPerGas: feeOptions.gasSettings.maxFeesPerGas,
-        maxPriorityFeesPerGas: feeOptions.gasSettings.maxPriorityFeesPerGas,
+        maxFeesPerGas: estFeeOptions.gasSettings.maxFeesPerGas,
+        maxPriorityFeesPerGas: estFeeOptions.gasSettings.maxPriorityFeesPerGas,
         gasLimits: opts.fee?.gasSettings?.gasLimits ?? estimated.gasLimits,
         teardownGasLimits: opts.fee?.gasSettings?.teardownGasLimits ?? estimated.teardownGasLimits,
       });
-      const txRequest = await (this as any).createTxExecutionRequestFromPayloadAndFee(
+      const prodFeeOptions = await self.completeFeeOptions(
+        opts.from,
+        executionPayload.feePayer,
+        gasSettings,
+      );
+
+      // ── Prove ────────────────────────────────────────────────────────
+      emit('proving');
+      const provingStart = Date.now();
+      const txRequest = await self.createTxExecutionRequestFromPayloadAndFee(
         executionPayload,
         opts.from,
-        { ...feeOptions, gasSettings },
+        prodFeeOptions,
       );
-      const provenTx = await (this as any).pxe.proveTx(
+      const provenTx = await self.pxe.proveTx(
         txRequest,
-        (this as any).scopesFrom(opts.from, opts.additionalScopes),
+        self.scopesFrom(opts.from, opts.additionalScopes),
       );
       const provingDuration = Date.now() - provingStart;
 
@@ -174,7 +185,7 @@ export class InstrumentedWallet extends EmbeddedWalletBase {
       if (provingStats?.timings) {
         const t = provingStats.timings;
         if (t.sync && t.sync > 0) phases.push({ name: 'Sync', duration: t.sync, color: '#90caf9' });
-        if (t.perFunction?.length > 0) {
+        if (Array.isArray(t.perFunction) && t.perFunction.length > 0) {
           const witgenTotal = t.perFunction.reduce(
             (sum: number, fn: { time: number }) => sum + fn.time, 0,
           );
@@ -191,7 +202,9 @@ export class InstrumentedWallet extends EmbeddedWalletBase {
         if (t.proving && t.proving > 0) {
           phases.push({ name: 'Proving', duration: t.proving, color: '#f48fb1' });
         }
-        if (t.unaccounted > 0) phases.push({ name: 'Other', duration: t.unaccounted, color: '#bdbdbd' });
+        if (t.unaccounted && t.unaccounted > 0) {
+          phases.push({ name: 'Other', duration: t.unaccounted, color: '#bdbdbd' });
+        }
       } else {
         phases.push({ name: 'Proving', duration: provingDuration, color: '#f48fb1' });
       }
@@ -206,10 +219,10 @@ export class InstrumentedWallet extends EmbeddedWalletBase {
       const txHash = tx.getTxHash();
       emit('sending', { aztecTxHash: txHash.toString() });
       const sendingStart = Date.now();
-      if (await (this as any).aztecNode.getTxEffect(txHash)) {
+      if (await self.aztecNode.getTxEffect(txHash)) {
         throw new Error(`A settled tx with equal hash ${txHash.toString()} exists.`);
       }
-      await (this as any).aztecNode.sendTx(tx);
+      await self.aztecNode.sendTx(tx);
       phases.push({ name: 'Sending', duration: Date.now() - sendingStart, color: '#2196f3' });
 
       if ((opts.wait as unknown) === NO_WAIT) {
@@ -221,7 +234,7 @@ export class InstrumentedWallet extends EmbeddedWalletBase {
       emit('mining');
       const miningStart = Date.now();
       const waitOpts = typeof opts.wait === 'object' ? opts.wait : undefined;
-      const receipt = await waitForTx((this as any).aztecNode, txHash, {
+      const receipt = await waitForTx(self.aztecNode, txHash, {
         ...waitOpts,
         waitForStatus: TxStatus.PROPOSED,
       });
