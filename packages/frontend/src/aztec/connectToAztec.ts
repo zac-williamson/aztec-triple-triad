@@ -271,21 +271,27 @@ export async function deployAndRegister(
         }
       } catch (e) { log(`Failed to import starter cards: ${e}`); }
     }
-  } else if (!deployed) {
-    // Deploy only (no mint needed — cards already minted)
-    log('Deploying account...');
-    const deployMethod = await accountManager.getDeployMethod();
-    const sendOpts: any = { from: NO_FROM, wait: { timeout: AZTEC_TX_TIMEOUT } };
-    if (options?.feeJuiceClaim) {
-      const { FeeJuicePaymentMethodWithClaim } = await import('@aztec/aztec.js/fee');
-      sendOpts.fee = {
-        paymentMethod: new FeeJuicePaymentMethodWithClaim(accountManager.address, options.feeJuiceClaim),
-      };
+  } else {
+    // Deploy first (if needed), then fall through to mint (if needed).
+    // The combined-tx branch above only runs when we have a feeJuiceClaim;
+    // on testnet the user funds via the bridge and we get no claim, so
+    // deploy + mint must run as separate txs.
+    if (!deployed) {
+      log('Deploying account...');
+      const deployMethod = await accountManager.getDeployMethod();
+      const sendOpts: any = { from: NO_FROM, wait: { timeout: AZTEC_TX_TIMEOUT } };
+      if (options?.feeJuiceClaim) {
+        const { FeeJuicePaymentMethodWithClaim } = await import('@aztec/aztec.js/fee');
+        sendOpts.fee = {
+          paymentMethod: new FeeJuicePaymentMethodWithClaim(accountManager.address, options.feeJuiceClaim),
+        };
+      }
+      await deployMethod.send(sendOpts);
+      if (useStorage) localStorage.setItem(AZTEC_CONFIG.storageKeys.deploymentStatus, 'deployed');
+      log(`Account deployed: ${accountAddress}`);
     }
-    await deployMethod.send(sendOpts);
-    if (useStorage) localStorage.setItem(AZTEC_CONFIG.storageKeys.deploymentStatus, 'deployed');
-    log(`Account deployed: ${accountAddress}`);
-  } else if (needsMint) {
+
+    if (needsMint) {
     // Mint only (account already deployed)
     const { Contract } = await import('@aztec/aztec.js/contracts');
     const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
@@ -321,6 +327,7 @@ export async function deployAndRegister(
           log('Starter cards stored and imported');
         }
       } catch (e) { log(`Failed to import starter cards: ${e}`); }
+    }
     }
   }
 
