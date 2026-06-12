@@ -10,9 +10,9 @@ and its own git worktree. Read this file first, then your lane brief.
   testnet contract deploy, Vercel + Lightsail infra, tx-progress instrumentation,
   post-settle card persistence, and a started-but-unapplied card-asset compression pass.
 - **The project is version-stranded.** `rpc.testnet.aztec-labs.com` now reports
-  nodeVersion **4.3.1** on a new rollup deployment. The repo pins
-  `v4.2.0-nightly.20260323` everywhere; the April testnet contracts no longer exist.
-  The local sandbox at the pinned nightly still works — pre-upgrade work is not blocked.
+  nodeVersion **4.3.1** on a new rollup deployment. The repo pins the 4.2.0
+  release set (CLAUDE.md §Versions); the April testnet contracts no longer exist.
+  The local sandbox at the pinned version still works — pre-upgrade work is not blocked.
 - The app was feature-complete end-to-end in April: onboarding → starter cards →
   matchmaking → 3D game with per-move client-side ZK proofs → single-tx settlement
   (11 recursive proof verifications in `process_game`) → card transfer + ArenaToken
@@ -27,8 +27,11 @@ and its own git worktree. Read this file first, then your lane brief.
 
 ## Ground rules (apply to ALL lanes — violations have burned us before)
 
-- Aztec version: **v4.2.0-nightly.20260323** until Lane 1 lands the 4.3.1 upgrade,
-  then **4.3.1 stable** pinned everywhere. Never mix versions across packages.
+- Aztec version: one matched 4.2.0 release set until Lane 1 lands the 4.3.1
+  upgrade — CLI/sandbox installer tag `4.2.0-nightly.20260323`, npm `@aztec/*`
+  and aztec-nr Nargo tags `4.2.0-aztecnr-rc.2` (same release, different publish
+  tags; see CLAUDE.md §Versions). Then **4.3.1 stable** pinned everywhere.
+  Never mix versions across packages.
 - Contracts compile with `aztec compile` (NOT `nargo compile` — misses AVM transpilation
   + VK generation). Standalone circuits use `nargo compile`.
 - Contract tests need TXE: `TXE_PORT=8081 txe &` then

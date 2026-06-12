@@ -138,3 +138,7 @@ boundaries (where leaks and duplication hide best).
   no STATUS line after human activity, ask the agent to re-emit one.
 - Merge station: ONLY the orchestrator merges to `testnet`, from the main checkout.
   Lane branches never touch each other directly.
+- `docs/plan/` ownership: orchestrator-only, with two exceptions — each lane may
+  edit its own `LANE_*.md` (ASSUMPTIONS and handoff notes encouraged), and
+  `CAMPAIGN_BACKLOG.md` belongs to lane 5. `TRIAL_LOG.md`, `MASTER_PLAN.md`,
+  `ORCHESTRATION.md`, `PLAYTEST_HARNESS.md` are never edited by lanes.

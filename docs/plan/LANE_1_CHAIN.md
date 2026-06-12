@@ -4,7 +4,9 @@ Branch `lane/1-chain` · Worktree `worktrees/lane-1-chain`
 Owns: `packages/contracts/`, `circuits/`, all Nargo.tomls. Critical-path lane.
 
 ## Mission
-Carry the project from v4.2.0-nightly.20260323 to **4.3.1 stable**: contracts and
+Carry the project from the 4.2.0 release set (CLI tag `4.2.0-nightly.20260323`,
+npm/aztec-nr tags `4.2.0-aztecnr-rc.2` — confirm these name the same release,
+see CLAUDE.md §Versions) to **4.3.1 stable**: contracts and
 circuits compile, TXE tests green, contracts redeployed to testnet. Also deliver the
 playtest fast-mode chain pieces (dummy_hand circuit + permissive-VK deploy flag).
 
