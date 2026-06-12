@@ -100,7 +100,9 @@ anything outward-facing (pushes, deploys, external services).
 
 ## Merge review gate (orchestrator, before ANY lane merges to testnet)
 
-Review `git diff testnet..lane/<x>` plus the lane's transcript against six criteria
+Review the lane's TRUE changes — `git diff $(git merge-base testnet lane/<x>)..lane/<x>`,
+NEVER `testnet..lane/<x>` (fork-point skew displays the orchestrator's own
+testnet-side commits as phantom reverts) — plus the lane's transcript, against six criteria
 (these are Zac's named endemic problems — treat each finding as a merge-blocker):
 
 1. **Flake-masking fallbacks** — any new retry, fallback, backfill, defensive
