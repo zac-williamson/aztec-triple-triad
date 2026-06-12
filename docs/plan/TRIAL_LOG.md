@@ -99,7 +99,7 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | lane-2-frontend | — | B | |
 | lane-3-game-ai | done → merged 1afb48e | card-db consolidation | D2 gated on A2 + Zac scope decision |
 | lane-4-backend | done → merged bc50650 | QA-F3 (room release) | D2-hook + F3 gated |
-| lane-5-qa | done → merged 826e0d0 | standby + utility annotation | acceptance duty when playtest Phase 1 lands |
+| lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
 | lane-6-assets-infra | — | F1 | |
 | lane-7-docs | E1+E2 merged (ade31c7, b249810) | standby | wake on lane-2 B merge (frontend sections), A3 (README) |
 | playtest | — | Harness Phase 1 | |
