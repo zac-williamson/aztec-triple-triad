@@ -36,9 +36,11 @@ docs/plan/       Revival master plan and per-lane briefs (binding)
 docs/history/    Build-era bug reports and logs (archaeology, not current docs)
 ```
 
-`GAME_LIFECYCLE_SPEC.md` (root) specifies the on-chain game lifecycle,
-including the abandoned-game path. `TUTORIAL_SCRIPT.md` is the demo
-walkthrough script. `FUTURE_IMPROVEMENTS.md` is the wishlist.
+**`docs/ARCHITECTURE.md` is the contract/protocol reference** — the game
+lifecycle, the 11-proof settlement, the note lifecycle, and an Aztec
+concept→`file:line` index. Read it before touching contracts or circuits.
+`TUTORIAL_SCRIPT.md` is the demo walkthrough script. `FUTURE_IMPROVEMENTS.md`
+is the wishlist.
 
 ## Versions — one matched set, never mixed
 

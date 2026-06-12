@@ -82,6 +82,37 @@ funding).
 - **Kept at root deliberately** (not in the E1 move list, read as current material):
   `GAME_LIFECYCLE_SPEC.md`, `TUTORIAL_SCRIPT.md`, `FUTURE_IMPROVEMENTS.md`.
 
+## ASSUMPTIONS (recorded during E2 part 1, 2026-06-12)
+- **GAME_LIFECYCLE_SPEC.md archived beyond the E1 list**: it described the
+  abandoned design — caller-supplied `game_id` (what ground rule #10 bans) and a
+  `prepare_for_game` escrow flow the game contract never calls (verified:
+  `triple_triad_game/src/main.nr` references none of
+  `prepare_for_game`/`reclaim_card`/`unlock_cards`/`game_transfer`). A root spec
+  contradicting ARCHITECTURE.md would be worse than a relocation outside the
+  brief's letter. Archived with a superseded marker in docs/history/README.md.
+- **ARCHITECTURE.md anchor convention**: full `path:line` on first mention,
+  bare `:line` within a paragraph whose file is unambiguous. Anchors were
+  machine bounds-checked and 21 load-bearing lines content-verified at commit
+  time; they will drift only if contracts/circuits change (owning lanes review
+  doc PRs per the constraint above — same applies in reverse).
+- **Dispute-window semantics documented from code, not spec**: the window only
+  remedies false claims against finished games; mid-game counter-claims are
+  structurally impossible today (status no longer `active` after the first
+  claim). Recorded in FUTURE_IMPROVEMENTS.md as a contract-change candidate.
+
+## Handoff notes for other lanes (from E2)
+- **Lane 3 (game-logic owner)**: `packages/game-logic` exports TWO stale card
+  databases from `index.ts` — `cards.ts` (legacy 50-card set: ids 1–50,
+  "Lerma" at id 50 vs canonical id 256) and `axolotlCards.ts` (256 different
+  cards, 4-tier rarity scheme; canonical is 5-tier per `generate_card`,
+  `triple_triad_nft/src/main.nr:17-49`). The canonical chain is
+  `scripts/card-database-256.json` → `circuits/card_data/src/lib.nr` →
+  `packages/frontend/src/cards.ts` (verified matching at ids 1 and 256).
+  Anything importing game-logic's databases gets wrong data — duplication +
+  divergence hazard, fits the D1a brain work.
+- **Lane 1 / Lane 5**: mid-game abandoned-claim counter-claim gap (above) is a
+  contract improvement candidate for the post-4.3.1 backlog.
+
 ## Handoff notes for other lanes (from E1)
 - **Lane 2**: `packages/frontend/src/hooks/useGame.ts:433` comment references
   `IDB_TRANSACTION_ERROR_REPORT.md`, now at `docs/history/` — fix the path during B.

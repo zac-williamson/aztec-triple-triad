@@ -1,5 +1,22 @@
 # Future Improvements
 
+## Abandoned-game counter-claim (2026-06-12)
+
+The 5-block dispute window after `claim_abandoned_game`
+(`packages/contracts/triple_triad_game/src/main.nr:491-494`) currently protects
+against exactly one attack: a false abandonment claim against a *finished* game,
+which the accused defeats by running `process_game` inside the window
+(`settle_game` gates on the `game_settled` flag only, `main.nr:761-762`; the
+abandonment settle then fails its `!settled` assert, `main.nr:496-497`).
+
+There is no recourse for a false claim *mid-game*: a counter-claim presenting a
+longer valid move chain is impossible because `claim_abandoned_game_public`
+requires status `active` (`main.nr:385-386`), which the first claim already
+consumed. A fix would allow a counter-claim while status is `abandoned_claimed`
+that supersedes the original iff it presents strictly more valid moves, resetting
+the dispute clock. Until then, the dispute window is a delay, not a remedy, for
+mid-game disputes. See `docs/ARCHITECTURE.md` §8.
+
 ## ~~Backend session staleness (2026-04-15)~~ — RESOLVED 2026-06-12 (Lane 4, item G)
 
 All four recommended fixes landed on `lane/4-backend`:
