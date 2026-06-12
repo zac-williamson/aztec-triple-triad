@@ -1,9 +1,9 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWebSocket } from './useWebSocket';
-import { useProofGeneration } from './useProofGeneration';
-import type { PlayerHandData } from './useProofGeneration';
+import type { ProofStatus } from './useProofGeneration';
 import { useGameStorage, type PersistedGameState } from './useGameStorage';
 import { useGameSession } from './useGameSession';
+import { useGamePlay } from './useGamePlay';
 import { useAztecContext } from '../aztec/AztecContext';
 import { importNotesFromTx, fetchTxEffectData } from '../aztec/noteImporter';
 import { addCards, type StoredCard } from '../aztec/cardStore';
@@ -12,27 +12,17 @@ import { ensureContracts, contractCache } from '../aztec/contracts';
 import { toFr as toFrUtil, toHexString, bytesToFrArray, base64ToFrArray, hexToFr } from '../aztec/fieldUtils';
 import { AZTEC_TX_TIMEOUT, AZTEC_SETTLE_TX_TIMEOUT, CARDS_PER_HAND, TOTAL_MOVES, MOVE_PROOF_WAIT_TIMEOUT, HAND_PROOF_WAIT_TIMEOUT } from '../aztec/gameConstants';
 import { requireWallet, requireAccountAddress } from '../aztec/walletGuards';
-import type { Screen, GameState, Player, Card, HandProofData, MoveProofData, PlaintextNoteData } from '../types';
+import type { Screen, PlaintextNoteData } from '../types';
 
 // Re-export types consumers need
 export type TxStatus = 'idle' | 'preparing' | 'proving' | 'sending' | 'confirmed' | 'error';
-export type ProofStatus = 'idle' | 'generating' | 'ready' | 'error';
+export type { ProofStatus };
 
-// Re-export the on-chain phase machine so consumers and tests keep
-// importing from useGame (the state machine itself lives in useGameSession).
+// Re-export the on-chain phase machine and winner mapping so consumers and
+// tests keep importing from useGame (they live in useGameSession/useGamePlay).
 export { VALID_TRANSITIONS } from './useGameSession';
 export type { OnChainPhase } from './useGameSession';
-
-/**
- * Map game winner to circuit winner_id value.
- * 0=not ended, 1=player1, 2=player2, 3=draw
- */
-export function mapWinnerId(winner: Player | 'draw' | null): number {
-  if (winner === null) return 0;
-  if (winner === 'player1') return 1;
-  if (winner === 'player2') return 2;
-  return 3;
-}
+export { mapWinnerId } from './useGamePlay';
 
 export interface UseGameReturn {
   // Screen routing
@@ -87,23 +77,13 @@ export interface UseGameReturn {
  *   Changes trigger re-renders, which update the UI.
  *
  * **Refs** — values consumed by async closures or that must survive navigation:
- *   cardIdsRef:          Snapshot of card IDs for proof generation closures.
- *   moveProofsRef:       Always-current move proof array (avoids stale closure
- *                        in handleSettle's execute callback).
- *   myHandProofRef,
- *   opponentHandProofRef: Same pattern — latest proof values for settlement.
- *   pendingMovesRef:     Moves queued before hand proofs are ready.
- *   gameStateHistoryRef: Board snapshots indexed by move number, for deferred
- *                        proof generation after hand proofs arrive.
- *   handProofSubmittedRef,
- *   handProofGeneratedRef,
- *   noteImportProcessedRef: Idempotency guards preventing duplicate operations.
- *   moveProofsCompleteRef,
- *   handProofsCompleteRef: Promise resolvers for cross-concern synchronization.
+ *   noteImportProcessedRef: Idempotency guard preventing duplicate note imports.
  *
  * Session-owned refs (settlementInfoRef, onChainPhaseRef,
- * activePhaseResolveRef) are documented in useGameSession.ts and reached
- * through its stable accessor functions.
+ * activePhaseResolveRef) are documented in useGameSession.ts; play-owned
+ * refs (cardIdsRef, moveProofsRef, hand-proof refs, pendingMovesRef,
+ * gameStateHistoryRef, proof-wait resolvers) in useGamePlay.ts. Both are
+ * reached only through their hooks' stable accessor functions.
  *
  * The general rule: if a value is read inside a txManager.execute() callback
  * or needs to survive screen transitions, it's a ref. If the UI renders it,
@@ -121,7 +101,6 @@ export interface UseGameReturn {
 export function useGame(wsUrl: string): UseGameReturn {
   const aztec = useAztecContext();
   const ws = useWebSocket(wsUrl);
-  const proofs = useProofGeneration();
   const storage = useGameStorage();
 
   // --- Screen + game state ---
@@ -132,6 +111,9 @@ export function useGame(wsUrl: string): UseGameReturn {
 
   // --- On-chain session: phase machine, create/join pipeline, settlement info ---
   const session = useGameSession({ ws, screen, cardIds });
+
+  // --- Proof orchestration: hand/move proofs, move queue, board history ---
+  const play = useGamePlay({ ws, cardIds, blindingFactor: session.blindingFactor });
 
   // --- Settlement tx state ---
   const [settleTxStatus, setSettleTxStatus] = useState<TxStatus>('idle');
@@ -147,284 +129,11 @@ export function useGame(wsUrl: string): UseGameReturn {
   const [opponentSettled, setOpponentSettled] = useState(false);
   const [takenCardId, setTakenCardId] = useState<number | null>(null);
 
-  // --- Proof state ---
-  const [myHandProof, setMyHandProof] = useState<HandProofData | null>(null);
-  const [opponentHandProof, setOpponentHandProof] = useState<HandProofData | null>(null);
-  const [collectedMoveProofs, setCollectedMoveProofs] = useState<MoveProofData[]>([]);
-  const [handProofStatus, setHandProofStatus] = useState<ProofStatus>('idle');
-  const [moveProofStatus, setMoveProofStatus] = useState<ProofStatus>('idle');
-
-  // Derived
-  const myCardCommit = myHandProof?.cardCommit ?? null;
-  const opponentCardCommit = opponentHandProof?.cardCommit ?? null;
-  const cardIdsRef = useRef<number[]>([]);
-  const canSettle = myHandProof !== null && opponentHandProof !== null && collectedMoveProofs.length >= TOTAL_MOVES;
-
-  // Ref to always access latest move proofs (avoids stale closure in handleSettle)
-  const moveProofsRef = useRef(collectedMoveProofs);
-  moveProofsRef.current = collectedMoveProofs;
-
   // --- Refs ---
-  // Idempotency guards (kept)
-  const handProofSubmittedRef = useRef(false);
-  const handProofGeneratedRef = useRef(false);
+  // Idempotency guard preventing duplicate note imports
   const noteImportProcessedRef = useRef<string | null>(null);
 
-  // Board state history — indexed by occupied cell count (move number)
-  const gameStateHistoryRef = useRef<Map<number, {
-    board: GameState['board'];
-    scores: [number, number];
-    currentTurn: 'player1' | 'player2';
-  }>>(new Map());
-
-  // Promise-based settlement wait (replaces busy-polling)
-  const moveProofsCompleteRef = useRef<(() => void) | null>(null);
-
-  // Refs for hand proofs (avoids stale closures in handleSettle)
-  const myHandProofRef = useRef(myHandProof);
-  myHandProofRef.current = myHandProof;
-  const opponentHandProofRef = useRef(opponentHandProof);
-  opponentHandProofRef.current = opponentHandProof;
-
-  // Promise-based hand proof wait (same pattern as moveProofsCompleteRef)
-  const handProofsCompleteRef = useRef<(() => void) | null>(null);
-
-  // Queue of moves made before hand proofs were ready
-  const pendingMovesRef = useRef<Array<{
-    card: Card; p1Hand: Card[]; p2Hand: Card[];
-    handIndex: number; row: number; col: number;
-    moveNumber: number;
-  }>>([]);
-
-  const addMoveProof = useCallback((proof: MoveProofData) => {
-    setCollectedMoveProofs(prev => {
-      const isDuplicate = prev.some(
-        p => p.startStateHash === proof.startStateHash && p.endStateHash === proof.endStateHash,
-      );
-      if (isDuplicate) return prev;
-      return [...prev, proof];
-    });
-  }, []);
-
-  const generateHandProofFromState = useCallback(async (
-    ids: number[],
-    opponentGameRandomness: string[],
-  ): Promise<void> => {
-    const blindingFactor = session.blindingFactor;
-    if (!blindingFactor) throw new Error('Cannot generate hand proof: no blinding factor');
-    cardIdsRef.current = ids;
-    setHandProofStatus('generating');
-
-    try {
-      const { computeCardCommitPoseidon2, computePlayerStateHash } = await import('../aztec/proofWorker');
-      const cardCommitHash = await computeCardCommitPoseidon2(ids, blindingFactor);
-      const opponentPlayerStateHash = await computePlayerStateHash(opponentGameRandomness);
-      const proof = await proofs.generateHandProof(
-        ids, blindingFactor, cardCommitHash,
-        opponentGameRandomness, opponentPlayerStateHash,
-      );
-      setMyHandProof(proof);
-      setHandProofStatus('ready');
-    } catch (err) {
-      setHandProofStatus('error');
-      throw err;
-    }
-  }, [session.blindingFactor, proofs.generateHandProof]);
-
-  const generateMoveProofForPlacement = useCallback(
-    async (
-      cardId: number,
-      row: number,
-      col: number,
-      playerNumber: 1 | 2,
-      boardBefore: GameState['board'],
-      boardAfter: GameState['board'],
-      scoresBefore: [number, number],
-      scoresAfter: [number, number],
-      gameEnded: boolean,
-      winnerId: number,
-    ): Promise<MoveProofData> => {
-      const blindingFactor = session.blindingFactor;
-      if (!myHandProof || !opponentHandProof) throw new Error('Cannot generate move proof: hand proofs not ready');
-      if (!myCardCommit || !opponentCardCommit) throw new Error('Cannot generate move proof: card commits missing');
-      if (!blindingFactor) throw new Error('Cannot generate move proof: no blinding factor');
-
-      const commit1 = playerNumber === 1 ? myCardCommit : opponentCardCommit;
-      const commit2 = playerNumber === 2 ? myCardCommit : opponentCardCommit;
-
-      const handData: PlayerHandData = {
-        cardIds: cardIdsRef.current,
-        blindingFactor,
-      };
-
-      setMoveProofStatus('generating');
-      try {
-        const proof = await proofs.generateMoveProof(
-          cardId, row, col, playerNumber,
-          boardBefore, boardAfter,
-          scoresBefore, scoresAfter,
-          commit1, commit2,
-          gameEnded, winnerId,
-          handData,
-        );
-        addMoveProof(proof);
-        setMoveProofStatus('ready');
-        return proof;
-      } catch (err) {
-        setMoveProofStatus('error');
-        throw err;
-      }
-    },
-    [myHandProof, opponentHandProof, myCardCommit, opponentCardCommit, session.blindingFactor, proofs.generateMoveProof, addMoveProof],
-  );
-
   // --- Effects ---
-
-  // Populate board state history from WS game state
-  useEffect(() => {
-    if (!ws.gameState) return;
-    let occupied = 0;
-    for (const row of ws.gameState.board) {
-      for (const cell of row) {
-        if (cell.card !== null) occupied++;
-      }
-    }
-    if (!gameStateHistoryRef.current.has(occupied)) {
-      gameStateHistoryRef.current.set(occupied, {
-        board: structuredClone(ws.gameState.board),
-        scores: [ws.gameState.player1Score, ws.gameState.player2Score],
-        currentTurn: ws.gameState.currentTurn,
-      });
-    }
-  }, [ws.gameState]);
-
-  // Auto-submit hand proof when generated
-  useEffect(() => {
-    if (!myHandProof || !ws.gameId || handProofSubmittedRef.current) return;
-    handProofSubmittedRef.current = true;
-    ws.submitHandProof(ws.gameId, myHandProof);
-  }, [myHandProof, ws.gameId, ws.submitHandProof]);
-
-  // Receive opponent hand proof from WebSocket
-  useEffect(() => {
-    if (!ws.opponentHandProof) return;
-    setOpponentHandProof(ws.opponentHandProof);
-  }, [ws.opponentHandProof]);
-
-  // Receive opponent move proof from WebSocket
-  useEffect(() => {
-    if (!ws.lastMoveProof) return;
-    addMoveProof(ws.lastMoveProof.moveProof);
-  }, [ws.lastMoveProof, addMoveProof]);
-
-  // Auto-generate hand proof when blinding factor + opponent randomness are available
-  useEffect(() => {
-    if (handProofGeneratedRef.current) return;
-
-    // Diagnostic logging — shows which preconditions are blocking proof generation
-    if (!ws.gameId || !ws.gameState) {
-      console.log('[useGame] Hand proof effect: waiting for gameId/gameState');
-      return;
-    }
-    if (ws.gameState.status !== 'playing' && ws.gameState.status !== 'finished') {
-      console.log('[useGame] Hand proof effect: game status is', ws.gameState.status, '(need playing/finished)');
-      return;
-    }
-    if (cardIds.length !== 5) {
-      console.log('[useGame] Hand proof effect: cardIds.length =', cardIds.length, '(need 5)');
-      return;
-    }
-    if (!session.blindingFactor) {
-      console.log('[useGame] Hand proof effect: blindingFactor not set yet');
-      return;
-    }
-    if (!ws.opponentGameRandomness || ws.opponentGameRandomness.length !== 6) {
-      console.log('[useGame] Hand proof effect: opponentGameRandomness not received yet (have:', ws.opponentGameRandomness?.length ?? 0, 'need 6)');
-      return;
-    }
-
-    console.log('[useGame] Hand proof effect: all preconditions met — generating proof');
-    handProofGeneratedRef.current = true;
-    generateHandProofFromState(cardIds, ws.opponentGameRandomness).catch(err => {
-      console.error('[useGame] Hand proof generation failed:', err);
-      handProofGeneratedRef.current = false;
-    });
-  }, [ws.gameId, ws.gameState, cardIds, session.blindingFactor, ws.opponentGameRandomness, generateHandProofFromState]);
-
-  // Resolve hand proof wait promise when both proofs are available
-  useEffect(() => {
-    if (myHandProof && opponentHandProof && handProofsCompleteRef.current) {
-      console.log('[useGame] Both hand proofs ready — resolving settlement wait');
-      handProofsCompleteRef.current();
-      handProofsCompleteRef.current = null;
-    }
-  }, [myHandProof, opponentHandProof]);
-
-  // Process queued moves once both hand proofs are available (bug #1 fix: use history snapshots)
-  useEffect(() => {
-    if (!myHandProof || !opponentHandProof) return;
-    if (pendingMovesRef.current.length === 0 || !ws.gameId || !ws.playerNumber) return;
-
-    const pending = pendingMovesRef.current.splice(0);
-    console.log(`[useGame] Processing ${pending.length} queued move(s)`);
-
-    (async () => {
-      for (const move of pending) {
-        try {
-          // Look up the correct board state at dequeue time (bug #1 fix)
-          const snapshot = gameStateHistoryRef.current.get(move.moveNumber);
-          if (!snapshot) {
-            console.warn(`[useGame] No board snapshot for move ${move.moveNumber}, skipping`);
-            continue;
-          }
-
-          // Apply the move using the pure game logic function
-          const { placeCard: applyMove } = await import('@axolotl-arena/game-logic');
-          const myPlayer = ws.playerNumber === 1 ? 'player1' : 'player2';
-
-          // Use hand snapshots captured at queue time (not the current
-          // ws.gameState hands, which may have cards set to null since then).
-          const syntheticState: GameState = {
-            board: snapshot.board,
-            player1Hand: move.p1Hand,
-            player2Hand: move.p2Hand,
-            currentTurn: snapshot.currentTurn,
-            player1Score: snapshot.scores[0],
-            player2Score: snapshot.scores[1],
-            status: 'playing',
-            winner: null,
-          };
-
-          const result = applyMove(syntheticState, myPlayer, move.handIndex, move.row, move.col);
-          const boardAfter = result.newState.board;
-          const scoresBefore: [number, number] = snapshot.scores;
-          const scoresAfter: [number, number] = [result.newState.player1Score, result.newState.player2Score];
-          const gameEnded = result.newState.status === 'finished';
-          const winnerId = mapWinnerId(result.newState.winner);
-
-          const moveProof = await generateMoveProofForPlacement(
-            move.card.id, move.row, move.col, ws.playerNumber!,
-            snapshot.board, boardAfter,
-            scoresBefore, scoresAfter,
-            gameEnded, winnerId,
-          );
-          if (moveProof && ws.gameId) {
-            ws.submitMoveProof(ws.gameId, move.handIndex, move.row, move.col, moveProof, move.moveNumber);
-          }
-        } catch (err) {
-          console.warn('[useGame] Deferred move proof failed:', err);
-        }
-      }
-    })();
-  }, [myHandProof, opponentHandProof]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Resolve move proofs promise when all 9 arrive (bug #4 fix)
-  useEffect(() => {
-    if (collectedMoveProofs.length >= TOTAL_MOVES && moveProofsCompleteRef.current) {
-      moveProofsCompleteRef.current();
-      moveProofsCompleteRef.current = null;
-    }
-  }, [collectedMoveProofs.length]);
 
   // Persist game state to localStorage
   useEffect(() => {
@@ -438,9 +147,9 @@ export function useGame(wsUrl: string): UseGameReturn {
       savedAt: Date.now(),
     };
     if (session.onChainGameId) persisted.onChainGameId = session.onChainGameId;
-    if (myHandProof) persisted.myHandProof = myHandProof;
-    if (opponentHandProof) persisted.opponentHandProof = opponentHandProof;
-    if (collectedMoveProofs.length > 0) persisted.collectedMoveProofs = collectedMoveProofs;
+    if (play.myHandProof) persisted.myHandProof = play.myHandProof;
+    if (play.opponentHandProof) persisted.opponentHandProof = play.opponentHandProof;
+    if (play.collectedMoveProofs.length > 0) persisted.collectedMoveProofs = play.collectedMoveProofs;
     if (ws.opponentAztecAddress) persisted.opponentAztecAddress = ws.opponentAztecAddress;
     if (ws.opponentOnChainGameId) persisted.opponentOnChainGameId = ws.opponentOnChainGameId;
     if (session.gameRandomness) persisted.gameRandomness = session.gameRandomness;
@@ -452,7 +161,7 @@ export function useGame(wsUrl: string): UseGameReturn {
   }, [
     ws.gameId, ws.playerNumber, cardIds, screen,
     session.onChainGameId, session.gameRandomness, session.blindingFactor,
-    myHandProof, opponentHandProof, collectedMoveProofs,
+    play.myHandProof, play.opponentHandProof, play.collectedMoveProofs,
     ws.opponentAztecAddress, ws.opponentOnChainGameId, ws.opponentGameRandomness,
     storage,
   ]);
@@ -482,30 +191,19 @@ export function useGame(wsUrl: string): UseGameReturn {
   // Reset state on returning to menu
   useEffect(() => {
     if (screen === 'main-menu') {
-      handProofSubmittedRef.current = false;
-      pendingMovesRef.current = [];
       noteImportProcessedRef.current = null;
-      handProofGeneratedRef.current = false;
-      gameStateHistoryRef.current = new Map();
-      moveProofsCompleteRef.current = null;
-      handProofsCompleteRef.current = null;
       // Session state/refs (onChainPhaseRef deliberately survives — see
       // useGameSession.resetForMenu)
       session.resetForMenu();
+      // Proof state, move queue, board history, proof-wait resolvers
+      play.resetForMenu();
       setSettleTxStatus('idle');
       setSettleTxHash(null);
       setSettleError(null);
-      setMyHandProof(null);
-      setOpponentHandProof(null);
-      setCollectedMoveProofs([]);
-      setHandProofStatus('idle');
-      setMoveProofStatus('idle');
       setOpponentSettled(false);
       setTakenCardId(null);
       opponentSettleTxIdRef.current = null;
       opponentSettleResolveRef.current = null;
-      cardIdsRef.current = [];
-      proofs.reset();
     }
   }, [screen]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -644,17 +342,14 @@ export function useGame(wsUrl: string): UseGameReturn {
     const saved = storage.loadGame();
     if (saved) {
       setCardIds(saved.selectedCardIds);
-      if (saved.opponentHandProof) setOpponentHandProof(saved.opponentHandProof);
-      if (saved.collectedMoveProofs) {
-        for (const mp of saved.collectedMoveProofs) addMoveProof(mp);
-      }
+      play.restoreFromSave(saved);
       session.restoreFromSave(saved);
       ws.queueMatchmaking(saved.selectedCardIds);
       setScreen('finding-opponent');
       return;
     }
     setScreen('card-selector');
-  }, [storage, ws, addMoveProof, session.restoreFromSave]);
+  }, [storage, ws, play.restoreFromSave, session.restoreFromSave]);
 
   const handleCardPacks = useCallback(() => {
     setScreen('card-packs');
@@ -691,58 +386,6 @@ export function useGame(wsUrl: string): UseGameReturn {
     aztec.refreshTokenBalance().catch(() => {});
     setScreen('card-packs');
   }, [aztec]);
-
-  const handlePlaceCard = useCallback(async (handIndex: number, row: number, col: number) => {
-    if (!ws.gameState || !ws.playerNumber || !ws.gameId) return;
-
-    const myHand = ws.playerNumber === 1 ? ws.gameState.player1Hand : ws.gameState.player2Hand;
-    const card = myHand[handIndex];
-
-    // Count occupied cells for move number
-    let moveNumber = 0;
-    for (const r of ws.gameState.board) {
-      for (const cell of r) {
-        if (cell.card !== null) moveNumber++;
-      }
-    }
-
-    // Get the board snapshot at the current move number (from history)
-    const boardBefore = gameStateHistoryRef.current.get(moveNumber)?.board ?? ws.gameState.board;
-
-    ws.placeCard(handIndex, row, col);
-
-    if (aztec.isAvailable && card) {
-      try {
-        const { placeCard: applyMove } = await import('@axolotl-arena/game-logic');
-        const myPlayer = ws.playerNumber === 1 ? 'player1' : 'player2';
-        const result = applyMove(ws.gameState, myPlayer, handIndex, row, col);
-        const boardAfter = result.newState.board;
-        const scoresBefore: [number, number] = [ws.gameState.player1Score, ws.gameState.player2Score];
-        const scoresAfter: [number, number] = [result.newState.player1Score, result.newState.player2Score];
-        const gameEnded = result.newState.status === 'finished';
-        const winnerId = mapWinnerId(result.newState.winner);
-
-        if (myHandProof && opponentHandProof) {
-          const moveProof = await generateMoveProofForPlacement(
-            card.id, row, col, ws.playerNumber,
-            boardBefore, boardAfter,
-            scoresBefore, scoresAfter,
-            gameEnded, winnerId,
-          );
-          ws.submitMoveProof(ws.gameId, handIndex, row, col, moveProof, moveNumber);
-        } else {
-          pendingMovesRef.current.push({
-            card,
-            p1Hand: [...ws.gameState.player1Hand],
-            p2Hand: [...ws.gameState.player2Hand],
-            handIndex, row, col, moveNumber,
-          });
-        }
-      } catch (err) {
-        console.warn('[useGame] Move proof generation failed:', err);
-      }
-    }
-  }, [ws, aztec.isAvailable, myHandProof, opponentHandProof, generateMoveProofForPlacement]);
 
   const handleSettle = useCallback(async (selectedCardId: number) => {
     if (!ws.gameId) throw new Error('No game ID for settlement');
@@ -787,26 +430,16 @@ export function useGame(wsUrl: string): UseGameReturn {
         session.transitionPhase('settling');
 
         // ── Wait for hand proofs ───────────────────────────────────────
-        if (!myHandProofRef.current || !opponentHandProofRef.current) {
+        if (!play.getMyHandProof() || !play.getOpponentHandProof()) {
           console.log('[useGame] Hand proofs not ready yet — waiting (my:',
-            !!myHandProofRef.current, 'opponent:', !!opponentHandProofRef.current, ')');
+            !!play.getMyHandProof(), 'opponent:', !!play.getOpponentHandProof(), ')');
           setPhase('queued');
-          await new Promise<void>((resolve, reject) => {
-            if (myHandProofRef.current && opponentHandProofRef.current) { resolve(); return; }
-            handProofsCompleteRef.current = resolve;
-            setTimeout(() => {
-              handProofsCompleteRef.current = null;
-              reject(new Error(
-                `Timed out waiting for hand proofs (${HAND_PROOF_WAIT_TIMEOUT / 1000}s). ` +
-                `my: ${!!myHandProofRef.current}, opponent: ${!!opponentHandProofRef.current}`,
-              ));
-            }, HAND_PROOF_WAIT_TIMEOUT);
-          });
+          await play.waitForHandProofs(HAND_PROOF_WAIT_TIMEOUT);
           console.log('[useGame] Hand proofs now ready — proceeding with settlement');
         }
 
-        const myProof = myHandProofRef.current;
-        const oppProof = opponentHandProofRef.current;
+        const myProof = play.getMyHandProof();
+        const oppProof = play.getOpponentHandProof();
         if (!myProof || !oppProof) throw new Error('Hand proofs not ready after wait');
 
         // ── Read pipeline-dependent values from persistent session ref ──
@@ -818,16 +451,7 @@ export function useGame(wsUrl: string): UseGameReturn {
         const liveOnChainGameId = sInfo.onChainGameId;
 
         // ── Wait for all move proofs ───────────────────────────────────
-        if (moveProofsRef.current.length < TOTAL_MOVES) {
-          await new Promise<void>((resolve, reject) => {
-            if (moveProofsRef.current.length >= TOTAL_MOVES) { resolve(); return; }
-            moveProofsCompleteRef.current = resolve;
-            setTimeout(() => {
-              moveProofsCompleteRef.current = null;
-              reject(new Error(`Timed out waiting for move proofs: have ${moveProofsRef.current.length}/${TOTAL_MOVES}`));
-            }, MOVE_PROOF_WAIT_TIMEOUT);
-          });
-        }
+        await play.waitForMoveProofs(MOVE_PROOF_WAIT_TIMEOUT);
 
         // ── All waits complete — backfill from latest ws state ────
         // (race: OPPONENT_AZTEC_INFO / GAME_OVER arrived before the pipeline
@@ -862,7 +486,7 @@ export function useGame(wsUrl: string): UseGameReturn {
         // Uses captured function ref that binds to the game's WebSocket send().
         capturedNotifySettle(capturedGameId, selectedCardId);
 
-        const capturedMoveProofs = [...moveProofsRef.current];
+        const capturedMoveProofs = play.getMoveProofs();
 
         setPhase('proving');
 
@@ -1020,7 +644,9 @@ export function useGame(wsUrl: string): UseGameReturn {
   }, [ws.gameId, ws.playerNumber,
       aztec.wallet, aztec.accountAddress, importNotes, ws.relayNoteData, ws.notifySettleStarted,
       session.getPhase, session.waitForActivePhase, session.transitionPhase,
-      session.getSettlementInfo, session.backfillSettlementInfoFromWs, session.clearSettlementInfo]);
+      session.getSettlementInfo, session.backfillSettlementInfoFromWs, session.clearSettlementInfo,
+      play.getMyHandProof, play.getOpponentHandProof, play.waitForHandProofs,
+      play.waitForMoveProofs, play.getMoveProofs]);
 
   // canGoBack: winner can leave after picking a card (settlement runs in background via txManager).
   // Winner can leave once settlement started (txManager runs in background).
@@ -1059,7 +685,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     // Backfill from latest ws state (same init race as handleSettle)
     const sInfo = session.backfillSettlementInfoFromWs();
     const capturedPlayerNumber = ws.playerNumber;
-    const validMoveProofs = [...moveProofsRef.current];
+    const validMoveProofs = play.getMoveProofs();
 
     if (!sInfo || !sInfo.onChainGameId || !sInfo.gameRandomness.length || !sInfo.opponentAddress) {
       console.error('[useGame] Cannot claim abandoned game: missing settlement info', { sInfo, wsOpponentAddr: ws.opponentAztecAddress });
@@ -1168,8 +794,8 @@ export function useGame(wsUrl: string): UseGameReturn {
           }
 
           // Build hand proof data
-          const myProof = myHandProofRef.current;
-          const oppProof = opponentHandProofRef.current;
+          const myProof = play.getMyHandProof();
+          const oppProof = play.getOpponentHandProof();
           if (!myProof || !oppProof) throw new Error('Hand proofs not ready');
           const handProof1 = capturedPlayerNumber === 1 ? myProof : oppProof;
           const handProof2 = capturedPlayerNumber === 2 ? myProof : oppProof;
@@ -1288,25 +914,26 @@ export function useGame(wsUrl: string): UseGameReturn {
       session.transitionPhase('idle');
     }
   }, [ws, aztec.wallet, aztec.accountAddress, importNotes,
-      session.transitionPhase, session.backfillSettlementInfoFromWs]);
+      session.transitionPhase, session.backfillSettlementInfoFromWs,
+      play.getMoveProofs, play.getMyHandProof, play.getOpponentHandProof]);
 
   // Auto-trigger abandoned game flow when opponent disconnects
   useEffect(() => {
     if (!ws.opponentDisconnected) return;
     if (abandonedClaimStartedRef.current) return;
     if (session.getPhase() !== 'active' && session.getPhase() !== 'awaiting_join') return;
-    if (moveProofsRef.current.length === 0) return;
+    if (play.getMoveProofs().length === 0) return;
     console.log('[useGame] Opponent disconnected with moves played, starting abandoned game flow...');
     handleAbandonedGame();
-  }, [ws.opponentDisconnected, handleAbandonedGame, session.getPhase]);
+  }, [ws.opponentDisconnected, handleAbandonedGame, session.getPhase, play.getMoveProofs]);
 
   return {
     screen, setScreen,
     ws,
     onChainGameId: session.onChainGameId,
-    handProofStatus,
-    moveProofStatus,
-    canSettle,
+    handProofStatus: play.handProofStatus,
+    moveProofStatus: play.moveProofStatus,
+    canSettle: play.canSettle,
     settleTxStatus,
     onChainError: session.onChainError,
     cardIds, packResult, hasGameInProgress,
@@ -1314,6 +941,6 @@ export function useGame(wsUrl: string): UseGameReturn {
     isClaimingAbandoned, abandonedDisputeCountdown, canGoBack,
     handlePlay, handleCardPacks, handleHandSelected,
     handleCancelMatchmaking, handlePackOpened, handlePackOpenComplete,
-    handlePlaceCard, handleSettle, handleBackToMenu,
+    handlePlaceCard: play.handlePlaceCard, handleSettle, handleBackToMenu,
   };
 }
