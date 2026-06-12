@@ -41,7 +41,7 @@ export const TEXTURES = {
   noiseBig: '/textures/Noise_Big.png',
 
   // Card textures
-  cardBack: '/cards/card_back.png',
+  cardBack: '/cards/card_back.webp',
 } as const;
 
 export const MODELS = {

@@ -58,6 +58,33 @@ sane post-F1.
 lanes merge, coordinated with Zac. Alternative if force-push is unacceptable:
 fresh-start repo or keep originals in a GitHub Release.
 
+## ASSUMPTIONS (discovered during execution)
+
+- **F1 touches seven frontend files, not two.** The brief names `Card.tsx` +
+  `Card3D.tsx`, but `/cards/*.png` references also live in `CardSelector.tsx`,
+  `PackOpening.tsx`, `tutorial/tutorialCards.ts`, `assets/modelManifest.ts`
+  (the `cardBack` texture path). Switching only the named two would 404 the
+  rest once PNGs are deleted, so the same mechanical switch was applied to all
+  — read as the intent of the cross-lane exception in MASTER_PLAN. Lane 2's
+  rebase surface grows by file count, not by kind.
+- **`card_back.png` was outside the compression script's coverage** (lives at
+  `cards/` root, script handled only `final/` + `board/`). Added a third
+  variant to the script (400×567 q80, same aspect) rather than a one-off
+  conversion, so the pipeline stays reproducible.
+- **`SwampScene.tsx` lines 82–83 were dead code**: `myCardImg`/`oppCardImg`
+  referenced raw root-level `/cards/card-1.png`/`card-2.png` but were never
+  read. Removed the two lines instead of switching them. (`myName`/`oppName`
+  right below are also dead but reference no assets — left for Lane 2.)
+- **Raw root `cards/card-N.png` originals (256 files, 453MB) deleted too.**
+  Only referenced by the dead SwampScene lines; the brief's 40–80MB target is
+  unreachable keeping them. Full-res originals survive in git history until
+  F1b decides their fate (GitHub Release option noted there).
+- **Kept**: the 50 `card-*.prompt.txt` generation-provenance files (tiny, no
+  code refs) and `/ui-elements/card-pack.png` (UI element, not card art).
+- **`generate-card-art.ts` still emits PNG by design** — regeneration flow is
+  generate PNG → run `compress-card-assets.ts` → commit only the webp.
+  `.gitignore` now blocks accidental PNG commits under `public/cards/`.
+
 ## Cross-lane contracts
 - **Provide:** .webp switch commit (→2 rebases), CI signal (→all), Vercel deploy
   (→5 smoke).
