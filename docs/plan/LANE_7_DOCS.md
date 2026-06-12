@@ -63,3 +63,31 @@ funding).
   the front page must read like a reference implementation.
 - Every claim in ARCHITECTURE.md gets a file:line anchor. No drift: doc PRs that
   reference moved code get blocked by the owning lane's review.
+
+## ASSUMPTIONS (recorded during E1, 2026-06-12)
+- **Version pin reality**: MASTER_PLAN says the repo pins `v4.2.0-nightly.20260323`
+  everywhere. Actual manifests pin `4.2.0-aztecnr-rc.2` (all npm `@aztec/*` deps AND
+  the aztec-nr git tags in every Nargo.toml); the nightly string appears only as the
+  CLI/sandbox installer tag (README, start-sandbox era). Assumed both name the same
+  release and documented them in CLAUDE.md as one matched set. **Lane 1 should
+  confirm during A1/A2.**
+- **ARCHITECTURE.md link deferred**: the E1 brief says CLAUDE.md links
+  ARCHITECTURE.md, which doesn't exist until E2. A dead link is worse; the link gets
+  added in the E2 commit (same lane, same branch).
+- **Untracked originals not deleted**: `architecture_report.md.m`, `test_report.md.m`,
+  `test-batch-deploy-mint.mjs` were committed into `docs/history/` byte-identical
+  (cmp-verified) from the main checkout; the untracked originals still sit at the
+  main-checkout root — another worktree's working dir, not Lane 7's to clean. Safe
+  to delete after this branch merges.
+- **Kept at root deliberately** (not in the E1 move list, read as current material):
+  `GAME_LIFECYCLE_SPEC.md`, `TUTORIAL_SCRIPT.md`, `FUTURE_IMPROVEMENTS.md`.
+
+## Handoff notes for other lanes (from E1)
+- **Lane 2**: `packages/frontend/src/hooks/useGame.ts:433` comment references
+  `IDB_TRANSACTION_ERROR_REPORT.md`, now at `docs/history/` — fix the path during B.
+  SponsoredFPC is still used in `src/aztec/contracts.ts` and `hooks/useCardPacks.ts`
+  (+ its test) despite the ban — CLAUDE.md flags them do-not-copy; removal lands
+  with A2/I.
+- **Lane 6 (F2)**: `test-results/.last-run.json` is tracked Playwright debris.
+- **E2.5 self-note**: README's "copy arena_token artifact" step is redundant —
+  `npm run copy-contracts` already includes all three artifacts.
