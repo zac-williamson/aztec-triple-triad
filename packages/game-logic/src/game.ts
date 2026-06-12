@@ -33,7 +33,13 @@ export function createGame(player1Hand: Card[], player2Hand: Card[]): GameState 
   };
 }
 
-const DIRECTIONS: { dr: number; dc: number; attackerRank: keyof Card['ranks']; defenderRank: keyof Card['ranks'] }[] = [
+/**
+ * Adjacency geometry shared by capture resolution and the bot's board
+ * evaluation: for each direction from a placed card, which of its ranks faces
+ * that way (attackerRank) and which rank of the neighbor faces back
+ * (defenderRank).
+ */
+export const DIRECTIONS: { dr: number; dc: number; attackerRank: keyof Card['ranks']; defenderRank: keyof Card['ranks'] }[] = [
   { dr: -1, dc: 0, attackerRank: 'top', defenderRank: 'bottom' },
   { dr: 1, dc: 0, attackerRank: 'bottom', defenderRank: 'top' },
   { dr: 0, dc: -1, attackerRank: 'left', defenderRank: 'right' },
