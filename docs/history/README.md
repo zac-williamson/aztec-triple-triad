@@ -24,6 +24,7 @@ workarounds that still shape the code.
 |------|------------|
 | [FIX_SPEC.md](FIX_SPEC.md) | Gap analysis between an early implementation and the original build brief |
 | [FIX_SPEC_V5.md](FIX_SPEC_V5.md) | Spec for the in-browser proof generation + on-chain settlement arc |
+| [GAME_LIFECYCLE_SPEC.md](GAME_LIFECYCLE_SPEC.md) | Design-era lifecycle spec (escrow/`prepare_for_game` flow, caller-supplied `game_id`). The implementation diverged: see [docs/ARCHITECTURE.md](../ARCHITECTURE.md) for what was actually built |
 | [PROGRESS.json](PROGRESS.json) … [PROGRESS_V7.json](PROGRESS_V7.json) | Milestone trackers from the original agent-orchestrated build (7 generations) |
 | [BLOCKERS.md](BLOCKERS.md) | Running blocker log from the same era |
 
