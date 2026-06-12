@@ -55,6 +55,15 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   recorded; GAME_LIFECYCLE_SPEC superseded into history. Lane 7 parked on
   standby (frontend sections ← lane-2 B; E2.5 ← A3).
 
+- 18:1x — **lane-3 D1a MERGED** (`1afb48e`; 103/103 verified). Bot brain
+  simulates via the real rules engine (no duplicated capture logic), seeded
+  mulberry32 determinism, D2 belief-state contract documented + degradation
+  tested. Also purged committed coverage/ debris. `chooseBotMove` now available
+  to lane-2 (D1b) and playtest (campaign policy) on their next rebase.
+  Lane-3 dispatched onto card-db consolidation (lane-7's duplication finding).
+  Merge-station note: had to discard my own dirty tracked coverage/ files first.
+- lane-7 confirmed standby at testnet HEAD.
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -88,7 +97,7 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 |------|-------------|--------------|-------|
 | lane-1-chain | restarted fresh post-interruption | A1 | prior WIP uncommitted in worktree |
 | lane-2-frontend | — | B | |
-| lane-3-game-ai | — | D1a | |
+| lane-3-game-ai | done → merged 1afb48e | card-db consolidation | D2 gated on A2 + Zac scope decision |
 | lane-4-backend | done → merged bc50650 | QA-F3 (room release) | D2-hook + F3 gated |
 | lane-5-qa | done → merged 826e0d0 | standby + utility annotation | acceptance duty when playtest Phase 1 lands |
 | lane-6-assets-infra | — | F1 | |
