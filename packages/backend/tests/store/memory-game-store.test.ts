@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { MemoryGameStore } from '../../src/store/MemoryGameStore.js';
+import { SESSION_TTL_MS } from '../../src/store/GameStore.js';
 import type { StoredGameRoom, SessionData, QueueEntryData } from '../../src/store/GameStore.js';
 
 function makeRoom(overrides: Partial<StoredGameRoom> = {}): StoredGameRoom {
@@ -148,6 +149,72 @@ describe('MemoryGameStore', () => {
       await store.setSessionTokenByPlayer('p1', 'tok');
       await store.deleteSessionTokenByPlayer('p1');
       expect(await store.getSessionTokenByPlayer('p1')).toBeNull();
+    });
+  });
+
+  // --- Session TTL (parity with Redis SESSION_TTL_S) ---
+
+  describe('session TTL', () => {
+    it('expires a session whose lastSeen exceeds the default 2h TTL, including its reverse mapping', async () => {
+      await store.setSession('tok', { playerId: 'p1', createdAt: 0, lastSeen: Date.now() - (SESSION_TTL_MS + 60_000) });
+      await store.setSessionTokenByPlayer('p1', 'tok');
+      expect(await store.getSession('tok')).toBeNull();
+      expect(await store.getSessionTokenByPlayer('p1')).toBeNull();
+    });
+
+    it('keeps a session whose lastSeen is within the TTL', async () => {
+      const session: SessionData = { playerId: 'p1', createdAt: Date.now(), lastSeen: Date.now() - (SESSION_TTL_MS - 60_000) };
+      await store.setSession('tok', session);
+      expect(await store.getSession('tok')).toEqual(session);
+    });
+
+    it('honours a custom sessionTtlMs option', async () => {
+      const shortStore = new MemoryGameStore({ sessionTtlMs: 1000 });
+      await shortStore.setSession('tok', { playerId: 'p1', createdAt: 0, lastSeen: Date.now() - 5000 });
+      expect(await shortStore.getSession('tok')).toBeNull();
+    });
+
+    it('never expires sessions when sessionTtlMs is Infinity', async () => {
+      const eternalStore = new MemoryGameStore({ sessionTtlMs: Infinity });
+      const session: SessionData = { playerId: 'p1', createdAt: 0, lastSeen: Date.now() - 25 * 60 * 60 * 1000 };
+      await eternalStore.setSession('tok', session);
+      expect(await eternalStore.getSession('tok')).toEqual(session);
+    });
+  });
+
+  // --- Stale session cleanup ---
+
+  describe('cleanupStaleSessions', () => {
+    it('removes sessions idle beyond staleMs along with their reverse mappings', async () => {
+      // Infinite lazy TTL so assertions below observe what the sweep did,
+      // not what getSession expired on read.
+      const sweepStore = new MemoryGameStore({ sessionTtlMs: Infinity });
+      await sweepStore.setSession('tok-old', { playerId: 'p-old', createdAt: 0, lastSeen: Date.now() - 3 * 60 * 60 * 1000 });
+      await sweepStore.setSessionTokenByPlayer('p-old', 'tok-old');
+      await sweepStore.setSession('tok-new', { playerId: 'p-new', createdAt: Date.now(), lastSeen: Date.now() });
+      await sweepStore.setSessionTokenByPlayer('p-new', 'tok-new');
+
+      expect(await sweepStore.cleanupStaleSessions(SESSION_TTL_MS)).toBe(1);
+      expect(await sweepStore.getSession('tok-old')).toBeNull();
+      expect(await sweepStore.getSessionTokenByPlayer('p-old')).toBeNull();
+      expect(await sweepStore.getSession('tok-new')).not.toBeNull();
+      expect(await sweepStore.getSessionTokenByPlayer('p-new')).toBe('tok-new');
+    });
+
+    it('returns 0 when no sessions are stale', async () => {
+      await store.setSession('tok', { playerId: 'p1', createdAt: Date.now(), lastSeen: Date.now() });
+      expect(await store.cleanupStaleSessions(SESSION_TTL_MS)).toBe(0);
+      expect(await store.getSession('tok')).not.toBeNull();
+    });
+
+    it('leaves a reverse mapping alone if it points at a different (live) token', async () => {
+      const sweepStore = new MemoryGameStore({ sessionTtlMs: Infinity });
+      await sweepStore.setSession('tok-old', { playerId: 'p1', createdAt: 0, lastSeen: Date.now() - 3 * 60 * 60 * 1000 });
+      await sweepStore.setSessionTokenByPlayer('p1', 'tok-current');
+
+      expect(await sweepStore.cleanupStaleSessions(SESSION_TTL_MS)).toBe(1);
+      expect(await sweepStore.getSession('tok-old')).toBeNull();
+      expect(await sweepStore.getSessionTokenByPlayer('p1')).toBe('tok-current');
     });
   });
 

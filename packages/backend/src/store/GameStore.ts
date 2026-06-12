@@ -2,6 +2,14 @@ import type { GameState, Player } from '@axolotl-arena/game-logic';
 import type { OnChainGameStatus, TxStatus } from '../types.js';
 
 /**
+ * How long a session may sit idle (no create/RESUME/PING refresh) before it
+ * expires. Single source of truth for both stores: Redis enforces it as a key
+ * TTL, MemoryGameStore enforces it lazily on read plus via the periodic
+ * cleanupStaleSessions sweep.
+ */
+export const SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+/**
  * Serializable game room — everything except the transient `processing` lock.
  */
 export interface StoredGameRoom {
@@ -90,6 +98,12 @@ export interface GameStore {
 
   // --- Cleanup ---
   cleanupStaleGames(timeoutMs: number): Promise<number>;
+  /**
+   * Remove sessions whose lastSeen is older than staleMs, along with each
+   * removed session's player→token reverse mapping (only when that mapping
+   * still points at the removed token). Returns the number of sessions removed.
+   */
+  cleanupStaleSessions(staleMs: number): Promise<number>;
 
   // --- Lifecycle ---
   close(): Promise<void>;
