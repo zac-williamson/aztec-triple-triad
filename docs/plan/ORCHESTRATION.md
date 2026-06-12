@@ -44,7 +44,18 @@ Every prompt uses this skeleton (lane-specific parts in the table):
 > orchestrator files, SponsoredFPC examples); MASTER_PLAN.md overrides it.
 > Work ONLY within your lane's file ownership (see MASTER_PLAN §Lanes). Commit to
 > your lane branch in small conventional-message increments. NEVER push. NEVER
-> merge to testnet — the orchestrator does that. Begin with **{FIRST_ITEM}**.
+> merge to testnet — the orchestrator does that.
+> **Quality bar (binding — every item is checked at the merge gate):**
+> (1) NO fallbacks, retries, or defensive recovery around flaky or unexplained
+> behavior — root-cause the flake and fix it, or stop with `STATUS: blocked` plus
+> your diagnosis. Masking a flake is a merge-blocker. (2) No leaky abstractions:
+> callers must never need to know your module's internals; if your interface forces
+> that, redesign the interface. (3) Every behavior change ships with a test that
+> fails without it. (4) Update every document your change invalidates in the same
+> commit. (5) Search for an existing helper before writing a new one — duplication
+> is a merge-blocker. (6) Write down every assumption or hidden requirement you
+> discover (add an ASSUMPTIONS section to your lane brief) — implicit knowledge is
+> a defect. Begin with **{FIRST_ITEM}**.
 > Done means: **{DONE}**. Protocol: end EVERY response with exactly one line
 > `STATUS: working|done|blocked|question — <one short sentence>`. When done,
 > blocked, or asking, stop and wait — the orchestrator sweeps periodically.
@@ -67,9 +78,9 @@ Self-paced wakeups, default every 15–20 min (tighter when a handoff is imminen
 1. `tmux capture-pane -p -t tt-<lane> -S -120` for each lane; find the last
    `STATUS:` line.
 2. Classify: `working` → leave alone. `question`/`blocked` → answer via send-keys
-   (or escalate, see below). `done` → review in main checkout
-   (`git diff testnet..lane/<x>`), run that lane's tests, merge `--no-ff` into
-   `testnet`, broadcast "rebase onto testnet" to affected lanes, send next item.
+   (or escalate, see below). `done` → run the **Merge review gate** below; only a
+   clean pass merges `--no-ff` into `testnet`; then broadcast "rebase onto testnet"
+   to affected lanes and send the next item.
 3. Fire handoffs (table below).
 4. Keep a running trial log in `docs/plan/TRIAL_LOG.md` (orchestrator-only file).
 
@@ -86,6 +97,34 @@ Self-paced wakeups, default every 15–20 min (tighter when a handoff is imminen
 **Escalate to Zac only:** S0 confirmation, deployer-account funding (A3),
 house-account funding + D2 go/no-go, domain name, F1b force-push decision,
 anything outward-facing (pushes, deploys, external services).
+
+## Merge review gate (orchestrator, before ANY lane merges to testnet)
+
+Review `git diff testnet..lane/<x>` plus the lane's transcript against six criteria
+(these are Zac's named endemic problems — treat each finding as a merge-blocker):
+
+1. **Flake-masking fallbacks** — any new retry, fallback, backfill, defensive
+   catch, or "recover if missing" path added around behavior the author cannot
+   explain. Reject and demand the root cause; the fix is fixing the flake.
+2. **Leaky abstractions** — interfaces that force callers to know internals
+   (exposed refs, ordering requirements, "call X before Y" contracts not enforced
+   by types/structure).
+3. **Insufficient tests** — behavior changes without a test that fails on revert;
+   tests that assert implementation rather than behavior.
+4. **Untracked assumptions/requirements** — implicit env, ordering, version, or
+   state requirements introduced but written down nowhere (lane brief ASSUMPTIONS,
+   ARCHITECTURE, or README as appropriate).
+5. **Stale documentation** — anything the diff invalidates (lane briefs,
+   MASTER_PLAN, ARCHITECTURE, README, inline doc comments) not updated in the
+   same change.
+6. **Duplicated code** — re-implementations of existing helpers/utilities
+   (check `game-logic`, `aztec/fieldUtils`, `txManager`, existing hooks first).
+
+Also: run the lane's own test suite plus any neighbor suite its diff touches.
+Findings go back to the agent via send-keys with concrete file:line references.
+After ALL lanes complete, a final integrated review of the full
+`git diff <trial-start>..testnet` applies the same six criteria across lane
+boundaries (where leaks and duplication hide best).
 
 ## Recovery & conventions
 
