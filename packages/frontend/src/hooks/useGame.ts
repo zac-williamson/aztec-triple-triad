@@ -3,19 +3,25 @@ import { useWebSocket } from './useWebSocket';
 import { useProofGeneration } from './useProofGeneration';
 import type { PlayerHandData } from './useProofGeneration';
 import { useGameStorage, type PersistedGameState } from './useGameStorage';
+import { useGameSession } from './useGameSession';
 import { useAztecContext } from '../aztec/AztecContext';
 import { importNotesFromTx, fetchTxEffectData } from '../aztec/noteImporter';
-import { addCards, removeCards, type StoredCard } from '../aztec/cardStore';
+import { addCards, type StoredCard } from '../aztec/cardStore';
 import txManager from '../aztec/txManager';
-import { ensureContracts, contractCache, warmupContracts, waitForWarmup } from '../aztec/contracts';
-import { AZTEC_CONFIG } from '../aztec/config';
+import { ensureContracts, contractCache } from '../aztec/contracts';
 import { toFr as toFrUtil, toHexString, bytesToFrArray, base64ToFrArray, hexToFr } from '../aztec/fieldUtils';
 import { AZTEC_TX_TIMEOUT, AZTEC_SETTLE_TX_TIMEOUT, CARDS_PER_HAND, TOTAL_MOVES, MOVE_PROOF_WAIT_TIMEOUT, HAND_PROOF_WAIT_TIMEOUT } from '../aztec/gameConstants';
+import { requireWallet, requireAccountAddress } from '../aztec/walletGuards';
 import type { Screen, GameState, Player, Card, HandProofData, MoveProofData, PlaintextNoteData } from '../types';
 
 // Re-export types consumers need
 export type TxStatus = 'idle' | 'preparing' | 'proving' | 'sending' | 'confirmed' | 'error';
 export type ProofStatus = 'idle' | 'generating' | 'ready' | 'error';
+
+// Re-export the on-chain phase machine so consumers and tests keep
+// importing from useGame (the state machine itself lives in useGameSession).
+export { VALID_TRANSITIONS } from './useGameSession';
+export type { OnChainPhase } from './useGameSession';
 
 /**
  * Map game winner to circuit winner_id value.
@@ -71,21 +77,6 @@ export interface UseGameReturn {
 }
 
 /**
- * Remove exactly one copy of each ID in `toRemove` from `source`.
- */
-function removeOneOfEach(source: number[], toRemove: number[]): number[] {
-  const remaining = [...toRemove];
-  return source.filter(id => {
-    const idx = remaining.indexOf(id);
-    if (idx !== -1) {
-      remaining.splice(idx, 1);
-      return false;
-    }
-    return true;
-  });
-}
-
-/**
  * ## Ref vs State design
  *
  * This hook uses both React state (useState) and refs (useRef) for game data.
@@ -96,13 +87,6 @@ function removeOneOfEach(source: number[], toRemove: number[]): number[] {
  *   Changes trigger re-renders, which update the UI.
  *
  * **Refs** — values consumed by async closures or that must survive navigation:
- *   settlementInfoRef:  Pipeline-derived data (gameId, randomness, card IDs,
- *                        opponent address/randomness). Populated by pipeline
- *                        postEffects and WS listener. NOT cleared on navigation
- *                        — settlement may run after the user leaves the game screen.
- *   onChainPhaseRef:    State machine for the on-chain lifecycle. Managed by
- *                        transitionPhase(). NOT reset on menu navigation to avoid
- *                        re-triggering spurious create_game.
  *   cardIdsRef:          Snapshot of card IDs for proof generation closures.
  *   moveProofsRef:       Always-current move proof array (avoids stale closure
  *                        in handleSettle's execute callback).
@@ -114,39 +98,18 @@ function removeOneOfEach(source: number[], toRemove: number[]): number[] {
  *   handProofSubmittedRef,
  *   handProofGeneratedRef,
  *   noteImportProcessedRef: Idempotency guards preventing duplicate operations.
- *   activePhaseResolveRef,
  *   moveProofsCompleteRef,
  *   handProofsCompleteRef: Promise resolvers for cross-concern synchronization.
+ *
+ * Session-owned refs (settlementInfoRef, onChainPhaseRef,
+ * activePhaseResolveRef) are documented in useGameSession.ts and reached
+ * through its stable accessor functions.
  *
  * The general rule: if a value is read inside a txManager.execute() callback
  * or needs to survive screen transitions, it's a ref. If the UI renders it,
  * it's state. Some values exist as both (e.g., myHandProof is state for the
  * UI status indicator AND a ref for the settlement closure).
  */
-
-// --- On-chain lifecycle phase ---
-export type OnChainPhase =
-  | 'idle'                  // No game lifecycle in progress. Safe to create a new game.
-  | 'creating'              // P1: sending create_game tx via txManager.
-  | 'awaiting_join'         // P1: create_game mined. Waiting for P2's join_game to mine.
-  | 'preparing'             // P2: read-only PXE simulations before sending any tx.
-  | 'awaiting_create'       // P2: preview data shared. Waiting for P1's create_game to confirm.
-  | 'joining'               // P2: sending join_game tx via txManager.
-  | 'active'                // Both players joined on-chain. Game in progress.
-  | 'settling'              // Winner: actively sending process_game / claim_abandoned_game.
-  | 'awaiting_settlement';  // Loser: waiting for opponent's settlement + NOTE_DATA.
-
-export const VALID_TRANSITIONS: Record<OnChainPhase, OnChainPhase[]> = {
-  idle:                 ['creating', 'preparing'],
-  creating:             ['awaiting_join', 'idle'],
-  awaiting_join:        ['active', 'idle'],
-  preparing:            ['awaiting_create', 'idle'],
-  awaiting_create:      ['joining', 'idle'],
-  joining:              ['active', 'awaiting_create', 'idle'],
-  active:               ['settling', 'awaiting_settlement', 'idle'],
-  settling:             ['idle'],
-  awaiting_settlement:  ['idle'],
-};
 
 /**
  * Merged game hook — replaces useGameOrchestrator + useGameSession.
@@ -167,14 +130,13 @@ export function useGame(wsUrl: string): UseGameReturn {
   const [packResult, setPackResult] = useState<{ location: string; cardIds: number[] } | null>(null);
   const [hasGameInProgress, setHasGameInProgress] = useState(() => storage.hasGame());
 
-  // --- On-chain state (from useGameSession) ---
-  const [onChainGameId, setOnChainGameId] = useState<string | null>(null);
-  const [gameRandomness, setGameRandomness] = useState<string[] | null>(null);
-  const [blindingFactor, setBlindingFactor] = useState<string | null>(null);
+  // --- On-chain session: phase machine, create/join pipeline, settlement info ---
+  const session = useGameSession({ ws, screen, cardIds });
+
+  // --- Settlement tx state ---
   const [settleTxStatus, setSettleTxStatus] = useState<TxStatus>('idle');
   const [settleTxHash, setSettleTxHash] = useState<string | null>(null);
   const [settleError, setSettleError] = useState<string | null>(null);
-  const [onChainError, setOnChainError] = useState<string | null>(null);
 
   // --- Abandoned game state ---
   const [isClaimingAbandoned, setIsClaimingAbandoned] = useState(false);
@@ -192,8 +154,6 @@ export function useGame(wsUrl: string): UseGameReturn {
   const [handProofStatus, setHandProofStatus] = useState<ProofStatus>('idle');
   const [moveProofStatus, setMoveProofStatus] = useState<ProofStatus>('idle');
 
-  const isContractAvailable = aztec.wallet !== null && AZTEC_CONFIG.enabled && !!AZTEC_CONFIG.gameContractAddress;
-
   // Derived
   const myCardCommit = myHandProof?.cardCommit ?? null;
   const opponentCardCommit = opponentHandProof?.cardCommit ?? null;
@@ -204,47 +164,11 @@ export function useGame(wsUrl: string): UseGameReturn {
   const moveProofsRef = useRef(collectedMoveProofs);
   moveProofsRef.current = collectedMoveProofs;
 
-  // Persistent ref for pipeline-dependent values that settle_game needs.
-  // Populated by pipeline postEffects and WebSocket effects. NOT cleared
-  // by handleBackToMenu or ws.leaveGame(), so settlement survives navigation.
-  const settlementInfoRef = useRef<{
-    onChainGameId: string;
-    gameRandomness: string[];
-    opponentAddress: string;
-    opponentRandomness: string[];
-    callerCardIds: number[];
-    opponentCardIds: number[];
-  } | null>(null);
-
   // --- Refs ---
   // Idempotency guards (kept)
   const handProofSubmittedRef = useRef(false);
   const handProofGeneratedRef = useRef(false);
   const noteImportProcessedRef = useRef<string | null>(null);
-
-  // Typed phase ref (replaces 4 boolean guards)
-  const onChainPhaseRef = useRef<OnChainPhase>('idle');
-
-  // Promise resolver for awaiting_join → active transition (P1 waiting for P2 join)
-  const activePhaseResolveRef = useRef<(() => void) | null>(null);
-
-  function transitionPhase(to: OnChainPhase): void {
-    const from = onChainPhaseRef.current;
-    if (from === to) return;
-    const allowed = VALID_TRANSITIONS[from];
-    if (!allowed.includes(to)) {
-      console.error(`[useGame] Invalid phase transition: ${from} → ${to}`);
-      return;
-    }
-    console.log(`[useGame] Phase: ${from} → ${to}`);
-    onChainPhaseRef.current = to;
-
-    // Resolve any waiters on the 'active' phase
-    if (to === 'active' && activePhaseResolveRef.current) {
-      activePhaseResolveRef.current();
-      activePhaseResolveRef.current = null;
-    }
-  }
 
   // Board state history — indexed by occupied cell count (move number)
   const gameStateHistoryRef = useRef<Map<number, {
@@ -262,25 +186,8 @@ export function useGame(wsUrl: string): UseGameReturn {
   const opponentHandProofRef = useRef(opponentHandProof);
   opponentHandProofRef.current = opponentHandProof;
 
-  // Refs mirroring ws state that handleSettle reads as backfill for
-  // settlementInfoRef. handleSettle is a useCallback whose dependency
-  // array does NOT include these ws fields (they'd re-create the callback
-  // every time a field updates, breaking in-flight settlement). So the
-  // callback's closure captures a stale `ws` object from an earlier render.
-  // These refs are updated on every render so the callback always reads
-  // the current value regardless of closure staleness.
-  const wsOpponentCardIdsRef = useRef(ws.opponentCardIds);
-  wsOpponentCardIdsRef.current = ws.opponentCardIds;
-  const wsOpponentAztecAddressRef = useRef(ws.opponentAztecAddress);
-  wsOpponentAztecAddressRef.current = ws.opponentAztecAddress;
-  const wsOpponentGameRandomnessRef = useRef(ws.opponentGameRandomness);
-  wsOpponentGameRandomnessRef.current = ws.opponentGameRandomness;
-
   // Promise-based hand proof wait (same pattern as moveProofsCompleteRef)
   const handProofsCompleteRef = useRef<(() => void) | null>(null);
-
-  // Guard: preview data already shared with opponent via WebSocket
-  const previewSharedRef = useRef(false);
 
   // Queue of moves made before hand proofs were ready
   const pendingMovesRef = useRef<Array<{
@@ -288,18 +195,6 @@ export function useGame(wsUrl: string): UseGameReturn {
     handIndex: number; row: number; col: number;
     moveNumber: number;
   }>>([]);
-
-  // --- Helpers ---
-
-  function requireWallet() {
-    if (!aztec.wallet) throw new Error('wallet is not connected');
-    return aztec.wallet;
-  }
-
-  function requireAccountAddress() {
-    if (!aztec.accountAddress) throw new Error('accountAddress is not set');
-    return aztec.accountAddress;
-  }
 
   const addMoveProof = useCallback((proof: MoveProofData) => {
     setCollectedMoveProofs(prev => {
@@ -311,161 +206,11 @@ export function useGame(wsUrl: string): UseGameReturn {
     });
   }, []);
 
-  // --- Contract actions (inline, not cross-hook) ---
-
-  const createGameOnChain = useCallback(async (ids: number[]): Promise<{ gameId: string; randomness: string[]; blindingFactor: string; txHash: string }> => {
-    const w = requireWallet();
-    const addr = requireAccountAddress();
-
-    // Wait for warmup to complete before touching PXE — warmup runs
-    // outside the txManager queue and its registerContract/Contract.at
-    // calls race with ours on IDB if we don't wait.
-    await waitForWarmup();
-    const { gameContract, nftContract, fee, Fr, AztecAddress } = await ensureContracts(w);
-    const senderAddr = AztecAddress.fromString(addr);
-
-    console.log('[useGame] Starting create_game pipeline...');
-    console.log(`[PXE-TRACE] ${Date.now()} nftContract.get_note_nonce(${senderAddr}).simulate()`);
-    const { result: nonceResult } = await nftContract.methods.get_note_nonce(senderAddr).simulate({ from: senderAddr });
-    const nonceFr = toFrUtil(Fr, nonceResult);
-    console.log(`[PXE-TRACE] ${Date.now()} get_note_nonce COMPLETE result=${nonceFr.toString()}`);
-
-    console.log(`[PXE-TRACE] ${Date.now()} nftContract.preview_game_data(${nonceFr}).simulate()`);
-    const { result: previewResult }: any = await nftContract.methods.preview_game_data(nonceFr).simulate({ from: senderAddr });
-    const gameId = String(previewResult[0]);
-    const randomnessHex = Array.from({ length: 6 }, (_, i) => toHexString(previewResult[i + 1]));
-    const gameIdFr = toFrUtil(Fr, gameId);
-    console.log(`[PXE-TRACE] ${Date.now()} preview_game_data COMPLETE gameId=${toHexString(gameId).slice(0,20)}...`);
-
-    console.log(`[PXE-TRACE] ${Date.now()} gameContract.get_game_status(${toHexString(gameId).slice(0,20)}...).simulate()`);
-    const { result: statusResult } = await gameContract.methods.get_game_status(gameIdFr).simulate({ from: senderAddr });
-    console.log(`[PXE-TRACE] ${Date.now()} get_game_status COMPLETE result=${statusResult}`);
-
-    console.log(`[PXE-TRACE] ${Date.now()} nftContract.compute_blinding_factor(${toHexString(gameId).slice(0,20)}...).simulate()`);
-    const { result: blindingResult } = await nftContract.methods.compute_blinding_factor(gameIdFr).simulate({ from: senderAddr });
-    console.log(`[PXE-TRACE] ${Date.now()} compute_blinding_factor COMPLETE`);
-    if (Number(statusResult) !== 0) {
-      throw new Error(`Game ID already exists with status ${Number(statusResult)}, nonce may be stale`);
-    }
-    const blindingHex = toHexString(blindingResult);
-    const gameIdHex = toHexString(gameId);
-
-    setOnChainGameId(gameIdHex);
-    setGameRandomness(randomnessHex);
-    setBlindingFactor(blindingHex);
-
-    console.log('game id hex = ', gameIdHex);
-    console.log('game randomness = ', randomnessHex);
-    console.log('game blinding factors = ', blindingHex);
-    cardIdsRef.current = ids;
-    console.log('chosen game ids = ', ids);
-    console.log('[useGame] Game preview ready, ID:', gameIdHex, '— sending create_game tx...');
-
-    // Diagnostic: check what notes the PXE thinks are available
-    try {
-      console.log(`[PXE-TRACE] ${Date.now()} nftContract.get_nfts_for_user(${senderAddr}, 0).simulate() [diagnostic]`);
-      const { result: pxeCards } = await nftContract.methods.get_nfts_for_user(senderAddr, 0).simulate({ from: senderAddr });
-      console.log(`[PXE-TRACE] ${Date.now()} get_nfts_for_user COMPLETE [diagnostic]`);
-      // simulate() returns tuple as nested array: [fieldArray, hasMore]
-      const page = pxeCards[0] ?? pxeCards;
-      const cardList = Array.isArray(page) ? page.map((c: any) => Number(c)) : page;
-      console.log('[useGame] PXE private cards before create_game:', cardList);
-    } catch (e) {
-      console.warn('[useGame] Could not query PXE private cards:', e);
-    }
-
-    console.log(`[PXE-TRACE] ${Date.now()} gameContract.create_game([${ids.join(',')}]).send(from=${senderAddr})`);
-    const { receipt } = await gameContract.methods
-      .create_game(ids.map((id: number) => new Fr(BigInt(id))))
-      .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_TX_TIMEOUT } });
-    const txHash = receipt?.txHash?.toString();
-    if (!txHash) throw new Error('create_game tx returned no txHash');
-    console.log(`[PXE-TRACE] ${Date.now()} create_game().send COMPLETE txHash=${txHash}`);
-
-    // DIAGNOSTIC: dump TxEffect nullifiers from create_game so we can compare
-    // with PXE's stored siloedNullifiers
-    try {
-      const nodeClient = aztec.nodeClient as any;
-      if (nodeClient) {
-        const { TxHash } = await import('@aztec/stdlib/tx');
-        const hash = TxHash.fromString(txHash);
-        const txResult = await nodeClient.getTxEffect(hash);
-        if (txResult?.data) {
-          const nullifiers = txResult.data.nullifiers ?? [];
-          console.log(`[useGame] create_game TxEffect: ${nullifiers.length} nullifiers, block=${txResult.l2BlockNumber}`);
-          nullifiers.forEach((n: any, i: number) => {
-            console.log(`[useGame] create_game nullifier[${i}]: ${n.toString()}`);
-          });
-          const noteHashes = txResult.data.noteHashes ?? [];
-          console.log(`[useGame] create_game TxEffect: ${noteHashes.length} noteHashes`);
-          noteHashes.forEach((h: any, i: number) => {
-            console.log(`[useGame] create_game noteHash[${i}]: ${h.toString()}`);
-          });
-        }
-      }
-    } catch (diagErr) {
-      console.warn('[useGame] create_game diagnostic failed:', diagErr);
-    }
-
-    // Remove committed cards from localStorage after confirmed tx
-    if (addr) removeCards(addr, ids);
-
-    return { gameId: gameIdHex, randomness: randomnessHex, blindingFactor: blindingHex, txHash };
-  }, [aztec.wallet, aztec.accountAddress]);
-
-  const prepareJoinGame = useCallback(async (chainGameId: string, ids: number[]): Promise<{ randomness: string[]; blindingFactor: string }> => {
-    const w = requireWallet();
-    const addr = requireAccountAddress();
-
-    console.log('[useGame] Preparing join_game preview...');
-    const { nftContract, Fr, AztecAddress } = await ensureContracts(w);
-    const senderAddr = AztecAddress.fromString(addr);
-    const chainGameIdFr = toFrUtil(Fr, chainGameId);
-
-    // PXE does not support concurrent simulate() calls (see IDB_TRANSACTION_ERROR_REPORT.md)
-    const { result: nonceResult } = await nftContract.methods.get_note_nonce(senderAddr).simulate({ from: senderAddr });
-    const { result: blindingResult } = await nftContract.methods.compute_blinding_factor(chainGameIdFr).simulate({ from: senderAddr });
-    const nonceFr = toFrUtil(Fr, nonceResult);
-    const blindingHex = toHexString(blindingResult);
-
-    const { result: previewResult }: any = await nftContract.methods.preview_game_data(nonceFr).simulate({ from: senderAddr });
-    const randomnessHex = Array.from({ length: 6 }, (_, i) => toHexString(previewResult[i + 1]));
-
-    setOnChainGameId(chainGameId);
-    setGameRandomness(randomnessHex);
-    setBlindingFactor(blindingHex);
-    cardIdsRef.current = ids;
-    console.log('[useGame] Join preview ready (no tx sent yet)');
-
-    return { randomness: randomnessHex, blindingFactor: blindingHex };
-  }, [aztec.wallet, aztec.accountAddress]);
-
-  const sendJoinGameTx = useCallback(async (chainGameId: string, ids: number[]): Promise<string> => {
-    const w = requireWallet();
-    const addr = requireAccountAddress();
-
-    console.log('[useGame] Sending join_game tx...');
-    const { gameContract, fee, Fr, AztecAddress } = await ensureContracts(w);
-    const senderAddr = AztecAddress.fromString(addr);
-    const chainGameIdFr = toFrUtil(Fr, chainGameId);
-
-    const { receipt } = await gameContract.methods
-      .join_game(chainGameIdFr, ids.map((id: number) => new Fr(BigInt(id))))
-      .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_TX_TIMEOUT } });
-    const txHash = receipt?.txHash?.toString();
-    if (!txHash) throw new Error('join_game tx returned no txHash');
-    console.log('[useGame] join_game tx mined, txHash:', txHash);
-
-    // Remove committed cards from localStorage after confirmed tx
-    if (addr) removeCards(addr, ids);
-
-    return txHash;
-  }, [aztec.wallet, aztec.accountAddress]);
-
   const generateHandProofFromState = useCallback(async (
     ids: number[],
     opponentGameRandomness: string[],
   ): Promise<void> => {
+    const blindingFactor = session.blindingFactor;
     if (!blindingFactor) throw new Error('Cannot generate hand proof: no blinding factor');
     cardIdsRef.current = ids;
     setHandProofStatus('generating');
@@ -484,7 +229,7 @@ export function useGame(wsUrl: string): UseGameReturn {
       setHandProofStatus('error');
       throw err;
     }
-  }, [blindingFactor, proofs.generateHandProof]);
+  }, [session.blindingFactor, proofs.generateHandProof]);
 
   const generateMoveProofForPlacement = useCallback(
     async (
@@ -499,6 +244,7 @@ export function useGame(wsUrl: string): UseGameReturn {
       gameEnded: boolean,
       winnerId: number,
     ): Promise<MoveProofData> => {
+      const blindingFactor = session.blindingFactor;
       if (!myHandProof || !opponentHandProof) throw new Error('Cannot generate move proof: hand proofs not ready');
       if (!myCardCommit || !opponentCardCommit) throw new Error('Cannot generate move proof: card commits missing');
       if (!blindingFactor) throw new Error('Cannot generate move proof: no blinding factor');
@@ -529,18 +275,10 @@ export function useGame(wsUrl: string): UseGameReturn {
         throw err;
       }
     },
-    [myHandProof, opponentHandProof, myCardCommit, opponentCardCommit, blindingFactor, proofs.generateMoveProof, addMoveProof],
+    [myHandProof, opponentHandProof, myCardCommit, opponentCardCommit, session.blindingFactor, proofs.generateMoveProof, addMoveProof],
   );
 
   // --- Effects ---
-
-  // Pre-warm contract cache
-  useEffect(() => {
-    if (aztec.wallet) {
-      console.log(`[PXE-TRACE] ${Date.now()} warmupContracts(wallet) [fire-and-forget]`);
-      warmupContracts(aztec.wallet);
-    }
-  }, [aztec.wallet]);
 
   // Populate board state history from WS game state
   useEffect(() => {
@@ -596,7 +334,7 @@ export function useGame(wsUrl: string): UseGameReturn {
       console.log('[useGame] Hand proof effect: cardIds.length =', cardIds.length, '(need 5)');
       return;
     }
-    if (!blindingFactor) {
+    if (!session.blindingFactor) {
       console.log('[useGame] Hand proof effect: blindingFactor not set yet');
       return;
     }
@@ -611,7 +349,7 @@ export function useGame(wsUrl: string): UseGameReturn {
       console.error('[useGame] Hand proof generation failed:', err);
       handProofGeneratedRef.current = false;
     });
-  }, [ws.gameId, ws.gameState, cardIds, blindingFactor, ws.opponentGameRandomness, generateHandProofFromState]);
+  }, [ws.gameId, ws.gameState, cardIds, session.blindingFactor, ws.opponentGameRandomness, generateHandProofFromState]);
 
   // Resolve hand proof wait promise when both proofs are available
   useEffect(() => {
@@ -699,21 +437,21 @@ export function useGame(wsUrl: string): UseGameReturn {
       selectedCardIds: cardIds,
       savedAt: Date.now(),
     };
-    if (onChainGameId) persisted.onChainGameId = onChainGameId;
+    if (session.onChainGameId) persisted.onChainGameId = session.onChainGameId;
     if (myHandProof) persisted.myHandProof = myHandProof;
     if (opponentHandProof) persisted.opponentHandProof = opponentHandProof;
     if (collectedMoveProofs.length > 0) persisted.collectedMoveProofs = collectedMoveProofs;
     if (ws.opponentAztecAddress) persisted.opponentAztecAddress = ws.opponentAztecAddress;
     if (ws.opponentOnChainGameId) persisted.opponentOnChainGameId = ws.opponentOnChainGameId;
-    if (gameRandomness) persisted.gameRandomness = gameRandomness;
-    if (blindingFactor) persisted.blindingFactor = blindingFactor;
+    if (session.gameRandomness) persisted.gameRandomness = session.gameRandomness;
+    if (session.blindingFactor) persisted.blindingFactor = session.blindingFactor;
     if (ws.opponentGameRandomness) persisted.opponentGameRandomness = ws.opponentGameRandomness;
 
     storage.saveGame(persisted);
     setHasGameInProgress(true);
   }, [
     ws.gameId, ws.playerNumber, cardIds, screen,
-    onChainGameId, gameRandomness, blindingFactor,
+    session.onChainGameId, session.gameRandomness, session.blindingFactor,
     myHandProof, opponentHandProof, collectedMoveProofs,
     ws.opponentAztecAddress, ws.opponentOnChainGameId, ws.opponentGameRandomness,
     storage,
@@ -741,194 +479,6 @@ export function useGame(wsUrl: string): UseGameReturn {
     return () => clearInterval(interval);
   }, [screen, ws.ping]);
 
-  // Share preview data with opponent as soon as state is set (before tx mines).
-  // This is a React effect, so it runs completely outside PXE's execution context —
-  // no interference with IDB transactions. Both P1 and P2 set gameRandomness via
-  // setState inside their respective pipeline functions; React flushes the update
-  // at the next render boundary (including during await yields), so this effect
-  // fires before the slow tx mining completes.
-  useEffect(() => {
-    if (previewSharedRef.current) return;
-    if (!ws.gameId || !gameRandomness || !aztec.accountAddress) return;
-    // P1 uses its own onChainGameId; P2 uses the opponent's
-    const gameIdToShare = onChainGameId ?? ws.opponentOnChainGameId;
-    if (!gameIdToShare) return;
-
-    previewSharedRef.current = true;
-    ws.shareAztecInfo(ws.gameId, aztec.accountAddress, gameIdToShare, gameRandomness);
-    console.log('[useGame] Preview data shared with opponent (early, via effect)');
-  }, [ws.gameId, gameRandomness, onChainGameId, ws.opponentOnChainGameId, aztec.accountAddress, ws.shareAztecInfo]);
-
-  // Merge opponent info into settlementInfoRef synchronously when it arrives
-  // via WebSocket. Uses addMessageListener (not useEffect) so the ref is
-  // updated in the same event loop tick as the message — async functions in
-  // txManager can read it immediately without yielding to React's render cycle.
-  useEffect(() => {
-    return ws.addMessageListener((msg) => {
-      if (msg.type === 'OPPONENT_AZTEC_INFO' && settlementInfoRef.current) {
-        if (msg.aztecAddress) {
-          settlementInfoRef.current.opponentAddress = msg.aztecAddress;
-        }
-        if (msg.gameRandomness && msg.gameRandomness.length === 6) {
-          settlementInfoRef.current.opponentRandomness = [...msg.gameRandomness];
-        }
-      }
-      // Capture opponent card IDs from GAME_OVER into the persistent ref.
-      // We identify "our" cards by matching against callerCardIds (already stored),
-      // and the remaining set is the opponent's.
-      if (msg.type === 'GAME_OVER' && settlementInfoRef.current) {
-        const m = msg as any;
-        const p1Ids: number[] = m.player1CardIds ?? [];
-        const p2Ids: number[] = m.player2CardIds ?? [];
-        const callerIds = settlementInfoRef.current.callerCardIds;
-        // Match: if our caller cards are P1's cards, opponent is P2 (and vice versa)
-        const callerIsP1 = callerIds.length > 0 && callerIds.every((id: number) => p1Ids.includes(id));
-        const oppIds = callerIsP1 ? p2Ids : p1Ids;
-        if (oppIds.length > 0) {
-          settlementInfoRef.current.opponentCardIds = [...oppIds];
-        }
-      }
-    });
-  }, [ws.addMessageListener]);
-
-  // P1: transition awaiting_join → active when P2's join_game tx is confirmed
-  useEffect(() => {
-    if (onChainPhaseRef.current === 'awaiting_join' && ws.opponentTxConfirmed) {
-      transitionPhase('active');
-    }
-  }, [ws.opponentTxConfirmed]);
-
-  // Consolidated on-chain pipeline (replaces 3 separate effects + dead fallback)
-  useEffect(() => {
-    if (screen === 'main-menu') return; // Never start pipeline during navigation
-    if (!ws.gameId || !ws.gameState) return;
-    if (ws.gameState.status !== 'playing' && ws.gameState.status !== 'finished') return;
-    if (!isContractAvailable) return;
-
-    const phase = onChainPhaseRef.current;
-
-    // P1: create game — runs through txManager
-    if (ws.playerNumber === 1 && phase === 'idle') {
-      transitionPhase('creating');
-      const capturedGameId = ws.gameId!;
-      const capturedAddr = aztec.accountAddress!;
-      const capturedCardIds = [...cardIds];
-      const capturedShareInfo = ws.shareAztecInfo;
-      const capturedNotifyTx = ws.notifyTxConfirmed;
-
-      txManager.runTx({
-        type: 'create_game',
-        label: 'Creating game...',
-        gameId: capturedGameId,
-        execute: async (setPhase) => {
-          setPhase('simulating');
-          const result = await createGameOnChain(capturedCardIds);
-          return result;
-        },
-        postEffects: async (result) => {
-          capturedShareInfo(capturedGameId, capturedAddr, result.gameId, result.randomness);
-          aztec.updateOwnedCards(prev => removeOneOfEach(prev, capturedCardIds));
-          capturedNotifyTx(capturedGameId, 'create_game', result.txHash);
-          console.log('[useGame] P1: create_game mined, notified backend');
-          // Seed settlementInfoRef with our own values (opponent values added
-          // when OPPONENT_AZTEC_INFO arrives). This ref is NOT cleared by navigation.
-          // Read opponent values from refs (NOT `ws.*`) because the outer
-          // useEffect closes over a stale `ws` object; the refs are updated
-          // every render and always hold the latest values.
-          settlementInfoRef.current = {
-            onChainGameId: result.gameId,
-            gameRandomness: result.randomness,
-            opponentAddress: wsOpponentAztecAddressRef.current ?? '',
-            opponentRandomness: wsOpponentGameRandomnessRef.current ? [...wsOpponentGameRandomnessRef.current] : [],
-            callerCardIds: capturedCardIds,
-            opponentCardIds: wsOpponentCardIdsRef.current.length > 0 ? [...wsOpponentCardIdsRef.current] : [],
-          };
-          transitionPhase('awaiting_join');
-        },
-      }).catch(err => {
-        console.error('[useGame] On-chain game creation failed:', err);
-        setOnChainError(err instanceof Error ? err.message : 'Create game failed');
-        transitionPhase('idle');
-      });
-      return;
-    }
-
-    // P2 phase 1: prepare preview — runs through txManager PXE queue
-    if (ws.playerNumber === 2 && phase === 'idle' && ws.opponentOnChainGameId) {
-      transitionPhase('preparing');
-      const capturedGameId = ws.gameId!;
-      const capturedAddr = aztec.accountAddress!;
-      const capturedChainGameId = ws.opponentOnChainGameId!;
-      const capturedCardIds = [...cardIds];
-      const capturedShareInfo = ws.shareAztecInfo;
-
-      txManager.runTx({
-        type: 'join_game',
-        label: 'Preparing to join...',
-        gameId: capturedGameId,
-        execute: async (setPhase) => {
-          setPhase('simulating');
-          const result = await prepareJoinGame(capturedChainGameId, capturedCardIds);
-          return result;
-        },
-        postEffects: async (result) => {
-          capturedShareInfo(capturedGameId, capturedAddr, capturedChainGameId, result.randomness);
-          aztec.updateOwnedCards(prev => removeOneOfEach(prev, capturedCardIds));
-          console.log('[useGame] P2: preview data shared, waiting for P1 tx confirmation...');
-          // Seed settlementInfoRef for P2. Read opponent values from refs
-          // (see P1 create_game above for why we can't use `ws.*` here).
-          settlementInfoRef.current = {
-            onChainGameId: capturedChainGameId,
-            gameRandomness: result.randomness,
-            opponentAddress: wsOpponentAztecAddressRef.current ?? '',
-            opponentRandomness: wsOpponentGameRandomnessRef.current ? [...wsOpponentGameRandomnessRef.current] : [],
-            callerCardIds: capturedCardIds,
-            opponentCardIds: wsOpponentCardIdsRef.current.length > 0 ? [...wsOpponentCardIdsRef.current] : [],
-          };
-          transitionPhase('awaiting_create');
-        },
-      }).catch(err => {
-        console.error('[useGame] P2 prepare failed:', err);
-        setOnChainError(err instanceof Error ? err.message : 'Prepare join failed');
-        transitionPhase('idle');
-      });
-      return;
-    }
-
-    // P2 phase 2: join after P1 confirmed — runs through txManager
-    if (ws.playerNumber === 2 && phase === 'awaiting_create' && ws.opponentTxConfirmed && onChainGameId) {
-      transitionPhase('joining');
-      const capturedGameId = ws.gameId!;
-      const capturedChainGameId = ws.opponentOnChainGameId!;
-      const capturedCardIds = [...cardIds];
-      const capturedNotifyTx = ws.notifyTxConfirmed;
-
-      txManager.runTx({
-        type: 'join_game',
-        label: 'Joining game...',
-        gameId: capturedGameId,
-        execute: async (setPhase) => {
-          setPhase('sending');
-          const txHash = await sendJoinGameTx(capturedChainGameId, capturedCardIds);
-          return txHash;
-        },
-        postEffects: async (txHash) => {
-          capturedNotifyTx(capturedGameId, 'join_game', txHash);
-          console.log('[useGame] P2: join_game mined, notified backend');
-          transitionPhase('active');
-        },
-      }).catch(err => {
-        console.error('[useGame] P2 join_game tx failed:', err);
-        setOnChainError(err instanceof Error ? err.message : 'Join game failed');
-        transitionPhase('awaiting_create');
-      });
-    }
-  }, [screen, ws.playerNumber, ws.gameId, ws.gameState, ws.opponentOnChainGameId,
-      ws.opponentTxConfirmed, isContractAvailable, onChainGameId, cardIds,
-      createGameOnChain, prepareJoinGame, sendJoinGameTx,
-      aztec.accountAddress, aztec.wallet, aztec.nodeClient, aztec.updateOwnedCards,
-      ws.shareAztecInfo, ws.notifyTxConfirmed]);
-
   // Reset state on returning to menu
   useEffect(() => {
     if (screen === 'main-menu') {
@@ -936,24 +486,15 @@ export function useGame(wsUrl: string): UseGameReturn {
       pendingMovesRef.current = [];
       noteImportProcessedRef.current = null;
       handProofGeneratedRef.current = false;
-      // Note: onChainPhaseRef is NOT reset here — it's managed by txManager
-      // postEffects (settlement sets it to 'idle' when the game lifecycle ends).
-      // Resetting it here causes a race: the pipeline effect re-fires with
-      // phase='idle' while ws.gameId is still set (deferred leave), triggering
-      // a spurious create_game.
       gameStateHistoryRef.current = new Map();
       moveProofsCompleteRef.current = null;
       handProofsCompleteRef.current = null;
-      previewSharedRef.current = false;
-      activePhaseResolveRef.current = null;
-      // Reset session state
-      setOnChainGameId(null);
-      setGameRandomness(null);
-      setBlindingFactor(null);
+      // Session state/refs (onChainPhaseRef deliberately survives — see
+      // useGameSession.resetForMenu)
+      session.resetForMenu();
       setSettleTxStatus('idle');
       setSettleTxHash(null);
       setSettleError(null);
-      setOnChainError(null);
       setMyHandProof(null);
       setOpponentHandProof(null);
       setCollectedMoveProofs([]);
@@ -1040,8 +581,8 @@ export function useGame(wsUrl: string): UseGameReturn {
     })();
 
     // Settlement complete on loser side — release the game lifecycle
-    transitionPhase('idle');
-  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, aztec.nodeClient, importNotes, cardIds, aztec.refreshTokenBalance]);
+    session.transitionPhase('idle');
+  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, aztec.nodeClient, importNotes, cardIds, aztec.refreshTokenBalance, session.transitionPhase]);
 
   // Track opponent's settlement on the loser's side via txManager.
   // When the winner starts settling, the loser receives OPPONENT_SETTLING via WS.
@@ -1052,7 +593,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     if (!ws.opponentSettling) return;
     if (opponentSettleTxIdRef.current) return; // Already tracking
 
-    transitionPhase('awaiting_settlement');
+    session.transitionPhase('awaiting_settlement');
     setTakenCardId(ws.opponentSettling.selectedCardId);
 
     // Create a txManager entry for the opponent's settlement
@@ -1070,7 +611,7 @@ export function useGame(wsUrl: string): UseGameReturn {
       },
       postEffects: async () => {
         setOpponentSettled(true);
-        transitionPhase('idle');
+        session.transitionPhase('idle');
         // Wait for PXE to sync the block containing the settlement tx
         // before querying token balance (token notes use ONCHAIN_CONSTRAINED
         // delivery which requires PXE block sync to discover).
@@ -1081,11 +622,11 @@ export function useGame(wsUrl: string): UseGameReturn {
 
     txId.catch(() => {
       // If something goes wrong, still release the game lifecycle
-      transitionPhase('idle');
+      session.transitionPhase('idle');
     });
 
     opponentSettleTxIdRef.current = 'tracking';
-  }, [ws.opponentSettling, ws.gameId]);
+  }, [ws.opponentSettling, ws.gameId, session.transitionPhase]);
 
   // Resolve the opponent's settlement wait when NOTE_DATA arrives
   const opponentSettleResolveRef = useRef<(() => void) | null>(null);
@@ -1107,17 +648,13 @@ export function useGame(wsUrl: string): UseGameReturn {
       if (saved.collectedMoveProofs) {
         for (const mp of saved.collectedMoveProofs) addMoveProof(mp);
       }
-      if (saved.onChainGameId && saved.gameRandomness) {
-        setOnChainGameId(saved.onChainGameId);
-        setGameRandomness(saved.gameRandomness);
-        if (saved.blindingFactor) setBlindingFactor(saved.blindingFactor);
-      }
+      session.restoreFromSave(saved);
       ws.queueMatchmaking(saved.selectedCardIds);
       setScreen('finding-opponent');
       return;
     }
     setScreen('card-selector');
-  }, [storage, ws, addMoveProof]);
+  }, [storage, ws, addMoveProof, session.restoreFromSave]);
 
   const handleCardPacks = useCallback(() => {
     setScreen('card-packs');
@@ -1213,11 +750,12 @@ export function useGame(wsUrl: string): UseGameReturn {
 
     // Capture values available NOW (stable across navigation).
     // Pipeline-dependent values (opponent address, randomness, on-chain game ID)
-    // are read from settlementInfoRef inside execute — that ref persists across navigation.
+    // are read from the session's settlement info inside execute — that ref
+    // persists across navigation.
     const capturedGameId = ws.gameId;
     const capturedPlayerNumber = ws.playerNumber;
-    const w = requireWallet();
-    const addr = requireAccountAddress();
+    const w = requireWallet(aztec.wallet);
+    const addr = requireAccountAddress(aztec.accountAddress);
     const capturedImportNotes = importNotes;
     const capturedRelayNoteData = (txHash: string, notes: PlaintextNoteData[]) =>
       ws.relayNoteData(capturedGameId, txHash, notes);
@@ -1238,22 +776,15 @@ export function useGame(wsUrl: string): UseGameReturn {
 
       execute: async (setPhase) => {
         // ── Wait for both players to be on-chain (phase: active) ──────
-        if (onChainPhaseRef.current !== 'active') {
-          console.log('[useGame] Game not yet active on-chain (phase:', onChainPhaseRef.current, ') — waiting...');
+        if (session.getPhase() !== 'active') {
+          console.log('[useGame] Game not yet active on-chain (phase:', session.getPhase(), ') — waiting...');
           setPhase('queued');
-          await new Promise<void>((resolve, reject) => {
-            if (onChainPhaseRef.current === 'active') { resolve(); return; }
-            activePhaseResolveRef.current = resolve;
-            setTimeout(() => {
-              activePhaseResolveRef.current = null;
-              reject(new Error(`Timed out waiting for game to become active (phase: ${onChainPhaseRef.current})`));
-            }, AZTEC_SETTLE_TX_TIMEOUT * 1000);
-          });
+          await session.waitForActivePhase(AZTEC_SETTLE_TX_TIMEOUT * 1000);
           console.log('[useGame] Game active on-chain — proceeding with settlement');
         }
 
         // NOW transition to settling (from 'active', which is a valid transition)
-        transitionPhase('settling');
+        session.transitionPhase('settling');
 
         // ── Wait for hand proofs ───────────────────────────────────────
         if (!myHandProofRef.current || !opponentHandProofRef.current) {
@@ -1278,8 +809,8 @@ export function useGame(wsUrl: string): UseGameReturn {
         const oppProof = opponentHandProofRef.current;
         if (!myProof || !oppProof) throw new Error('Hand proofs not ready after wait');
 
-        // ── Read pipeline-dependent values from persistent ref ──────────
-        const sInfo = settlementInfoRef.current;
+        // ── Read pipeline-dependent values from persistent session ref ──
+        const sInfo = session.getSettlementInfo();
         if (!sInfo) throw new Error('Settlement info not available (pipeline incomplete)');
 
         // Both players are on-chain (guaranteed by active phase wait above).
@@ -1298,29 +829,11 @@ export function useGame(wsUrl: string): UseGameReturn {
           });
         }
 
-        // ── All waits complete — read from persistent ref ────
-        // Backfill from WS state refs if the message listener missed the update
-        // (race: message arrived before settlementInfoRef was initialized).
-        // We read via refs (NOT `ws.*` directly) because handleSettle is a
-        // useCallback whose closure captures a stale `ws` object from an
-        // earlier render. The refs are updated on every render so they always
-        // hold the latest values.
-        const liveWsOpponentAddress = wsOpponentAztecAddressRef.current;
-        const liveWsOpponentRandomness = wsOpponentGameRandomnessRef.current;
-        const liveWsOpponentCardIds = wsOpponentCardIdsRef.current;
-
-        if (!sInfo.opponentAddress && liveWsOpponentAddress) {
-          console.log('[useGame] Backfilling opponentAddress from ws state');
-          sInfo.opponentAddress = liveWsOpponentAddress;
-        }
-        if (sInfo.opponentRandomness.length === 0 && liveWsOpponentRandomness?.length === 6) {
-          console.log('[useGame] Backfilling opponentRandomness from ws state');
-          sInfo.opponentRandomness = [...liveWsOpponentRandomness];
-        }
-        if (sInfo.opponentCardIds.length === 0 && liveWsOpponentCardIds.length > 0) {
-          console.log('[useGame] Backfilling opponentCardIds from ws state');
-          sInfo.opponentCardIds = [...liveWsOpponentCardIds];
-        }
+        // ── All waits complete — backfill from latest ws state ────
+        // (race: OPPONENT_AZTEC_INFO / GAME_OVER arrived before the pipeline
+        // seeded the settlement info — the session merges the latest ws
+        // values, read via render-updated refs, into any still-empty field).
+        session.backfillSettlementInfoFromWs();
 
         const capturedOpponentAddress = sInfo.opponentAddress;
         const capturedOpponentRandomness = sInfo.opponentRandomness;
@@ -1331,13 +844,13 @@ export function useGame(wsUrl: string): UseGameReturn {
         if (capturedCardIds.length === 0) throw new Error('No caller card IDs (settlement info incomplete)');
         if (capturedOpponentCardIds.length === 0) {
           console.error('[useGame] Settlement failed: opponentCardIds is empty.',
-            { sInfo, liveWsOpponentCardIds });
+            { sInfo });
           throw new Error('No opponent card IDs (settlement info incomplete)');
         }
         if (!capturedOpponentAddress) {
           console.error('[useGame] Settlement failed: opponentAddress is empty.',
             'OPPONENT_AZTEC_INFO was not received via WS or ref.',
-            { sInfo, liveWsOpponentAddress });
+            { sInfo });
           throw new Error('No opponent address (OPPONENT_AZTEC_INFO not received)');
         }
         if (capturedOpponentRandomness.length === 0) {
@@ -1493,30 +1006,32 @@ export function useGame(wsUrl: string): UseGameReturn {
 
         // Game's on-chain lifecycle is complete — mark idle so the pipeline
         // effect won't re-trigger a spurious create_game on navigation.
-        transitionPhase('idle');
-        settlementInfoRef.current = null;
+        session.transitionPhase('idle');
+        session.clearSettlementInfo();
       },
     }).catch((err) => {
       const message = err instanceof Error ? err.message : 'Transaction failed';
       console.error('[useGame] settleGame error:', err);
       setSettleError(message);
       setSettleTxStatus('error');
-      transitionPhase('idle');
-      settlementInfoRef.current = null;
+      session.transitionPhase('idle');
+      session.clearSettlementInfo();
     });
   }, [ws.gameId, ws.playerNumber,
-      aztec.wallet, aztec.accountAddress, importNotes, ws.relayNoteData, ws.notifySettleStarted]);
+      aztec.wallet, aztec.accountAddress, importNotes, ws.relayNoteData, ws.notifySettleStarted,
+      session.getPhase, session.waitForActivePhase, session.transitionPhase,
+      session.getSettlementInfo, session.backfillSettlementInfoFromWs, session.clearSettlementInfo]);
 
   // canGoBack: winner can leave after picking a card (settlement runs in background via txManager).
   // Winner can leave once settlement started (txManager runs in background).
   // Loser must wait for NOTE_DATA (awaiting_settlement blocks navigation).
-  const phase = onChainPhaseRef.current;
+  const phase = session.getPhase();
   const canGoBack = screen === 'main-menu'
     || phase === 'settling'   // winner: settlement in progress, can leave
     || phase === 'idle';      // no lifecycle active
 
   const handleBackToMenu = useCallback(() => {
-    const currentPhase = onChainPhaseRef.current;
+    const currentPhase = session.getPhase();
     if (currentPhase !== 'idle' && currentPhase !== 'settling') {
       console.log('[useGame] Back to menu blocked: game in-flight (phase:', currentPhase, ')');
       return;
@@ -1530,44 +1045,34 @@ export function useGame(wsUrl: string): UseGameReturn {
     setAbandonedDisputeCountdown(null);
     abandonedClaimStartedRef.current = false;
     setScreen('main-menu');
-  }, [ws, storage]);
+  }, [ws, storage, session.getPhase]);
 
   // --- Abandoned game handler ---
   const handleAbandonedGame = useCallback(async () => {
     if (abandonedClaimStartedRef.current) return;
     abandonedClaimStartedRef.current = true;
-    transitionPhase('settling');
+    session.transitionPhase('settling');
     setIsClaimingAbandoned(true);
 
-    const w = requireWallet();
-    const addr = requireAccountAddress();
-    const sInfo = settlementInfoRef.current;
+    const w = requireWallet(aztec.wallet);
+    const addr = requireAccountAddress(aztec.accountAddress);
+    // Backfill from latest ws state (same init race as handleSettle)
+    const sInfo = session.backfillSettlementInfoFromWs();
     const capturedPlayerNumber = ws.playerNumber;
     const validMoveProofs = [...moveProofsRef.current];
-
-    // Backfill from ws state refs (same stale closure issue as handleSettle)
-    if (sInfo && !sInfo.opponentAddress && wsOpponentAztecAddressRef.current) {
-      sInfo.opponentAddress = wsOpponentAztecAddressRef.current;
-    }
-    if (sInfo && sInfo.opponentRandomness.length === 0 && wsOpponentGameRandomnessRef.current?.length === 6) {
-      sInfo.opponentRandomness = [...wsOpponentGameRandomnessRef.current];
-    }
-    if (sInfo && sInfo.opponentCardIds.length === 0 && wsOpponentCardIdsRef.current.length > 0) {
-      sInfo.opponentCardIds = [...wsOpponentCardIdsRef.current];
-    }
 
     if (!sInfo || !sInfo.onChainGameId || !sInfo.gameRandomness.length || !sInfo.opponentAddress) {
       console.error('[useGame] Cannot claim abandoned game: missing settlement info', { sInfo, wsOpponentAddr: ws.opponentAztecAddress });
       setIsClaimingAbandoned(false);
       abandonedClaimStartedRef.current = false;
-      transitionPhase('idle');
+      session.transitionPhase('idle');
       return;
     }
     if (sInfo.callerCardIds.length === 0) {
       console.error('[useGame] Cannot claim abandoned game: missing own card IDs');
       setIsClaimingAbandoned(false);
       abandonedClaimStartedRef.current = false;
-      transitionPhase('idle');
+      session.transitionPhase('idle');
       return;
     }
 
@@ -1770,7 +1275,7 @@ export function useGame(wsUrl: string): UseGameReturn {
           // Refresh token balance (abandoned game settlement may mint tokens)
           aztec.refreshTokenBalance().catch(() => {});
 
-          transitionPhase('idle');
+          session.transitionPhase('idle');
           setIsClaimingAbandoned(false);
           setAbandonedDisputeCountdown(null);
         },
@@ -1780,29 +1285,30 @@ export function useGame(wsUrl: string): UseGameReturn {
       setIsClaimingAbandoned(false);
       setAbandonedDisputeCountdown(null);
       abandonedClaimStartedRef.current = false;
-      transitionPhase('idle');
+      session.transitionPhase('idle');
     }
-  }, [ws, aztec.wallet, aztec.accountAddress, importNotes]);
+  }, [ws, aztec.wallet, aztec.accountAddress, importNotes,
+      session.transitionPhase, session.backfillSettlementInfoFromWs]);
 
   // Auto-trigger abandoned game flow when opponent disconnects
   useEffect(() => {
     if (!ws.opponentDisconnected) return;
     if (abandonedClaimStartedRef.current) return;
-    if (onChainPhaseRef.current !== 'active' && onChainPhaseRef.current !== 'awaiting_join') return;
+    if (session.getPhase() !== 'active' && session.getPhase() !== 'awaiting_join') return;
     if (moveProofsRef.current.length === 0) return;
     console.log('[useGame] Opponent disconnected with moves played, starting abandoned game flow...');
     handleAbandonedGame();
-  }, [ws.opponentDisconnected, handleAbandonedGame]);
+  }, [ws.opponentDisconnected, handleAbandonedGame, session.getPhase]);
 
   return {
     screen, setScreen,
     ws,
-    onChainGameId,
+    onChainGameId: session.onChainGameId,
     handProofStatus,
     moveProofStatus,
     canSettle,
     settleTxStatus,
-    onChainError,
+    onChainError: session.onChainError,
     cardIds, packResult, hasGameInProgress,
     opponentSettled, takenCardId,
     isClaimingAbandoned, abandonedDisputeCountdown, canGoBack,
