@@ -1,0 +1,81 @@
+# CI phase 1 (E3a): TypeScript unit tests + type-check. Sandbox-free.
+# Phase 2 (E3b) adds Noir compile + TXE contract tests once the 4.3.1
+# toolchain pin lands (Lane 1's A1).
+name: CI
+
+on:
+  push:
+    branches: [testnet]
+  pull_request:
+    branches: [testnet]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ts-tests:
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      # Unit tests never read card art; excluding public/cards keeps the
+      # checkout small (same sparse pattern the dev worktrees use).
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            /*
+            !packages/frontend/public/cards
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Cache node_modules
+        id: node-modules-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            packages/*/node_modules
+          key: node-modules-${{ runner.os }}-node22-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        run: npm ci --legacy-peer-deps
+
+      # Workspace packages resolve @axolotl-arena/game-logic via dist/
+      - name: Build game-logic
+        run: npm run build --workspace packages/game-logic
+
+      - name: Game-logic tests
+        run: npx vitest run
+        working-directory: packages/game-logic
+
+      - name: Backend tests
+        run: npx vitest run
+        working-directory: packages/backend
+        env:
+          REDIS_URL: redis://localhost:6379
+
+      - name: Frontend type-check
+        run: npx tsc --noEmit
+        working-directory: packages/frontend
+
+      - name: Frontend tests
+        run: npx vitest run
+        working-directory: packages/frontend

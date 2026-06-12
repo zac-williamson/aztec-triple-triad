@@ -97,6 +97,21 @@ fresh-start repo or keep originals in a GitHub Release.
   scripts), which required one-line edits to root + frontend `package.json`
   (shared files, minimal diff).
 
+- **E3a: one job, not three.** Wall-clock is install-dominated (suites run in
+  seconds: 71 + 179 + 255 tests ≈ 10s total); splitting jobs triples the
+  install/cache cost for no signal gain. CI checkout uses the same sparse
+  pattern as the dev worktrees (unit tests never read card art). Node 22 =
+  the documented floor (no `engines` field exists; CLAUDE.md says >= 22).
+  `node_modules` cached directly, keyed on `package-lock.json`; install
+  skipped on hit. `npm ci --legacy-peer-deps --dry-run` verified in-sync.
+- **E3a: all three suites verified green locally before authoring CI**
+  (game-logic 71, backend 179 with a real Redis, frontend 255 + clean
+  `tsc --noEmit` after building game-logic — workspace resolves via `dist/`,
+  hence the build step ordering). Item G's "3 test assertion fixes" do not
+  make today's backend suite red. `packages/integration` (proof generation)
+  is deliberately out of phase 1 per the brief; frontend's
+  proofIntegration.test.ts already gives circuit-execution signal.
+
 ## Cross-lane contracts
 - **Provide:** .webp switch commit (→2 rebases), CI signal (→all), Vercel deploy
   (→5 smoke).
