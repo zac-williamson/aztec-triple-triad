@@ -84,6 +84,18 @@ fresh-start repo or keep originals in a GitHub Release.
 - **`generate-card-art.ts` still emits PNG by design** — regeneration flow is
   generate PNG → run `compress-card-assets.ts` → commit only the webp.
   `.gitignore` now blocks accidental PNG commits under `public/cards/`.
+- **F2: `circuits/target/aggregate_game.json` is also tracked and equally dead**
+  (the `aggregate_game` crate is gone from `circuits/Nargo.toml`), but
+  `circuits/` is Lane 1's tree — flagged for them, not touched here. Both
+  copy-circuits scripts no longer reference it, so it can't repollute
+  `public/circuits/`.
+- **F2: no cross-named codegen JSONs are tracked.** The cross-named files
+  (`triple_triad_game-ArenaToken.json` etc.) are untracked symlinks that
+  `scripts/test-all.sh` creates for TXE runs. The real risk was the frontend
+  `copy-circuits`/`copy-contracts` `*.json` wildcards, which would sweep
+  symlinks and strays into `public/` — made both explicit (matching the root
+  scripts), which required one-line edits to root + frontend `package.json`
+  (shared files, minimal diff).
 
 ## Cross-lane contracts
 - **Provide:** .webp switch commit (→2 rebases), CI signal (→all), Vercel deploy

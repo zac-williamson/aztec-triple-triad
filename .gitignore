@@ -29,5 +29,8 @@ dump.rdb
 # Contract compilation backup artifacts
 packages/contracts/target/*.bak
 
+# Test coverage output (vitest --coverage)
+coverage/
+
 # Per-worktree lane pointer (untracked, see docs/plan/MASTER_PLAN.md)
 /LANE.md
