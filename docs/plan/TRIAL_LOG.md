@@ -41,6 +41,13 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - lane-6 parked mid-F1 (~10/256 board webps) → continue-nudge sent with F2
   addition + rebase instruction.
 
+- 17:5x — **lane-4 G MERGED** (`bc50650`, gate passed: fallback scan clean, 60s
+  grace preserved, suite verified locally 160+33-skip & tsc clean; agent ran
+  193/193 with Redis). Bonus root-cause find: sliding-TTL resume bug. QA-F2
+  confirmed independently (sanitization tests fixed in April — brief was stale).
+  Exemplary ASSUMPTIONS section. Dispatched onto QA-F3 (backend half of
+  abandoned-claim room release).
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -71,7 +78,7 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | lane-1-chain | restarted fresh post-interruption | A1 | prior WIP uncommitted in worktree |
 | lane-2-frontend | — | B | |
 | lane-3-game-ai | — | D1a | |
-| lane-4-backend | — | G | |
+| lane-4-backend | done → merged bc50650 | QA-F3 (room release) | D2-hook + F3 gated |
 | lane-5-qa | done → merged 826e0d0 | standby + utility annotation | acceptance duty when playtest Phase 1 lands |
 | lane-6-assets-infra | — | F1 | |
 | lane-7-docs | done → merged ade31c7 | E2 | E2 frontend sections wait on lane-2 B |
