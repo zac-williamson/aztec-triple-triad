@@ -35,6 +35,7 @@ import {
   OPPONENT_HAND_POS,
   OPPONENT_HAND_ROT,
 } from './utils/cardPositions';
+import { SceneBridge } from '../testkit';
 
 interface SwampSceneProps {
   board: Board;
@@ -120,6 +121,7 @@ function SceneContent(props: SwampSceneProps) {
   return (
     <>
       <CameraController />
+      <SceneBridge /> {/* no-op unless VITE_TESTKIT=1 */}
 
       {/* Lighting */}
       <ambientLight color="#2a4a2a" intensity={0.5} />

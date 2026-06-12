@@ -103,6 +103,7 @@ export function CardSelector({ ownedCardIds, onConfirm, onBack }: CardSelectorPr
             return (
               <div
                 key={card.id}
+                data-testid={`card-select-${card.id}`}
                 className={[
                   'card-selector__grid-item',
                   selected > 0 ? 'card-selector__grid-item--selected' : '',
@@ -175,6 +176,7 @@ export function CardSelector({ ownedCardIds, onConfirm, onBack }: CardSelectorPr
 
         <button
           className="card-selector__play-btn"
+          data-testid="hand-confirm"
           disabled={selectedIds.length !== 5}
           onClick={handleConfirm}
         >

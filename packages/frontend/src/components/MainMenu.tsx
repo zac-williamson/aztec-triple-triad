@@ -74,6 +74,7 @@ export function MainMenu({
       <div className="main-menu__buttons">
         <button
           className="main-menu__btn main-menu__btn--play"
+          data-testid="menu-play"
           onClick={handlePlayClick}
           disabled={!canPlay}
           title={!canPlay ? 'Connecting to server...' : undefined}

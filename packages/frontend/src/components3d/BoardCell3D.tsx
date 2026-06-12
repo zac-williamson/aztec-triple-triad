@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { Board, Player } from '../types';
 import { Card3D } from './Card3D';
 import { BOARD_CARD_WIDTH } from './utils/cardPositions';
+import { CELL_NAME } from '../testkit/names';
 
 interface BoardCell3DProps {
   row: number;
@@ -43,6 +44,7 @@ export function BoardCell3D({
     <group position={position}>
       {/* Click/hover target plane */}
       <mesh
+        name={CELL_NAME(row, col)}
         rotation={[-Math.PI / 2, 0, 0]}
         onClick={(e) => {
           e.stopPropagation();

@@ -166,7 +166,7 @@ export function GameHUD({
               +20 Arena Tokens earned!
             </div>
             {gameOver.winner === 'draw' ? (
-              <button className="parchment-dialog__btn" onClick={onBackToLobby}>
+              <button className="parchment-dialog__btn" data-testid="back-to-lobby" onClick={onBackToLobby}>
                 Back to Lobby
               </button>
             ) : !opponentSettled ? (
@@ -180,7 +180,7 @@ export function GameHUD({
                     Your opponent took card #{takenCardId}
                   </div>
                 )}
-                <button className="parchment-dialog__btn" onClick={onBackToLobby}>
+                <button className="parchment-dialog__btn" data-testid="back-to-lobby" onClick={onBackToLobby}>
                   Back to Lobby
                 </button>
               </>

@@ -13,6 +13,7 @@ import {
   FAN_ANGLE_SPAN,
   FAN_RADIUS,
 } from './utils/cardPositions';
+import { HAND_PLANE_NAME } from '../testkit/names';
 
 interface PlayerHand3DProps {
   cards: Card[];
@@ -271,6 +272,7 @@ export function PlayerHand3D({
 
       {/* Single invisible hit plane for Hearthstone-style hover detection */}
       <mesh
+        name={HAND_PLANE_NAME}
         position={[0, 0, 0.1]}
         onPointerMove={handleHitMove}
         onPointerLeave={handleHitLeave}
