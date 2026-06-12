@@ -117,10 +117,13 @@ Mainline branch: `testnet`. Lanes branch from it and merge back via PR/review.
 
 ## Worktree conventions
 
-- Every worktree is **sparse**: `packages/frontend/public/cards` (1.9GB) is excluded.
-  Worktrees that run the app (lane-2, lane-5, playtest) have a symlink to the main
-  checkout's cards dir instead. Lane 6 runs `git sparse-checkout disable` temporarily
-  when doing F1 (needs real files), then re-enables.
+- Asset sharing: lanes 1/3/4/6/7 are **sparse** worktrees — `packages/frontend/public/cards`
+  (1.9GB) is excluded via `git sparse-checkout`. App-running worktrees (lane-2, lane-5,
+  playtest) are full worktrees whose cards directory is an **APFS copy-on-write clone**
+  (`cp -Rc` from the main checkout — instant, ~zero disk until modified; do NOT use
+  symlinks: git reports tracked files behind a symlink as deleted). Lane 6 runs
+  `git sparse-checkout disable` temporarily when doing F1 (needs real files), then
+  re-enables.
 - `node_modules` is NOT shared. Run `npm install --legacy-peer-deps` only in worktrees
   that need JS tooling (~1GB each); lanes 1 and 7 don't need it.
 - Each worktree has an untracked `LANE.md` at its root identifying the lane.
