@@ -1,3 +1,4 @@
+import { SESSION_TTL_MS } from './GameStore.js';
 import type { GameStore, StoredGameRoom, SessionData, QueueEntryData } from './GameStore.js';
 
 /**
@@ -12,6 +13,11 @@ export class MemoryGameStore implements GameStore {
   private inboxes = new Map<string, unknown[]>();
   private queue: QueueEntryData[] = [];
   private locks = new Set<string>();
+  private readonly sessionTtlMs: number;
+
+  constructor(options: { sessionTtlMs?: number } = {}) {
+    this.sessionTtlMs = options.sessionTtlMs ?? SESSION_TTL_MS;
+  }
 
   // --- Game rooms ---
 
@@ -62,7 +68,15 @@ export class MemoryGameStore implements GameStore {
   // --- Sessions ---
 
   async getSession(token: string): Promise<SessionData | null> {
-    return this.sessions.get(token) ?? null;
+    const data = this.sessions.get(token);
+    if (!data) return null;
+    // Lazy expiry, mirroring Redis TTL semantics (every setSession writes a
+    // fresh lastSeen, so "expired since last write" == "lastSeen older than TTL").
+    if (Date.now() - data.lastSeen > this.sessionTtlMs) {
+      this.deleteSessionAndMapping(token, data);
+      return null;
+    }
+    return data;
   }
 
   async setSession(token: string, data: SessionData): Promise<void> {
@@ -83,6 +97,14 @@ export class MemoryGameStore implements GameStore {
 
   async deleteSessionTokenByPlayer(playerId: string): Promise<void> {
     this.playerToSession.delete(playerId);
+  }
+
+  /** Remove a session and, if it still points at this token, its reverse mapping. */
+  private deleteSessionAndMapping(token: string, data: SessionData): void {
+    this.sessions.delete(token);
+    if (this.playerToSession.get(data.playerId) === token) {
+      this.playerToSession.delete(data.playerId);
+    }
   }
 
   // --- Message inbox ---
@@ -167,6 +189,18 @@ export class MemoryGameStore implements GameStore {
         if (room.player2Id) this.playerToGame.delete(room.player2Id);
         this.inboxes.delete(room.player1Id);
         if (room.player2Id) this.inboxes.delete(room.player2Id);
+        cleaned++;
+      }
+    }
+    return cleaned;
+  }
+
+  async cleanupStaleSessions(staleMs: number): Promise<number> {
+    const now = Date.now();
+    let cleaned = 0;
+    for (const [token, data] of this.sessions) {
+      if (now - data.lastSeen > staleMs) {
+        this.deleteSessionAndMapping(token, data);
         cleaned++;
       }
     }

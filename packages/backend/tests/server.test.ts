@@ -1521,3 +1521,119 @@ describe('Disconnect-reconnect game continuation', () => {
     ws2.close();
   });
 });
+
+describe('Session staleness (item G)', () => {
+  /** Connect to an arbitrary port and resolve on SESSION_ESTABLISHED. */
+  function establish(p: number, resumeToken?: string): Promise<{ ws: WebSocket; sessionToken: string; playerId: string; resumed: boolean }> {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(`ws://localhost:${p}`);
+      ws.on('error', reject);
+      if (resumeToken) {
+        ws.on('open', () => ws.send(JSON.stringify({ type: 'RESUME', sessionToken: resumeToken })));
+      }
+      ws.on('message', function onFirst(data: WebSocket.Data) {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'SESSION_ESTABLISHED') {
+          ws.removeListener('message', onFirst);
+          resolve({ ws, sessionToken: msg.sessionToken, playerId: msg.playerId, resumed: msg.resumed });
+        }
+      });
+    });
+  }
+
+  it('rejects RESUME when lastSeen is older than 24h and issues a fresh session', async () => {
+    // Infinite store TTL so only the server-side SESSION_STALE_MS check can reject.
+    const { MemoryGameStore } = await import('../src/store/MemoryGameStore.js');
+    const store = new MemoryGameStore({ sessionTtlMs: Infinity });
+    const stalePort = 4100 + Math.floor(Math.random() * 400);
+    const staleServer = createServer({ port: stalePort, sessionHandshakeMs: 50, store });
+    await new Promise<void>((resolve) => staleServer.httpServer.listen(stalePort, resolve));
+
+    try {
+      const first = await establish(stalePort);
+      first.ws.close();
+      await new Promise(r => setTimeout(r, 50));
+
+      // Back-date the session beyond the 24h staleness window
+      await store.setSession(first.sessionToken, {
+        playerId: first.playerId,
+        createdAt: Date.now() - 26 * 60 * 60 * 1000,
+        lastSeen: Date.now() - 25 * 60 * 60 * 1000,
+      });
+
+      const second = await establish(stalePort, first.sessionToken);
+      expect(second.resumed).toBe(false);
+      expect(second.playerId).not.toBe(first.playerId);
+      expect(second.sessionToken).not.toBe(first.sessionToken);
+      // The stale session was discarded, not left behind (TTL here is Infinity,
+      // so only the server can have deleted it).
+      expect(await store.getSession(first.sessionToken)).toBeNull();
+      expect(await store.getSessionTokenByPlayer(first.playerId)).toBeNull();
+      second.ws.close();
+    } finally {
+      await staleServer.close();
+    }
+  });
+
+  it('still resumes a session last seen under 24h ago', async () => {
+    const { MemoryGameStore } = await import('../src/store/MemoryGameStore.js');
+    const store = new MemoryGameStore({ sessionTtlMs: Infinity });
+    const freshPort = 4500 + Math.floor(Math.random() * 400);
+    const freshServer = createServer({ port: freshPort, sessionHandshakeMs: 50, store });
+    await new Promise<void>((resolve) => freshServer.httpServer.listen(freshPort, resolve));
+
+    try {
+      const first = await establish(freshPort);
+      first.ws.close();
+      await new Promise(r => setTimeout(r, 50));
+
+      await store.setSession(first.sessionToken, {
+        playerId: first.playerId,
+        createdAt: Date.now() - 23 * 60 * 60 * 1000,
+        lastSeen: Date.now() - 23 * 60 * 60 * 1000,
+      });
+
+      const second = await establish(freshPort, first.sessionToken);
+      expect(second.resumed).toBe(true);
+      expect(second.playerId).toBe(first.playerId);
+      second.ws.close();
+    } finally {
+      await freshServer.close();
+    }
+  });
+
+  it('PING refreshes the session lastSeen so active connections never go stale', async () => {
+    const { ws, sessionToken } = await createClientWithSession();
+    const before = (await server.store.getSession(sessionToken))!.lastSeen;
+
+    await new Promise(r => setTimeout(r, 20));
+    sendMessage(ws, { type: 'PING' });
+    await waitForMessage(ws, (m) => m.type === 'PONG');
+
+    const after = (await server.store.getSession(sessionToken))!.lastSeen;
+    expect(after).toBeGreaterThan(before);
+    ws.close();
+  });
+
+  it('periodic cleanup loop sweeps stale sessions', async () => {
+    const { MemoryGameStore } = await import('../src/store/MemoryGameStore.js');
+    class SpyStore extends MemoryGameStore {
+      cleanupSessionCalls = 0;
+      override async cleanupStaleSessions(staleMs: number): Promise<number> {
+        this.cleanupSessionCalls++;
+        return super.cleanupStaleSessions(staleMs);
+      }
+    }
+    const spy = new SpyStore();
+    const loopPort = 4900 + Math.floor(Math.random() * 90);
+    const loopServer = createServer({ port: loopPort, sessionHandshakeMs: 50, cleanupIntervalMs: 40, store: spy });
+    await new Promise<void>((resolve) => loopServer.httpServer.listen(loopPort, resolve));
+
+    try {
+      await new Promise(r => setTimeout(r, 150));
+      expect(spy.cleanupSessionCalls).toBeGreaterThan(0);
+    } finally {
+      await loopServer.close();
+    }
+  });
+});

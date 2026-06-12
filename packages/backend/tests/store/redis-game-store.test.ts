@@ -4,8 +4,9 @@
  * Mirrors the MemoryGameStore tests but runs against a real Redis instance.
  * Skipped if REDIS_URL is not set (e.g., in CI without Redis).
  */
-import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { RedisGameStore } from '../../src/store/RedisGameStore.js';
+import { SESSION_TTL_MS } from '../../src/store/GameStore.js';
 import type { StoredGameRoom, SessionData, QueueEntryData } from '../../src/store/GameStore.js';
 
 const REDIS_URL = process.env.REDIS_URL;
@@ -275,6 +276,38 @@ describe.skipIf(!REDIS_URL)('RedisGameStore', () => {
       expect(await store.getPlayerGame('p-old')).toBeNull();
       expect(await store.getPlayerGame('p-new')).toBe('new');
       expect(await store.getInbox('p-old')).toEqual([]);
+    });
+  });
+
+  // --- Stale session cleanup ---
+
+  describe('cleanupStaleSessions', () => {
+    it('removes sessions idle beyond staleMs along with their reverse mappings', async () => {
+      await store.setSession('tok-old', { playerId: 'p-old', createdAt: 0, lastSeen: Date.now() - 3 * 60 * 60 * 1000 });
+      await store.setSessionTokenByPlayer('p-old', 'tok-old');
+      await store.setSession('tok-new', { playerId: 'p-new', createdAt: Date.now(), lastSeen: Date.now() });
+      await store.setSessionTokenByPlayer('p-new', 'tok-new');
+
+      expect(await store.cleanupStaleSessions(SESSION_TTL_MS)).toBe(1);
+      expect(await store.getSession('tok-old')).toBeNull();
+      expect(await store.getSessionTokenByPlayer('p-old')).toBeNull();
+      expect(await store.getSession('tok-new')).not.toBeNull();
+      expect(await store.getSessionTokenByPlayer('p-new')).toBe('tok-new');
+    });
+
+    it('returns 0 when no sessions are stale', async () => {
+      await store.setSession('tok', { playerId: 'p1', createdAt: Date.now(), lastSeen: Date.now() });
+      expect(await store.cleanupStaleSessions(SESSION_TTL_MS)).toBe(0);
+      expect(await store.getSession('tok')).not.toBeNull();
+    });
+
+    it('leaves a reverse mapping alone if it points at a different (live) token', async () => {
+      await store.setSession('tok-old', { playerId: 'p1', createdAt: 0, lastSeen: Date.now() - 3 * 60 * 60 * 1000 });
+      await store.setSessionTokenByPlayer('p1', 'tok-current');
+
+      expect(await store.cleanupStaleSessions(SESSION_TTL_MS)).toBe(1);
+      expect(await store.getSession('tok-old')).toBeNull();
+      expect(await store.getSessionTokenByPlayer('p1')).toBe('tok-current');
     });
   });
 });
