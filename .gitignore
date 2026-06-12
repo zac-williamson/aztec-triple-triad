@@ -28,3 +28,6 @@ dump.rdb
 
 # Contract compilation backup artifacts
 packages/contracts/target/*.bak
+
+# Per-worktree lane pointer (untracked, see docs/plan/MASTER_PLAN.md)
+/LANE.md
