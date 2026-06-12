@@ -51,3 +51,29 @@ without them).
 - Real-proof runs are slow (~30–60 min per campaign) — schedule them, don't block
   interactive work on them. Fast-mode green is necessary but NOT sufficient for
   version-bump merges.
+
+## ASSUMPTIONS
+Discovered while writing CAMPAIGN_BACKLOG.md (2026-06-12). Full detail with
+file:line evidence lives in CAMPAIGN_BACKLOG.md §5; one line each here.
+
+- **QA-A1**: opponent-hand sanitization hiding only the last 2 of 5 hand slots
+  (`HIDDEN_COUNT = 2`, server.ts:194) is intended design, not a privacy leak.
+- **QA-A2**: note-nonce delta is +6 per player per game (gameRandomness is
+  `[Field; 6]`) — fixture determinism depends on it; unconfirmed in
+  `commit_five_nfts_create/join` (open question #6 → Lane 1).
+- **QA-A3**: sandbox blocks advance only on txs, so C3's dispute-window wait is
+  `advanceBlocks(5)` via cheat-code or filler txs, never wall-clock.
+- **QA-A4**: C5 pins the current 60s disconnect grace (server.ts:14); work item
+  G must not change behavior within that window. C5b is spec'd only after G.
+- **Hand-size invariant** (drives C1/C9 design): a 5-card player who loses a
+  game drops to 4 cards and cannot field the next game — consecutive-game
+  campaigns must script outcomes and schedule pack purchases
+  (CAMPAIGN_BACKLOG.md §1.5).
+- **Fast-mode blind spot**: with dummy VKs, `claim_abandoned_game`'s
+  real-vs-dummy VK discrimination collapses — C3 fidelity requires real-proof
+  mode, in addition to the known proof-format-drift blind spot.
+
+Findings filed against other lanes during this work: QA-F1 (onboarding
+double-claim unguarded on-chain → Lane 1), QA-F2 ("3 test assertion fixes" in
+work item G look already-fixed → Lane 4 verify), QA-F3 (abandoned-claim never
+releases the backend room → Lane 4 + Lane 2). Detail: CAMPAIGN_BACKLOG.md §5.
