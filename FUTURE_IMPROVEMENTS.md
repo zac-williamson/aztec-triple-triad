@@ -1,20 +1,20 @@
 # Future Improvements
 
-## Backend session staleness (2026-04-15)
+## ~~Backend session staleness (2026-04-15)~~ — RESOLVED 2026-06-12 (Lane 4, item G)
 
-The current session system has gaps in how staleness is detected:
+All four recommended fixes landed on `lane/4-backend`:
 
-- **`SessionData.lastSeen` is dead data.** Stored on create/RESUME but never read by any code path. No comparison or expiry check uses it.
-- **MemoryGameStore has no session TTL.** Only Redis sessions auto-expire (2h). In-memory sessions persist forever until explicit `deleteSession`.
-- **No `cleanupStaleSessions` in the periodic cleanup loop.** The 5-minute cleanup runs `cleanupStaleGames` and `cleanupStaleQueue` but not sessions.
-- **RESUME accepts any session returned by `getSession`.** No check that the session is "fresh" (e.g., `lastSeen` within 24h). After a server crash, a 2-hour-old session with a stale `clients` map gap is accepted unconditionally.
-
-**Recommended fixes:**
-
-1. Enforce `lastSeen` on RESUME — reject sessions older than `SESSION_STALE_MS` (e.g., 24h), create a new session instead, log the event.
-2. Add session TTL equivalent to MemoryGameStore (match Redis 2h behavior) or remove the memory path in favor of Redis-only.
-3. Add `cleanupStaleSessions` to the `CLEANUP_INTERVAL_MS` loop.
-4. If `lastSeen` is kept, wire it into all the above. If we decide not to use it, delete the field from `SessionData` rather than leave dead state.
+1. RESUME now rejects sessions whose `lastSeen` is older than `SESSION_STALE_MS`
+   (24h), deletes them, logs the rejection, and issues a fresh session
+   (`server.ts`, defense-in-depth behind the store TTL).
+2. `MemoryGameStore` enforces the shared `SESSION_TTL_MS` (2h) — lazily on
+   `getSession` plus via the periodic sweep. The memory path was kept (tests and
+   local dev depend on it); Redis derives its key TTL from the same constant.
+3. `cleanupStaleSessions` is part of the `GameStore` contract (both stores) and
+   runs in the periodic cleanup loop alongside games and queue.
+4. `lastSeen` is now load-bearing: read by the RESUME check, the lazy TTL, and
+   the sweep — and refreshed on PING so a long-lived connection's session
+   cannot expire out from under it mid-game.
 
 ## Full settlement E2E test (2026-04-16)
 

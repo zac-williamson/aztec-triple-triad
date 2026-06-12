@@ -48,3 +48,35 @@ domain exists.
   buffered-inbox semantics (HAND_PROOF, MOVE_PROVEN, NOTE_DATA, OPPONENT_SETTLING,
   OPPONENT_AZTEC_INFO) are load-bearing for offline players.
 - Keep the backend Aztec-free. Anything chain-aware belongs in `packages/bot/`.
+
+## ASSUMPTIONS (discovered during item G, 2026-06-12)
+
+- **The "3 failing hand-sanitization tests" were already fixed** in `4403e2e`
+  (2026-04-17): assertions match the server's HIDDEN_COUNT=2 (first 3 visible,
+  last 2 hidden) and the suite was green at fork point. The brief was stale on
+  this; no test changes were needed.
+- **The 30 skipped tests are the entire RedisGameStore suite**, gated on
+  `describe.skipIf(!REDIS_URL)` — environment-gated by design, not broken.
+  Verified 33/33 green (incl. 3 new sweep tests) against a local
+  `redis-server --port 6390` on 2026-06-12. CI could un-gate them with a Redis
+  service container (Lane 6, E3a/E3b).
+- **Memory store kept** (spec offered "or delete the memory path"): the whole
+  test suite and `npm run dev` run storeless; Redis-only would force a
+  redis-server onto every contributor and CI job. TTL parity chosen instead.
+- **PING refreshes the session** — interpreted as part of "wire `lastSeen`
+  everywhere". Without it, a client connected continuously for >2h never
+  slides its session TTL (RESUME is the only other refresh) and loses the
+  session on its next blip — a real pre-existing bug under Redis.
+- **The 24h RESUME check is defense-in-depth and normally unreachable**: both
+  stores now expire sessions at 2h idle, so the 24h branch only fires if TTL
+  semantics drift. Tested by injecting a `sessionTtlMs: Infinity` store.
+- **`createdAt` stays** as write-only debugging metadata; the spec only
+  condemned `lastSeen` as dead state.
+- **playerId↔sessionToken is 1:1 for life** (fresh uuid pair per session,
+  never re-bound), so deleting a stale session's reverse mapping is safe; the
+  store sweep still guards with a points-at-this-token check so synthetic
+  test states behave precisely.
+- **No protocol change**: stale-RESUME rejection reuses the existing
+  `SESSION_ESTABLISHED { resumed: false }` path, and `useWebSocket.ts`
+  unconditionally overwrites its stored token on that message — no Lane 2/8
+  coordination required.

@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { GameManager } from './GameManager.js';
 import type { ClientMessage, ServerMessage } from './types.js';
 import type { GameState } from '@axolotl-arena/game-logic';
+import { SESSION_TTL_MS } from './store/GameStore.js';
 import type { GameStore } from './store/GameStore.js';
 import { MemoryGameStore } from './store/MemoryGameStore.js';
 import { RedisGameStore } from './store/RedisGameStore.js';
@@ -13,6 +14,10 @@ const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
 const DISCONNECT_TIMEOUT_MS = 60 * 1000; // 60 seconds reconnection window
 const SESSION_HANDSHAKE_MS = 2000; // 2 seconds to send RESUME before new session
+// Defense in depth behind the store-level SESSION_TTL_MS: even if a session
+// key survives (TTL semantics change, store bug), RESUME refuses anything
+// not seen for this long and issues a fresh session instead.
+const SESSION_STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // Known client message types
 const VALID_MESSAGE_TYPES = new Set([
@@ -41,6 +46,8 @@ export interface ServerOptions {
   store?: GameStore;
   /** How long to wait for a RESUME message before creating a new session. Default: 2000ms. */
   sessionHandshakeMs?: number;
+  /** Period of the stale games/queue/sessions sweep. Default: 5 minutes. */
+  cleanupIntervalMs?: number;
 }
 
 export interface CardGameServer {
@@ -56,6 +63,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
   const host = options.host ?? '0.0.0.0';
   const store = options.store ?? new MemoryGameStore();
   const sessionHandshakeMs = options.sessionHandshakeMs ?? SESSION_HANDSHAKE_MS;
+  const cleanupIntervalMs = options.cleanupIntervalMs ?? CLEANUP_INTERVAL_MS;
   const gameManager = new GameManager(store);
 
   // playerId → WebSocket (in-memory, rebuilt on reconnect)
@@ -295,6 +303,33 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     return null;
   }
 
+  /** Create and register a brand-new session for this socket. */
+  async function createFreshSession(ws: WebSocket, reason: string): Promise<string> {
+    const playerId = uuidv4();
+    const sessionToken = uuidv4();
+    const now = Date.now();
+    await store.setSession(sessionToken, { playerId, createdAt: now, lastSeen: now });
+    await store.setSessionTokenByPlayer(playerId, sessionToken);
+    clients.set(playerId, ws);
+    send(ws, { type: 'SESSION_ESTABLISHED', sessionToken, playerId, resumed: false, gameId: null }, playerId);
+    console.log(`[WS] player=${playerId.slice(0, 8)} new session (${reason})`);
+    return playerId;
+  }
+
+  /**
+   * Refresh a connected player's session so it cannot expire mid-connection:
+   * bumps lastSeen and slides both the session and reverse-mapping TTLs.
+   */
+  async function touchSession(playerId: string): Promise<void> {
+    const token = await store.getSessionTokenByPlayer(playerId);
+    if (!token) return;
+    const session = await store.getSession(token);
+    if (!session) return;
+    session.lastSeen = Date.now();
+    await store.setSession(token, session);
+    await store.setSessionTokenByPlayer(playerId, token);
+  }
+
   /**
    * Establish a session for a new or resumed connection.
    * Returns the playerId associated with this socket.
@@ -307,15 +342,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         if (resolved) return;
         resolved = true;
         // No RESUME received — create new session
-        const playerId = uuidv4();
-        const sessionToken = uuidv4();
-        const now = Date.now();
-        await store.setSession(sessionToken, { playerId, createdAt: now, lastSeen: now });
-        await store.setSessionTokenByPlayer(playerId, sessionToken);
-        clients.set(playerId, ws);
-        send(ws, { type: 'SESSION_ESTABLISHED', sessionToken, playerId, resumed: false, gameId: null }, playerId);
-        console.log(`[WS] player=${playerId.slice(0, 8)} new session`);
-        resolve(playerId);
+        resolve(await createFreshSession(ws, 'no resume'));
       }, sessionHandshakeMs);
 
       // Listen for a RESUME message as the first message
@@ -334,10 +361,24 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
           ws.removeListener('message', onMessage);
 
           const session = await store.getSession(msg.sessionToken);
-          if (session) {
+          const idleMs = session ? Date.now() - session.lastSeen : 0;
+          if (session && idleMs > SESSION_STALE_MS) {
+            // Session survived in the store but has not been seen for too
+            // long to trust (server crash, clients-map gap). Discard it and
+            // start over rather than resume into inconsistent state.
+            await store.deleteSession(msg.sessionToken);
+            await store.deleteSessionTokenByPlayer(session.playerId);
+            console.log(
+              `[WS] player=${session.playerId.slice(0, 8)} rejected stale session ` +
+              `(last seen ${Math.round(idleMs / 3_600_000)}h ago, limit ${SESSION_STALE_MS / 3_600_000}h)`,
+            );
+            resolve(await createFreshSession(ws, 'stale token'));
+          } else if (session) {
             const playerId = session.playerId;
             session.lastSeen = Date.now();
             await store.setSession(msg.sessionToken, session);
+            // Slide the reverse-mapping TTL in step with the session's
+            await store.setSessionTokenByPlayer(playerId, msg.sessionToken);
             clients.set(playerId, ws);
 
             // Cancel any pending disconnect timeout
@@ -402,15 +443,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
             resolve(playerId);
           } else {
             // Expired/invalid session — create new
-            const playerId = uuidv4();
-            const sessionToken = uuidv4();
-            const now = Date.now();
-            await store.setSession(sessionToken, { playerId, createdAt: now, lastSeen: now });
-            await store.setSessionTokenByPlayer(playerId, sessionToken);
-            clients.set(playerId, ws);
-            send(ws, { type: 'SESSION_ESTABLISHED', sessionToken, playerId, resumed: false, gameId: null }, playerId);
-            console.log(`[WS] player=${playerId.slice(0, 8)} new session (expired token)`);
-            resolve(playerId);
+            resolve(await createFreshSession(ws, 'expired token'));
           }
         }
         // If first message is not RESUME, let the timeout handle it
@@ -738,6 +771,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
 
       case 'PING': {
         await gameManager.updatePing(playerId);
+        await touchSession(playerId);
         send(ws, { type: 'PONG' }, playerId);
         break;
       }
@@ -780,7 +814,11 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
   const cleanupInterval = setInterval(async () => {
     await gameManager.cleanupStaleGames();
     await gameManager.cleanupStaleQueue();
-  }, CLEANUP_INTERVAL_MS);
+    // Sessions are server-owned (GameManager never touches them), so the
+    // sweep goes straight to the store. Threshold = the store TTL, giving
+    // MemoryGameStore active expiry on top of its lazy on-read expiry.
+    await store.cleanupStaleSessions(SESSION_TTL_MS);
+  }, cleanupIntervalMs);
 
   async function close(): Promise<void> {
     clearInterval(cleanupInterval);
