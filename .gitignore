@@ -32,5 +32,8 @@ packages/contracts/target/*.bak
 # Test coverage output (vitest --coverage)
 coverage/
 
+# Playwright run output
+test-results/
+
 # Per-worktree lane pointer (untracked, see docs/plan/MASTER_PLAN.md)
 /LANE.md
