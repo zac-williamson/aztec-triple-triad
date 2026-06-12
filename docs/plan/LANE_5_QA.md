@@ -76,4 +76,7 @@ file:line evidence lives in CAMPAIGN_BACKLOG.md §5; one line each here.
 Findings filed against other lanes during this work: QA-F1 (onboarding
 double-claim unguarded on-chain → Lane 1), QA-F2 ("3 test assertion fixes" in
 work item G look already-fixed → Lane 4 verify), QA-F3 (abandoned-claim never
-releases the backend room → Lane 4 + Lane 2). Detail: CAMPAIGN_BACKLOG.md §5.
+releases the backend room → Lane 4 + Lane 2), QA-F4 (checked-in contract
+codegen predates the abandoned-game flow — regenerate, never trust → Lane 1),
+QA-F5 (integration e2e tests use banned SponsoredFPC; package has no owning
+lane → orchestrator). Detail: CAMPAIGN_BACKLOG.md §5.

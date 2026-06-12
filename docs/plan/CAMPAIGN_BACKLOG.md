@@ -26,8 +26,8 @@ public and private:
 |-------|------|----------------|
 | **L1 Frontend** | What each player's tab shows + that tab's app-level state | `window.__triadTest` read hooks (per-tab PXE via the app's own utilities) + DOM/HUD selectors. Testkit per PLAYTEST_HARNESS.md §2 |
 | **L2 Backend** | Relay/lobby truth | `GET /health`, `GET /games`, `GET /games/{id}` (`server.ts:80-130`); Redis key reads when `REDIS_URL` set (key schema `RedisGameStore.ts:4-14`); per-tab WS message logs recorded by the testkit |
-| **L3 Chain-public** | Public storage + decoded public events, read by the harness's own Node client — independent of both browsers | View fns: `get_game_status`, `is_game_settled`, `get_game_player1/2` (game `main.nr:863-906`), `public_owner_of` (nft `main.nr:941`). Events: `GameCreated`, `GameJoined`, `GameSettled`, `GameCancelled`, `GameAbandoned`, `AbandonedGameSettled` (game `main.nr:41-79`) |
-| **L4 Chain-private** | Each player's private notes/balance, asserted INSIDE that player's browser context (the only place that PXE exists) | `get_nfts_for_user(addr, page)` paginated (`connectToAztec.ts:359-373`), `ArenaToken.get_balance(owner)` (token `main.nr:83`), `get_note_nonce(owner)` |
+| **L3 Chain-public** | Public storage + decoded public events, read by the harness's own Node client — independent of both browsers | View fns: `get_game_status`, `is_game_settled`, `get_game_player1/2` (game `main.nr:863-906`), `public_owner_of` (nft `main.nr:941`). Events: `GameCreated`, `GameJoined`, `GameSettled`, `GameCancelled`, `GameAbandoned`, `AbandonedGameSettled` (game `main.nr:41-79`). Call shapes + decode rules: §1.7 |
+| **L4 Chain-private** | Each player's private notes/balance, asserted INSIDE that player's browser context (the only place that PXE exists) | `get_nfts_for_user(addr, page)` paginated (`connectToAztec.ts:359-373`), `ArenaToken.get_balance(owner)` (token `main.nr:83`), `get_note_nonce(owner)`. Call shapes + decode rules: §1.7 |
 
 L4 card assertions are **multiset** comparisons of token ids, not set comparisons:
 duplicate token ids are legal (both players start with ids 1–5; packs can repeat
@@ -101,10 +101,12 @@ PLAYTEST_HARNESS.md §3).
 **SC-CREATE/JOIN** (after create or join tx `complete`):
 - L1 both: phase reaches `active` (`useGame.ts:136`); board renders empty.
 - L2: `GET /games/{id}` → `status: 'playing'`, both `playerConnected` flags true.
-- L3: `get_game_status == 2`; `get_game_player1/2` == fixture addresses;
-  `GameCreated` + `GameJoined` events decoded with matching `game_id`.
-- L4 both: the 5 committed ids are **absent** from `get_nfts_for_user` (notes
-  nullified into the game commitment) — the "escrowed while playing" property.
+- L3: `get_game_status == 2` [U-STATUS]; `get_game_player1/2` == fixture
+  addresses [U-PLAYERS]; `GameCreated` + `GameJoined` events decoded with
+  matching `game_id` [U-EVENTS].
+- L4 both: the 5 committed ids are **absent** from `get_nfts_for_user`
+  [U-NFTS] (notes nullified into the game commitment) — the "escrowed while
+  playing" property.
 
 **SC-MOVE** (after every placement):
 - L1 both: board equals the game-logic projection of the move script so far;
@@ -120,21 +122,62 @@ PLAYTEST_HARNESS.md §3).
 - L2: room `status: 'finished'`; both `player:{id}:game` mappings released
   (`GameManager.ts:203-211`); `NOTE_DATA` relayed W→L (or buffered to L's inbox
   if L offline — `server.ts:30-36`).
-- L3: `get_game_status == 3`; `is_game_settled == true`; `GameSettled
-  { game_id, winner: W, loser: L, transferred_card_id: X }`; **no**
-  `public_owners` entries appear for any of the 10 committed ids (win path is
-  fully private).
-- L4 W: inventory == prior + X (committed 5 return + X); balance +20.
-- L4 L: inventory == prior − X; balance +20 (mint is ONCHAIN_CONSTRAINED —
-  arrives by PXE sync, no relay needed; poll per §1.2).
+- L3: `get_game_status == 3` [U-STATUS]; `is_game_settled == true`
+  [U-SETTLED]; `GameSettled { game_id, winner: W, loser: L,
+  transferred_card_id: X }` [U-EVENTS]; **no** `public_owners` entries appear
+  for any of the 10 committed ids [U-PUBOWNER] (win path is fully private).
+- L4 W: inventory == prior + X (committed 5 return + X) [U-NFTS]; balance +20
+  [U-BAL].
+- L4 L: inventory == prior − X [U-NFTS]; balance +20 [U-BAL] (mint is
+  ONCHAIN_CONSTRAINED — arrives by PXE sync, no relay needed; poll per §1.2).
 
 **SC-PACK** (buyer B):
 - L1 B: reveal screen shows exactly the 10 ids that
-  `preview_card_ids(nonce).simulate()` returned **before** the tx
+  `preview_card_ids(nonce).simulate()` returned **before** the tx [U-PREVIEW]
   (`useCardPacks.ts:105-124`); collection +10.
 - L3: tx mined; nothing else public.
-- L4 B: inventory +10 (exact ids); balance −100; `get_note_nonce` +10.
+- L4 B: inventory +10 (exact ids) [U-NFTS]; balance −100 [U-BAL];
+  `get_note_nonce` +10 [U-NONCE].
 - L2: n/a (packs never touch the backend).
+
+### 1.7 Chain-read utility map (L3/L4 → concrete calls)
+
+Every chain-layer assertion in this document carries a `[U-*]` tag resolving
+here, so each spec is implementable without re-deriving call shapes. Two
+execution contexts:
+
+- **in-tab** (L4): MUST run inside the owning player's browser context
+  (`page.evaluate` → testkit read hook) — it reads private notes that exist
+  only in that tab's PXE/IndexedDB.
+- **Node** (L3): the harness's own process, independent of both browsers.
+  Boot pattern U-NODE below; in-repo precedent for public reads:
+  `packages/integration/tests/e2e-aztec-settlement.test.ts:417`.
+
+| Tag | Call (TS) | Context | Returns / decode notes | Source |
+|-----|-----------|---------|------------------------|--------|
+| U-NFTS | `nft.methods.get_nfts_for_user(owner, page).simulate({ from: owner })` | in-tab | `[ids: [Field; MAX_NOTES_PER_PAGE], hasMore: bool]` — loop `page++` while `hasMore`, drop zero slots, compare as **multiset** of `Number(BigInt(v))`. Canonical loop: `connectToAztec.ts:359-373` | nft `main.nr:1075` |
+| U-BAL | `token.methods.get_balance(owner).simulate({ from: owner })` | in-tab | u128 → compare as `BigInt`, exact equality (§1.2: poll to convergence, then assert) | arena_token `main.nr:83` |
+| U-NONCE | `nft.methods.get_note_nonce(owner).simulate({ from: owner })` | in-tab | Field; **returns 0 when no nonce note exists** (pre-onboarding state) | nft `main.nr:1092-1096` |
+| U-PREVIEW | `nft.methods.preview_card_ids(nonce).simulate({ from: owner })` | in-tab | `[Field; 10]`; result is msg_sender-dependent (derived from that account's keys) | nft `main.nr:448` |
+| U-STATUS | `game.methods.get_game_status(gid).simulate({ from })` | Node or in-tab | Field `0–5` per §1.4 lifecycle; compare as `BigInt` | game `main.nr:869` |
+| U-SETTLED | `game.methods.is_game_settled(gid).simulate({ from })` | Node or in-tab | bool | game `main.nr:863` |
+| U-PLAYERS | `game.methods.get_game_player1/2(gid).simulate({ from })` | Node or in-tab | AztecAddress — compare canonically (`.equals()` / `.toString()`), never raw simulate output | game `main.nr:875-882` |
+| U-PUBOWNER | `nft.methods.public_owner_of(token_id).simulate({ from })` | Node or in-tab | AztecAddress; zero address ⇒ no public owner | nft `main.nr:941` |
+| U-EVENTS | `getDecodedPublicEvents` (`@aztec/aztec.js/events`) with `TripleTriadGame.events.<Name>` metadata over a block range | Node | **No in-repo usage precedent — the harness chain client builds this once.** The checked-in codegen metadata is stale (QA-F4): regenerate before building this | events: game `main.nr:41-79`; metadata: `target/codegen/TripleTriadGame.ts:217` (after regen) |
+
+**U-NODE — harness chain-client boot:** `createAztecNodeClient(url)` →
+`EmbeddedWallet.create(node, { ephemeral: true })` → typed handles
+`TripleTriadGame.at(addr, wallet)` / `TripleTriadNFT.at(…)` / `ArenaToken.at(…)`
+from `packages/contracts/target/codegen/` (**regenerated** — QA-F4), addresses
+from the deploy step (`scripts/deploy-contracts.ts` writes `frontend/.env`).
+The chain client is **read-only** (`.simulate` only) — no fee setup needed. If
+it ever sends txs (e.g. C3's `advanceBlocks` filler), Fee Juice only:
+`packages/integration/tests/e2e-*` still carry the banned SponsoredFPC pattern
+(QA-F5) — do NOT copy their fee/deploy code.
+
+Decode rule (ground rule 8): `.simulate()` results stringify as **decimal** —
+never hex-parse them; compare via `BigInt`. In-tab `Fr` construction uses the
+prefix-checking `toFr` helper (`packages/frontend/src/aztec/fieldUtils.ts`).
 
 ---
 
@@ -184,8 +227,8 @@ play scripted 9 moves (SC-MOVE each) → wait `GAME_OVER` → winner picks sched
 Xᵢ → SC-SETTLE-WIN. After steps 2/6: SC-PACK. Click-interaction mode (testkit
 `getScreenXY`) for G1; `placeCard` fast mode acceptable for G2–G5.
 **Assertions:** SC blocks at every step, PLUS the ledger row after each step at
-L4 (both players: exact inventory multiset + exact balance) and L1 (HUD shows
-the same numbers). Final state: both players at exactly 100 tokens, 16/14 cards.
+L4 (both players: exact inventory multiset [U-NFTS] + exact balance [U-BAL])
+and L1 (HUD shows the same numbers). Final state: both players at exactly 100 tokens, 16/14 cards.
 **Negative paths:** none — this is the happy-path regression net.
 **Notes:** Real-proof run of C1 is the **merge gate for A1/A2** (LANE_5_QA.md).
 Fixture-gen must account for note-nonce consumption per game
@@ -206,10 +249,10 @@ Fixture-gen must account for note-nonce consumption per game
 - L2: room `finished`, `winner: 'draw'`; players released; `NOTE_DATA` relayed
   to P2 (draw re-mints are OFFCHAIN-randomness notes needing import, nft
   `main.nr:727-742`).
-- L3: status 3, settled; `GameSettled { winner: 0x0, loser: 0x0,
-  transferred_card_id: 0 }` (game `main.nr:851-856`).
-- L4 both: inventory multiset identical to pre-game (all 5 committed ids back);
-  balance +20 each.
+- L3: status 3 [U-STATUS], settled [U-SETTLED]; `GameSettled { winner: 0x0,
+  loser: 0x0, transferred_card_id: 0 }` [U-EVENTS] (game `main.nr:851-856`).
+- L4 both: inventory multiset identical to pre-game (all 5 committed ids back)
+  [U-NFTS]; balance +20 each [U-BAL].
 **Negative paths:** after P1's settle completes, P2's client must NOT attempt a
 second settlement (`game_settled` guard, game `main.nr:823-825`); assert P2's
 tab reaches idle with no error toast.
@@ -243,15 +286,18 @@ Claim target X ∈ P2's committed hand.
 6. `advanceBlocks(5)` (§1.2), then P1 settles with `claimed_card_id = X` →
    wait `complete`.
 **Assertions:**
-- After step 4 — L3: status 5; `GameAbandoned { game_id, claimant: P1,
-  num_valid_moves: 3 }`.
-- After step 6 — L3: status 3, settled; `AbandonedGameSettled { game_id,
-  claimant: P1, claimed_card_id: X }`; `public_owner_of(t) == P2` for each of
-  P2's 4 remaining committed ids (nft `main.nr:774-784`); no public owner for X.
-- L4 P1: inventory == prior + X; balance +20.
+- After step 4 — L3: status 5 [U-STATUS]; `GameAbandoned { game_id, claimant:
+  P1, num_valid_moves: 3 }` [U-EVENTS — needs regenerated codegen, QA-F4: the
+  checked-in metadata predates this event].
+- After step 6 — L3: status 3 [U-STATUS], settled [U-SETTLED];
+  `AbandonedGameSettled { game_id, claimant: P1, claimed_card_id: X }`
+  [U-EVENTS — same QA-F4 caveat]; `public_owner_of(t) == P2` for each of P2's
+  4 remaining committed ids [U-PUBOWNER] (nft `main.nr:774-784`); no public
+  owner for X [U-PUBOWNER].
+- L4 P1: inventory == prior + X [U-NFTS]; balance +20 [U-BAL].
 - L4 P2 (n/a live — context closed; assert via a re-opened context with P2's
-  pinned creds): private inventory == prior − committed 5; balance unchanged
-  (+0: no reward for the abandoner, game `main.nr:462-468`).
+  pinned creds): private inventory == prior − committed 5 [U-NFTS]; balance
+  unchanged (+0: no reward for the abandoner, game `main.nr:462-468`) [U-BAL].
 - L2: **P1 can immediately create a new game after settling.** Expected to FAIL
   today — see finding QA-F3 (§5): abandoned rooms never hit GAME_OVER, so the
   backend never releases `player:{id}:game` until the 30-min stale sweep,
@@ -276,12 +322,13 @@ P1 cancels from the lobby → wait cancel tx `complete` and `GAME_CANCELLED` WS 
 **P1 immediately creates a NEW game committing the SAME 5 ids** (the strongest
 proof the re-minted notes are spendable) → cancel it again to leave clean state.
 **Assertions:**
-- L3: status 4 after cancel (`GameCancelled` event, game `main.nr:217-219`);
-  the follow-up create succeeds with a fresh game_id (status 1).
-- L4 P1: all 5 ids back in `get_nfts_for_user` **without any NOTE_DATA relay or
-  manual import** — cancel re-mints use ONCHAIN_CONSTRAINED delivery
-  (nft `main.nr:711-723`), discovered by PXE tag sync alone; poll per §1.2.
-  Balance unchanged (no reward on cancel).
+- L3: status 4 after cancel [U-STATUS] (`GameCancelled` event [U-EVENTS], game
+  `main.nr:217-219`); the follow-up create succeeds with a fresh game_id
+  (status 1) [U-STATUS].
+- L4 P1: all 5 ids back in `get_nfts_for_user` [U-NFTS] **without any
+  NOTE_DATA relay or manual import** — cancel re-mints use ONCHAIN_CONSTRAINED
+  delivery (nft `main.nr:711-723`), discovered by PXE tag sync alone; poll per
+  §1.2. Balance unchanged (no reward on cancel) [U-BAL].
 - L2: room removed (`GET /games` no longer lists it); P1's player→game mapping
   released (the follow-up create succeeding proves it end-to-end).
 - L1 P1: lobby shows no stale entry; collection shows 5 cards again.
@@ -334,9 +381,10 @@ P1 picks X and settles → wait P1 `complete` → P2 stays at menu.
 - L1 P2 (at menu): `NOTE_DATA` import still fires (`incomingNoteData` effect)
   — collection (menu/collection view) eventually shows prior − X; balance HUD
   eventually +20; no error toast; no navigation hijack back into the game.
-- L4 P2: inventory == prior − X; balance +20 — asserted at the menu, then ALSO
-  after a full page reload (localStorage `cardStore` + PXE re-import path,
-  `connectToAztec.ts:336-381` — the April persistence work this guards).
+- L4 P2: inventory == prior − X [U-NFTS]; balance +20 [U-BAL] — asserted at
+  the menu, then ALSO after a full page reload (localStorage `cardStore` + PXE
+  re-import path, `connectToAztec.ts:336-381` — the April persistence work
+  this guards).
 - L1/L4 P1: standard SC-SETTLE-WIN winner-side checks.
 - L3: standard SC-SETTLE-WIN chain checks.
 - L2: `NOTE_DATA` delivered live to P2's connected socket (not buffered).
@@ -357,10 +405,13 @@ or a tx escaping to chain when the burn can't succeed.
   frontend pre-guard — `useCardPacks.ts:165-169`); error surfaced in the pack
   UI; **no reveal animation, no cards added to the collection view**; user can
   navigate away and back (not wedged).
-- L4: balance still 0; inventory still 15 (exact multiset unchanged);
-  `get_note_nonce` unchanged at 15.
-- L3: no new tx from P1's account after the failed attempt (compare account
-  nonce/tx-receipt absence via node).
+- L4: balance still 0 [U-BAL]; inventory still 15 (exact multiset unchanged)
+  [U-NFTS]; `get_note_nonce` unchanged at 15 [U-NONCE].
+- L3: nothing reached the chain. Implementable as: the attempt's txProgress
+  stream contains no `sending`/`mining` phase and no `aztecTxHash` — combined
+  with the unchanged [U-NONCE]/[U-BAL]/[U-NFTS] reads above this proves no
+  state mutation. (There is no per-account tx index to query node-side; do not
+  invent one.)
 - L2: n/a.
 **Negative paths:** this whole campaign is the negative path. Optional boundary
 companion: with balance exactly 100, purchase succeeds to 0 (covered by the
@@ -383,10 +434,13 @@ page (returning-player path).
   txHash/noteHashes (`cardStore.ts:8-21`) — starter notes are
   `create_and_push_note` + OFFCHAIN events, so the app-side `importNotesFromTx`
   path MUST have run (ground rule: such notes are never auto-discovered).
-- L4: `get_nfts_for_user == {1,2,3,4,5}`; `get_balance == 100`;
-  `get_note_nonce == 5`.
-- L3: deploy+mint tx mined; account contract instance exists at the derived
-  address.
+- L4: `get_nfts_for_user == {1,2,3,4,5}` [U-NFTS]; `get_balance == 100`
+  [U-BAL]; `get_note_nonce == 5` [U-NONCE] (asserting the 0→5 transition —
+  U-NONCE returns 0 pre-onboarding).
+- L3: deploy+mint tx mined (txProgress `complete` with `aztecTxHash`); the
+  functional account-existence proof is the in-tab U-NFTS/U-BAL reads above
+  succeeding `{ from: accountAddress }` — no separate node-side existence
+  check is required.
 - L2: WS `SESSION_ESTABLISHED` received; session token persisted
   (`aztec_tt_ws_session_token`).
 - **After reload:** connects via the `alreadyDeployed` path with NO second mint
@@ -419,12 +473,12 @@ reward/burn flows, including the draw reward C1 never touches.
 | 4 | G3: P2 wins, claims X₂ | 160 | 60 | 5 | 15 |
 
 **Assertions:** after every step, at BOTH of:
-- L4: `get_balance` exactly equals the ledger cell (no ±, no eventual-ish
-  tolerance — poll to convergence per §1.2, then assert equality); inventory
-  multiset matches.
+- L4: `get_balance` exactly equals the ledger cell [U-BAL] (no ±, no
+  eventual-ish tolerance — poll to convergence per §1.2, then assert
+  equality); inventory multiset matches [U-NFTS].
 - L1: the HUD/menu balance displays the same number L4 returned — the campaign
   exists to catch display drift as much as chain drift.
-- L3 per game: matching `GameSettled` events (G2's with zero
+- L3 per game: matching `GameSettled` events [U-EVENTS] (G2's with zero
   winner/loser/card per C2).
 **Negative paths:** none; C7 owns the failure-side economics.
 
@@ -447,11 +501,12 @@ Game 1's settlement is mining if timing allows).
 - L2 (the core one): each tab's full WS message log contains **only its own
   gameId** — no message of any type ever crosses rooms; D's MATCH_FOUND pairs
   D with C, never with A/B.
-- L3: two distinct on-chain game_ids; each settles with its own `GameSettled`;
-  statuses never interfere (Game 2 still `2` while Game 1 is `3`, then both
-  `3`).
+- L3: two distinct on-chain game_ids; each settles with its own `GameSettled`
+  [U-EVENTS]; statuses never interfere (Game 2 still `2` while Game 1 is `3`,
+  then both `3`) [U-STATUS, U-SETTLED — poll both gids at each transition].
 - L4 all four: inventory/balance deltas correspond ONLY to each player's own
-  game outcome (e.g. A's claimed card never appears in C's or D's inventory).
+  game outcome (e.g. A's claimed card never appears in C's or D's inventory)
+  [U-NFTS, U-BAL per tab].
 - L1 all four: each tab renders only its own board; no flicker/overwrite from
   the other game's GAME_STATE.
 **Negative paths:** while in Game 1, A sends a `JOIN_GAME` for Game 2's id
@@ -495,6 +550,20 @@ LANE_5_QA.md ASSUMPTIONS.
   until the 30-min stale sweep, likely blocking them from creating/joining a
   new game. C3 specs the intended behavior (immediate new game) and will fail
   until this is wired (e.g. release room when the claim flow completes).
+- **QA-F4 (→Lane 1, build artifact):** the checked-in codegen
+  (`packages/contracts/target/codegen/`, last regenerated at 52f9c95) predates
+  the abandoned-game flow (43dd513): it has NO `claim_abandoned_game` /
+  `settle_abandoned_game` methods and NO `GameAbandoned` /
+  `AbandonedGameSettled` event metadata. Anything Node-side (U-NODE, U-EVENTS)
+  must regenerate first (`aztec compile && aztec codegen target/ -o
+  target/codegen`) and treat codegen as a build artifact — never trust the
+  checked-in copy. A1 regenerates as part of the upgrade anyway.
+- **QA-F5 (→orchestrator; ownership unassigned):**
+  `packages/integration/tests/e2e-*.test.ts` still use SponsoredFPC
+  (`e2e-aztec-settlement.test.ts:144,209`) — banned by ground rule 5. Lane 8
+  must not copy that fee/deploy code into the harness chain client (§1.7
+  U-NODE); the tests themselves need migrating to Fee Juice, but
+  `packages/integration` has no owning lane in MASTER_PLAN.md.
 - **QA-A1 (assumption):** opponent-hand sanitization hiding only the LAST 2
   hand slots (3 of 5 visible) is intended game design, not a leak. Campaign
   asserts current behavior; if design changes, SC-MOVE's L2 check changes.
