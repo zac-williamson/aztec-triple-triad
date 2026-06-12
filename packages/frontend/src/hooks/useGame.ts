@@ -114,7 +114,6 @@ function removeOneOfEach(source: number[], toRemove: number[]): number[] {
  *   handProofSubmittedRef,
  *   handProofGeneratedRef,
  *   noteImportProcessedRef: Idempotency guards preventing duplicate operations.
- *   pipelineDoneResolveRef,
  *   activePhaseResolveRef,
  *   moveProofsCompleteRef,
  *   handProofsCompleteRef: Promise resolvers for cross-concern synchronization.
@@ -282,13 +281,6 @@ export function useGame(wsUrl: string): UseGameReturn {
 
   // Guard: preview data already shared with opponent via WebSocket
   const previewSharedRef = useRef(false);
-
-  // Promise-based wait for on-chain pipeline completion (prevents concurrent PXE access)
-  const pipelineDoneResolveRef = useRef<(() => void) | null>(null);
-
-  // Last settlement tx hash — persists across game resets so we can wait for
-  // the PXE to process the block containing nullifiers before the next create_game
-  const lastSettleTxHashRef = useRef<string | null>(null);
 
   // Queue of moves made before hand proofs were ready
   const pendingMovesRef = useRef<Array<{
@@ -824,10 +816,6 @@ export function useGame(wsUrl: string): UseGameReturn {
       const capturedShareInfo = ws.shareAztecInfo;
       const capturedNotifyTx = ws.notifyTxConfirmed;
 
-      if (lastSettleTxHashRef.current) {
-        lastSettleTxHashRef.current = null;
-      }
-
       txManager.runTx({
         type: 'create_game',
         label: 'Creating game...',
@@ -856,7 +844,6 @@ export function useGame(wsUrl: string): UseGameReturn {
             opponentCardIds: wsOpponentCardIdsRef.current.length > 0 ? [...wsOpponentCardIdsRef.current] : [],
           };
           transitionPhase('awaiting_join');
-          if (pipelineDoneResolveRef.current) { pipelineDoneResolveRef.current(); pipelineDoneResolveRef.current = null; }
         },
       }).catch(err => {
         console.error('[useGame] On-chain game creation failed:', err);
@@ -874,10 +861,6 @@ export function useGame(wsUrl: string): UseGameReturn {
       const capturedChainGameId = ws.opponentOnChainGameId!;
       const capturedCardIds = [...cardIds];
       const capturedShareInfo = ws.shareAztecInfo;
-
-      if (lastSettleTxHashRef.current) {
-        lastSettleTxHashRef.current = null;
-      }
 
       txManager.runTx({
         type: 'join_game',
@@ -933,7 +916,6 @@ export function useGame(wsUrl: string): UseGameReturn {
           capturedNotifyTx(capturedGameId, 'join_game', txHash);
           console.log('[useGame] P2: join_game mined, notified backend');
           transitionPhase('active');
-          if (pipelineDoneResolveRef.current) { pipelineDoneResolveRef.current(); pipelineDoneResolveRef.current = null; }
         },
       }).catch(err => {
         console.error('[useGame] P2 join_game tx failed:', err);
@@ -963,7 +945,6 @@ export function useGame(wsUrl: string): UseGameReturn {
       moveProofsCompleteRef.current = null;
       handProofsCompleteRef.current = null;
       previewSharedRef.current = false;
-      pipelineDoneResolveRef.current = null;
       activePhaseResolveRef.current = null;
       // Reset session state
       setOnChainGameId(null);
@@ -1038,7 +1019,6 @@ export function useGame(wsUrl: string): UseGameReturn {
     const { txHash, notes } = ws.incomingNoteData;
     if (noteImportProcessedRef.current === txHash) return;
     noteImportProcessedRef.current = txHash;
-    lastSettleTxHashRef.current = txHash;
 
     // Determine which card was taken by comparing returned cards vs original hand
     const returnedIds = new Set(notes.map(n => n.tokenId));
@@ -1473,7 +1453,6 @@ export function useGame(wsUrl: string): UseGameReturn {
       postEffects: async (result) => {
         const { hash, callerRandomness, opponentRandomness, capturedCardIds, capturedOpponentCardIds } = result;
         setSettleTxHash(hash);
-        lastSettleTxHashRef.current = hash;
         setSettleTxStatus('confirmed');
         console.log('[useGame] Game settled on-chain, txHash:', hash);
 
