@@ -88,7 +88,9 @@ pub contract TripleTriadNFT {
             storage::storage,
         },
         messages::{
-            discovery::private_notes::attempt_note_discovery, logs::note::MAX_NOTE_PACKED_LEN,
+            discovery::private_notes::process_private_note_msg,
+            encoding::{decode_message, MESSAGE_PLAINTEXT_LEN},
+            logs::note::encode_private_note_message,
             message_delivery::MessageDelivery,
             processing::validate_and_store_enqueued_notes_and_events,
         },
@@ -1019,8 +1021,8 @@ pub contract TripleTriadNFT {
     /// Import a note created by the settlement tx into the recipient's PXE.
     /// Called via .simulate() -- NO on-chain tx. Validates against the on-chain tree.
     ///
-    /// Uses attempt_note_discovery + validate_and_store.
-    /// Also runs manual hash chain verification to diagnose matching issues.
+    /// Encodes the note as a standard private-note message and feeds it through
+    /// process_private_note_msg + validate_and_store, mirroring normal delivery.
     #[external("utility")]
     unconstrained fn import_note(
         owner: AztecAddress,
@@ -1038,8 +1040,6 @@ pub contract TripleTriadNFT {
         let storage_slot = TripleTriadNFT::storage_layout().private_nfts.slot;
 
         let note = FieldNote { value };
-        let packed_note: BoundedVec<Field, MAX_NOTE_PACKED_LEN> =
-            BoundedVec::from_array(note.pack());
 
         // Build BoundedVec of unique note hashes from the tx
         let mut unique_hashes_vec: BoundedVec<Field, MAX_NOTE_HASHES_PER_TX> = BoundedVec::new();
@@ -1049,24 +1049,26 @@ pub contract TripleTriadNFT {
             }
         }
 
-        // Run discovery (finds nonce, computes note hash, enqueues for validation)
-        attempt_note_discovery(
+        // Run discovery (finds nonce, computes note hash, enqueues for validation).
+        // attempt_note_discovery went private in 4.3.1; the public path is to encode
+        // the note exactly as a delivered private-note message and re-split it.
+        let message: BoundedVec<Field, MESSAGE_PLAINTEXT_LEN> = BoundedVec::from_array(
+            encode_private_note_message(note, owner, storage_slot, randomness),
+        );
+        let (_msg_type_id, msg_metadata, msg_content) = decode_message(message).unwrap();
+        process_private_note_msg(
             address,
             tx_hash,
             unique_hashes_vec,
             first_nullifier,
             _compute_note_hash,
             _compute_note_nullifier,
-            owner,
-            storage_slot,
-            randomness,
-            FieldNote::get_id(),
-            packed_note,
-            recipient,
+            msg_metadata,
+            msg_content,
         );
 
-        // Validate against on-chain tree and persist to PXE
-        validate_and_store_enqueued_notes_and_events(address, recipient);
+        // Validate against on-chain tree and persist to PXE, scoped to the recipient
+        validate_and_store_enqueued_notes_and_events(recipient);
     }
 
     // --- Utility Functions ---
