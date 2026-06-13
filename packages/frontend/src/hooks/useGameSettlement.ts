@@ -285,7 +285,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
         if (!sInfo) throw new Error('Settlement info not available (pipeline incomplete)');
 
         // Both players are on-chain (guaranteed by active phase wait above).
-        const { fee, Fr, AztecAddress } = await ensureContracts(w);
+        const { Fr, AztecAddress } = await ensureContracts(w);
         const liveOnChainGameId = sInfo.onChainGameId;
 
         // ── Wait for all move proofs ───────────────────────────────────
@@ -396,7 +396,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
             callerRandomness,
             opponentRandomness,
           )
-          .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_SETTLE_TX_TIMEOUT } });
+          .send({ from: senderAddr, wait: { timeout: AZTEC_SETTLE_TX_TIMEOUT } });
 
         const hash = receipt?.txHash?.toString();
         if (!hash) throw new Error('Settlement tx returned no txHash');
@@ -583,7 +583,6 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           if (!contract) throw new Error('Game contract not initialized');
 
           const senderAddr = AztecAddress.fromString(addr);
-          const { fee } = await ensureContracts(w);
 
           const { receipt } = await contract.methods
             .claim_abandoned_game(
@@ -601,7 +600,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
               allProofs[6], allInputs[6], allProofs[7], allInputs[7],
               allProofs[8], allInputs[8],
             )
-            .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_TX_TIMEOUT } });
+            .send({ from: senderAddr, wait: { timeout: AZTEC_TX_TIMEOUT } });
 
           return receipt?.txHash?.toString() ?? '';
         },
@@ -640,7 +639,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           setPhase('sending');
 
           const { ensureContracts } = await import('../aztec/contracts');
-          const { Fr, AztecAddress, fee } = await ensureContracts(w);
+          const { Fr, AztecAddress } = await ensureContracts(w);
 
           const contract = contractCache.gameContract;
           if (!contract) throw new Error('Game contract not initialized');
@@ -658,7 +657,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
               new Fr(BigInt(claimedCardId)),
               opponent,
             )
-            .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_TX_TIMEOUT } });
+            .send({ from: senderAddr, wait: { timeout: AZTEC_TX_TIMEOUT } });
 
           const hash = receipt?.txHash?.toString();
           if (!hash) throw new Error('Settlement tx returned no txHash');

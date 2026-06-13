@@ -27,14 +27,14 @@ import { resolve } from 'path';
 import { createAztecNodeClient } from '@aztec/aztec.js/node';
 import { Fr } from '@aztec/aztec.js/fields';
 import { AztecAddress } from '@aztec/aztec.js/addresses';
-import { SponsoredFeePaymentMethod } from '@aztec/aztec.js/fee';
+import { FeeJuicePaymentMethodWithClaim } from '@aztec/aztec.js/fee';
 import { NO_FROM } from '@aztec/aztec.js/account';
 
 import { EmbeddedWallet } from '@aztec/wallets/embedded';
 import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
-import { getContractInstanceFromInstantiationParams } from '@aztec/stdlib/contract';
-import { SponsoredFPCContractArtifact } from '@aztec/noir-contracts.js/SponsoredFPC';
-import { SPONSORED_FPC_SALT } from '@aztec/constants';
+
+// L1→L2 Fee Juice bridge (shared with the in-app devnet onboarding flow)
+import { fundAccountOnDevnet } from '../packages/frontend/src/aztec/fundDevnet';
 
 // bb.js for VK hash computation
 import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
@@ -138,38 +138,31 @@ async function main() {
   console.log('Waiting for PXE to sync...');
   await new Promise(r => setTimeout(r, 5000));
 
-  // Register SponsoredFPC for fee payments
-  console.log('Registering SponsoredFPC...');
-  const sponsoredFPC = await getContractInstanceFromInstantiationParams(SponsoredFPCContractArtifact, {
-    salt: new Fr(SPONSORED_FPC_SALT),
-  });
-  await wallet.registerContract(sponsoredFPC, SponsoredFPCContractArtifact);
-  const fee = new SponsoredFeePaymentMethod(sponsoredFPC.address);
-
-  // For contract deploys and method calls — publish class/instance on-chain
-  const sendAs = (addr: any) => ({
-    from: addr,
-    fee: { paymentMethod: fee },
-    wait: { timeout: 300 },
-  });
-
-  // For account deploys only — class already registered, skip publication
-  const sendAsAccount = (addr: any) => ({
-    from: addr,
-    fee: { paymentMethod: fee },
-    wait: { timeout: 300 },
-    skipClassPublication: true,
-    skipInstancePublication: true,
-  });
-
+  // Fees: bridge Fee Juice from L1 to the deployer, claim it in the account
+  // deployment, then pay every subsequent tx natively from the deployer's
+  // balance. SponsoredFPC is BANNED (MASTER_PLAN ground rules). Requires
+  // the sandbox's empty-block production (SEQ_MIN_TX_PER_BLOCK=0) for the
+  // L1→L2 claim message — same constraint as start-sandbox.sh documents.
   console.log('Creating deployer account...');
   const deployerAccount = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
   const deployerAddress = deployerAccount.address;
-  // Deploy account with retry for PXE sync race
+
+  console.log('Bridging Fee Juice to deployer...');
+  const claim = await fundAccountOnDevnet(node, deployerAddress.toString(), (msg) => console.log(`  ${msg}`));
+  const claimFee = new FeeJuicePaymentMethodWithClaim(deployerAddress, claim as never);
+
+  // Contract deploys and method calls: no fee option — the deployer pays
+  // natively in Fee Juice from its bridged balance (wallet default).
+  const sendAs = (addr: any) => ({
+    from: addr,
+    wait: { timeout: 300 },
+  });
+
+  // Deploy account with retry for PXE sync race (claims the bridged juice)
   const deployMethod = await deployerAccount.getDeployMethod();
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      await deployMethod.send({ from: NO_FROM, fee: { paymentMethod: fee }, wait: { timeout: 300 } });
+      await deployMethod.send({ from: NO_FROM, fee: { paymentMethod: claimFee }, wait: { timeout: 300 } });
       break;
     } catch (err: any) {
       if (err?.message?.includes('expiration timestamp') && attempt < 2) {

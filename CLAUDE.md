@@ -44,23 +44,18 @@ is the wishlist.
 
 ## Versions — matched sets, never bumped piecemeal
 
-**The repo is mid-upgrade (A2 in progress).** The Noir layer moved to 4.3.1
-(work item A1); the TypeScript layer stays on the 4.2.0 release set until A2
-lands. Each layer is a matched set — bump it atomically or not at all.
+| What | Pin |
+|------|-----|
+| Aztec CLI / sandbox install | `4.3.1` (worktree `.aztecrc` pins it) |
+| npm `@aztec/*` packages | `4.3.1` |
+| aztec-nr git tags in `Nargo.toml` (contracts + circuits) | `v4.3.1` |
+| nargo / `@noir-lang/noir_js` | `1.0.0-beta.21` |
+| poseidon git tag (circuits) | `v0.3.0` |
+| Node.js | >= 22 |
 
-| Layer | What | Pin |
-|-------|------|-----|
-| Noir (4.3.1) | Aztec CLI / sandbox / TXE — pinned per-checkout by `.aztecrc` | `4.3.1` |
-| | aztec-nr git tags in every `Nargo.toml` (contracts + circuits) | `v4.3.1` |
-| | nargo (ships inside the CLI toolchain) | `1.0.0-beta.21` |
-| | poseidon git tag (circuits) | `v0.3.0` |
-| TypeScript (until A2) | npm `@aztec/*` packages | `4.2.0-aztecnr-rc.2` |
-| Both | Node.js | >= 22 |
-
-The 4.2.0 set's two strings — installer tag `4.2.0-nightly.20260323`, package
-tag `4.2.0-aztecnr-rc.2` — name the same release (the CLI self-reports the rc
-tag; confirmed during A1). A2 moves the npm side to 4.3.1 and collapses this
-table back to one row set.
+One uniform set on **4.3.1 stable** (landed by Lanes 1+2, June 2026). Treat it
+as one set — never bump one without the others, never mix versions across
+packages.
 
 ```bash
 aztec-up use 4.3.1     # switch an existing install; or install fresh:
@@ -107,9 +102,8 @@ cd packages/frontend && npm run dev:devnet    # or dev:testnet
 From `docs/plan/MASTER_PLAN.md`; repeated here because every one of these was
 learned the hard way.
 
-1. **Versions**: the layer sets above. Noir layer is on 4.3.1; the npm side
-   stays on the 4.2.0 set until A2 lands. Never mix versions within a layer,
-   never bump a layer piecemeal.
+1. **Versions**: the pin set above, everywhere (uniform 4.3.1). Never mix Aztec
+   versions across packages.
 2. **Contracts compile with `aztec compile`**, not `nargo compile` (misses AVM
    transpilation + VK generation). Standalone circuits use `nargo compile`.
 3. **Contract tests run against TXE** (see command above).
@@ -117,8 +111,8 @@ learned the hard way.
    `wallet.createSchnorrAccount(...)`. `@aztec/test-wallet` / `TestWallet` is
    **FORBIDDEN**.
 5. **SponsoredFPC / `SponsoredFeePaymentMethod` is BANNED.** Fee Juice flows
-   only. (Legacy usages remain in the frontend pending removal — do not copy
-   them into new code.)
+   only: bridge + claim at account deployment, then senders pay natively
+   (omit the `fee` option). The legacy usages were removed in A2.
 6. **All PXE operations are SERIAL per wallet** — concurrent txs, proofs, or
    simulations cause IndexedDB `TransactionInactiveError` (full story in
    `docs/history/IDB_INVESTIGATION_STATUS.md`).

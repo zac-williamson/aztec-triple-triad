@@ -48,18 +48,6 @@ vi.mock('../../aztec/config', () => ({
 vi.mock('@aztec/aztec.js/addresses', () => ({
   AztecAddress: { fromString: (s: string) => s },
 }));
-vi.mock('@aztec/aztec.js/fee', () => ({
-  SponsoredFeePaymentMethod: class { constructor(public address: string) {} },
-}));
-vi.mock('@aztec/stdlib/contract', () => ({
-  getContractInstanceFromInstantiationParams: vi.fn().mockResolvedValue({ address: '0xFPC' }),
-}));
-vi.mock('@aztec/noir-contracts.js/SponsoredFPC', () => ({
-  SponsoredFPCContractArtifact: {},
-}));
-vi.mock('@aztec/constants', () => ({
-  SPONSORED_FPC_SALT: 1n,
-}));
 vi.mock('@aztec/aztec.js/fields', () => {
   class MockFr {
     constructor(public value: any) {}
@@ -110,9 +98,8 @@ describe('useCardPacks', () => {
     mockNftContract.methods.preview_card_ids.mockReturnValue({
       simulate: vi.fn().mockResolvedValue({ result: previewCardIds }),
     });
-    mockNftContract.methods.purchase_card_pack.mockReturnValue({
-      send: vi.fn().mockResolvedValue({ receipt: { txHash: { toString: () => '0xTX_HASH' } } }),
-    });
+    const purchaseSend = vi.fn().mockResolvedValue({ receipt: { txHash: { toString: () => '0xTX_HASH' } } });
+    mockNftContract.methods.purchase_card_pack.mockReturnValue({ send: purchaseSend });
     mockNftContract.methods.compute_note_randomness.mockReturnValue({
       simulate: vi.fn().mockResolvedValue({
         result: previewCardIds.map((_, i) => ({ toString: () => `0xrand${i}` })),
@@ -136,6 +123,12 @@ describe('useCardPacks', () => {
     expect(huntResult.cardIds).toEqual(previewCardIds);
     expect(huntResult.txHash).toBe('0xTX_HASH');
     expect(result.current.txStatus).toBe('done');
+
+    // SponsoredFPC is banned: the purchase is sent WITHOUT a fee option —
+    // the sender pays natively in Fee Juice (wallet default).
+    expect(purchaseSend).toHaveBeenCalledTimes(1);
+    expect(purchaseSend.mock.calls[0][0]).not.toHaveProperty('fee');
+    expect(purchaseSend.mock.calls[0][0]).toMatchObject({ from: '0xACCOUNT' });
 
     // Verify cards were persisted
     expect(addCards).toHaveBeenCalledWith(

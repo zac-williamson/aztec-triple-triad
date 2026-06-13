@@ -116,3 +116,34 @@ the manual FundingPrompt flow. **SponsoredFPC remains banned** — Fee Juice onl
     re-enters the idempotent GAME_OVER path, and a benign
     `ERROR 'Game not found'` only sets `ws.error`, which has no UI
     consumer (verified by grep — nothing renders it).
+
+### From item A2 (4.3.1 SDK migration + SponsoredFPC removal)
+
+11. **npm tag confirmed**: `@aztec/*@4.3.1` all exist (verified via
+    `npm view`); `@noir-lang/noir_js@1.0.0-beta.21` (plain release) matches
+    lane-1's nargo. Lane 1's "presumed 4.3.1" assumption is now confirmed.
+12. **The public SDK surface the app uses survived 4.2→4.3.1 unchanged**
+    (tsc clean with zero source edits outside the two below). The churn was
+    confined to wallet INTERNALS used by instrumentedWallet:
+    `completeFeeOptionsForEstimation` is gone (one
+    `completeFeeOptions({ from, feePayer, gasSettings, forEstimation })`
+    config object now), `simulateViaEntrypoint` takes `additionalScopes` +
+    `sendMessagesAs`, `pxe.proveTx` takes `{ scopes, senderForTags }`.
+    Verified against the installed 4.3.1 wallet-sdk source, not docs.
+13. **`UltraHonkBackend` now requires an explicit `Barretenberg` api**
+    (second constructor arg) — fixed in integration's noir-backend; the
+    frontend already passed it.
+14. **Fee Juice default**: omitting the `fee` option makes the sending
+    account pay natively from its own balance
+    (`AccountFeePaymentMethodOptions.PREEXISTING_FEE_JUICE` in 4.3.1's
+    completeFeeOptions). All game/pack txs now rely on this; accounts are
+    funded at onboarding (bridge+claim on devnet, manual bridge on testnet).
+    The deploy script bridges to its deployer via the same
+    `fundAccountOnDevnet` helper the app uses.
+15. **No proof-shape change** (lane-1 verified: proof 500 fields, VK 115) —
+    `proofWorker.ts` needed no size changes; contract method signatures the
+    frontend calls (incl. `import_note`'s 8 params) are unchanged in the
+    migrated contracts, so the 673d772-style churn did not recur.
+16. **CLAUDE.md §Versions + ground rules updated in this commit** (stale
+    4.2 pins + "legacy SponsoredFPC usages remain" parenthetical) — a
+    1-section cross-lane touch on Lane 7's file, flagged at the gate.
