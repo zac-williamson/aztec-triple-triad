@@ -372,3 +372,30 @@ fails CLIENT-SIDE assembling the proof chain (no tx sent):
 `public/` circuit+contract artifacts from `target/` before serving — the
 committed `public/contracts` copy was stale after the C2 merge and would
 mismatch the deployed ABI once a run reaches `process_game`.)
+
+### Acceptance attempt 7 — GREEN ✅ (A1+A2 upgrade validated end-to-end)
+
+C2 round-2 (testnet `318a791`): chained masks reverted across circuit + contract
++ prover; replaced with the sound original-owner check on a 30-field, **publicly
+agreed** state hash (both peers derive per-cell original-owners identically from
+the board), so the proof chain assembles across the P1→P2 boundary.
+
+`2 passed (6.3m)` on a fresh 4.3.1 stack:
+- **Deliverable** (5.3m): two contexts onboard (Fee-Juice deploy + faucet) →
+  matchmake → 9 click-driven moves with per-move board cross-check → all 9 move
+  proofs (0 "Card already placed") → `canSettle` → winner claims a loser card →
+  `process_game` settles on-chain (`txHash 0x0863aa…`) → three layers asserted:
+  winner PXE +1 incl. the claimed card / loser PXE −1, winner token +20, public
+  `game_status == settled` + on-chain players == both browser accounts, backend
+  room finished/released.
+- **Loser +20 token** (132ms): the ArenaToken reward note imported and the
+  balance reached 120 (sentinel flipped from test.fail to expect-pass — now
+  passing).
+
+Every blocker the gate surfaced (vite cold-optimize, fee headroom incl. the
+deploy-contracts.ts coverage gap, C2 card-replay vs identical decks, the C2
+mask-chaining regression) is fixed; this run exercises the full real-proof path
+on 4.3.1. NOTE for go-live hygiene: the committed `packages/frontend/public/`
+contract/circuit copies lag `target/` after contract changes — the harness syncs
+them at boot, but lane-6/the build should commit them in sync (or gitignore the
+public build outputs).
