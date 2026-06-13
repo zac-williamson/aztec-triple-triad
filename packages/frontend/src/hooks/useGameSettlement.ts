@@ -9,6 +9,7 @@ import { ensureContracts, contractCache } from '../aztec/contracts';
 import { toFr as toFrUtil, toHexString, bytesToFrArray, base64ToFrArray, hexToFr } from '../aztec/fieldUtils';
 import { AZTEC_TX_TIMEOUT, AZTEC_SETTLE_TX_TIMEOUT, CARDS_PER_HAND, TOTAL_MOVES, MOVE_PROOF_WAIT_TIMEOUT, HAND_PROOF_WAIT_TIMEOUT } from '../aztec/gameConstants';
 import { requireWallet, requireAccountAddress } from '../aztec/walletGuards';
+import { gasSettingsWithHeadroom, type BaseFeeNode } from '../aztec/feeSettings';
 import type { HandProofData, MoveProofData, PlaintextNoteData } from '../types';
 
 export type TxStatus = 'idle' | 'preparing' | 'proving' | 'sending' | 'confirmed' | 'error';
@@ -396,7 +397,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
             callerRandomness,
             opponentRandomness,
           )
-          .send({ from: senderAddr, wait: { timeout: AZTEC_SETTLE_TX_TIMEOUT } });
+          .send({ from: senderAddr, fee: { gasSettings: await gasSettingsWithHeadroom(aztec.nodeClient as BaseFeeNode) }, wait: { timeout: AZTEC_SETTLE_TX_TIMEOUT } });
 
         const hash = receipt?.txHash?.toString();
         if (!hash) throw new Error('Settlement tx returned no txHash');
@@ -600,7 +601,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
               allProofs[6], allInputs[6], allProofs[7], allInputs[7],
               allProofs[8], allInputs[8],
             )
-            .send({ from: senderAddr, wait: { timeout: AZTEC_TX_TIMEOUT } });
+            .send({ from: senderAddr, fee: { gasSettings: await gasSettingsWithHeadroom(aztec.nodeClient as BaseFeeNode) }, wait: { timeout: AZTEC_TX_TIMEOUT } });
 
           return receipt?.txHash?.toString() ?? '';
         },
@@ -657,7 +658,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
               new Fr(BigInt(claimedCardId)),
               opponent,
             )
-            .send({ from: senderAddr, wait: { timeout: AZTEC_TX_TIMEOUT } });
+            .send({ from: senderAddr, fee: { gasSettings: await gasSettingsWithHeadroom(aztec.nodeClient as BaseFeeNode) }, wait: { timeout: AZTEC_TX_TIMEOUT } });
 
           const hash = receipt?.txHash?.toString();
           if (!hash) throw new Error('Settlement tx returned no txHash');

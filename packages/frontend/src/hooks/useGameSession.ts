@@ -9,6 +9,7 @@ import { AZTEC_CONFIG } from '../aztec/config';
 import { toFr as toFrUtil, toHexString } from '../aztec/fieldUtils';
 import { AZTEC_TX_TIMEOUT } from '../aztec/gameConstants';
 import { requireWallet, requireAccountAddress } from '../aztec/walletGuards';
+import { gasSettingsWithHeadroom, type BaseFeeNode } from '../aztec/feeSettings';
 import type { Screen } from '../types';
 
 // --- On-chain lifecycle phase ---
@@ -262,7 +263,7 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
     console.log(`[PXE-TRACE] ${Date.now()} gameContract.create_game([${ids.join(',')}]).send(from=${senderAddr})`);
     const { receipt } = await gameContract.methods
       .create_game(ids.map((id: number) => new Fr(BigInt(id))))
-      .send({ from: senderAddr, wait: { timeout: AZTEC_TX_TIMEOUT } });
+      .send({ from: senderAddr, fee: { gasSettings: await gasSettingsWithHeadroom(aztec.nodeClient as BaseFeeNode) }, wait: { timeout: AZTEC_TX_TIMEOUT } });
     const txHash = receipt?.txHash?.toString();
     if (!txHash) throw new Error('create_game tx returned no txHash');
     console.log(`[PXE-TRACE] ${Date.now()} create_game().send COMPLETE txHash=${txHash}`);
@@ -335,7 +336,7 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
 
     const { receipt } = await gameContract.methods
       .join_game(chainGameIdFr, ids.map((id: number) => new Fr(BigInt(id))))
-      .send({ from: senderAddr, wait: { timeout: AZTEC_TX_TIMEOUT } });
+      .send({ from: senderAddr, fee: { gasSettings: await gasSettingsWithHeadroom(aztec.nodeClient as BaseFeeNode) }, wait: { timeout: AZTEC_TX_TIMEOUT } });
     const txHash = receipt?.txHash?.toString();
     if (!txHash) throw new Error('join_game tx returned no txHash');
     console.log('[useGameSession] join_game tx mined, txHash:', txHash);

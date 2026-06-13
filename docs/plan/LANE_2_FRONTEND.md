@@ -280,3 +280,30 @@ winner's `handleSettle` postEffects (`useGameSettlement.ts:439`
 `capturedRelayNoteData`), and in the loser's `incomingNoteData` effect call the
 ArenaToken `import_note` next to the card import — then `refreshTokenBalance`
 reflects +20. Ship with a test; the harness sentinel flips green.
+
+### Fee headroom (4.3.1 playtest gate fix, 2026-06-13)
+
+26. **Every tx send sets `maxFeesPerGas = currentBaseFee × FEE_HEADROOM_MULTIPLIER`**
+    via `src/aztec/feeSettings.ts` (`gasSettingsWithHeadroom(node)`). The L2
+    base fee (`node.getCurrentMinFees()` — the 4.3.1 name for what the playtest
+    called `getCurrentBaseFees`) rises with demand; the wallet's default
+    `completeFeeOptions` sets `maxFeesPerGas` to base × a tiny `minFeePadding`,
+    so a tx computed against a momentarily-low base fee REJECTS when the fee
+    climbs during proving (observed `maxFeesPerGas.feePerL2Gas=21600000 <
+    gasFees.feePerL2Gas`; harness assumption 15). `completeFeeOptions` honors a
+    caller-provided `gasSettings.maxFeesPerGas`, so passing a partial
+    `fee: { gasSettings: { maxFeesPerGas } }` (the wallet fills gasLimits from
+    estimation) is all that's needed. Wired on all 9 frontend send paths:
+    onboarding deploy+mint / deploy-only / mint-only (`connectToAztec`),
+    `create_game`/`join_game` (`useGameSession`),
+    `process_game`/`claim_abandoned_game`/`settle_abandoned_game`
+    (`useGameSettlement`), `purchase_card_pack` (`useCardPacks`).
+
+**`FEE_HEADROOM_MULTIPLIER = 3` is the CANONICAL value → Lane 1 scripts.**
+`scripts/deploy-*.ts` send their own txs (account deploy, contract deploys,
+mints) and must use the same headroom so on-chain and in-app share one fee
+policy. They can import `gasSettingsWithHeadroom` / `FEE_HEADROOM_MULTIPLIER`
+directly from `packages/frontend/src/aztec/feeSettings.ts` (deploy-contracts.ts
+already imports `fundAccountOnDevnet` from frontend src), or replicate
+`base × 3`. If the canonical multiplier ever changes, change it in
+`feeSettings.ts` and re-announce to Lane 1.
