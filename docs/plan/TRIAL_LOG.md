@@ -108,6 +108,13 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - ESCALATION (Zac): A3 needs a funded deployer account once A2 lands; D2
   launch-scope decision still open.
 
+- 19:4x — **lane-2 C + QA-F3-frontend + cards-dedupe MERGED** (`89d2314`;
+  271/271 + tsc verified). ChainViewPanel reads existing state only; QA-F3
+  spec-exact incl. failure-path test; **abandoned flow has test coverage for
+  the first time** (B decomposition payoff); cards.ts is now re-exports with a
+  guard test. Lane-2 dispatched onto A2 (npm 4.3.1 verified to exist;
+  SponsoredFPC removal in atomic scope incl. deploy-contracts.ts cross-touch).
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -153,7 +160,7 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
 | lane-1-chain | A1+A1.5 merged | QA-F1 + nonce + aggregate twin | then A2 support |
-| lane-2-frontend | B merged cdf5caf | C + QA-F3 frontend half | A2 next once lane-1 lands |
+| lane-2-frontend | B + C bundle merged | A2 (SDK 4.3.1 + SponsoredFPC removal) | D1b after |
 | lane-3-game-ai | both items merged (1afb48e, 64f7e6d) | parked | D2 ← A2 + Zac decision |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
