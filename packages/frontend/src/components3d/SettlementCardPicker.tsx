@@ -86,6 +86,7 @@ export function SettlementCardPicker({
             {opponentCards.map((card) => (
               <button
                 key={card.id}
+                data-testid={`settle-card-${card.id}`}
                 disabled={isProcessing}
                 onClick={() => handleSelect(card.id)}
                 className="settle-card"
@@ -105,7 +106,7 @@ export function SettlementCardPicker({
         )}
 
         {hasPickedCard && onBackToLobby && (
-          <button className="parchment-dialog__btn" onClick={onBackToLobby}>
+          <button className="parchment-dialog__btn" data-testid="back-to-lobby" onClick={onBackToLobby}>
             Back to Lobby
           </button>
         )}

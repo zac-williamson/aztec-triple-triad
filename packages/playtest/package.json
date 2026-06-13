@@ -1,0 +1,20 @@
+{
+  "name": "@axolotl-arena/playtest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed"
+  },
+  "dependencies": {
+    "@axolotl-arena/game-logic": "*"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.27.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.4.0"
+  }
+}

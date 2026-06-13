@@ -6,6 +6,7 @@ import type { ChainViewData } from './ChainViewPanel';
 import { TurnAnnouncer } from './TurnAnnouncer';
 import { useCardAnimation } from './hooks/useCardAnimation';
 import { useCaptureAnimation, type CaptureAnimationEntry } from './hooks/useCaptureAnimation';
+import { useGameScreenBridge } from '../testkit';
 
 export type ProofStatusInfo = {
   hand: string;
@@ -78,6 +79,7 @@ export function GameScreen3D({
   } = useCaptureAnimation();
   const prevBoardRef = useRef<Board | null>(null);
   const pendingCascadeRef = useRef<CaptureAnimationEntry[] | null>(null);
+  useGameScreenBridge(selectedCardIndex, flyingCard !== null, isCascadeActive); // no-op unless VITE_TESTKIT=1
 
   const myPlayer: Player = playerNumber === 1 ? 'player1' : 'player2';
   const opponentPlayer: Player = playerNumber === 1 ? 'player2' : 'player1';

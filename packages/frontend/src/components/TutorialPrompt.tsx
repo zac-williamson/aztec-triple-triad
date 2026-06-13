@@ -46,6 +46,7 @@ export function TutorialPrompt({ onLearnToPlay, onSkip }: TutorialPromptProps) {
           </button>
           <button
             className="parchment-dialog__btn"
+            data-testid="tutorial-skip"
             style={{ background: 'rgba(90,74,52,0.3)' }}
             onClick={onSkip}
           >

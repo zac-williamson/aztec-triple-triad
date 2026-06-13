@@ -14,6 +14,7 @@ import { FundingPrompt } from './components/FundingPrompt';
 import { FundingProgress } from './components/FundingProgress';
 import { TxNotificationCenter } from './components/TxNotificationCenter';
 import { GameScreen3D as GameScreen } from './components3d/GameScreen3D';
+import { useTestkitBridge } from './testkit';
 import './App.css';
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
@@ -21,6 +22,7 @@ const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
 function AppInner() {
   const aztec = useAztecContext();
   const game = useGame(WS_URL);
+  useTestkitBridge(aztec, game); // no-op unless VITE_TESTKIT=1
 
   const [showTutorialPrompt, setShowTutorialPrompt] = useState(
     () => !localStorage.getItem('tutorial_seen'),
