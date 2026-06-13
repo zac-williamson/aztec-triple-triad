@@ -51,6 +51,15 @@ Spike what faucet the 4.3.1 testnet exposes (node info shows a `feeAssetHandler`
 on Sepolia). Then: in-app "request funds" → poll balance → auto-continue, replacing
 the manual FundingPrompt flow. **SponsoredFPC remains banned** — Fee Juice only.
 
+**Reference (orchestrator, for when A3 unblocks this):** model the L1→L2
+Fee Juice flow on **aztec-kit `apps/bridge`** (gregojuice) — the canonical
+bridge implementation — and **aztec-kit `packages/common`**, which has
+bridging helpers worth reusing. Our existing `aztec/fundDevnet.ts`
+(`fundAccountOnDevnet`, used by `connectToAztec` + `deploy-contracts.ts`) is
+the devnet bridge; item I generalizes that into the testnet faucet/onboarding
+UX. Note gregojuice is already this repo's port source for
+`instrumentedWallet.ts`.
+
 ## Cross-lane contracts
 - **Consume:** artifacts/codegen + proof-shape notices (←1), `chooseBotMove` (←3),
   testkit spec coordination (←8: one `main.tsx` import + HUD `data-testid`s —
