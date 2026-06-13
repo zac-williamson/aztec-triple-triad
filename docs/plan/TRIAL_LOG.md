@@ -189,6 +189,13 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   send({from:NO_FROM}) with NO fee/claim — must use FeeJuicePaymentMethodWithClaim).
   Reusable later by item I (player onboarding) + D2 (bot). This is the A3 enabler.
 
+- 21:4x — **playtest model-recovery**: it was the one session that missed the
+  fleet Opus switch (a background test run held the session, so loop-wakeups kept
+  resuming it on revoked fable-5 and erroring). Now on Opus 4.8, Phase 1 at 4/5
+  (evidence run 10 green); nudged to finish the three-layer settlement assertions
+  + repeatability. Sweep: lanes 2-7 confirmed parked; lane-1 actively building
+  fund-testnet.ts (reading L1FeeJuicePortalManager/bridgeTokensPublic).
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
