@@ -62,3 +62,41 @@ the manual FundingPrompt flow. **SponsoredFPC remains banned** — Fee Juice onl
 - EmbeddedWallet only; serial PXE ops; safe `toFr` helper for all simulate results;
   `import_note` after every `create_and_push_note` tx; `--legacy-peer-deps`.
 - `tsc --noEmit` stays at 0 errors (it is clean today — keep it that way).
+
+## ASSUMPTIONS (discovered during item B — useGame decomposition)
+
+1. **The 9 test files importing useGame are the behavioral net.** They pass
+   with zero edits (no import updates needed): `useGame.ts` re-exports
+   `VALID_TRANSITIONS`, `OnChainPhase`, `mapWinnerId`, `TxStatus`,
+   `ProofStatus` from their new homes. `GameScreen.tsx` also imports
+   `TxStatus` from `useGame` — that re-export is load-bearing.
+2. **Dead refs removed** (commit "refactor(frontend): remove dead
+   pipelineDoneResolveRef and lastSettleTxHashRef"). `pipelineDoneResolveRef` was
+   resolved in pipeline postEffects but no code ever registered a waiter;
+   `lastSettleTxHashRef` was written on settle/loser-import and no-op
+   cleared, never read for a decision. Verified by grep before removal; no
+   observable behavior change, so no test accompanies it.
+3. **Session-side `cardIdsRef` writes were redundant.** The ref's only read
+   (`generateMoveProofForPlacement`'s handData) is gated on `myHandProof`,
+   which only exists after `generateHandProofFromState` wrote the identical
+   facade `cardIds` value to that ref. The duplicate writes in
+   `createGameOnChain`/`prepareJoinGame` were dropped; the ref is now
+   private to `useGamePlay`.
+4. **`handlePlay` intentionally does not restore `myHandProof`** from
+   localStorage — after a reload `handProofGeneratedRef` is fresh and the
+   own-hand proof regenerates from saved card IDs + blinding factor. Now
+   documented on `useGamePlay.restoreFromSave`.
+5. **`settleTxHash`/`settleError` are set but not yet rendered.** Kept and
+   exposed on `UseGameSettlementReturn` because item C (privacy panel)
+   surfaces settlement anatomy; deleting them would churn C.
+6. **Effect-order shift is safe.** Sub-hook effects now run before facade
+   effects in a commit (previously interleaved in one hook). The only
+   cross-group pair (facade reset-on-menu vs settlement's loser-import/
+   abandoned triggers) is order-insensitive: `ws.leaveGame()` clears the ws
+   fields those effects key on before `screen` flips to `main-menu`.
+7. **Cross-hook contracts are stable-identity functions, not raw refs**
+   (`getPhase`, `waitForActivePhase`, `getSettlementInfo`,
+   `backfillSettlementInfoFromWs`, `getMoveProofs`, `waitFor*Proofs`…).
+   This is what keeps `handleSettle` memoized (the stale-closure settle bug
+   regression pinned by `useGame.settleFlow.test.ts`). Anything added to a
+   hook's public surface must keep this property.
