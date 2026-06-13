@@ -197,6 +197,14 @@ export class Stack {
     // (the 4.3.1 acceptance-run break). A completed `vite optimize` under the
     // same env leaves a warm cache, so the server starts reload-free.
     const frontendCwd = resolve(ROOT, 'packages/frontend');
+    // Sync public/ circuit + contract artifacts from target/ before serving.
+    // The dev server serves public/ as-is (no build step), and committed public
+    // copies can lag target/ after a contracts/circuits change (seen after the
+    // C2 merge) — a stale ABI would mismatch the freshly-deployed contracts.
+    log('syncing frontend public artifacts from target...');
+    await this.runToCompletion('copy-artifacts', 'bash',
+      ['-c', 'npm run copy-circuits && npm run copy-contracts'],
+      { cwd: ROOT, timeoutMs: 60_000 });
     log('pre-optimizing frontend deps (warm vite cache)...');
     await this.runToCompletion('frontend-optimize', 'npx', ['vite', 'optimize'], {
       cwd: frontendCwd,
