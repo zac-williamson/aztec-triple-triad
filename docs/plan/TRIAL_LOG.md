@@ -285,6 +285,61 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   CHANGE, and lanes were continuously BUSY; the gap was the heartbeat chain, now
   re-armed each loop.)
 
+- 06-13 (~03:20) — **Zac AFK; autonomous mode**. Directive: do not stall.
+  Operating rules while AFK: (1) heartbeat sweep every ~20min is the reliable
+  backstop (reads all panes directly), monitor re-armed if dead. (2) Merge
+  completed lanes through the gate autonomously. (3) NO outward/irreversible
+  actions without Zac: no testnet redeploy, no F3 go-live, no F1b force-push, no
+  git push, no new faucet/funding. (4) Decisions reserved for Zac: D2 scope, F3
+  domain, F1b, testnet ArenaToken redeploy.
+  Autonomous plan: playtest acceptance green → merge harness (capstone);
+  lane-1 ArenaToken loser-token fix → merge (codebase only, NO testnet
+  redeploy). Then quiet — most lanes parked on Zac decisions.
+  TUI note: long pasted dispatches can fail to submit (collapse to "paste again
+  to expand"); use SHORT send-keys messages.
+
+- 06-13 — **Zac directive: testnet redeploy AUTHORIZED, but NO address churn**
+  ("fix the code"). Updated autonomous rules: testnet redeploy now ALLOWED for
+  lane-1 IF it proves addresses are byte-identical locally first (Aztec contract
+  class-update/upgrade for changed contracts + pinned deterministic salts for
+  unchanged ones). If no-churn is infeasible in 4.3.1, lane-1 STOPS + reports —
+  must not churn. Still RESERVED for Zac: F3 go-live, F1b force-push, git push,
+  D2 scope. Directive queued to lane-1 (mid ArenaToken fix).
+
+- 06-13 — **No-churn proven INFEASIBLE; Zac chose C (full updatable redeploy).**
+  lane-1's analysis: A3 instances aren't updatable + set-once PublicImmutable
+  wiring → any contract change forces all-3 churn. Zac chose C: full redeploy
+  with all 3 made UPDATABLE (guarded admin update + set_update_delay) so this is
+  the LAST forced churn; future fixes become address-preserving class updates.
+  ArenaToken loser-token fix is done + TXE-green. lane-1 executing C now
+  (updatable contracts → recompile → full testnet redeploy → re-wire →
+  .env.testnet/README → report new addresses). This ONE churn authorized by Zac.
+  When new addresses land → notify lane-2 (.env build), lane-6 (Vercel env/F3);
+  playtest acceptance uses a LOCAL deploy so unaffected.
+
+- 06-13 (~08:00) — **ROOT-CAUSED the 4 loop stalls** (Zac: stop band-aiding).
+  Cause: the loop ran in /loop DYNAMIC mode = ScheduleWakeup, a SINGLE pending
+  self-wakeup that must be re-armed every turn AND is cancelled by user
+  messages; paired with a Monitor that hard-expires at 1h and is silent during
+  long BUSY ops. Survival required both to hold — every user interjection or
+  >1h operation broke the chain. CronList confirmed ZERO cron jobs were ever
+  set. NOT a model issue (broke under Fable too) — wrong tool.
+  FIX: CronCreate recurring job **6595c0f7** (`4,14,24,34,44,54 * * * *`, every
+  10min, off-minute) — fires INDEPENDENTLY, no re-arming, immune to user msgs +
+  monitor death, 7-day expiry. Monitor v7 (b6n308n3b) kept only as a fast-path
+  accelerator; cron is the guarantee. Stopped using ScheduleWakeup for the loop.
+- **C MERGED** (`1d8c949`): loser-token fix + all 3 contracts updatable
+  (admin-guarded update_to/set_update_delay, ≥600s delay) + testnet redeploy.
+  NEW addresses: NFT 0x03c4a439… Game 0x2d8675fc… Token 0x0ed08cbb… (in
+  .env.testnet/README). Last forced churn.
+- **playtest attempt-3 caught 2 real bugs** (migration core otherwise sound):
+  (1) deploy-contracts.ts missed the fee-headroom mirror → lane-1 (in progress);
+  (2) useGamePlay deferred move-proof "Card already placed" (board-snapshot
+  keying off under 4.3.1 timing → winner never gets 9/9 → no settlement; real
+  fast-play bug) → lane-2 (in progress). playtest holds; re-runs after both.
+- New addresses → lane-2 picks up via .env.testnet (its bug-2 dispatch);
+  lane-6 for F3/Vercel (parked, F3 gated on domain); lane-4 n/a (no addresses).
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -331,7 +386,7 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
-| lane-1-chain | A3 + scripts fee merged (48c341b) | parked (user in window) | ArenaToken loser-token next |
+| lane-1-chain | C + bug-1 merged (234c344) | parked | all items done; D2 contract support if greenlit |
 | lane-2-frontend | fee fix merged (7875d08) | parked | I (unblocked, not gating) + loser-token wiring ← lane-1 |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
@@ -339,3 +394,21 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | lane-6-assets-infra | all merged + CI wiring | parked | F3 ← A3+domain; F1b ← end-of-cycle |
 | lane-7-docs | all items merged | parked | E2.5 ← A3 |
 | playtest | re-running 4.3.1 acceptance | fee fixes in | verdict awaited = A1/A2 acceptance |
+
+## Zac decisions (06-13)
+- **Push to remote: DONE** — origin/testnet @ 380cf10 (clean FF, 145 commits). Work safe.
+- **D2 house bot: POST-LAUNCH** — lane-3 (D2) + lane-4 (D2-hook) stay parked; not in launch scope.
+- **F1b: DEFER to the very end; NO force-push without Zac's explicit approval.** (Hard rule.)
+- **F3: GO, domain = www.aztec-arena.com (previously deployed there).** BLOCKED on credentials:
+  - Vercel: old token REVOKED by S0 (was leaked plaintext); vercel CLI not installed. Need a fresh
+    token or `vercel login`. Project ID known; domain previously attached to that project.
+  - Lightsail/AWS: NO access (~/.aws absent). Need AWS keys OR SSH to the (April?) instance if still up.
+  - Contracts were redeployed → Vercel env + backend need the NEW addresses (sync-vercel-env.ts).
+
+## 06-13 — both acceptance-blocking bugs fixed
+- bug 1 (deploy-contracts fee mirror) merged 234c344; bug 2 (useGamePlay deferred-move keying
+  "Card already placed") + loser-token import merged 009d5ee (296/296+tsc; removed a masking
+  refresh-poll → deterministic import). Both pushed to origin.
+- playtest re-running 4.3.1 acceptance — expect green (settlement reaches 9/9, loser-token
+  test.fail flips). If green: full A1+A2 upgrade validated E2E → merge the harness (capstone).
+- lane-2 parked (item I faucet-onboarding available, not gating). lane-7 all done.

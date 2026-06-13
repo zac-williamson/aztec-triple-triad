@@ -87,13 +87,13 @@ export class TripleTriadGameContract extends ContractBase {
    * @param instantiation - Optional address-affecting parameters (salt, deployer / universalDeploy, publicKeys).
    *                       Salt defaults to a random value; the deployer is locked lazily from the first send-time `from`.
    */
-  public static deploy(wallet: Wallet, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, token_address: AztecAddressLike, dummy_vk_hash: FieldLike, instantiation?: DeployInstantiationOptions) {
+  public static deploy(wallet: Wallet, admin: AztecAddressLike, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, token_address: AztecAddressLike, dummy_vk_hash: FieldLike, instantiation?: DeployInstantiationOptions) {
     return DeployMethod.create<TripleTriadGameContract>(
       wallet,
       {
         artifact: TripleTriadGameContractArtifact,
         postDeployCtor: (instance, wallet) => TripleTriadGameContract.at(instance.address, wallet),
-        args: [nft_address, hand_vk_hash, move_vk_hash, token_address, dummy_vk_hash],
+        args: [admin, nft_address, hand_vk_hash, move_vk_hash, token_address, dummy_vk_hash],
       },
       instantiation,
     );
@@ -135,54 +135,57 @@ export class TripleTriadGameContract extends ContractBase {
   }
   
 
-  public static get storage(): ContractStorageLayout<'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2' | 'game_player_state_1' | 'game_player_state_2' | 'token_contract' | 'dummy_vk_hash' | 'game_claim_player' | 'game_claim_block'> {
+  public static get storage(): ContractStorageLayout<'admin' | 'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2' | 'game_player_state_1' | 'game_player_state_2' | 'token_contract' | 'dummy_vk_hash' | 'game_claim_player' | 'game_claim_block'> {
       return {
-        nft_contract: {
+        admin: {
       slot: new Fr(1n),
     },
-hand_vk_hash: {
+nft_contract: {
       slot: new Fr(3n),
     },
-move_vk_hash: {
+hand_vk_hash: {
       slot: new Fr(5n),
     },
-game_settled: {
+move_vk_hash: {
       slot: new Fr(7n),
     },
-game_status: {
-      slot: new Fr(8n),
-    },
-game_player1: {
+game_settled: {
       slot: new Fr(9n),
     },
-game_player2: {
+game_status: {
       slot: new Fr(10n),
     },
-game_card_commit_1: {
+game_player1: {
       slot: new Fr(11n),
     },
-game_card_commit_2: {
+game_player2: {
       slot: new Fr(12n),
     },
-game_player_state_1: {
+game_card_commit_1: {
       slot: new Fr(13n),
     },
-game_player_state_2: {
+game_card_commit_2: {
       slot: new Fr(14n),
     },
-token_contract: {
+game_player_state_1: {
       slot: new Fr(15n),
     },
-dummy_vk_hash: {
+game_player_state_2: {
+      slot: new Fr(16n),
+    },
+token_contract: {
       slot: new Fr(17n),
     },
-game_claim_player: {
+dummy_vk_hash: {
       slot: new Fr(19n),
     },
+game_claim_player: {
+      slot: new Fr(21n),
+    },
 game_claim_block: {
-      slot: new Fr(20n),
+      slot: new Fr(22n),
     }
-      } as ContractStorageLayout<'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2' | 'game_player_state_1' | 'game_player_state_2' | 'token_contract' | 'dummy_vk_hash' | 'game_claim_player' | 'game_claim_block'>;
+      } as ContractStorageLayout<'admin' | 'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2' | 'game_player_state_1' | 'game_player_state_2' | 'token_contract' | 'dummy_vk_hash' | 'game_claim_player' | 'game_claim_block'>;
     }
     
 
@@ -195,8 +198,8 @@ game_claim_block: {
     /** claim_abandoned_game(game_id: field, num_valid_moves: field, caller_is_player1: boolean, hand_vk: array, move_vk: array, dummy_vk: array, hand_proof_1: array, hand_proof_1_inputs: array, hand_proof_2: array, hand_proof_2_inputs: array, move_proof_1: array, move_inputs_1: array, move_proof_2: array, move_inputs_2: array, move_proof_3: array, move_inputs_3: array, move_proof_4: array, move_inputs_4: array, move_proof_5: array, move_inputs_5: array, move_proof_6: array, move_inputs_6: array, move_proof_7: array, move_inputs_7: array, move_proof_8: array, move_inputs_8: array, move_proof_9: array, move_inputs_9: array) */
     claim_abandoned_game: ((game_id: FieldLike, num_valid_moves: FieldLike, caller_is_player1: boolean, hand_vk: FieldLike[], move_vk: FieldLike[], dummy_vk: FieldLike[], hand_proof_1: FieldLike[], hand_proof_1_inputs: FieldLike[], hand_proof_2: FieldLike[], hand_proof_2_inputs: FieldLike[], move_proof_1: FieldLike[], move_inputs_1: FieldLike[], move_proof_2: FieldLike[], move_inputs_2: FieldLike[], move_proof_3: FieldLike[], move_inputs_3: FieldLike[], move_proof_4: FieldLike[], move_inputs_4: FieldLike[], move_proof_5: FieldLike[], move_inputs_5: FieldLike[], move_proof_6: FieldLike[], move_inputs_6: FieldLike[], move_proof_7: FieldLike[], move_inputs_7: FieldLike[], move_proof_8: FieldLike[], move_inputs_8: FieldLike[], move_proof_9: FieldLike[], move_inputs_9: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** constructor(nft_address: struct, hand_vk_hash: field, move_vk_hash: field, token_address: struct, dummy_vk_hash: field) */
-    constructor: ((nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, token_address: AztecAddressLike, dummy_vk_hash: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** constructor(admin: struct, nft_address: struct, hand_vk_hash: field, move_vk_hash: field, token_address: struct, dummy_vk_hash: field) */
+    constructor: ((admin: AztecAddressLike, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, token_address: AztecAddressLike, dummy_vk_hash: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** create_game(card_ids: array) */
     create_game: ((card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -237,11 +240,17 @@ game_claim_block: {
     /** public_dispatch(selector: field) */
     public_dispatch: ((selector: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
+    /** set_update_delay(new_delay: integer) */
+    set_update_delay: ((new_delay: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
     /** settle_abandoned_game(game_id: field, caller_card_ids: array, caller_randomness: array, opponent_card_ids: array, claimed_card_id: field, opponent: struct) */
     settle_abandoned_game: ((game_id: FieldLike, caller_card_ids: FieldLike[], caller_randomness: FieldLike[], opponent_card_ids: FieldLike[], claimed_card_id: FieldLike, opponent: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** sync_state(scope: struct) */
     sync_state: ((scope: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** update_to(new_class_id: struct) */
+    update_to: ((new_class_id: WrappedFieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
   };
 
   

@@ -100,6 +100,40 @@ funding).
   structurally impossible today (status no longer `active` after the first
   claim). Recorded in FUTURE_IMPROVEMENTS.md as a contract-change candidate.
 
+## ASSUMPTIONS (recorded during E2.5 README refresh, 2026-06-13)
+- **Title renamed to "Axolotl Arena"**: the README was the lone surface still
+  reading "Aztec Triple Triad" — the browser title (`index.html`), root
+  `package.json` name, CLAUDE.md, and ARCHITECTURE.md all say Axolotl Arena.
+  Renamed for front-door consistency (the lane mission); repo name clarified
+  inline so the `aztec-triple-triad` git remote still makes sense. Slightly
+  beyond the literal E2.5 list but squarely within "read like a reference."
+- **"Play in 60 seconds" claim verified, not assumed**: practice mode is a
+  local chainless screen (`App.tsx:46-52` short-circuits before any chain
+  code; `usePractice.ts` imports no aztec/wallet; `config.ts` defaults are
+  crash-safe with no env) — so plain `npm run dev` from `packages/frontend`
+  (which has the `dev` script) reaches Practice-vs-Bot with no wallet/funding/
+  backend. D1a bot brain (`game-logic/src/bot.ts`) + D1b UI both merged.
+- **Updatability documented from contract source**, not the directive's
+  summary: all three contracts expose `update_to(new_class_id)` +
+  `set_update_delay` (NFT gated on `minter`, game/token on `admin`), via
+  `ContractInstanceRegistry` — address-preserving. Verified in
+  `packages/contracts/*/src/main.nr`.
+- **Live URL deferred per directive**: no URL added (domain pending F3); left
+  a marked "hosted version coming" note so F3 has a clean insertion point and
+  there is no dead link.
+- **Addresses already current**: the A3 redeploy commit (`d7bcb7b`, Option C)
+  had already repointed the README address block; E2.5 only added the
+  surrounding updatability context.
+
+## NON-BLOCKING ENV NOTE (2026-06-13)
+- A stray `npm error Missing script: "dev"` surfaced in my terminal during an
+  E2.5 `git commit`. Root-caused as NOT mine: no git hook, husky, or
+  `.claude` settings hook references `dev`; the error targets a *root* `dev`
+  script (my README scopes `npm run dev` to `packages/frontend`, which has
+  it). Most likely the background orchestrator loop/cron (per TRIAL_LOG "cron
+  drives loop now") leaking into the shared shell. Commit landed clean, tree
+  verified. Flagging for visibility, not action.
+
 ## ASSUMPTIONS (recorded during E2 part 2, 2026-06-12)
 - **§12 anchors target the post-B layout** as instructed; they drift if Lane 2
   refactors again — the same owning-lane review contract applies.

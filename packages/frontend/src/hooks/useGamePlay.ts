@@ -64,9 +64,9 @@ export interface UseGamePlayReturn {
  *                        in settlement's execute callback).
  *   myHandProofRef,
  *   opponentHandProofRef: Same pattern — latest proof values for settlement.
- *   pendingMovesRef:     Moves queued before hand proofs are ready.
- *   gameStateHistoryRef: Board snapshots indexed by move number, for deferred
- *                        proof generation after hand proofs arrive.
+ *   pendingMovesRef:     Moves queued before hand proofs are ready, each with
+ *                        the full pre-move state (board+hands+scores+turn)
+ *                        captured at queue time for deferred proof generation.
  *   handProofSubmittedRef,
  *   handProofGeneratedRef: Idempotency guards preventing duplicate operations.
  *   moveProofsCompleteRef,
@@ -98,13 +98,6 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
   const handProofSubmittedRef = useRef(false);
   const handProofGeneratedRef = useRef(false);
 
-  // Board state history — indexed by occupied cell count (move number)
-  const gameStateHistoryRef = useRef<Map<number, {
-    board: GameState['board'];
-    scores: [number, number];
-    currentTurn: 'player1' | 'player2';
-  }>>(new Map());
-
   // Promise-based settlement wait (replaces busy-polling)
   const moveProofsCompleteRef = useRef<(() => void) | null>(null);
 
@@ -117,9 +110,16 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
   // Promise-based hand proof wait (same pattern as moveProofsCompleteRef)
   const handProofsCompleteRef = useRef<(() => void) | null>(null);
 
-  // Queue of moves made before hand proofs were ready
+  // Queue of moves made before hand proofs were ready. Each entry captures the
+  // FULL pre-move game state (board + hands + scores + turn) at queue time, so
+  // the deferred processor can replay the move against the exact board the
+  // player acted on — no later board-state lookup (the snapshot-keying bug:
+  // a count-keyed history map returned a board that already contained the
+  // queued card under 4.3.1 broadcast timing → game_move "Card already placed").
   const pendingMovesRef = useRef<Array<{
-    card: Card; p1Hand: Card[]; p2Hand: Card[];
+    card: Card;
+    board: GameState['board']; p1Hand: Card[]; p2Hand: Card[];
+    scores: [number, number]; currentTurn: 'player1' | 'player2';
     handIndex: number; row: number; col: number;
     moveNumber: number;
   }>>([]);
@@ -206,24 +206,6 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
 
   // --- Effects ---
 
-  // Populate board state history from WS game state
-  useEffect(() => {
-    if (!ws.gameState) return;
-    let occupied = 0;
-    for (const row of ws.gameState.board) {
-      for (const cell of row) {
-        if (cell.card !== null) occupied++;
-      }
-    }
-    if (!gameStateHistoryRef.current.has(occupied)) {
-      gameStateHistoryRef.current.set(occupied, {
-        board: structuredClone(ws.gameState.board),
-        scores: [ws.gameState.player1Score, ws.gameState.player2Score],
-        currentTurn: ws.gameState.currentTurn,
-      });
-    }
-  }, [ws.gameState]);
-
   // Auto-submit hand proof when generated
   useEffect(() => {
     if (!myHandProof || !ws.gameId || handProofSubmittedRef.current) return;
@@ -286,7 +268,7 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
     }
   }, [myHandProof, opponentHandProof]);
 
-  // Process queued moves once both hand proofs are available (bug #1 fix: use history snapshots)
+  // Process queued moves once both hand proofs are available.
   useEffect(() => {
     if (!myHandProof || !opponentHandProof) return;
     if (pendingMovesRef.current.length === 0 || !ws.gameId || !ws.playerNumber) return;
@@ -297,40 +279,35 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
     (async () => {
       for (const move of pending) {
         try {
-          // Look up the correct board state at dequeue time (bug #1 fix)
-          const snapshot = gameStateHistoryRef.current.get(move.moveNumber);
-          if (!snapshot) {
-            console.warn(`[useGamePlay] No board snapshot for move ${move.moveNumber}, skipping`);
-            continue;
-          }
-
           // Apply the move using the pure game logic function
           const { placeCard: applyMove } = await import('@axolotl-arena/game-logic');
           const myPlayer = ws.playerNumber === 1 ? 'player1' : 'player2';
 
-          // Use hand snapshots captured at queue time (not the current
-          // ws.gameState hands, which may have cards set to null since then).
+          // Replay against the FULL pre-move state captured at queue time —
+          // the exact board the player acted on, which by construction does
+          // NOT yet contain this card. (The old count-keyed history lookup
+          // could return a board that already held it.)
           const syntheticState: GameState = {
-            board: snapshot.board,
+            board: move.board,
             player1Hand: move.p1Hand,
             player2Hand: move.p2Hand,
-            currentTurn: snapshot.currentTurn,
-            player1Score: snapshot.scores[0],
-            player2Score: snapshot.scores[1],
+            currentTurn: move.currentTurn,
+            player1Score: move.scores[0],
+            player2Score: move.scores[1],
             status: 'playing',
             winner: null,
           };
 
           const result = applyMove(syntheticState, myPlayer, move.handIndex, move.row, move.col);
           const boardAfter = result.newState.board;
-          const scoresBefore: [number, number] = snapshot.scores;
+          const scoresBefore: [number, number] = move.scores;
           const scoresAfter: [number, number] = [result.newState.player1Score, result.newState.player2Score];
           const gameEnded = result.newState.status === 'finished';
           const winnerId = mapWinnerId(result.newState.winner);
 
           const moveProof = await generateMoveProofForPlacement(
             move.card.id, move.row, move.col, ws.playerNumber!,
-            snapshot.board, boardAfter,
+            move.board, boardAfter,
             scoresBefore, scoresAfter,
             gameEnded, winnerId,
           );
@@ -360,7 +337,10 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
     const myHand = ws.playerNumber === 1 ? ws.gameState.player1Hand : ws.gameState.player2Hand;
     const card = myHand[handIndex];
 
-    // Count occupied cells for move number
+    // Move number = the global count of cards already on the board (both
+    // players). ws.placeCard only sends to the backend; the local board
+    // updates from broadcasts, so ws.gameState here IS the authoritative
+    // pre-move board (the player acts on their turn, their card not yet on it).
     let moveNumber = 0;
     for (const r of ws.gameState.board) {
       for (const cell of r) {
@@ -368,8 +348,8 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
       }
     }
 
-    // Get the board snapshot at the current move number (from history)
-    const boardBefore = gameStateHistoryRef.current.get(moveNumber)?.board ?? ws.gameState.board;
+    // boardBefore for the proof = the exact board the move is applied to.
+    const boardBefore = ws.gameState.board;
 
     ws.placeCard(handIndex, row, col);
 
@@ -393,10 +373,16 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
           );
           ws.submitMoveProof(ws.gameId, handIndex, row, col, moveProof, moveNumber);
         } else {
+          // Capture the full pre-move state (deep-cloned board) so the deferred
+          // processor replays against the exact board, hands, scores, and turn
+          // the player acted on — independent of later ws.gameState changes.
           pendingMovesRef.current.push({
             card,
+            board: structuredClone(ws.gameState.board),
             p1Hand: [...ws.gameState.player1Hand],
             p2Hand: [...ws.gameState.player2Hand],
+            scores: [ws.gameState.player1Score, ws.gameState.player2Score],
+            currentTurn: ws.gameState.currentTurn,
             handIndex, row, col, moveNumber,
           });
         }
@@ -453,7 +439,6 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
     handProofSubmittedRef.current = false;
     pendingMovesRef.current = [];
     handProofGeneratedRef.current = false;
-    gameStateHistoryRef.current = new Map();
     moveProofsCompleteRef.current = null;
     handProofsCompleteRef.current = null;
     setMyHandProof(null);

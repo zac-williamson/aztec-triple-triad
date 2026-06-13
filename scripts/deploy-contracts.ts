@@ -39,6 +39,8 @@ import { fundAccountOnDevnet } from '../packages/frontend/src/aztec/fundDevnet';
 // bb.js for VK hash computation
 import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
 
+import { headroomMaxFeesPerGas } from './lib/feeSettings';
+
 
 
 const PXE_URL = process.env.AZTEC_PXE_URL || 'http://localhost:8080';
@@ -151,10 +153,14 @@ async function main() {
   const claim = await fundAccountOnDevnet(node, deployerAddress.toString(), (msg) => console.log(`  ${msg}`));
   const claimFee = new FeeJuicePaymentMethodWithClaim(deployerAddress, claim as never);
 
-  // Contract deploys and method calls: no fee option — the deployer pays
-  // natively in Fee Juice from its bridged balance (wallet default).
-  const sendAs = (addr: any) => ({
+  // Contract deploys and method calls: deployer pays natively in Fee Juice from
+  // its bridged balance. Cap maxFeesPerGas with headroom over the current L2 base
+  // fee (scripts/lib/feeSettings.ts) so a rising base fee between estimation and
+  // inclusion doesn't reject the tx — same as deploy-testnet. Computed fresh per
+  // send; async, so call sites use `await sendAs(...)`.
+  const sendAs = async (addr: any) => ({
     from: addr,
+    fee: { gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) } },
     wait: { timeout: 300 },
   });
 
@@ -162,7 +168,11 @@ async function main() {
   const deployMethod = await deployerAccount.getDeployMethod();
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      await deployMethod.send({ from: NO_FROM, fee: { paymentMethod: claimFee }, wait: { timeout: 300 } });
+      await deployMethod.send({
+        from: NO_FROM,
+        fee: { paymentMethod: claimFee, gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) } },
+        wait: { timeout: 300 },
+      });
       break;
     } catch (err: any) {
       if (err?.message?.includes('expiration timestamp') && attempt < 2) {
@@ -234,7 +244,7 @@ async function main() {
     nameField,
     symbolField,
   ])
-    .send(sendAs(deployerAddress));
+    .send(await sendAs(deployerAddress));
 
   const nftAddress = nftContract.address;
   console.log(`TripleTriadNFT deployed at: ${nftAddress.toString()}`);
@@ -248,7 +258,7 @@ async function main() {
   const { contract: tokenContract } = await Contract.deploy(wallet, tokenArtifact, [
     deployerAddress,
   ])
-    .send(sendAs(deployerAddress));
+    .send(await sendAs(deployerAddress));
 
   const tokenAddress = tokenContract.address;
   console.log(`ArenaToken deployed at: ${tokenAddress.toString()}`);
@@ -258,15 +268,16 @@ async function main() {
 
   // 7. Deploy Game contract
   console.log('\nDeploying TripleTriadGame...');
-  // Constructor: (nft_address, hand_vk_hash, move_vk_hash, token_address, dummy_vk_hash)
+  // Constructor: (admin, nft_address, hand_vk_hash, move_vk_hash, token_address, dummy_vk_hash)
   const { contract: gameContract } = await Contract.deploy(wallet, gameArtifact, [
+    deployerAddress, // admin (for upgradeability)
     nftAddress,
     Fr.fromHexString(handVkHash),
     Fr.fromHexString(moveVkHash),
     tokenAddress,
     Fr.fromHexString(dummyVkHash),
   ])
-    .send(sendAs(deployerAddress));
+    .send(await sendAs(deployerAddress));
 
   const gameAddress = gameContract.address;
   console.log(`TripleTriadGame deployed at: ${gameAddress.toString()}`);
@@ -278,25 +289,25 @@ async function main() {
   console.log('\nRegistering game contract on NFT...');
   await nftContract.methods
     .set_game_contract(gameAddress)
-    .send(sendAs(deployerAddress));
+    .send(await sendAs(deployerAddress));
   console.log('Game contract registered on NFT.');
 
   console.log('Registering token contract on NFT...');
   await nftContract.methods
     .set_token_contract(tokenAddress)
-    .send(sendAs(deployerAddress));
+    .send(await sendAs(deployerAddress));
   console.log('Token contract registered on NFT.');
 
   console.log('Registering NFT contract on ArenaToken...');
   await tokenContract.methods
     .set_nft_contract(nftAddress)
-    .send(sendAs(deployerAddress));
+    .send(await sendAs(deployerAddress));
   console.log('NFT contract registered on ArenaToken.');
 
   console.log('Registering game contract on ArenaToken...');
   await tokenContract.methods
     .set_game_contract(gameAddress)
-    .send(sendAs(deployerAddress));
+    .send(await sendAs(deployerAddress));
   console.log('Game contract registered on ArenaToken.');
 
   // 9. Write deployed addresses to frontend .env

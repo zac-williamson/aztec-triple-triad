@@ -1,6 +1,21 @@
-# Aztec Triple Triad
+# Axolotl Arena
 
-A fully on-chain Triple Triad card game built on the [Aztec Network](https://aztec.network). Players collect NFT cards, build decks, and battle in private 1v1 matches where game moves are proven with zero-knowledge proofs.
+A fully on-chain Triple Triad card game built on the [Aztec Network](https://aztec.network). Players collect NFT cards, build decks, and battle in private 1v1 matches where every game move is proven with a client-side zero-knowledge proof — only three transactions touch the chain per game, and none of them reveals your hand.
+
+> Repo name is `aztec-triple-triad`; the game is **Axolotl Arena**.
+
+## Play in 60 seconds
+
+Want to try it without a wallet, funding, or even a backend? **Practice vs Bot** runs entirely in your browser against a local AI opponent — no chain, no setup beyond starting the dev server:
+
+```bash
+npm install --legacy-peer-deps
+cd packages/frontend && npm run dev        # http://localhost:3000
+```
+
+Click **Practice vs Bot** on the main menu and pick a difficulty (Novice / Skilled / Master). The on-chain multiplayer experience (NFT cards, ZK-proven moves, on-chain settlement) is below.
+
+> A hosted version you can play without any local setup is coming with the public launch. Until then, run it locally as described here.
 
 ## What is Triple Triad?
 
@@ -10,14 +25,16 @@ Triple Triad is the card game from Final Fantasy VIII. Two players take turns pl
 
 ```
 packages/
-  game-logic/     Pure TypeScript game rules (capture, scoring, win detection)
+  game-logic/     Pure TypeScript game rules (capture, scoring, win detection) + practice bot
   backend/        WebSocket relay server for real-time multiplayer
   frontend/       React + Three.js frontend with 3D swamp environment
-  contracts/      Aztec Noir smart contracts (NFT + Game)
+  contracts/      Aztec Noir contracts: triple_triad_nft, triple_triad_game, arena_token
   integration/    End-to-end tests
-circuits/         Standalone Noir circuits for client-side ZK proofs
+circuits/         Standalone Noir circuits: prove_hand, game_move, dummy_move, dummy_hand
 scripts/          Dev tooling (deploy, card art generation, dev startup)
 ```
+
+For how it all fits together — the three-transaction game lifecycle, the 11-proof recursive settlement, the note lifecycle, and an **Aztec concept → `file:line` index** for learners — see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ### Key Features
 
@@ -25,16 +42,20 @@ scripts/          Dev tooling (deploy, card art generation, dev startup)
 - **NFT cards**: Each card is a private NFT on Aztec, with hidden ownership until revealed
 - **Card packs**: Hunt for cards across 5 locations (River, Forest, Beach, City, Dockyard) with cooldown timers
 - **On-chain settlement**: Winner submits all move proofs in a single transaction; loser's card transfers automatically
+- **Practice mode**: Play a local, chainless game against an AI bot — no wallet or funding required
 - **3D environment**: Swamp-themed diorama with interactive props, built with React Three Fiber
 
 ## Prerequisites
 
 - **Node.js** >= 22.0.0
-- **Aztec CLI** v4.2.0-nightly.20260323 — install via:
+- **Aztec CLI** 4.3.1 — install via:
   ```bash
-  bash -i <(curl -s https://install.aztec.network) 4.2.0-nightly.20260323
+  bash -i <(curl -s https://install.aztec.network) 4.3.1
   ```
-- **Nargo** (installed with the Aztec CLI)
+  (or `aztec-up use 4.3.1` to switch an existing install). The toolchain version is pinned per-checkout by the committed `.aztecrc`.
+- **Nargo** (installed with the Aztec CLI; this repo uses `1.0.0-beta.21`)
+
+> Everything is pinned to **Aztec 4.3.1** — the npm `@aztec/*` packages, the aztec-nr git tags in every `Nargo.toml`, and the CLI. Never mix versions across packages. See [CLAUDE.md](CLAUDE.md#versions--matched-sets-never-bumped-piecemeal) for the full pin table.
 
 ## Getting Started
 
@@ -70,11 +91,11 @@ This deploys all three contracts (NFT, Game, Token), wires them together, and wr
 cp packages/frontend/.env packages/frontend/.env.devnet
 ```
 
-### 3. Copy contract artifacts to frontend
+### 3. Copy contract + circuit artifacts to frontend
 
 ```bash
-npm run copy-contracts
-cp packages/contracts/target/arena_token-ArenaToken.json packages/frontend/public/contracts/
+npm run copy-contracts   # all three contract artifacts → public/contracts/
+npm run copy-circuits    # prove_hand, game_move, dummy_move, dummy_hand → public/circuits/
 ```
 
 ### 4. Start the backend and frontend
@@ -125,14 +146,16 @@ Once funded, click **Confirm Funded** and the app will deploy your account and m
 
 ### Testnet contract addresses
 
-The testnet contracts are pre-deployed and configured in `packages/frontend/.env.testnet`:
+The testnet contracts are deployed on Aztec 4.3.1 and configured in `packages/frontend/.env.testnet`:
 
 ```
 VITE_AZTEC_PXE_URL=https://rpc.testnet.aztec-labs.com
-VITE_NFT_CONTRACT_ADDRESS=0x0e42ec512f2a63e47d43ed2824628dff4fc5a38873d87afa261768e2c1278f7c
-VITE_GAME_CONTRACT_ADDRESS=0x2325ef2879aed75990c6190b6db3ac455f8737cc18ab2133cd7acdfd8c3af4ec
-VITE_TOKEN_CONTRACT_ADDRESS=0x1851bd7c15d78bf29e159f3db3ab871dad80e8891922357d529bb0d8ebb22de8
+VITE_NFT_CONTRACT_ADDRESS=0x03c4a439df5a6b44a645037050b9de4af201f4327240c09b2c0a77fba5d59a9c
+VITE_GAME_CONTRACT_ADDRESS=0x2d8675fc746e38ff6606cae2836c0cd0fa1693b12edb56396f83a530109b75f4
+VITE_TOKEN_CONTRACT_ADDRESS=0x0ed08cbbb2eac1213186c99787736e0ee768dfa9ffa9dfc1a4b9c1d741e870fb
 ```
+
+All three contracts are **updatable** (admin-guarded): each exposes an `update_to(new_class_id)` function that swaps the contract class while preserving the address, gated to the deployer (`minter` for the NFT, `admin` for the game and token contracts) and subject to an on-chain update delay. Future bug fixes ship as address-preserving class updates — these addresses are stable, so deployments no longer churn `.env.testnet`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the contract details.
 
 ## Development
 
