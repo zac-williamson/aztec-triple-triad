@@ -7,78 +7,15 @@
  * queue the app uses — because concurrent PXE access corrupts IndexedDB
  * transactions (see MASTER_PLAN ground rules).
  */
-import txManager, { type TxEntry } from '../aztec/txManager';
+import txManager from '../aztec/txManager';
 import { txProgress, type TxProgressEvent } from '../aztec/txProgress';
 import { ensureContracts } from '../aztec/contracts';
 import { registry } from './registry';
-import { getScreenXY, type ClickTarget } from './project';
+import { getScreenXY } from './project';
+import type { PhaseSnapshot, TriadTestApi } from './contract';
 import type { Player } from '../types';
 
-export interface CellSnapshot {
-  cardId: number | null;
-  owner: Player | null;
-  originalOwner: Player | null;
-}
-
-export interface PhaseSnapshot {
-  seq: number;
-  screen: string;
-  aztecStatus: string;
-  accountAddress: string | null;
-  ownedCardIds: number[];
-  tokenBalance: number;
-  ws: {
-    connected: boolean;
-    gameId: string | null;
-    playerNumber: 1 | 2 | null;
-    matchmakingStatus: string;
-    gameOver: { winner: Player | 'draw' } | null;
-    opponentDisconnected: boolean;
-  };
-  game: {
-    status: string;
-    currentTurn: Player;
-    isMyTurn: boolean;
-    board: CellSnapshot[][];
-    myHandCardIds: number[];
-    myScore: number;
-    opponentScore: number;
-  } | null;
-  chain: {
-    onChainGameId: string | null;
-    handProofStatus: string;
-    moveProofStatus: string;
-    canSettle: boolean;
-    settleTxStatus: string;
-    opponentSettled: boolean;
-    takenCardId: number | null;
-    onChainError: string | null;
-  };
-  interaction: {
-    selectedCardIndex: number | null;
-    flying: boolean;
-    cascading: boolean;
-  } | null;
-}
-
-export interface TriadTestApi {
-  /** Monotonic publish counter — bump means state changed. */
-  seq(): number;
-  /** Cheap synchronous snapshot of app/game/chain state. Null until the app bridge publishes. */
-  phase(): PhaseSnapshot | null;
-  /** Viewport pixel coords for a board cell or hand-fan strip, via the live camera. */
-  getScreenXY(target: ClickTarget): { x: number; y: number };
-  /** Direct-dispatch escape hatch ("fast interaction" mode). Click mode is the default. */
-  placeCard(handIndex: number, row: number, col: number): void;
-  /** Card token IDs in THIS tab's PXE (serialized through the app's PXE queue). */
-  getPrivateCards(): Promise<number[]>;
-  /** Arena Token balance from THIS tab's PXE (serialized through the app's PXE queue). */
-  getTokenBalance(): Promise<number>;
-  /** Live txManager entries (create_game / join_game / settle_game lifecycle). */
-  txEntries(): TxEntry[];
-  /** Recent txProgress events (wallet-level phases incl. aztecTxHash). */
-  txEvents(): TxProgressEvent[];
-}
+export type { PhaseSnapshot, TriadTestApi, ClickTarget, CellSnapshot } from './contract';
 
 const PXE_READ_TIMEOUT_MS = 120_000;
 /** FIFO behind all app work — reads never jump the PXE queue. */

@@ -11,10 +11,9 @@ import { Vector3 } from 'three';
 import { getCardFanTransform } from '../components3d/utils/cardPositions';
 import { registry } from './registry';
 import { CELL_NAME, HAND_PLANE_NAME } from './names';
+import type { ClickTarget } from './contract';
 
-export type ClickTarget =
-  | { type: 'cell'; row: number; col: number }
-  | { type: 'hand'; index: number };
+export type { ClickTarget };
 
 /**
  * Viewport pixel coordinates (CSS px, relative to the page viewport) for a
