@@ -394,3 +394,13 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | lane-6-assets-infra | all merged + CI wiring | parked | F3 ← A3+domain; F1b ← end-of-cycle |
 | lane-7-docs | all items merged | parked | E2.5 ← A3 |
 | playtest | re-running 4.3.1 acceptance | fee fixes in | verdict awaited = A1/A2 acceptance |
+
+## Zac decisions (06-13)
+- **Push to remote: DONE** — origin/testnet @ 380cf10 (clean FF, 145 commits). Work safe.
+- **D2 house bot: POST-LAUNCH** — lane-3 (D2) + lane-4 (D2-hook) stay parked; not in launch scope.
+- **F1b: DEFER to the very end; NO force-push without Zac's explicit approval.** (Hard rule.)
+- **F3: GO, domain = www.aztec-arena.com (previously deployed there).** BLOCKED on credentials:
+  - Vercel: old token REVOKED by S0 (was leaked plaintext); vercel CLI not installed. Need a fresh
+    token or `vercel login`. Project ID known; domain previously attached to that project.
+  - Lightsail/AWS: NO access (~/.aws absent). Need AWS keys OR SSH to the (April?) instance if still up.
+  - Contracts were redeployed → Vercel env + backend need the NEW addresses (sync-vercel-env.ts).
