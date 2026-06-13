@@ -478,3 +478,26 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   correctly NOT starting a 5–10d optional feature; D1 already solved the empty-room problem];
   (3) Zac-reserved [F3 publish, F1b force-push]. Item I (faucet onboarding, non-gating) is the
   only net-new work available to dispatch while we wait.
+
+## 06-13 — playtest attempt 5: REAL game-breaker found (C2 owner-blind replay) + misdiagnosis correction
+- Attempt 5 root-caused the persistent P2 "Card already placed" failure to circuits/game_move/
+  src/main.nr:124-129: an owner-blind replay check `assert(board_before[i*2] != card_id)` whose
+  own comment assumes "card ids are unique NFTs" — FALSE: STARTER_CARD_IDS=[1,2,3,4,5] mints the
+  same ids to both players. P1 places 1–5, then P2's 1–4 are each already on the board → all 4 of
+  P2's move proofs rejected. applyMove (TS) only checks cell-occupancy so it passed; divergence
+  only ever surfaced in-circuit. Added since 4.2 (b72cf42/47912b8), absent at the 4.2 merge-base,
+  which is why phase-1 passed on 4.2. Verified the code directly.
+- HONEST CORRECTION: attempts 3/4 misattributed this to a board-capture race and routed fixes to
+  lane-2. That was wrong — the symptom was C2 id-collision all along. Lane-2's clone fixes (14df546,
+  0a06e2d) cannot affect it and stand on their own merits (a correct pre-move board legitimately
+  holds the opponent's cards); NOT reverting them. The playtest agent flagged its own error.
+- ⇒ This is game-breaking: no two fresh players can finish a game on 4.3.1. F3 frontend go-live is
+  now gated on the REAL fix, not a formality.
+- Routed to lane-1 (circuits+contracts) via docs/plan/BUG_C2_REPLAY.md with 3 fix options + my
+  soundness analysis: (a) current-owner-aware is a TRAP (false-rejects a hand card whose id was
+  captured back — unsound under capture); (a′) original-owner-aware is the surgical sound fix (adds
+  originalOwner to the circuit board encoding + TS mirror + board hash); (b) globally-unique
+  token_ids (correct NFT model, larger blast radius); (c) move the check to aggregation if card_id
+  is exposable there. Lane-1 to choose on soundness + blast radius, ship failing-first test
+  (circuit + TS engine together), then STATUS → I gate-review + merge → playtest attempt 6.
+- Fast-path monitors: b42xmvsqt (lane-1 fix), bwpefs259 (playtest attempt 6). Cron a13b5367 backstop.
