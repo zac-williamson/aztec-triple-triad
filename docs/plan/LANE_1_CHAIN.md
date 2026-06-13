@@ -141,3 +141,81 @@ compiled JSON into `frontend/public/contracts/`, and answering proof-shape quest
     looks like a mass regression but is purely environmental. Always
     `pkill -9 -f "start --txe"` before a run and use a fresh port; one TXE at a
     time. The contract suite is 9/6/17 green on a clean single instance.
+
+### A3 funding automation (2026-06-12)
+
+13. **One-key funding -> auto-distribute (built).** Fee Juice is non-transferable
+    on L2, so distribution = one L1->L2 bridge per recipient. New pieces:
+    - `scripts/lib/feeJuiceBridge.ts` — shared core. `bridgeFeeJuice` generalizes
+      fundDevnet.ts to any network (L1 RPC + funder key from the caller, mint via
+      FeeAssetHandler so the treasury only needs Sepolia ETH). Plus pure helpers:
+      `parseL2Addresses`, `serializeClaim`/`deserializeClaim`, `readFunderKey`,
+      and a claim store (`claimStorePath`/`loadClaimStore`/`putStoredClaim`/
+      `getStoredClaim`/`markClaimConsumed`).
+    - `scripts/fund-testnet.ts` — bridge + persist a claim to each L2 address arg;
+      idempotent (skips addresses with an unconsumed claim unless `--force`).
+    - `scripts/deploy-testnet.ts` GAP FIX — the deployer account was deployed with
+      `send({from:NO_FROM})` and NO fee (can't pay for itself on testnet, no
+      SponsoredFPC). Now obtains a claim (persisted, or bridged inline if treasury
+      creds are in env) and deploys via `FeeJuicePaymentMethodWithClaim` — the
+      canonical fresh-account-init flow (matches aztec-nr's account_init e2e and
+      the devnet smoke test). Claim marked consumed on success.
+14. **Decisions made (no orchestrator input needed):**
+    - **Sepolia RPC:** required via `TESTNET_L1_RPC_URL` (never hardcoded). The
+      chain is auto-detected from the RPC's `eth_chainId` (no chain arg, same as
+      fundDevnet). A public Sepolia RPC or the operator's own endpoint both work.
+    - **Claim persistence:** JSON map (L2 addr -> serialized claim + status +
+      bridgedAt) at `~/.aztec-triad-private/fee-juice-claims.json` (0600, mkdir
+      0700), i.e. OUTSIDE the repo alongside the treasury key so secrets can't be
+      committed. Override via `FEE_JUICE_CLAIMS_FILE`. Treasury key read from
+      `TREASURY_L1_KEY` or `TREASURY_L1_KEY_FILE` (default the 600 file the
+      orchestrator named), validated as 0x-32-byte, never logged.
+15. **DEDUP — flagged, not done (needs a Lane 2 edit + a shared-package call):**
+    fundDevnet.ts (`packages/frontend/src/aztec/`, Lane 2) still holds a local-only
+    copy of the bridge core. Proposal: the canonical home for `bridgeFeeJuice` is a
+    new shared workspace package **`packages/aztec-fee/`** so the frontend funding
+    path (item I) and the headless bot (D2) can depend on it without reaching into
+    `scripts/` or each other's `src/`. fundDevnet.ts should then re-export/import
+    from there. I did NOT edit fundDevnet.ts (Lane 2 owns it); for now the two
+    scripts share `scripts/lib/feeJuiceBridge.ts` so they are deduplicated today.
+16. **Cross-lane + pre-existing flags (for the merge gate / A3 live run):**
+    - `scripts/` is Lane 6's; this is orchestrator-directed work (as deploy-
+      contracts.ts was in A1.5). Did not touch `.gitignore` — the default claim
+      store is outside the repo, so no commit risk.
+    - Pre-existing in deploy-testnet.ts (NOT changed, scope discipline): hardcoded
+      default deployer keys (lines ~121-3, must be overridden via env for a real
+      deploy); the contract-deploy `sendAs` omits an explicit fee and relies on the
+      deployer's native Fee Juice balance after the claim — works once funded, but
+      a single bridged claim must cover the account deploy + 3 contract deploys + 4
+      wiring txs (8 total). The live A3 run will confirm the FeeAssetHandler mint is
+      large enough; if not, fund the deployer twice or top up.
+    - RESUME guidance: re-run a partial deploy with `--skip-account` (skips the
+      claim path entirely); plain re-run without it re-bridges (claim not lost — it
+      lands on the deployer, claimable later — but spends Sepolia gas).
+    - Tests live in `scripts/lib/feeJuiceBridge.test.ts` (`node:test` via
+      `npx tsx --test`), self-contained in scripts/ rather than a workspace package.
+      Live bridging gated behind `TESTNET_L1_RPC_URL`+`TREASURY_L1_KEY`.
+
+### A3 funder — gate-review fixes (2026-06-12)
+
+17. **Tests run green under vitest + no longer orphaned.** The unit test used
+    `node:test`, which vitest could not collect ("No test suite found in file" —
+    a spurious failed-suite even though the 8 tests passed). Rewrote it as
+    vitest-native (`describe`/`it`/`expect`, the repo convention). Added a root
+    `npm run test:scripts` (`vitest run scripts`) so the script tests aren't
+    orphaned by `npm test` (workspaces-only) — Lane 6 to wire it into CI (E3a).
+    Green: `npx vitest run scripts/lib/feeJuiceBridge.test.ts` and
+    `npm run test:scripts` both report 8 passed / 1 skipped (live, env-gated).
+18. **deploy-testnet hardcoded default keys REMOVED (loud-fail).** Deleted the
+    three committed default deployer keys (the old `account_details_do_not_commit`
+    fallback — two operators relying on it would deploy to one shared account).
+    Now: a real deploy REQUIRES DEPLOYER_SECRET/SALT/SIGNING_KEY and throws FAST
+    (before the compile) if any is missing; `--create-account` mints a fresh
+    RANDOM account and prints its keys (+ a `fund-testnet.ts` pointer). The real-
+    deploy path no longer echoes secret material to logs. Verified the throw fires
+    before any compile output.
+19. **Re-typechecked against 4.3.1 (caveat resolved).** A2's npm bump is in;
+    reinstalled (`@aztec/aztec.js` now 4.3.1 in node_modules). All three scripts
+    `tsc` clean against 4.3.1, and `FeeJuicePaymentMethodWithClaim`'s ctor is
+    unchanged from 4.2 (`(sender, Pick<L2AmountClaim,
+    'claimAmount'|'claimSecret'|'messageLeafIndex'>)`) — no funder API drift.
