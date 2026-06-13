@@ -8,6 +8,9 @@ import { SESSION_TTL_MS } from './store/GameStore.js';
 import type { GameStore } from './store/GameStore.js';
 import { MemoryGameStore } from './store/MemoryGameStore.js';
 import { RedisGameStore } from './store/RedisGameStore.js';
+import type { FaucetService } from './faucet/types.js';
+
+const FAUCET_MAX_BODY_BYTES = 4 * 1024; // a faucet request is just { l2Address }
 
 const DEFAULT_PORT = 5174;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -41,6 +44,76 @@ const BUFFERED_MESSAGE_TYPES = new Set([
   'OPPONENT_SETTLING',
 ]);
 
+/** Client IP, honoring X-Forwarded-For since the backend sits behind nginx. */
+function clientIp(req: http.IncomingMessage): string {
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.length > 0) {
+    return xff.split(',')[0].trim();
+  }
+  return req.socket.remoteAddress ?? 'unknown';
+}
+
+type ReadBodyResult = { ok: true; value: any } | { ok: false; tooLarge: boolean };
+
+/** Read and JSON-parse a request body, capped at maxBytes. */
+function readJsonBody(req: http.IncomingMessage, maxBytes: number): Promise<ReadBodyResult> {
+  return new Promise((resolve) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    let done = false;
+    const finish = (r: ReadBodyResult) => { if (!done) { done = true; resolve(r); } };
+    req.on('data', (c: Buffer) => {
+      if (done) return;
+      size += c.length;
+      if (size > maxBytes) {
+        finish({ ok: false, tooLarge: true });
+        // Drain (discard) the rest so the response can flush cleanly instead of
+        // RSTing the socket mid-upload (which the client sees as ECONNRESET).
+        req.resume();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      try {
+        finish({ ok: true, value: JSON.parse(Buffer.concat(chunks).toString('utf-8')) });
+      } catch {
+        finish({ ok: false, tooLarge: false });
+      }
+    });
+    req.on('error', () => finish({ ok: false, tooLarge: false }));
+  });
+}
+
+/** Serve POST /faucet: parse, validate shape, delegate to the faucet, map status. */
+async function handleFaucetRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  faucet: FaucetService,
+): Promise<void> {
+  const body = await readJsonBody(req, FAUCET_MAX_BODY_BYTES);
+  if (!body.ok) {
+    const status = body.tooLarge ? 413 : 400;
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: body.tooLarge ? 'request_too_large' : 'invalid_json' }));
+    return;
+  }
+  const l2Address = body.value?.l2Address;
+  if (typeof l2Address !== 'string') {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'l2Address is required' }));
+    return;
+  }
+  const result = await faucet.requestClaim(l2Address, clientIp(req));
+  if (result.ok) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ claim: result.claim, reused: result.reused }));
+  } else {
+    res.writeHead(result.status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: result.error }));
+  }
+}
+
 export interface ServerOptions {
   port?: number;
   host?: string;
@@ -49,6 +122,12 @@ export interface ServerOptions {
   sessionHandshakeMs?: number;
   /** Period of the stale games/queue/sessions sweep. Default: 5 minutes. */
   cleanupIntervalMs?: number;
+  /**
+   * Optional Fee Juice faucet (item I). When provided, `POST /faucet` is served;
+   * when omitted, that route 404s and the relay stays entirely Aztec-free. The
+   * service is an injected interface — the relay never touches the Aztec SDK.
+   */
+  faucet?: FaucetService;
 }
 
 export interface CardGameServer {
@@ -65,6 +144,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
   const store = options.store ?? new MemoryGameStore();
   const sessionHandshakeMs = options.sessionHandshakeMs ?? SESSION_HANDSHAKE_MS;
   const cleanupIntervalMs = options.cleanupIntervalMs ?? CLEANUP_INTERVAL_MS;
+  const faucet = options.faucet;
   const gameManager = new GameManager(store);
 
   // playerId → WebSocket (in-memory, rebuilt on reconnect)
@@ -91,12 +171,17 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     if (origin && allowedOrigins.has(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
     }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/faucet' && faucet) {
+      await handleFaucetRequest(req, res, faucet);
       return;
     }
 
@@ -884,9 +969,23 @@ if (process.argv[1]?.endsWith('server.js') || process.argv[1]?.endsWith('server.
       console.log(`Using Redis store at ${redisUrl}`);
     }
 
-    const server = createServer({ port, store });
+    // Optional Fee Juice faucet (item I). Enabled only when FAUCET_ENABLED=true.
+    // The faucet is non-gating: if its (Aztec-touching) wiring can't be built,
+    // log loudly and run relay-only rather than taking the whole server down.
+    let faucet: FaucetService | undefined;
+    if (process.env.FAUCET_ENABLED === 'true') {
+      try {
+        const { createTreasuryFaucetFromEnv } = await import('./faucet/createTreasuryFaucet.js');
+        faucet = await createTreasuryFaucetFromEnv();
+        console.log('Fee Juice faucet enabled (POST /faucet)');
+      } catch (err) {
+        console.error(`[faucet] disabled — ${(err as Error)?.message ?? err}`);
+      }
+    }
+
+    const server = createServer({ port, store, faucet });
     server.httpServer.listen(port, () => {
-      console.log(`Axolotl Arena server running on port ${port}${store ? ' (Redis)' : ' (in-memory)'}`);
+      console.log(`Axolotl Arena server running on port ${port}${store ? ' (Redis)' : ' (in-memory)'}${faucet ? ' +faucet' : ''}`);
     });
   })();
 }

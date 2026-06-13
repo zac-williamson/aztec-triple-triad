@@ -159,6 +159,73 @@ If you see the JSON, the backend is live.
 
 ---
 
+## Step 2g — (Optional) Enable the Fee Juice faucet (item I)
+
+The faucet lets a brand-new browser user self-onboard with no L1 wallet: `POST
+/faucet { l2Address }` bridges Fee Juice from the Sepolia **treasury** and returns
+a consumable claim the frontend feeds to its combined deploy+mint tx. It is
+**off by default** and **non-gating** — skip this whole section to launch without
+it; the relay runs identically and `POST /faucet` simply 404s.
+
+The treasury L1 key is **server-only** and never reaches the browser. Abuse is
+bounded by three caps: one claim per L2 address (persistent claim store),
+`FAUCET_IP_DAILY_LIMIT` per IP/day, and `FAUCET_GLOBAL_DAILY_LIMIT` total/day
+(the treasury-drain backstop — daily spend ≤ that many bridges).
+
+**1. Put the treasury key on the box** (the Sepolia wallet `0xDA74…DEAa2`, funded
+with ~0.4 ETH for L1 gas):
+
+```bash
+mkdir -p ~/.aztec-triad-private && chmod 700 ~/.aztec-triad-private
+printf '0x%s' '<TREASURY_PRIVATE_KEY_HEX>' > ~/.aztec-triad-private/treasury-l1-key.txt
+chmod 600 ~/.aztec-triad-private/treasury-l1-key.txt
+```
+
+**2. Build the bridge module as JS.** The systemd unit runs **plain `node`** (not
+tsx), but `scripts/lib/feeJuiceBridge.ts` is TypeScript with no build step, so it
+must be transpiled and `FEE_JUICE_BRIDGE_PATH` pointed at the output:
+
+```bash
+cd "$REPO_DIR"
+npx tsc scripts/lib/feeJuiceBridge.ts --outDir scripts/lib/dist \
+  --module nodenext --moduleResolution nodenext --target es2022 --skipLibCheck
+# → scripts/lib/dist/feeJuiceBridge.js  (set FEE_JUICE_BRIDGE_PATH to this)
+```
+
+(`deploy/update-backend.sh` does not yet run this step — add it there if you keep
+the faucet enabled long-term, so redeploys refresh the compiled module.)
+
+**3. Set the faucet env** in `/etc/triad-backend.env` (uncomment the block from
+`triad-backend.env.example`): `FAUCET_ENABLED=true`, `AZTEC_NODE_URL`,
+`FAUCET_L1_RPC_URL` (Sepolia), `TREASURY_L1_KEY_FILE`, `FEE_JUICE_BRIDGE_PATH`,
+`FEE_JUICE_CLAIMS_FILE`, and the two limits.
+
+**4. Let the hardened unit read the key + write claims.** `ProtectHome=read-only`
+blocks both, so uncomment the `ReadWritePaths=/home/ubuntu/.aztec-triad-private`
+line in `triad-backend.service`, then:
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart triad-backend
+sudo journalctl -u triad-backend -n 20 --no-pager
+# Expect: "Fee Juice faucet enabled (POST /faucet)"
+# If misconfigured you'll see "[faucet] disabled — <reason>" and the relay still runs.
+```
+
+Smoke test (use a real prepared L2 address):
+
+```bash
+curl -X POST https://ws.YOURDOMAIN.com/faucet \
+  -H 'Content-Type: application/json' -d '{"l2Address":"0x<64hex>"}'
+# Expect: {"claim":{...},"reused":false}   (first call ~minutes: it bridges L1→L2)
+# Repeat → {"reused":true}; over the IP cap → HTTP 429; bad address → 400.
+```
+
+> Box-level faucet wiring (compiled module in `update-backend.sh`, the exact node
+> URL) is finished as part of **F3 go-live**; the endpoint, limits, and degraded
+> fallback are done and tested in the backend now.
+
+---
+
 ## Step 3 — Deploy the frontend to Vercel
 
 ### 3a. Create the project

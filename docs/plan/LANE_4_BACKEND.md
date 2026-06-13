@@ -59,6 +59,52 @@ persists until the stale sweep, same as normal finishes, so `/games/{id}` and
 server→client vocabulary unchanged; `/games/{id}` can now report
 `finished`/winner for abandoned games.
 
+### Item I — backend Fee Juice faucet (Option B) — DONE 2026-06-13
+ITEM_I_ONBOARDING.md, "Integration scope → Lane 4". `POST /faucet { l2Address } →
+{ claim, reused }` bridges Fee Juice from the Sepolia treasury (via the proven
+`scripts/lib/feeJuiceBridge`) and returns a consumable claim the frontend feeds
+to `deployAndRegister({ feeJuiceClaim })`. The treasury L1 key is server-only and
+never enters any response.
+
+Design (keeps the relay Aztec-free — the one ground-rule tension this item
+forces, minimized):
+- `src/faucet/FaucetService.ts` holds the abuse logic and depends only on an
+  injected `FaucetClaimBackend` + local types — zero SDK, fully unit-tested.
+  Three caps bound treasury spend: **one claim per L2 address** (reuses the
+  existing persistent claim store — pending→returned idempotently, consumed→409),
+  **per-IP/day** (`FAUCET_IP_DAILY_LIMIT`, default 5), **global/day**
+  (`FAUCET_GLOBAL_DAILY_LIMIT`, default 200 — the "capped mint": per-claim amount
+  is fixed on-chain, so capping count caps the mint). Reservations roll back on
+  bridge failure so a Sepolia hiccup never burns a user's allowance; an in-flight
+  guard stops a double-click double-bridging one address.
+- `src/faucet/createTreasuryFaucet.ts` is the ONLY Aztec-touching file, via
+  RUNTIME dynamic imports of string-typed specifiers (`FEE_JUICE_BRIDGE_PATH`,
+  `@aztec/aztec.js/node`). No static `@aztec` import, no `@aztec` in the backend
+  `package.json`, no TS6059 from importing across `scripts/` — `tsc` and the relay
+  stay SDK-free. `createServer` only ever sees the `FaucetService` interface.
+- Wire it via `FAUCET_ENABLED=true`; if the wiring can't build, the composition
+  root logs `[faucet] disabled — <reason>` and runs relay-only (non-gating).
+
+**HTTP wire contract (→Lane 2 consumes; →Lane 8 asserts):**
+`POST /faucet` body `{ l2Address: string }` →
+- `200 { claim: { l2Address, claimAmount, claimSecret, claimSecretHash,
+  messageHash, messageLeafIndex }, reused: boolean }` — all strings; mirrors the
+  consumable fields of `scripts/lib/feeJuiceBridge.SerializedClaim`, so Lane 2
+  deserializes with the existing `deserializeClaim` (inject `Fr`).
+- `400 { error }` malformed/missing address or bad JSON · `409` already funded /
+  claim in progress · `429` ip/global rate limited · `413` oversized body ·
+  `503 { error: 'bridge_failed' }` → Lane 2 falls back to the manual
+  `FundingPrompt`. The first call blocks for the L1→L2 bridge (minutes); a repeat
+  returns the same claim instantly with `reused: true`.
+
+**Lane 8 note:** new HTTP route only (`POST /faucet`); WS protocol unchanged.
+
+**Box wiring (F3):** prod runs plain `node` while the bridge module is TS-only —
+`FEE_JUICE_BRIDGE_PATH` must point at compiled JS, and the hardened systemd unit
+needs `ReadWritePaths` for the private dir. Both documented in
+`deploy/DEPLOY.md §2g` + `triad-backend.service`; finishing it on the live box is
+F3.
+
 ### D2 hook — bot matchmaking trigger (0.5d) — when Lane 3 starts D2
 Flag-gated (`BOT_ENABLED`): expose queue-wait-time signal; when a human waits > N
 seconds, notify the bot service (or let the bot poll `/health`-style endpoint).
@@ -117,6 +163,47 @@ domain exists.
   `SESSION_ESTABLISHED { resumed: false }` path, and `useWebSocket.ts`
   unconditionally overwrites its stored token on that message — no Lane 2/8
   coordination required.
+
+### Item I — backend faucet (2026-06-13)
+
+- **The "keep the backend Aztec-free" rule is deliberately bent, not broken.**
+  The orchestrator scoped Option B (faucet wraps `bridgeFeeJuice`) to this lane,
+  so SOME Aztec touch is unavoidable. It is quarantined to one runtime-only file
+  (`createTreasuryFaucet.ts`) behind dynamic imports; the relay's `tsc` build,
+  its `package.json`, and all faucet *logic* remain SDK-free and unit-tested.
+- **A static import from `scripts/lib/` is impossible** from the backend: TS6059
+  (scripts/ is outside the backend `rootDir`), and it would drag `@aztec/*` into
+  the relay build. Hence the injected-loader + dynamic-import design. Verified by
+  probe.
+- **`scripts/lib/feeJuiceBridge.ts` is NOT moved to a shared package.** The doc's
+  own `packages/aztec-fee/` proposal would edit Lane 6's `scripts/` and its two
+  importers — out of lane for a 0.5d task. The orchestrator's "or import from
+  scripts/lib" sanctioned referencing it; the runtime-loader does so without a
+  static dependency.
+- **Prod loads the bridge as compiled JS, not TS.** The systemd unit runs plain
+  `node` (no tsx; `ProtectHome=read-only` blocks npx), so `FEE_JUICE_BRIDGE_PATH`
+  must point at transpiled JS and the unit needs `ReadWritePaths` for the claim
+  store + key. Documented in `deploy/`; the actual box step is F3. The faucet is
+  off by default, so this merge changes nothing until explicitly enabled.
+- **Rate limiters are in-memory, single-process.** The hard treasury bound is the
+  persistent per-address claim store (survives restart); per-IP/global caps are a
+  cost/DoS guard and reset on restart. Fine for one Lightsail box; if scaled out,
+  move the counters to Redis (noted in `DailyRateLimiter`).
+- **X-Forwarded-For is trusted** because the backend is only reachable via nginx
+  in prod. The per-IP cap is a soft guard, not a security boundary — the
+  per-address + global caps are the hard limits, so XFF spoofing only costs an
+  attacker against the global/day budget.
+- **`FaucetClaim` (the HTTP wire type) is the backend's API contract**, not a
+  duplicate of the lib's `SerializedClaim`: it carries only the 5 consumable
+  fields + address, dropping the internal `status`/`bridgedAt`. The adapter maps
+  between them.
+- **A `consumed` claim returns 409, not a re-bridge.** Once an account is funded
+  + deployed it doesn't need more Fee Juice; a repeat is abuse or confusion. If a
+  legit re-fund need ever appears, add an explicit admin path rather than
+  loosening this.
+- **No live integration test in the suite.** The real bridge needs Sepolia +
+  treasury ETH; like `feeJuiceBridge.test.ts`, that path is env-gated. Coverage
+  here is the service + HTTP + adapter-mapping with injected fakes (35 tests).
 
 ### QA-F3 backend half — abandoned-settlement release (2026-06-12)
 

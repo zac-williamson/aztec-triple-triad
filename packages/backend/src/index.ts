@@ -11,3 +11,5 @@ export type { ServerOptions, CardGameServer } from './server.js';
 export type { GameStore, StoredGameRoom, SessionData, QueueEntryData } from './store/GameStore.js';
 export { MemoryGameStore } from './store/MemoryGameStore.js';
 export { RedisGameStore } from './store/RedisGameStore.js';
+export type { FaucetClaim, FaucetResult, FaucetService } from './faucet/types.js';
+export { createTreasuryFaucet, createTreasuryFaucetFromEnv } from './faucet/createTreasuryFaucet.js';
