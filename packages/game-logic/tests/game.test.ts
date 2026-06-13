@@ -836,3 +836,65 @@ describe('Chain captures', () => {
     }
   });
 });
+
+// C2 regression (BUG_C2_REPLAY): the real starter config mints the SAME ids
+// [1..5] to every player, so card ids are NOT globally unique. The engine
+// addresses cards by hand slot and the board by position, so it already handles
+// shared decks; these tests lock that in and mirror the game_move circuit's
+// two duplicate-deck tests (the circuit's owner-blind board scan used to reject
+// these — fixed with a per-player placed-slot mask).
+describe('shared starter decks (duplicate card ids across players)', () => {
+  // Both players hold the identical deck [1..5]. card 1 has a strong right rank
+  // so it can drive a capture; the rest are uniform.
+  const deck = (): Card[] => [
+    makeCard(1, 1, 9, 1, 1),
+    makeCard(2, 2, 2, 2, 2),
+    makeCard(3, 3, 3, 3, 3),
+    makeCard(4, 4, 4, 4, 4),
+    makeCard(5, 5, 5, 5, 5),
+  ];
+
+  it('lets P2 place its card whose id is already on the board owned by P1', () => {
+    let state = createGame(deck(), deck());
+
+    // P1 plays card 1 at centre.
+    state = placeCard(state, 'player1', 0, 1, 1).newState;
+    expect(state.board[1][1].card?.id).toBe(1);
+    expect(state.board[1][1].owner).toBe('player1');
+
+    // P2 plays ITS card 1 (same id, different hand) at (0,0) — must not throw.
+    expect(() => placeCard(state, 'player2', 0, 0, 0)).not.toThrow();
+    state = placeCard(state, 'player2', 0, 0, 0).newState;
+    expect(state.board[0][0].card?.id).toBe(1);
+    expect(state.board[0][0].owner).toBe('player2');
+    // P1's identical-id card is untouched.
+    expect(state.board[1][1].card?.id).toBe(1);
+    expect(state.board[1][1].owner).toBe('player1');
+  });
+
+  it('lets P2 place its hand card after capturing an opponent card with the same id', () => {
+    let state = createGame(deck(), deck());
+
+    // P1 plays card 1 at (0,1).
+    state = placeCard(state, 'player1', 0, 0, 1).newState;
+    // P2 plays card 5 at (0,0): its right rank 5 beats card 1's left rank 1,
+    // capturing (0,1). Now a card with id 1 sits on the board owned by P2,
+    // while P2 still holds its OWN card 1 in hand (slot 0).
+    state = placeCard(state, 'player2', 4, 0, 0).newState;
+    expect(state.board[0][1].card?.id).toBe(1);
+    expect(state.board[0][1].owner).toBe('player2');
+
+    // P1 plays a neutral card.
+    state = placeCard(state, 'player1', 0, 2, 2).newState;
+
+    // P2 plays its hand card 1 at (1,1) — the capture-collision case. The
+    // current-owner check (option a) would wrongly reject this; placement must
+    // succeed and not disturb the captured card.
+    expect(() => placeCard(state, 'player2', 0, 1, 1)).not.toThrow();
+    state = placeCard(state, 'player2', 0, 1, 1).newState;
+    expect(state.board[1][1].card?.id).toBe(1);
+    expect(state.board[1][1].owner).toBe('player2');
+    expect(state.board[0][1].card?.id).toBe(1);
+    expect(state.board[0][1].owner).toBe('player2');
+  });
+});
