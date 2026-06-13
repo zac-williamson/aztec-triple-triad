@@ -195,3 +195,27 @@ compiled JSON into `frontend/public/contracts/`, and answering proof-shape quest
     - Tests live in `scripts/lib/feeJuiceBridge.test.ts` (`node:test` via
       `npx tsx --test`), self-contained in scripts/ rather than a workspace package.
       Live bridging gated behind `TESTNET_L1_RPC_URL`+`TREASURY_L1_KEY`.
+
+### A3 funder — gate-review fixes (2026-06-12)
+
+17. **Tests run green under vitest + no longer orphaned.** The unit test used
+    `node:test`, which vitest could not collect ("No test suite found in file" —
+    a spurious failed-suite even though the 8 tests passed). Rewrote it as
+    vitest-native (`describe`/`it`/`expect`, the repo convention). Added a root
+    `npm run test:scripts` (`vitest run scripts`) so the script tests aren't
+    orphaned by `npm test` (workspaces-only) — Lane 6 to wire it into CI (E3a).
+    Green: `npx vitest run scripts/lib/feeJuiceBridge.test.ts` and
+    `npm run test:scripts` both report 8 passed / 1 skipped (live, env-gated).
+18. **deploy-testnet hardcoded default keys REMOVED (loud-fail).** Deleted the
+    three committed default deployer keys (the old `account_details_do_not_commit`
+    fallback — two operators relying on it would deploy to one shared account).
+    Now: a real deploy REQUIRES DEPLOYER_SECRET/SALT/SIGNING_KEY and throws FAST
+    (before the compile) if any is missing; `--create-account` mints a fresh
+    RANDOM account and prints its keys (+ a `fund-testnet.ts` pointer). The real-
+    deploy path no longer echoes secret material to logs. Verified the throw fires
+    before any compile output.
+19. **Re-typechecked against 4.3.1 (caveat resolved).** A2's npm bump is in;
+    reinstalled (`@aztec/aztec.js` now 4.3.1 in node_modules). All three scripts
+    `tsc` clean against 4.3.1, and `FeeJuicePaymentMethodWithClaim`'s ctor is
+    unchanged from 4.2 (`(sender, Pick<L2AmountClaim,
+    'claimAmount'|'claimSecret'|'messageLeafIndex'>)`) — no funder API drift.
