@@ -179,6 +179,16 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   + gitignored *.txt; copy-circuits dummy_hand fix. 2 clean full-suite runs.
   Lane-6 PARKED (F3 Vercel ← A3+domain; F1b ← end-of-cycle + Zac).
 
+- 21:3x — **Fee Juice distribution automation (Zac request) → lane-1 un-parked.**
+  Design forced by Fee-Juice non-transferability (confirmed in fundDevnet.ts):
+  ONE L1 Sepolia treasury key (Zac faucets Sepolia ETH to it once) → mint+bridge
+  to every L2 account on demand. Treasury L1 addr 0xDA74…EAa2 generated, key at
+  ~/.aztec-triad-private/treasury-l1-key.txt (600, env-only). Lane-1 building
+  scripts/fund-testnet.ts (generalize fundDevnet to testnet, env-driven, multi-
+  recipient, persist claims) + FIX deploy-testnet.ts deployer deploy (currently
+  send({from:NO_FROM}) with NO fee/claim — must use FeeJuicePaymentMethodWithClaim).
+  Reusable later by item I (player onboarding) + D2 (bot). This is the A3 enabler.
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -224,7 +234,7 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
-| lane-1-chain | A1+A1.5+QA-F1 merged (29ecb92) | parked | A3 ← Zac funding + lane-8 acceptance |
+| lane-1-chain | A1/A1.5/QA-F1 merged | fund-testnet.ts + deploy claim-fix | A3 ← Zac funds 0xDA74…EAa2 + lane-8 acceptance |
 | lane-2-frontend | all queued merged (e502768) | parked | I (faucet onboarding) ← A3 |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
