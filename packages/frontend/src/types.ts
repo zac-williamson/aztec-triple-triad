@@ -56,6 +56,17 @@ export interface MoveProofData extends SerializedProof {
   endStateHash: string;
   gameEnded: boolean;
   winnerId: number;
+  /**
+   * Per-player placed-hand-slot bitmasks AFTER this move (C2 replay fix).
+   * Folded into the start/end state hashes (private circuit inputs), so they
+   * are NOT public proof outputs. Relayed alongside the proof (rides opaquely
+   * through the backend) so the opponent can chain: the receiver adopts these
+   * as the before-masks for their next move. The opponent's committed-hand
+   * slot is otherwise underivable (the live hand is spliced, the commit order
+   * is private).
+   */
+  p1PlacedAfter?: number;
+  p2PlacedAfter?: number;
 }
 
 /** Plaintext note data for frontend-driven delivery (no tagging) */

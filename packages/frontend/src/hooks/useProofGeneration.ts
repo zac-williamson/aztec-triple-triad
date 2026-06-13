@@ -46,6 +46,8 @@ export interface UseProofGenerationReturn {
     gameEnded: boolean,
     winnerId: number,
     playerHandData: PlayerHandData,
+    p1PlacedBefore: number,
+    p2PlacedBefore: number,
   ) => Promise<MoveProofData>;
   reset: () => void;
 }
@@ -90,6 +92,8 @@ export function useProofGeneration(): UseProofGenerationReturn {
       gameEnded: boolean,
       winnerId: number,
       playerHandData: PlayerHandData,
+      p1PlacedBefore: number,
+      p2PlacedBefore: number,
     ): Promise<MoveProofData> => {
       return new Promise<MoveProofData>((resolve, reject) => {
         proofQueueRef.current = proofQueueRef.current.then(async () => {
@@ -105,6 +109,7 @@ export function useProofGeneration(): UseProofGenerationReturn {
               cardCommit1, cardCommit2,
               gameEnded, winnerId,
               playerHandData,
+              p1PlacedBefore, p2PlacedBefore,
             );
             resolve(proofData);
           } catch (err) {
