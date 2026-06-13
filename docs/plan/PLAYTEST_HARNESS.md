@@ -244,3 +244,34 @@ both packages typecheck on the 4.3.1 SDK, CLI/artifacts are 4.3.1.
     `maxFeesPerGas` component. The harness cannot mask this with a retry
     (quality bar) and cannot edit those lanes' files; the 4.3.1 acceptance run
     is BLOCKED on this fix landing in lanes 1 + 2.
+
+### Acceptance attempt 3 (after lanes 1+2 merged the fee fix) — two more findings
+
+16. **Fee fix missed `deploy-contracts.ts` (Lane 1/6 coverage gap).** The
+    headroom helper (`scripts/lib/feeSettings.ts`, `getCurrentMinFees × 3`) was
+    wired into `deploy-testnet.ts` and `fund-testnet.ts` but NOT
+    `deploy-contracts.ts` — the local-sandbox deploy the harness runs, whose
+    `sendAs` carries no `fee` option at all (stock 1.5× cap). So the local
+    deploy still flaked. I temp-patched the exact mirror locally
+    (`fee: { gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) } }`
+    on every send + the account deploy) → deploy then SUCCEEDED, validating both
+    the fix and that it was the only deploy-side gap. Patch reverted (not my
+    lane); diff reported to the orchestrator for Lane 1/6.
+17. **GATE-BLOCKING — deferred move-proof reconstruction (Lane 2
+    `useGamePlay.ts`).** With the deploy fixed, the game played to `active` and
+    all proofs generated, but settlement never started: `canSettle` stayed
+    false because P2 submitted 0 of 4 move proofs (backend relay confirms only
+    P1's 5 SUBMIT_MOVE_PROOF). Cause, from P2's log:
+    `[useGamePlay] Processing 2 queued move(s)` →
+    `Deferred move proof failed: Circuit execution failed: Card already placed on board`
+    (×4). Moves placed before the hand proof is ready are queued in
+    `pendingMovesRef`; the deferred processor rebuilds each move's board from
+    `gameStateHistoryRef.get(move.moveNumber)`, but the snapshot it gets already
+    contains the card being placed (move-number vs occupied-count keying is
+    off under 4.3.1's WS/proof-readiness timing), so the `game_move` circuit
+    rejects it. The winner therefore never collects 9/9 → `canSettle` false →
+    no settlement. Latent on 4.2 (timing never queued moves); 4.3.1 exposes it.
+    Real fast-play bug (a human placing before proofs finish hits the same path),
+    not a harness artifact — the harness drove valid clicks. Fix belongs to
+    Lane 2 (snapshot keying in the deferred-move path). Acceptance run BLOCKED
+    on this until it lands.
