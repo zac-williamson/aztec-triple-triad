@@ -112,6 +112,58 @@ fresh-start repo or keep originals in a GitHub Release.
   is deliberately out of phase 1 per the brief; frontend's
   proofIntegration.test.ts already gives circuit-execution signal.
 
+- **E3b: TXE races under parallel test functions — contract tests run
+  `--test-threads 1`.** Reproduced on 4.3.1: `nargo test` default parallelism
+  against one TXE intermittently fails with
+  `mdb_txn_begin: 22 - Invalid argument` (ServerError -32702). Two different
+  arena_token tests failed across occurrences → not test-specific; it's a race
+  in TXE's per-test LMDB store lifecycle, surfacing under CPU load (1/10 runs
+  with 6 busy cores; also once in a full test-all run right after the
+  integration suite). With `--test-threads 1` under identical load: 0/10.
+  This is the PXE serial-execution constraint (ground rule #6) in its TXE/LMDB
+  form — serializing conforms to the platform, it does not mask the bug.
+  **Lane 1: candidate upstream report** (fits their ASSUMPTION #5 TXE-crash
+  class). If upstream fixes it, drop the flag and re-soak.
+- **E3b: a SECOND, distinct flake — TXE readiness race.** Separate from the
+  in-suite parallelism above (it persisted with `--test-threads 1` applied):
+  tests intermittently failed `client error (Connect)` on the *first* test of
+  a suite, and a later TXE sometimes wrote a 0-byte log and never started.
+  Root cause: the `listening on port` log line prints a beat before the RPC
+  server reliably accepts connections, so grep-on-log readiness raced ahead;
+  under machine load (other lanes' live dev servers — lane-8 playtest runs a
+  vite+backend; plus aztec-mcp + a 4.2 node) the gap widened and a starved TXE
+  could fail to start at all. Fix: `start_txe` now waits on actual TCP
+  reachability (`curl --max-time 2`, the readiness check the pre-4.3.1 script
+  used) AND `kill -0` the process so a dead TXE fails fast with its log instead
+  of after the 60s timeout. This is correct startup synchronization, not a
+  retry/mask. Verified: 2 consecutive clean full `test-all.sh` runs green
+  (all 4 TS suites + circuits + 3 contract suites) under that same load, plus
+  the CI-equivalent noir-only sequence 3/3 green in isolation. The CI workflow
+  uses the identical reachability+liveness gate.
+- **E3b: CI reads the toolchain pin from `.aztecrc`** (single source of truth;
+  CI tracks Lane 1's bumps with no workflow edit). Fresh install in CI makes
+  `current` the pin itself, which sidesteps both PATH footguns from
+  LANE_1_CHAIN ASSUMPTIONS #3/#4 — footgun #1 was reproduced verbatim here
+  (`aztec compile` from `packages/contracts/` with current=4.2 → the
+  3205-error macro explosion), hence versioned-binary paths everywhere local.
+- **E3b: caches** — `~/.aztec` (toolchain), `~/.bb-crs` (1.0GB CRS),
+  `~/.bb/<ver>/vk_cache` (VKs), keyed `aztec-{os}-{version}`;
+  `AZTEC_NO_AUTO_UPDATE=1` so a restored cache can't self-update mid-run
+  (knob read from the current aztec-up source). actions/cache is write-once
+  per key: VKs cached from the first green run; contracts edited later regen
+  VKs in-run (CRS + toolchain stay warm — the expensive parts).
+- **E3b: test-all.sh rewrite footnotes.** (a) macOS `mktemp` silently returns
+  the literal template when the `XXXXXX` isn't the suffix — three TXEs shared
+  one log and the readiness grep could match a stale line; logs are now
+  `/tmp/txe-$$-<n>.log`. (b) The cross-crate artifact symlinks are gone —
+  4.3.1 tests use `@package/Name` deploys (Lane 1 ASSUMPTION #5). (c) Circuit
+  tests added (CI parity; they were in no local runner). (d) Toolchain-missing
+  and TXE-start failures now exit 1 loudly instead of skipping.
+- **E3b: frontend `copy-circuits` was missing `dummy_hand.json`** — Lane 1
+  updated the root script when A1.5 added the circuit; the frontend copy (made
+  explicit in F2) wasn't in their sweep. Aligned. The two lists must move
+  together — candidate for a single shared script if it bites again.
+
 ## Cross-lane contracts
 - **Provide:** .webp switch commit (→2 rebases), CI signal (→all), Vercel deploy
   (→5 smoke).

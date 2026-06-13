@@ -1,6 +1,6 @@
-# CI phase 1 (E3a): TypeScript unit tests + type-check. Sandbox-free.
-# Phase 2 (E3b) adds Noir compile + TXE contract tests once the 4.3.1
-# toolchain pin lands (Lane 1's A1).
+# ts-tests (E3a): TypeScript unit tests + type-check. Sandbox-free.
+# noir-tests (E3b): Aztec toolchain pinned via .aztecrc — contract compile,
+# circuit compile + tests, TXE contract tests.
 name: CI
 
 on:
@@ -79,3 +79,101 @@ jobs:
       - name: Frontend tests
         run: npx vitest run
         working-directory: packages/frontend
+
+  noir-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # A restored toolchain cache must never self-update mid-run.
+      AZTEC_NO_AUTO_UPDATE: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            /*
+            !packages/frontend/public/cards
+          sparse-checkout-cone-mode: false
+
+      # Aztec tooling (TXE, aztec CLI) runs on the system node; >= 22 required.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # .aztecrc is the single source of truth for the toolchain pin —
+      # CI follows it automatically when Lane 1 bumps versions.
+      - name: Read toolchain pin
+        id: pin
+        run: echo "version=$(grep -v '^#' .aztecrc | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Aztec toolchain + CRS + VK cache
+        id: aztec-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.aztec
+            ~/.bb-crs
+            ~/.bb
+          key: aztec-${{ runner.os }}-${{ steps.pin.outputs.version }}
+
+      # Fresh install makes ~/.aztec/current the pinned version itself, which
+      # sidesteps both 4.3.1 PATH footguns (.aztecrc only honored in $PWD;
+      # bare nargo lives in internal-bin, off PATH) — see
+      # docs/plan/LANE_1_CHAIN.md ASSUMPTIONS #3/#4.
+      - name: Install Aztec toolchain
+        if: steps.aztec-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://install.aztec.network -o /tmp/aztec-install.sh
+          VERSION=${{ steps.pin.outputs.version }} bash /tmp/aztec-install.sh
+
+      - name: Add Aztec to PATH
+        run: |
+          echo "$HOME/.aztec/current/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.aztec/current/node_modules/.bin" >> "$GITHUB_PATH"
+          echo "$HOME/.aztec/bin" >> "$GITHUB_PATH"
+
+      # aztec compile, NOT nargo compile — nargo misses AVM transpilation + VKs.
+      - name: Compile contracts
+        run: aztec compile
+        working-directory: packages/contracts
+
+      - name: Compile circuits and run circuit tests
+        run: |
+          aztec-nargo compile
+          aztec-nargo test
+        working-directory: circuits
+
+      # Each package gets a fresh TXE — suites assume clean TXE state
+      # (long-standing convention from scripts/test-all.sh).
+      # --test-threads 1: parallel test functions race TXE's per-test LMDB
+      # store setup (mdb_txn_begin EINVAL under load) — same serial-execution
+      # constraint as PXE. Diagnosis in LANE_6_ASSETS_INFRA.md ASSUMPTIONS.
+      - name: Contract tests (TXE)
+        working-directory: packages/contracts
+        run: |
+          for pkg in arena_token triple_triad_nft triple_triad_game; do
+            echo "::group::${pkg}"
+            aztec start --txe --port 8081 > "/tmp/txe-${pkg}.log" 2>&1 &
+            txe_pid=$!
+            # Ready = process alive AND the port actually accepts a connection.
+            # The "listening" log line prints a beat before the RPC server
+            # accepts, so verify reachability; bail fast if the process dies.
+            ready=
+            for _ in $(seq 1 120); do
+              kill -0 "${txe_pid}" 2>/dev/null || break
+              if grep -q "listening on port 8081" "/tmp/txe-${pkg}.log" \
+                 && curl -s -o /dev/null --max-time 2 http://127.0.0.1:8081; then
+                ready=1; break
+              fi
+              sleep 1
+            done
+            if [ -z "${ready}" ]; then
+              echo "TXE failed to become ready for ${pkg}:"
+              cat "/tmp/txe-${pkg}.log"
+              exit 1
+            fi
+            (cd "${pkg}" && aztec-nargo test --test-threads 1 --oracle-resolver http://127.0.0.1:8081)
+            kill "${txe_pid}"
+            wait "${txe_pid}" 2>/dev/null || true
+            echo "::endgroup::"
+          done
