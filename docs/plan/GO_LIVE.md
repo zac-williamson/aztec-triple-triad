@@ -20,6 +20,11 @@ gated actions remain.
 Until the frontend is validated AND the contract is updated, do not publish — an interim
 deploy would point the app at an unvalidated build / stale contract.
 
+4. **Item I faucet env (ONLY if Item I ships with launch — non-gating).** The `/faucet` endpoint
+   needs `TREASURY_L1_KEY` in `/etc/triad-backend.env` on the EC2 box (the funded Sepolia wallet
+   `0xDA74…DEAa2`; key currently only in `~/.aztec-triad-private/treasury-l1-key.txt`). Server-only,
+   never to the browser. Add it, then `systemctl restart triad-backend`. Skip if Item I is fast-follow.
+
 ## Current state (already done)
 
 - Backend is LIVE on HTTP on `13.42.161.225`: systemd `triad-backend` active,

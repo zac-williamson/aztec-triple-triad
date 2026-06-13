@@ -571,3 +571,18 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   enough for demo onboarding volume or top up + what rate limits; (3) priority — before launch or
   fast-follow (non-gating for F3). lane-2 parked (was 100% context). Did NOT start integration
   (treasury-key exposure + Zac's money + launch scope are all his).
+
+## 06-13 — Zac decisions: D2 post-launch · campaigns serial · Item I GO (Option B, existing treasury)
+- D2 house bot: **POST-LAUNCH** (decided, not greenlit) → lane-3/lane-4 stay parked re: D2.
+- Campaigns C2–C10: **SERIAL** → lane-8 builds them after C1 (attempt 6) goes green; no 2nd lane.
+- Item I: **GO, Option B** (backend faucet) reusing the existing funded Sepolia treasury 0xDA74…DEAa2.
+  Design doc merged to testnet (16f01b6). Dispatched in parallel:
+  - lane-4 (~0.5d): POST /faucet {l2Address}→{claim} wrapping bridgeFeeJuice with TREASURY_L1_KEY
+    from env (server-only), abuse limits (one claim/address via claim store + per-IP/day + capped mint).
+  - lane-2 (~1d): requestFeeJuiceClaim abstraction + useAztec testnet onboarding (request claim →
+    deployAndRegister → auto-continue, 'funding' status + progress screen, FundingPrompt fallback).
+    SponsoredFPC stays banned.
+- DEPLOY STEP (go-live): TREASURY_L1_KEY must be added to /etc/triad-backend.env on the EC2 box for
+  the faucet to work in prod (key currently lives only in ~/.aztec-triad-private/treasury-l1-key.txt).
+  Added to GO_LIVE.md.
+- Now 3 lanes active (lane-2 Item I FE, lane-4 Item I BE, playtest attempt 6); lane-1/3/5/6/7 parked.
