@@ -536,3 +536,22 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   NOT needed for the playtest (it deploys fresh contracts to a LOCAL sandbox). Noted in GO_LIVE.md.
 - Sequence: lane-2 done → gate-review + merge → playtest attempt 6 (local sandbox) → if green, F3
   go-live incl. the testnet contract update. Monitor b6n308n3b (broad) + cron a13b5367.
+
+## 06-13 — C2 fix COMPLETE E2E (lane-2 prover merged 27b8a04); attempt 6 running; lane audit + Item I
+- lane-2 C2 frontend-prover follow-up (90e9393) gate-PASSED + MERGED (27b8a04). Reviewed the
+  opponent-mask design: each move proof relays its after-masks (p1/p2PlacedAfter in MoveProofData);
+  the receiver OR's them into a running pair (opponent's committed slot is private/underivable).
+  Turn-sequencing makes the running pair correct at proof-gen time; deferred moves capture
+  before-masks at placement. Verified the backend relays moveProof whole-object (no schema strip —
+  masks ride opaquely). proofWorker hash layout byte-matches the circuit; settlement canonical hash
+  now (0,0)/[5,5]/turn1 = the contract's compute_initial_state_hash. ⇒ C2 fix complete circuit +
+  contract + prover. Triggered playtest attempt 6 (C1 on the fixed stack).
+- LANE AUDIT (Zac: skeptical all-parked, CPU cold). Verified concretely (not STATUS lines):
+  catalog A1–A3/B/C/D1/E*/F1/G done; lane-4 abandoned-game gap actually implemented; lane-5
+  CAMPAIGN_BACKLOG real (10 campaigns). REAL available work found: (1) Item I onboarding (only
+  deploy-time fee-juice claim exists) → dispatched to lane-2 as a spike (design → docs/plan/
+  ITEM_I_ONBOARDING.md for go/no-go); (2) playtest campaigns C2–C10 — only C1 (full-game.spec.ts)
+  built; rest specced-not-built, gated on attempt 6 + lane-8 (single lane). Structural reason for
+  cold CPU: parallel build-out done, now in the serial integration tail; C2–C10 was downstream of
+  the move-format change (now landed). Open Zac calls surfaced: greenlight D2? parallelize C2–C10
+  (pull a 2nd lane to scaffold)? Confirmed all 8 agents alive (lane-2 + playtest took dispatches).
