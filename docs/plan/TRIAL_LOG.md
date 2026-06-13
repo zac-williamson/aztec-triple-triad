@@ -273,6 +273,18 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   root-causes the gate flake. lane-1 mirroring in scripts. playtest re-runs
   acceptance once lane-1's scripts fee fix lands. lane-2 parked.
 
+- 06-13 — **both fee-headroom fixes MERGED** (frontend `7875d08`, scripts
+  `48c341b`). Multiplier=3 confirmed by Zac (typed into lane-1's window). Lanes
+  1+2 independently landed on the SAME canonical computation —
+  `getCurrentMinFees() × 3` — lane-1's scripts/lib/feeSettings mirrors lane-2's
+  src/aztec/feeSettings (node-vs-browser duplication, documented, source-of-truth
+  cited). playtest dispatched to rebase + RE-RUN the 4.3.1 acceptance — expected
+  green now (loser-token test.fail sentinel stays red until ArenaToken fix).
+- Monitor cleanup: killed duplicate v5 (bvwkjxy11); v6 (bf2mzs99y) is the single
+  live monitor. (v5 hadn't died during the 90-min gap — it only emits on state
+  CHANGE, and lanes were continuously BUSY; the gap was the heartbeat chain, now
+  re-armed each loop.)
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -319,11 +331,11 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
-| lane-1-chain | A3 merged (3ae3938) — contracts live | scripts fee-headroom mirror | then ArenaToken loser-token |
+| lane-1-chain | A3 + scripts fee merged (48c341b) | parked (user in window) | ArenaToken loser-token next |
 | lane-2-frontend | fee fix merged (7875d08) | parked | I (unblocked, not gating) + loser-token wiring ← lane-1 |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
 | lane-6-assets-infra | all merged + CI wiring | parked | F3 ← A3+domain; F1b ← end-of-cycle |
 | lane-7-docs | all items merged | parked | E2.5 ← A3 |
-| playtest | 4.3.1 acceptance blocked on fee bug | hold for fee fix | re-run after lanes 1+2 |
+| playtest | re-running 4.3.1 acceptance | fee fixes in | verdict awaited = A1/A2 acceptance |
