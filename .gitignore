@@ -38,3 +38,7 @@ test-results/
 
 # Per-worktree lane pointer (untracked, see docs/plan/MASTER_PLAN.md)
 /LANE.md
+
+# Vercel token — never commit
+vercel*.txt
+vercel.txt
