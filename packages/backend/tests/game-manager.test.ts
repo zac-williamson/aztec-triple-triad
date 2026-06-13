@@ -378,6 +378,71 @@ describe('GameManager', () => {
     });
   });
 
+  describe('settleAbandonedGame', () => {
+    let gameId: string;
+
+    beforeEach(async () => {
+      const room = await manager.createGame('player-1', PLAYER1_CARDS);
+      gameId = room.id;
+      await manager.joinGame(gameId, 'player-2', PLAYER2_CARDS);
+      // Partial game: P1 m0, P2 m1, P1 m2 — then P2 abandons
+      await manager.placeCard(gameId, 'player-1', 0, 0, 0, 0);
+      await manager.placeCard(gameId, 'player-2', 0, 1, 1, 1);
+      await manager.placeCard(gameId, 'player-1', 0, 2, 2, 2);
+    });
+
+    it('marks the game finished with the reporter as winner', async () => {
+      const room = await manager.settleAbandonedGame(gameId, 'player-1');
+      expect(room.state.status).toBe('finished');
+      expect(room.state.winner).toBe('player1');
+      // Persisted, not just returned
+      const stored = (await manager.getGame(gameId))!;
+      expect(stored.state.status).toBe('finished');
+      expect(stored.state.winner).toBe('player1');
+    });
+
+    it('releases both players so they can start new games immediately', async () => {
+      await manager.settleAbandonedGame(gameId, 'player-1');
+      expect(await manager.getPlayerGame('player-1')).toBeNull();
+      expect(await manager.getPlayerGame('player-2')).toBeNull();
+      // The QA-F3 symptom: this used to throw 'already in an active game'
+      const fresh = await manager.createGame('player-1', PLAYER1_CARDS);
+      expect(fresh.id).not.toBe(gameId);
+    });
+
+    it('throws for an unknown game', async () => {
+      await expect(manager.settleAbandonedGame('nonexistent', 'player-1')).rejects.toThrow('Game not found');
+    });
+
+    it('throws for a player not in the game', async () => {
+      await expect(manager.settleAbandonedGame(gameId, 'intruder')).rejects.toThrow('Player not in this game');
+    });
+
+    it('throws for a game that has not started', async () => {
+      const waiting = await manager.createGame('player-3', [11, 12, 13, 14, 15]);
+      await expect(manager.settleAbandonedGame(waiting.id, 'player-3')).rejects.toThrow('Game has not started');
+    });
+
+    it('is idempotent and keeps the first reporter as winner', async () => {
+      await manager.settleAbandonedGame(gameId, 'player-1');
+      const again = await manager.settleAbandonedGame(gameId, 'player-2');
+      expect(again.state.status).toBe('finished');
+      expect(again.state.winner).toBe('player1');
+    });
+
+    it('rejects further moves after settlement', async () => {
+      await manager.settleAbandonedGame(gameId, 'player-1');
+      await expect(manager.placeCard(gameId, 'player-2', 0, 0, 1, 3)).rejects.toThrow();
+    });
+
+    it('releases the game lock so subsequent calls are not blocked', async () => {
+      await manager.settleAbandonedGame(gameId, 'player-1');
+      // Would throw 'Game is currently processing another move' if the lock leaked
+      const again = await manager.settleAbandonedGame(gameId, 'player-1');
+      expect(again.state.status).toBe('finished');
+    });
+  });
+
   describe('cleanupStaleGames', () => {
     it('should remove games past timeout', async () => {
       const room = await manager.createGame('player-1', PLAYER1_CARDS);

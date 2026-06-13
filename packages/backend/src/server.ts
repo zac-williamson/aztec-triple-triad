@@ -27,6 +27,7 @@ const VALID_MESSAGE_TYPES = new Set([
   'SHARE_AZTEC_INFO',
   'RELAY_NOTE_DATA',
   'SETTLE_STARTED',
+  'ABANDONED_GAME_SETTLED',
   'QUEUE_MATCHMAKING', 'CANCEL_MATCHMAKING', 'PING',
   'RESUME',
 ]);
@@ -286,6 +287,9 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       case 'SETTLE_STARTED':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
         if (typeof msg.selectedCardId !== 'number') return 'selectedCardId must be a number';
+        break;
+      case 'ABANDONED_GAME_SETTLED':
+        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
         break;
       case 'QUEUE_MATCHMAKING':
         if (!Array.isArray(msg.cardIds)) return 'cardIds must be an array of numbers';
@@ -732,6 +736,28 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
             gameId: msg.gameId,
             selectedCardId: msg.selectedCardId,
           });
+        }
+        break;
+      }
+
+      case 'ABANDONED_GAME_SETTLED': {
+        try {
+          const room = await gameManager.settleAbandonedGame(msg.gameId, playerId);
+          const opponentId = await getOpponentId(msg.gameId, playerId);
+          const overMsg: ServerMessage = {
+            type: 'GAME_OVER',
+            gameId: msg.gameId,
+            gameState: room.state,
+            winner: room.state.winner!,
+            player1CardIds: room.player1CardIds,
+            player2CardIds: room.player2CardIds,
+          };
+          send(ws, overMsg, playerId);
+          // Usually offline in this flow; GAME_OVER is not inbox-buffered, so
+          // an offline opponent learns the outcome from the chain instead.
+          if (opponentId) await sendToPlayer(opponentId, overMsg);
+        } catch (err: any) {
+          send(ws, { type: 'ERROR', message: err.message }, playerId);
         }
         break;
       }
