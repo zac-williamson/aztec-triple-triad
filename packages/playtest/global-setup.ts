@@ -4,11 +4,33 @@
  * for the tests and globalTeardown.
  */
 import { mkdirSync, writeFileSync } from 'fs';
+import { resolve } from 'path';
+import { buildSync } from 'esbuild';
 import { Stack } from './src/stack.js';
 import {
-  REUSE_STACK, ARTIFACTS_DIR, STACK_INFO_PATH, PXE_URL, BACKEND_URL, FRONTEND_URL,
+  REUSE_STACK, ROOT, ARTIFACTS_DIR, STACK_INFO_PATH, GAME_LOGIC_BUNDLE_PATH,
+  PXE_URL, BACKEND_URL, FRONTEND_URL,
   readContractAddresses, type StackInfo,
 } from './src/env.js';
+
+/**
+ * Bundle game-logic's source to a private CJS file for the rules mirror.
+ * The package's dist is ESM without a "type" declaration, which plain-Node
+ * CJS consumers (Playwright's transform) cannot load — see expected.ts.
+ * Rebuilt every run so it can never go stale against lane 3's source.
+ */
+function bundleGameLogic(): void {
+  buildSync({
+    entryPoints: [resolve(ROOT, 'packages/game-logic/src/index.ts')],
+    outfile: GAME_LOGIC_BUNDLE_PATH,
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    target: 'node22',
+    sourcemap: false,
+    logLevel: 'silent',
+  });
+}
 
 async function assertReachable(name: string, url: string, init?: RequestInit): Promise<void> {
   try {
@@ -21,6 +43,7 @@ async function assertReachable(name: string, url: string, init?: RequestInit): P
 
 export default async function globalSetup(): Promise<void> {
   mkdirSync(ARTIFACTS_DIR, { recursive: true });
+  bundleGameLogic();
 
   if (REUSE_STACK) {
     // Mark the run as attached FIRST: globalTeardown runs even when setup

@@ -3,11 +3,29 @@
  * with @axolotl-arena/game-logic. After every placement the UI board (both
  * browsers) is compared against this, so a rules divergence between frontend,
  * TS engine, and (at settlement) the circuits is pinned to the exact move.
+ *
+ * TEMPORARY loading path: game-logic's dist is ESM inside a package that
+ * declares no "type", so the test runner cannot load the package entry
+ * (require() of typeless ESM). globalSetup bundles the package's own source
+ * to a private CJS file (same single rules implementation, no duplication)
+ * and this module requires that. Revert to a plain package import once
+ * lane 3 lands `"type": "module"` (diff reported to the orchestrator).
  */
-import {
-  createGame, placeCard, getCardsByIds,
-  type GameState, type Player,
-} from '@axolotl-arena/game-logic';
+import { createRequire } from 'module';
+import type { GameState, Player } from '@axolotl-arena/game-logic';
+import { GAME_LOGIC_BUNDLE_PATH } from './env.js';
+
+type GameLogic = typeof import('@axolotl-arena/game-logic');
+
+// Lazy: the bundle is produced by globalSetup, which has not run yet when
+// Playwright merely collects tests (--list) and imports this module.
+let _logic: GameLogic | null = null;
+function logic(): GameLogic {
+  if (!_logic) {
+    _logic = createRequire(import.meta.url)(GAME_LOGIC_BUNDLE_PATH) as GameLogic;
+  }
+  return _logic;
+}
 
 export interface BoardCellExpectation {
   cardId: number | null;
@@ -18,16 +36,16 @@ export class ExpectedGame {
   state: GameState;
 
   constructor(p1CardIds: number[], p2CardIds: number[]) {
-    const p1Cards = getCardsByIds(p1CardIds);
-    const p2Cards = getCardsByIds(p2CardIds);
+    const p1Cards = logic().getCardsByIds(p1CardIds);
+    const p2Cards = logic().getCardsByIds(p2CardIds);
     if (p1Cards.length !== 5 || p2Cards.length !== 5) {
       throw new Error('ExpectedGame: both hands must resolve to 5 known cards');
     }
-    this.state = createGame(p1Cards, p2Cards);
+    this.state = logic().createGame(p1Cards, p2Cards);
   }
 
   apply(player: Player, handIndex: number, row: number, col: number): void {
-    this.state = placeCard(this.state, player, handIndex, row, col).newState;
+    this.state = logic().placeCard(this.state, player, handIndex, row, col).newState;
   }
 
   get board(): BoardCellExpectation[][] {

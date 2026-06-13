@@ -145,8 +145,13 @@ test('full click-driven game settles correctly across all three layers', async (
 
   await winnerDriver.expectEventually(
     'winner token reward', () => winnerDriver.tokenBalance(), STARTER_TOKENS + GAME_REWARD);
+  // DIAGNOSTIC ceiling (6 min): the loser's +20 arrives via tagged-log block
+  // scanning (the winner's own settle tx registers notes at execution, the
+  // loser is the only true scan consumer). Run 7 showed 100 after 120s — this
+  // run distinguishes slow discovery from never-discovered (app/SDK finding).
   await loserDriver.expectEventually(
-    'loser token reward', () => loserDriver.tokenBalance(), STARTER_TOKENS + GAME_REWARD);
+    'loser token reward', () => loserDriver.tokenBalance(), STARTER_TOKENS + GAME_REWARD,
+    360_000);
 
   // ── Layer 2: public chain state via the harness's own node client ──────
   const chain = await ChainClient.connect(stack.addresses);

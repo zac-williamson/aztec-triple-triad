@@ -31,6 +31,8 @@ export const STACK_INFO_PATH = resolve(ARTIFACTS_DIR, 'stack.json');
 /** Registry for a long-lived stack from scripts/boot-stack.ts (stop-stack.ts kills it). */
 export const STANDALONE_INFO_PATH = resolve(ARTIFACTS_DIR, 'standalone-stack.json');
 export const FRONTEND_ENV_PATH = resolve(ROOT, 'packages/frontend/.env');
+/** CJS bundle of game-logic's source, rebuilt by globalSetup (see expected.ts). */
+export const GAME_LOGIC_BUNDLE_PATH = resolve(ARTIFACTS_DIR, 'game-logic.bundle.cjs');
 
 export interface ContractAddresses {
   nft: string;
