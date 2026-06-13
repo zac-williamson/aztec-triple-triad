@@ -501,3 +501,21 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   is exposable there. Lane-1 to choose on soundness + blast radius, ship failing-first test
   (circuit + TS engine together), then STATUS → I gate-review + merge → playtest attempt 6.
 - Fast-path monitors: b42xmvsqt (lane-1 fix), bwpefs259 (playtest attempt 6). Cron a13b5367 backstop.
+
+## 06-13 — lane-1 C2 fix gate-REVIEWED: sound design, REJECTED as incomplete (contract gap caught)
+- lane-1 shipped ca698e2: per-player placed-hand-slot bitmask (a 5th option — in-proof chained
+  state). Directly enforces "each player places each committed hand card at most once",
+  capture-immune + duplicate-deck-immune; public-input count stays 6 (masks fold into the 21→23
+  state-hash preimage, NOT new public inputs) so process_game/recursive verification is untouched.
+  29 circuit + 40 TS-engine tests; the C2 cases verified failing-first incl. the exact (a)
+  capture-collision trap. Verified the soundness dependency myself: prove_hand asserts distinct hand
+  ids (slot-find is unambiguous); dummy_move is a zero-constraint passthrough (6 pub inputs) — no gap.
+- GATE CAUGHT a missed consumer: triple_triad_game/src/main.nr:377 builds canonical_initial from
+  initial_inputs:[Field;21] and asserts move[0].start_state == it. With hash_board_state now 23-field,
+  move 1's start_state (masks 0,0) ≠ the 21-field canonical_initial → settlement would revert "First
+  move start_state does not match initial state" at attempt 6. lane-1's game_move tests passed in
+  isolation and missed it (no real-proof process_game test). Routed back: bump to [Field;23], aztec
+  compile, add a process_game initial-state test. NOT merged until fixed. (Exactly the
+  leaky/incomplete-change criterion the gate exists for.)
+- Cross-lane: lane-2 frontend prover follow-up still pending (LANE_2_FRONTEND.md); dispatch after
+  lane-1 re-passes the gate, then playtest attempt 6.
