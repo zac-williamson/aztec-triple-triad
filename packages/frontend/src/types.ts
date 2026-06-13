@@ -40,6 +40,9 @@ export interface GameState {
 export interface SerializedProof {
   proof: string;
   publicInputs: string[];
+  /** Prover-local generation time in ms. Travels with relayed proofs, so an
+   *  opponent's proof carries the opponent's timing. Display-only. */
+  durationMs?: number;
 }
 
 export interface HandProofData extends SerializedProof {

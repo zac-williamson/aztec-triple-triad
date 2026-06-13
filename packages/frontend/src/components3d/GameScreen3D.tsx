@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import type { GameState, Player, Card, Board } from '../types';
 import { SwampScene } from './SwampScene';
 import { GameHUD } from './GameHUD';
+import type { ChainViewData } from './ChainViewPanel';
 import { TurnAnnouncer } from './TurnAnnouncer';
 import { useCardAnimation } from './hooks/useCardAnimation';
 import { useCaptureAnimation, type CaptureAnimationEntry } from './hooks/useCaptureAnimation';
@@ -30,6 +31,8 @@ interface GameScreenProps {
   settleProgress?: { myHand: boolean; oppHand: boolean; moves: number };
   opponentSettled?: boolean;
   takenCardId?: number | null;
+  /** Data for the "you see / chain sees" privacy panel (GameHUD toggle). */
+  chainView?: ChainViewData;
   // Tutorial optional
   tutorialHighlightCells?: { row: number; col: number }[];
   tutorialPulseHandIndex?: number | null;
@@ -53,6 +56,7 @@ export function GameScreen3D({
   settleProgress,
   opponentSettled,
   takenCardId,
+  chainView,
   tutorialHighlightCells,
   tutorialPulseHandIndex,
   xochitlRevealCount,
@@ -271,6 +275,7 @@ export function GameScreen3D({
         settleTxStatus={settleTxStatus}
         opponentSettled={opponentSettled}
         takenCardId={takenCardId}
+        chainView={chainView}
       />
     </div>
   );

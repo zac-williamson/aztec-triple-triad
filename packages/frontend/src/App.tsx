@@ -137,6 +137,13 @@ function AppInner() {
           settleTxStatus={game.settleTxStatus}
           opponentSettled={game.opponentSettled}
           takenCardId={game.takenCardId}
+          chainView={{
+            onChainGameId: game.onChainGameId,
+            myHandProof: game.myHandProof,
+            opponentHandProof: game.opponentHandProof,
+            moveProofs: game.collectedMoveProofs,
+            settleTxHash: game.settleTxHash,
+          }}
         />
       )}
       {game.screen === 'game' && !game.ws.gameState && (

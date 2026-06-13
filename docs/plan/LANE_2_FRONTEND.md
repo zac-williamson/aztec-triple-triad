@@ -100,3 +100,19 @@ the manual FundingPrompt flow. **SponsoredFPC remains banned** — Fee Juice onl
    This is what keeps `handleSettle` memoized (the stale-closure settle bug
    regression pinned by `useGame.settleFlow.test.ts`). Anything added to a
    hook's public surface must keep this property.
+
+### From item C (chain-view panel) + QA-F3 frontend half
+
+8. **txProgress events cover wallet txs only** (create/join/settle via
+   instrumentedWallet) — client-side circuit proofs never pass through the
+   wallet. Per-proof timings therefore come from a new optional
+   `durationMs` on `SerializedProof`, set by proofWorker (which already
+   measured and discarded it). A relayed proof carries the PROVER's
+   timing — the opponent's number is theirs.
+9. **Move proofs carry no player attribution** (`MoveProofData` has no
+   player field; both card commits appear in every proof), so the panel's
+   ticker lists move proofs in arrival order without "you/them" labels.
+10. **QA-F3 reply handling needs no code**: the server's GAME_OVER response
+    re-enters the idempotent GAME_OVER path, and a benign
+    `ERROR 'Game not found'` only sets `ws.error`, which has no UI
+    consumer (verified by grep — nothing renders it).

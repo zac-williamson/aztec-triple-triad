@@ -6,7 +6,7 @@ import { useGameSession } from './useGameSession';
 import { useGamePlay } from './useGamePlay';
 import { useGameSettlement, type TxStatus } from './useGameSettlement';
 import { useAztecContext } from '../aztec/AztecContext';
-import type { Screen } from '../types';
+import type { Screen, HandProofData, MoveProofData } from '../types';
 
 // Re-export types consumers need
 export type { TxStatus, ProofStatus };
@@ -32,6 +32,12 @@ export interface UseGameReturn {
   canSettle: boolean;
   settleTxStatus: TxStatus;
   onChainError: string | null;
+
+  // Chain-view data (privacy panel): live proofs + settlement tx hash
+  myHandProof: HandProofData | null;
+  opponentHandProof: HandProofData | null;
+  collectedMoveProofs: MoveProofData[];
+  settleTxHash: string | null;
 
   // Game state
   cardIds: number[];
@@ -268,6 +274,10 @@ export function useGame(wsUrl: string): UseGameReturn {
     canSettle: play.canSettle,
     settleTxStatus: settlement.settleTxStatus,
     onChainError: session.onChainError,
+    myHandProof: play.myHandProof,
+    opponentHandProof: play.opponentHandProof,
+    collectedMoveProofs: play.collectedMoveProofs,
+    settleTxHash: settlement.settleTxHash,
     cardIds, packResult, hasGameInProgress,
     opponentSettled: settlement.opponentSettled,
     takenCardId: settlement.takenCardId,
