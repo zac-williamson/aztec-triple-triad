@@ -51,6 +51,11 @@ pub fn generate_card(seed: Field, counter: Field) -> (u8, u32) {
 /// Fixed starter set card IDs (common cards)
 global STARTER_CARD_IDS: [Field; 5] = [1, 2, 3, 4, 5];
 
+/// Domain separator for the one-per-account starter-claim nullifier:
+/// "STARTER_CLAIM" packed as big-endian ASCII. App-level separator, distinct
+/// from the protocol's DOM_SEP__NOTE_NULLIFIER space.
+global DOM_SEP__STARTER_CLAIM: Field = 0x535441525445525f434c41494d;
+
 /// Cost of a card pack in Arena Tokens
 global CARD_PACK_COST: u128 = 100;
 
@@ -76,7 +81,8 @@ global GAME_ID_IV_FIELD: Field = 0x47616d654964;
 pub contract TripleTriadNFT {
     use super::{
         AXOLOTL_NOTE_SECRET_IV_FIELD, AXOLOTL_NOTE_TAG_FIELD, AXOLOTL_PAYLOAD_IV_FIELD,
-        CARD_PACK_COST, GAME_ID_IV_FIELD, generate_card, STARTER_CARD_IDS,
+        CARD_PACK_COST, DOM_SEP__STARTER_CLAIM, GAME_ID_IV_FIELD, generate_card,
+        STARTER_CARD_IDS,
     };
     use super::filters::{filter_by_token_ids, filter_by_token_ids_10};
     use arena_token::ArenaToken;
@@ -101,11 +107,12 @@ pub contract TripleTriadNFT {
             note_viewer_options::NoteViewerOptions,
             utils::compute_confirmed_note_hash_for_nullification,
         },
+        history::nullifier::assert_nullifier_did_not_exist_by,
         oracle::{logging::debug_log_format, notes::notify_created_note},
         protocol::{
             address::AztecAddress,
             constants::{DOM_SEP__NOTE_HASH, DOM_SEP__NOTE_NULLIFIER, MAX_NOTE_HASHES_PER_TX},
-            hash::{poseidon2_hash, poseidon2_hash_with_separator},
+            hash::{compute_siloed_nullifier, poseidon2_hash, poseidon2_hash_with_separator},
             traits::{Hash, Packable, ToField},
         },
         state_vars::{Map, Owned, PrivateSet, PublicImmutable, PublicMutable, StateVariable},
@@ -382,6 +389,7 @@ pub contract TripleTriadNFT {
 
     /// Give a new player their starter set of 5 common cards + 100 Arena Tokens.
     /// Creates a note_nonce with initial value 5 (since 5 cards were created at indices 0..4).
+    /// One claim per account, enforced on-chain (QA-F1).
     #[external("private")]
     fn get_cards_for_new_player() {
         let owner = self.msg_sender();
@@ -390,6 +398,21 @@ pub contract TripleTriadNFT {
         let owner_npk_m = get_public_keys(owner).npk_m;
         let owner_npk_m_hash = owner_npk_m.hash();
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
+
+        // One starter claim per account (QA-F1). The nullifier is deterministic
+        // for the account but unlinkable from outside: it is derived from the
+        // app-siloed nullifier secret, so observers cannot precompute it from an
+        // address to learn whether that account claimed. The non-inclusion proof
+        // rejects re-claims with a clean error at the anchor block the wallet
+        // proves against; push_nullifier is the protocol-level backstop that
+        // catches a malicious prover anchoring at a pre-claim block (duplicate
+        // nullifiers make the sequencer drop the tx).
+        let claim_nullifier = poseidon2_hash([DOM_SEP__STARTER_CLAIM, nhk_app_secret]);
+        assert_nullifier_did_not_exist_by(
+            self.context.anchor_block_header,
+            compute_siloed_nullifier(self.address, claim_nullifier),
+        );
+        self.context.push_nullifier(claim_nullifier);
 
         // Mint 5 starter cards with deterministic randomness and emit CardCreated events
         for i in 0..5 {
@@ -591,6 +614,11 @@ pub contract TripleTriadNFT {
 
         let player_state_hash = poseidon2_hash(randomness);
 
+        // Advance the nonce past the 6 randomness slots this game consumed:
+        // derive_game_randomness reads slots [nonce_value, nonce_value + 6) (one
+        // per gameRandomness [Field; 6] element, main.nr derive_game_randomness),
+        // so +6 guarantees no later pack/game derivation reuses a slot. Mirrors
+        // purchase_card_pack's +10 for its 10 cards. (QA-A2: per-game delta = +6.)
         push_note_nonce(self.context, self.storage, owner, nonce_value + 6);
 
         debug_log_format(
@@ -659,6 +687,11 @@ pub contract TripleTriadNFT {
 
         let player_state_hash = poseidon2_hash(randomness);
 
+        // Advance the nonce past the 6 randomness slots this game consumed:
+        // derive_game_randomness reads slots [nonce_value, nonce_value + 6) (one
+        // per gameRandomness [Field; 6] element, main.nr derive_game_randomness),
+        // so +6 guarantees no later pack/game derivation reuses a slot. Mirrors
+        // purchase_card_pack's +10 for its 10 cards. (QA-A2: per-game delta = +6.)
         push_note_nonce(self.context, self.storage, owner, nonce_value + 6);
         debug_log_format(
             "[NFT] commit_join: card_commit={0} player_state={1}",

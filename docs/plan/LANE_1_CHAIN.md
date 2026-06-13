@@ -106,3 +106,38 @@ compiled JSON into `frontend/public/contracts/`, and answering proof-shape quest
 9. **Tracked target/*.json.bak files** get rewritten by every compile and are
    committed alongside artifacts (April convention). Lane 6's F2 purge should
    drop them from git; until then they bloat artifact diffs.
+
+### QA queue follow-ups (2026-06-12, post-A1 merge)
+
+10. **QA-F1 CONFIRMED and FIXED — starter double-claim.** `get_cards_for_new_player`
+    had no on-chain guard: a second direct call re-minted 5 cards + 100 tokens
+    and pushed a second nonce note (verified — wrote a should_fail test that
+    *passed* against the unguarded contract). Fix: a deterministic per-account
+    claim nullifier `poseidon2([DOM_SEP__STARTER_CLAIM, nhk_app_secret])`,
+    enforced with the canonical pair — `assert_nullifier_did_not_exist_by` at the
+    anchor block (clean simulation-time rejection, "Cannot prove nullifier
+    non-inclusion" — same error aztec-nr's own history/nullifier test asserts)
+    plus `push_nullifier` (protocol backstop against a malicious prover anchoring
+    pre-claim). Derived from the app-siloed secret, so the nullifier is
+    unlinkable from the address — an observer can't tell who has claimed. Tests:
+    `starter_claim_mints_starter_tokens`, `starter_claim_rejects_second_claim`.
+    NFT TXE suite 15→17. Note: the localStorage `deploymentStatus` flag (Lane 2)
+    is now belt-and-suspenders, not the only protection — the C8 campaign's
+    "direct second call → assert revert" extension is now executable.
+11. **QA-A2 CONFIRMED — nonce delta +6 per game (open question #6).** Both
+    `commit_five_nfts_create` and `commit_five_nfts_join` end with
+    `push_note_nonce(owner, nonce_value + 6)`. The "where/why": the nonce is a
+    monotonic *next-free randomness-slot* counter; `derive_game_randomness`
+    consumes 6 slots `[nonce_value, nonce_value + 6)` (one per `gameRandomness
+    [Field; 6]`), so +6 prevents any later pack/game derivation reusing a slot —
+    exactly mirroring `purchase_card_pack`'s +10 for 10 cards and the starter's
+    init-to-5 for 5 cards. Documented at both push sites in main.nr. Fixture-gen
+    determinism (predicted pack contents after N games) can rely on +6/game.
+12. **TXE runner hygiene (operational, not code).** Stale `aztec start --txe`
+    processes from interrupted/killed runs accumulate and cause LMDB
+    world-state contention: the next run's TXE aborts with
+    `libc++abi: mdb_txn_begin: 22 - Invalid argument`, and every test then
+    fails with "Failed calling external resolver. client error (Connect)" —
+    looks like a mass regression but is purely environmental. Always
+    `pkill -9 -f "start --txe"` before a run and use a fresh port; one TXE at a
+    time. The contract suite is 9/6/17 green on a clean single instance.
