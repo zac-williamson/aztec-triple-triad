@@ -136,6 +136,34 @@ async function main() {
   const createAccountOnly = process.argv.includes('--create-account');
   const skipAccount = process.argv.includes('--skip-account');
 
+  // Resolve the deployer keys up front (before the slow compile) so a real
+  // deploy fails FAST and LOUD if its keys are missing. NO hardcoded default:
+  // two operators relying on a shared default would deploy to the same account
+  // and collide (no-silent-fallback rule). --create-account mints a FRESH
+  // random account and prints its keys to re-run with.
+  let secretFr: InstanceType<typeof Fr>;
+  let saltFr: InstanceType<typeof Fr>;
+  let signingKey: InstanceType<typeof GrumpkinScalar>;
+
+  if (createAccountOnly) {
+    secretFr = Fr.random();
+    saltFr = Fr.random();
+    signingKey = GrumpkinScalar.random();
+  } else {
+    const { DEPLOYER_SECRET, DEPLOYER_SALT, DEPLOYER_SIGNING_KEY } = process.env;
+    if (!DEPLOYER_SECRET || !DEPLOYER_SALT || !DEPLOYER_SIGNING_KEY) {
+      throw new Error(
+        'A real deploy requires DEPLOYER_SECRET, DEPLOYER_SALT and DEPLOYER_SIGNING_KEY in the env.\n' +
+          '  Create a fresh deployer:  npx tsx scripts/deploy-testnet.ts --create-account\n' +
+          '  then re-run with the printed keys. There is no shared default key — two\n' +
+          '  operators relying on one would deploy to the same account and collide.',
+      );
+    }
+    secretFr = Fr.fromHexString(DEPLOYER_SECRET);
+    saltFr = Fr.fromHexString(DEPLOYER_SALT);
+    signingKey = GrumpkinScalar.fromHexString(DEPLOYER_SIGNING_KEY);
+  }
+
   // Compile contracts first
   console.log('=== Compiling Contracts ===');
   const { execSync } = await import('child_process');
@@ -165,35 +193,23 @@ async function main() {
   console.log('Waiting for PXE sync...');
   await new Promise(r => setTimeout(r, 8000));
 
-  // Create or restore deployer account
-  let secretFr: InstanceType<typeof Fr>;
-  let saltFr: InstanceType<typeof Fr>;
-  let signingKey: InstanceType<typeof GrumpkinScalar>;
-
-  // Default keys from ../account_details_do_not_commit.md (override via env vars)
-  const defaultSecret = '0x1666c6a09995cf41be384233f3d81355a99b421362806a83acdfd4a852aff30e';
-  const defaultSalt = '0x2ab7f2d2a8ea4911b714136d35c37d1ba3fca2f22124b6650330b0eaeaa98f16';
-  const defaultSigningKey = '0x12cba212b89ebfd4aa5169a31b64ce92355a4b1f19a4aeb0ac95171436258410';
-
-  secretFr = Fr.fromHexString(process.env.DEPLOYER_SECRET || defaultSecret);
-  saltFr = Fr.fromHexString(process.env.DEPLOYER_SALT || defaultSalt);
-  signingKey = GrumpkinScalar.fromHexString(process.env.DEPLOYER_SIGNING_KEY || defaultSigningKey);
-
   const deployerAccount = await wallet.createSchnorrAccount(secretFr, saltFr, signingKey);
   const deployerAddress = deployerAccount.address;
 
   console.log(`\nDeployer address: ${deployerAddress.toString()}`);
-  console.log(`Secret:          ${secretFr.toString()}`);
-  console.log(`Salt:            ${saltFr.toString()}`);
-  console.log(`Signing key:     ${signingKey.toString()}`);
 
   if (createAccountOnly) {
-    console.log('\n=== Account Created ===');
-    console.log('Fund this address with Fee Juice using one of:');
-    console.log('  - https://aztec-faucet.nethermind.io (select Testnet)');
-    console.log('  - https://bridge.gregojuice.anothercoffeefor.me/');
-    console.log('\nThen re-run without --create-account to deploy contracts:');
+    // Only the create path echoes the secret material — intentionally, so the
+    // operator can capture it. A real deploy never logs the keys it read.
+    console.log('\n=== Fresh Account Created (keys are NOT persisted — save them) ===');
+    console.log(`  Secret:      ${secretFr.toString()}`);
+    console.log(`  Salt:        ${saltFr.toString()}`);
+    console.log(`  Signing key: ${signingKey.toString()}`);
+    console.log('\nFund it, then deploy with those keys:');
     console.log(`  DEPLOYER_SECRET=${secretFr.toString()} DEPLOYER_SALT=${saltFr.toString()} DEPLOYER_SIGNING_KEY=${signingKey.toString()} npx tsx scripts/deploy-testnet.ts`);
+    console.log('\nFunding options:');
+    console.log(`  npx tsx scripts/fund-testnet.ts ${deployerAddress.toString()}   (one-key treasury bridge)`);
+    console.log('  or the public faucet: https://aztec-faucet.nethermind.io (select Testnet)');
     return;
   }
 
