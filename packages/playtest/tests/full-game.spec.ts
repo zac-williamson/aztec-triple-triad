@@ -208,21 +208,16 @@ test.describe.serial('ladder campaign', () => {
     settled = { alice, bob, loserDriver, expectedLoserTokens: STARTER_TOKENS + GAME_REWARD };
   });
 
-  // KNOWN OPEN APP BUG (lanes 1/2), tracked as an expected failure so the
-  // suite stays green while it exists and flips RED the moment it's fixed —
-  // the honest alternative to deleting the assertion. The loser's +20 is an
-  // ONCHAIN_CONSTRAINED note tagged inside the WINNER's settle tx; the loser's
-  // PXE never discovers it in-session (100, not 120, after 360s — runs 7, 9).
-  // See docs/plan/PLAYTEST_HARNESS.md assumption 13.
+  // The loser's +20 reward is an ONCHAIN_CONSTRAINED note tagged inside the
+  // WINNER's settle tx; the loser's PXE discovers it by block scanning, so it
+  // arrives slightly after the winner's. Was a tracked test.fail sentinel
+  // while the loser couldn't discover it at all (read 100 not 120 across runs
+  // 7/9); flipped to a normal expect-pass after the ArenaToken discoverable-
+  // note fix + the frontend import landed.
   test('loser +20 token reward is discovered in-session', async () => {
-    test.fail(true, 'KNOWN OPEN BUG (lanes 1/2): loser ONCHAIN_CONSTRAINED token note not discovered in-session');
-    test.info().annotations.push({
-      type: 'finding',
-      description: 'Loser +20 token reward note undiscoverable in-session; see PLAYTEST_HARNESS.md assumption 13. Owner: lanes 1 (tag derivation) / 2 (PXE-session scanning).',
-    });
     expect(settled, 'settlement test must run first (serial)').not.toBeNull();
     await settled!.loserDriver.expectEventually(
       'loser token reward', () => settled!.loserDriver.tokenBalance(),
-      settled!.expectedLoserTokens, 120_000);
+      settled!.expectedLoserTokens, 180_000);
   });
 });
