@@ -727,3 +727,18 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   VITE_GAME_CONTRACT_ADDRESS + Vercel redeploy; works immediately, one-time address change.
   Recommend A unless the demo must work in the next 24h.
 - Minor follow-up: add a Vercel ignore-build-step so docs-only testnet pushes stop auto-redeploying.
+
+## 06-13 — DIRECTIVE: FRESH-REDEPLOY update model; rip out the updatable/upgrade pattern (Zac)
+- Zac reversed the earlier "make contracts updatable" decision. During active dev, an update = a
+  COMPLETE fresh redeployment, applied IMMEDIATELY. NO update_to / set_update_delay /
+  ContractInstanceRegistry — on this rollup that path is clamped to a 24h delay (the slop that
+  blocked go-live). VALIDATED: fresh deploy is immediate; the 3 contracts are interdependent
+  (triple_triad_nft stores the game addr as PublicImmutable → authorizes the game) so fresh =
+  all-3-together via deploy-testnet.ts (wires cross-refs + writes frontend .env). Address churn is
+  the (automated) cost — fine for active dev.
+- Routed to lane-1 (docs/plan/UPDATE_MODEL.md): strip the upgrade pattern from ALL 3 contracts
+  (keep the C2 round-2 fix), aztec compile, fresh-deploy all 3 to testnet (new addresses), delete
+  update-game-class-testnet.ts + verify-game-update-testnet.ts. Then me: Vercel env → 3 new
+  addresses + redeploy → live game works IMMEDIATELY (supersedes the 24h-delay update 1f4da52).
+- STANDING MODEL: code fix → aztec compile → deploy-testnet.ts → new .env → frontend redeploy.
+  Immediate, every time.
