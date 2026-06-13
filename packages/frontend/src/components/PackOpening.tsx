@@ -94,7 +94,8 @@ export function PackOpening({ location, cardIds, onComplete }: PackOpeningProps)
 
   // Reveal + dissolve phases
   return (
-    <div className="pack-opening" onClick={allFlipped ? handleContinue : undefined}>
+    <div className="pack-opening" data-testid="pack-opening" onClick={allFlipped ? handleContinue : undefined}>
+      {allFlipped && <div data-testid="pack-all-flipped" style={{ display: 'none' }} />}
       <div className="pack-opening__cards">
         {cards.map((card, idx) => {
           const isFlipped = flipped.has(idx);
@@ -103,6 +104,7 @@ export function PackOpening({ location, cardIds, onComplete }: PackOpeningProps)
           return (
             <div
               key={idx}
+              data-testid={`pack-card-${idx}`}
               className={`pack-opening__card-wrapper ${isDissolving ? 'pack-opening__card-wrapper--dissolving' : ''}`}
               style={{ '--dissolve-delay': `${idx * 0.05}s` } as React.CSSProperties}
               onClick={() => handleFlip(idx)}

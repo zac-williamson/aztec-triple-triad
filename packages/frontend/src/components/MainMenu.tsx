@@ -103,6 +103,7 @@ export function MainMenu({
 
         <button
           className="main-menu__btn main-menu__btn--packs"
+          data-testid="menu-packs"
           onClick={onCardPacks}
           disabled={!connected}
         >

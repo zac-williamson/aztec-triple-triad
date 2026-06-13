@@ -27,6 +27,7 @@ export const TIMEOUTS = {
   interactionIdle: 60_000,  // capture cascades run ~1s per flip
   canSettle: 1_200_000,     // all 9 move proofs + 2 hand proofs (real proving)
   settleTx: 1_800_000,      // process_game: 11 recursive verifications, client-proved
+  packTx: 600_000,          // purchase_card_pack: tx proving + 10-note import
   pxeRead: 180_000,
   eventually: 120_000,      // private-state eventual consistency after settle
 };
@@ -253,5 +254,49 @@ export class PlayerDriver {
       `${this.name}: "${label}" never reached expected value within ${timeout / 1000}s\n` +
       `expected: ${JSON.stringify(expected)}\nlast:     ${JSON.stringify(last)}`,
     );
+  }
+
+  /** Current app screen ('main-menu' | 'card-packs' | 'pack-opening' | 'game' | ...). */
+  async screen(): Promise<string> {
+    return (await this.phase()).screen;
+  }
+
+  async waitScreen(screen: string, timeout = TIMEOUTS.match): Promise<void> {
+    await this.waitPhase(`screen=${screen}`, (p, s) => p.screen === s, timeout, screen);
+  }
+
+  /** From the game-over dialog: click Back to Lobby and land on the main menu. */
+  async returnToMenu(): Promise<void> {
+    await this.page.getByTestId('back-to-lobby').click();
+    await this.waitScreen('main-menu', TIMEOUTS.boardUpdate);
+  }
+
+  /**
+   * Open ONE card pack via the real UI: menu → Card Packs → Purchase → drive
+   * the reveal (flip all 10, continue) → back to menu. Returns the 10 new card
+   * ids. The purchase is a real tx (proving), so it can take a while.
+   */
+  async openPack(): Promise<number[]> {
+    const before = (await this.phase()).ownedCardIds.length;
+    await this.page.getByTestId('menu-packs').click();
+    await this.waitScreen('card-packs', TIMEOUTS.match);
+    await this.page.getByTestId('purchase-pack').click();
+    // Wait through the purchase tx + note import until the reveal screen.
+    await this.waitScreen('pack-opening', TIMEOUTS.packTx);
+    // Reveal phase auto-starts after ~4.5s of intro animation; flip all 10.
+    for (let i = 0; i < 10; i++) {
+      await this.page.getByTestId(`pack-card-${i}`).click({ timeout: TIMEOUTS.boardUpdate });
+    }
+    await this.page.getByTestId('pack-all-flipped').waitFor({ state: 'attached', timeout: TIMEOUTS.selection });
+    await this.page.locator('[data-testid="pack-opening"]').click(); // "click anywhere to continue"
+    await this.waitScreen('card-packs', TIMEOUTS.boardUpdate);
+    // Cards land in ownedCardIds via handlePackOpenComplete.
+    const after = await this.waitPhase(
+      'pack cards added to collection',
+      (p, b) => p.ownedCardIds.length >= b + 10, TIMEOUTS.boardUpdate, before);
+    await this.page.getByTestId('packs-back').click();
+    await this.waitScreen('main-menu', TIMEOUTS.match);
+    // The 10 new ids = ownedCardIds delta (multiset).
+    return after.ownedCardIds.slice(before);
   }
 }
