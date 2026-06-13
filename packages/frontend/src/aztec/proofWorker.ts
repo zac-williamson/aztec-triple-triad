@@ -226,8 +226,8 @@ export async function generateProveHandProof(
   const backend = await getOrCreateBackend('prove_hand', artifact.bytecode);
   const proofData = await backend.generateProof(witness);
 
-  const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
-  console.log(`[proofWorker] prove_hand proof generated in ${elapsed}s`);
+  const durationMs = performance.now() - startTime;
+  console.log(`[proofWorker] prove_hand proof generated in ${(durationMs / 1000).toFixed(1)}s`);
 
   // Public inputs: [0] card_commit_hash, [1] opponent_player_state_hash
   if (proofData.publicInputs.length < 2) {
@@ -240,6 +240,7 @@ export async function generateProveHandProof(
     proof: proofToBase64(proofData.proof),
     publicInputs: proofData.publicInputs,
     cardCommit: proofData.publicInputs[0],
+    durationMs,
   };
 }
 
@@ -318,8 +319,8 @@ export async function generateGameMoveProof(
   const backend = await getOrCreateBackend('game_move', artifact.bytecode);
   const proofData = await backend.generateProof(witness);
 
-  const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
-  console.log(`[proofWorker] game_move proof generated in ${elapsed}s`);
+  const durationMs = performance.now() - startTime;
+  console.log(`[proofWorker] game_move proof generated in ${(durationMs / 1000).toFixed(1)}s`);
 
   // Public inputs: [0] card_commit_1, [1] card_commit_2,
   // [2] start_state_hash, [3] end_state_hash,
@@ -340,5 +341,6 @@ export async function generateGameMoveProof(
     endStateHash: proofData.publicInputs[3],
     gameEnded: proofData.publicInputs[4] !== ZERO_FIELD && proofData.publicInputs[4] !== '0',
     winnerId: Number(BigInt(proofData.publicInputs[5])),
+    durationMs,
   };
 }

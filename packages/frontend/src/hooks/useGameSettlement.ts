@@ -476,6 +476,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     // Backfill from latest ws state (same init race as handleSettle)
     const sInfo = session.backfillSettlementInfoFromWs();
     const capturedPlayerNumber = ws.playerNumber;
+    const capturedWsGameId = ws.gameId;
     const validMoveProofs = play.getMoveProofs();
 
     if (!sInfo || !sInfo.onChainGameId || !sInfo.gameRandomness.length || !sInfo.opponentAddress) {
@@ -617,6 +618,19 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
       }
       setAbandonedDisputeCountdown(0);
 
+      // Determine which card to claim (first opponent card placed on board, if any)
+      // For now claim the first opponent card if any moves were played by opponent
+      const numValid = validMoveProofs.length;
+      const opponentPlayedCards = numValid >= 2; // Opponent played at least 1 card (move index 1)
+      const claimedCardId = opponentPlayedCards && capturedOpponentCardIds.length > 0
+        ? capturedOpponentCardIds[0]
+        : 0;
+
+      // Parity with the normal settle flow: tell the (possibly offline)
+      // opponent which card is being claimed — the relay buffers
+      // OPPONENT_SETTLING for them (QA-F3, docs/plan/LANE_4_BACKEND.md).
+      if (capturedWsGameId) ws.notifySettleStarted(capturedWsGameId, claimedCardId);
+
       // Step 3: settle_abandoned_game
       await txManager.runTx<{ hash: string; callerRandomness: any[] }>({
         type: 'settle_abandoned_game',
@@ -634,14 +648,6 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           const senderAddr = AztecAddress.fromString(addr);
           const opponent = AztecAddress.fromString(capturedOpponentAddress);
           const callerRandomness = capturedGameRandomness!.map(v => toFrUtil(Fr, v));
-
-          // Determine which card to claim (first opponent card placed on board, if any)
-          // For now claim the first opponent card if any moves were played by opponent
-          const numValid = validMoveProofs.length;
-          const opponentPlayedCards = numValid >= 2; // Opponent played at least 1 card (move index 1)
-          const claimedCardId = opponentPlayedCards && capturedOpponentCardIds.length > 0
-            ? capturedOpponentCardIds[0]
-            : 0;
 
           const { receipt } = await contract.methods
             .settle_abandoned_game(
@@ -668,6 +674,12 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
             callerNotes.push({ tokenId: capturedCardIds[i], randomness: toHexString(callerRandomness[i]) });
           }
           await importNotes(hash, callerNotes, 'Abandoned game recovery');
+
+          // QA-F3: report the MINED settlement to the relay — the server
+          // releases both players' room bindings on receipt and replies with
+          // a standard GAME_OVER (inert here; ws.error from a benign
+          // ERROR 'Game not found' after a >30-min flow has no UI consumer).
+          if (capturedWsGameId) ws.notifyAbandonedGameSettled(capturedWsGameId);
 
           // Refresh token balance (abandoned game settlement may mint tokens)
           aztec.refreshTokenBalance().catch(() => {});

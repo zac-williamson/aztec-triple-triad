@@ -27,6 +27,10 @@ export interface UseWebSocketReturn {
   // Settlement lifecycle
   opponentSettling: { selectedCardId: number } | null;
   notifySettleStarted: (gameId: string, selectedCardId: number) => void;
+  /** Report a mined settle_abandoned_game tx — the server releases both
+   *  players' room bindings and replies with a standard GAME_OVER. Send
+   *  only AFTER the tx is mined (QA-F3, docs/plan/LANE_4_BACKEND.md). */
+  notifyAbandonedGameSettled: (gameId: string) => void;
   // On-chain tx lifecycle
   opponentTxConfirmed: boolean;
   notifyTxConfirmed: (gameId: string, txType: 'create_game' | 'join_game', txHash: string) => void;
@@ -334,6 +338,10 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     send({ type: 'SETTLE_STARTED', gameId: gId, selectedCardId });
   }, [send]);
 
+  const notifyAbandonedGameSettled = useCallback((gId: string) => {
+    send({ type: 'ABANDONED_GAME_SETTLED', gameId: gId });
+  }, [send]);
+
   const notifyTxConfirmed = useCallback((gId: string, txType: 'create_game' | 'join_game', txHash: string) => {
     send({ type: 'TX_CONFIRMED', gameId: gId, txType, txHash });
   }, [send]);
@@ -413,6 +421,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     incomingNoteData,
     opponentSettling,
     notifySettleStarted,
+    notifyAbandonedGameSettled,
     opponentGameRandomness,
     opponentTxConfirmed,
     relayNoteData,
