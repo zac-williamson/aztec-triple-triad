@@ -89,6 +89,9 @@ export type ClientMessage =
   | { type: 'RELAY_NOTE_DATA'; gameId: string; txHash: string; notes: PlaintextNoteData[] }
   // Settlement lifecycle
   | { type: 'SETTLE_STARTED'; gameId: string; selectedCardId: number }
+  // Abandoned-game settlement mined on-chain — server releases both players'
+  // room bindings on receipt (QA-F3, docs/plan/LANE_4_BACKEND.md)
+  | { type: 'ABANDONED_GAME_SETTLED'; gameId: string }
   // Matchmaking
   | { type: 'QUEUE_MATCHMAKING'; cardIds: number[] }
   | { type: 'CANCEL_MATCHMAKING' }

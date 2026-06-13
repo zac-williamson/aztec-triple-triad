@@ -479,6 +479,20 @@ describe('useWebSocket', () => {
     });
   });
 
+  describe('notifyAbandonedGameSettled', () => {
+    it('sends ABANDONED_GAME_SETTLED with the gameId (QA-F3)', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      act(() => { ws.simulateSessionEstablished(); });
+
+      act(() => { result.current.notifyAbandonedGameSettled('game-42'); });
+
+      const sent = JSON.parse(ws.sentMessages[ws.sentMessages.length - 1]);
+      expect(sent).toEqual({ type: 'ABANDONED_GAME_SETTLED', gameId: 'game-42' });
+    });
+  });
+
   // --- Malformed JSON ---
 
   describe('error resilience', () => {
