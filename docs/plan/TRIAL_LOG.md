@@ -196,6 +196,16 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   + repeatability. Sweep: lanes 2-7 confirmed parked; lane-1 actively building
   fund-testnet.ts (reading L1FeeJuicePortalManager/bridgeTokensPublic).
 
+- 21:5x — **funder BOUNCED (not merged)**: lane-1's fund-testnet.ts + shared
+  feeJuiceBridge core + deploy-testnet claim-gap fix are correct and the 8 unit
+  tests pass — BUT gate review found (a) `vitest run` emits a spurious "No test
+  suite found" failed-suite on the file despite tests passing, and (b) scripts/
+  isn't a workspace so the tests run in NO CI suite (orphaned). Bounced for:
+  green-standalone test collection, a documented test:scripts command (→lane-6
+  wires to CI after), and a loud-fail in deploy-testnet when DEPLOYER_* env
+  unset (vs silent hardcoded-default-key fallback). Rebase onto post-A2 4.3.1
+  + re-typecheck.
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -203,7 +213,8 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - **lane-2**: remove live SponsoredFPC from `src/aztec/contracts.ts`,
   `hooks/useCardPacks.ts` (+ test) — banned pattern; fold into A2/I. Fix the
   `useGame.ts:433` comment path (report moved to docs/history/).
-- **lane-6**: F2 — `test-results/.last-run.json` (done) AND
+- **lane-6**: after lane-1 confirms a green `test:scripts` command, wire it into
+  ci.yml. Also (done earlier) F2 — `test-results/.last-run.json` AND
   `packages/integration/test.txt` (~2k-line committed PXE log debris) →
   git rm + gitignore guard for stray integration *.txt logs.
 - **lane-1**: confirm nightly.20260323 ↔ aztecnr-rc.2 name the same release.
