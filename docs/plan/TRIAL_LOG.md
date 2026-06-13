@@ -586,3 +586,19 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   the faucet to work in prod (key currently lives only in ~/.aztec-triad-private/treasury-l1-key.txt).
   Added to GO_LIVE.md.
 - Now 3 lanes active (lane-2 Item I FE, lane-4 Item I BE, playtest attempt 6); lane-1/3/5/6/7 parked.
+
+## 06-13 — Item I frontend MERGED (fbed226); attempt 6 validated C2, now probing an ordering race
+- lane-2 Item I frontend (62f3a5b) gate-PASSED + MERGED. requestFeeJuiceClaim abstraction +
+  useAztec testnet onboarding + FundingProgress UI + manual fallback (graceful degradation, not
+  flake-masking). Verified claimSecret hex-parsing matches feeJuiceBridge's Fr.toString()
+  serialization (real-Fr round-trip, proven by deploy-testnet — NOT the .simulate() decimal
+  footgun). Fork-skew caught: `diff testnet..lane/2` falsely showed TRIAL_LOG/GO_LIVE "removals";
+  merge-base diff confirmed lane-2 never touched them (used merge-base diff per the gate fix).
+  Live E2E awaits lane-4's /faucet — I'll verify lane-4 returns the matching hex SerializedClaim
+  at its merge.
+- Playtest attempt 6: C2 fix VALIDATED on REAL PROOFS (P2 4/4 clean, settlement completed) — the
+  game-breaker is fixed end-to-end. Agent is now empirically probing a possible move-proof ordering
+  race (bob generating his proof vs adopting alice's relayed after-mask). MOVE_PROVEN carries
+  gameState+moveProof atomically, so likely benign, but the check is right. If real → lane-2
+  follow-up (now free); if benign → attempt 6 green → go-live gate.
+- Active: lane-4 (Item I BE). Parked: lane-1/2/3/5/6/7. Playtest finishing attempt 6.
