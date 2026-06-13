@@ -1522,6 +1522,174 @@ describe('Disconnect-reconnect game continuation', () => {
   });
 });
 
+describe('Abandoned game settlement (QA-F3)', () => {
+  /** Create + join + 3 moves, then P2 hard-quits. Returns P1's socket/collector and P2's token. */
+  async function playToAbandonment(): Promise<{ ws1: WebSocket; c1: MessageCollector; gameId: string; p2Token: string }> {
+    const { ws: ws1 } = await createClientWithSession();
+    const { ws: ws2, sessionToken: p2Token } = await createClientWithSession();
+    const c1 = new MessageCollector(ws1);
+    const c2 = new MessageCollector(ws2);
+
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
+    const gameId = created.gameId;
+
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await c2.wait((m) => m.type === 'GAME_JOINED');
+    await c1.wait((m) => m.type === 'GAME_START');
+
+    sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0, moveNumber: 0 });
+    await c1.wait((m) => m.type === 'GAME_STATE');
+    await c2.wait((m) => m.type === 'GAME_STATE');
+    sendMessage(ws2, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 1, col: 1, moveNumber: 1 });
+    await c1.wait((m) => m.type === 'GAME_STATE');
+    await c2.wait((m) => m.type === 'GAME_STATE');
+    sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 2, col: 2, moveNumber: 2 });
+    await c1.wait((m) => m.type === 'GAME_STATE');
+
+    // P2 hard-quits (no graceful leave)
+    ws2.close();
+    await c1.wait((m) => m.type === 'OPPONENT_DISCONNECTED');
+
+    return { ws1, c1, gameId, p2Token };
+  }
+
+  it('releases the claimant immediately: settle, GAME_OVER, then a new game can be created', async () => {
+    const { ws1, c1, gameId } = await playToAbandonment();
+
+    sendMessage(ws1, { type: 'ABANDONED_GAME_SETTLED', gameId } as any);
+    const over = await c1.wait((m) => m.type === 'GAME_OVER') as any;
+    expect(over.gameId).toBe(gameId);
+    expect(over.winner).toBe('player1');
+    expect(over.gameState.status).toBe('finished');
+
+    // THE QA-F3 assertion: claimant can start a new game right away
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const fresh = await c1.wait((m) => m.type === 'GAME_CREATED' || m.type === 'ERROR') as any;
+    expect(fresh.type).toBe('GAME_CREATED');
+    expect(fresh.gameId).not.toBe(gameId);
+
+    ws1.close();
+  });
+
+  it('unbinds the offline opponent: their RESUME comes back with gameId null and they can play again', async () => {
+    const { ws1, c1, gameId, p2Token } = await playToAbandonment();
+
+    sendMessage(ws1, { type: 'ABANDONED_GAME_SETTLED', gameId } as any);
+    await c1.wait((m) => m.type === 'GAME_OVER');
+
+    // P2 returns later
+    const ws2b = new WebSocket(getUrl());
+    const session = await new Promise<{ resumed: boolean; gameId: string | null }>((resolve, reject) => {
+      ws2b.on('error', reject);
+      ws2b.on('open', () => {
+        ws2b.send(JSON.stringify({ type: 'RESUME', sessionToken: p2Token }));
+      });
+      ws2b.on('message', (data: WebSocket.Data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'SESSION_ESTABLISHED') {
+          resolve({ resumed: msg.resumed, gameId: msg.gameId });
+        }
+      });
+    });
+    expect(session.resumed).toBe(true);
+    expect(session.gameId).toBeNull();
+
+    const c2b = new MessageCollector(ws2b);
+    sendMessage(ws2b, { type: 'CREATE_GAME', cardIds: PLAYER2_CARDS });
+    const fresh = await c2b.wait((m) => m.type === 'GAME_CREATED' || m.type === 'ERROR') as any;
+    expect(fresh.type).toBe('GAME_CREATED');
+
+    ws1.close();
+    ws2b.close();
+  });
+
+  it('notifies a still-connected opponent with GAME_OVER', async () => {
+    const { ws: ws1 } = await createClientWithSession();
+    const { ws: ws2 } = await createClientWithSession();
+    const c1 = new MessageCollector(ws1);
+    const c2 = new MessageCollector(ws2);
+
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
+    const gameId = created.gameId;
+    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await c2.wait((m) => m.type === 'GAME_JOINED');
+    await c1.wait((m) => m.type === 'GAME_START');
+    sendMessage(ws1, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0, moveNumber: 0 });
+    await c1.wait((m) => m.type === 'GAME_STATE');
+    await c2.wait((m) => m.type === 'GAME_STATE');
+
+    sendMessage(ws1, { type: 'ABANDONED_GAME_SETTLED', gameId } as any);
+    const over1 = await c1.wait((m) => m.type === 'GAME_OVER') as any;
+    const over2 = await c2.wait((m) => m.type === 'GAME_OVER') as any;
+    expect(over1.winner).toBe('player1');
+    expect(over2.winner).toBe('player1');
+
+    ws1.close();
+    ws2.close();
+  });
+
+  it('is idempotent: a duplicate report re-sends GAME_OVER and keeps the original winner', async () => {
+    const { ws1, c1, gameId } = await playToAbandonment();
+
+    sendMessage(ws1, { type: 'ABANDONED_GAME_SETTLED', gameId } as any);
+    const first = await c1.wait((m) => m.type === 'GAME_OVER') as any;
+    expect(first.winner).toBe('player1');
+
+    sendMessage(ws1, { type: 'ABANDONED_GAME_SETTLED', gameId } as any);
+    const second = await c1.wait((m) => m.type === 'GAME_OVER') as any;
+    expect(second.winner).toBe('player1');
+
+    ws1.close();
+  });
+
+  it('rejects reports for unknown games, outsiders, and unstarted games', async () => {
+    const { ws: ws1 } = await createClientWithSession();
+    const c1 = new MessageCollector(ws1);
+
+    sendMessage(ws1, { type: 'ABANDONED_GAME_SETTLED', gameId: 'nonexistent' } as any);
+    const e1 = await c1.wait((m) => m.type === 'ERROR') as any;
+    expect(e1.message).toBe('Game not found');
+
+    // Unstarted game (no player 2)
+    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
+    sendMessage(ws1, { type: 'ABANDONED_GAME_SETTLED', gameId: created.gameId } as any);
+    const e2 = await c1.wait((m) => m.type === 'ERROR') as any;
+    expect(e2.message).toBe('Game has not started');
+
+    // Outsider
+    const { ws: ws3 } = await createClientWithSession();
+    const c3 = new MessageCollector(ws3);
+    sendMessage(ws3, { type: 'ABANDONED_GAME_SETTLED', gameId: created.gameId } as any);
+    const e3 = await c3.wait((m) => m.type === 'ERROR') as any;
+    expect(e3.message).toBe('Player not in this game');
+
+    ws1.close();
+    ws3.close();
+  });
+
+  it('reflects the settled state in GET_GAME and the REST endpoint', async () => {
+    const { ws1, c1, gameId } = await playToAbandonment();
+
+    sendMessage(ws1, { type: 'ABANDONED_GAME_SETTLED', gameId } as any);
+    await c1.wait((m) => m.type === 'GAME_OVER');
+
+    sendMessage(ws1, { type: 'GET_GAME', gameId });
+    const info = await c1.wait((m) => m.type === 'GAME_INFO') as any;
+    expect(info.game.status).toBe('finished');
+    expect(info.game.winner).toBe('player1');
+
+    const { status, body } = await httpGet(`/games/${gameId}`);
+    expect(status).toBe(200);
+    expect(body.status).toBe('finished');
+    expect(body.winner).toBe('player1');
+
+    ws1.close();
+  });
+});
+
 describe('Session staleness (item G)', () => {
   /** Connect to an arbitrary port and resolve on SESSION_ESTABLISHED. */
   function establish(p: number, resumeToken?: string): Promise<{ ws: WebSocket; sessionToken: string; playerId: string; resumed: boolean }> {
