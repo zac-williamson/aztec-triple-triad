@@ -536,3 +536,106 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   NOT needed for the playtest (it deploys fresh contracts to a LOCAL sandbox). Noted in GO_LIVE.md.
 - Sequence: lane-2 done → gate-review + merge → playtest attempt 6 (local sandbox) → if green, F3
   go-live incl. the testnet contract update. Monitor b6n308n3b (broad) + cron a13b5367.
+
+## 06-13 — C2 fix COMPLETE E2E (lane-2 prover merged 27b8a04); attempt 6 running; lane audit + Item I
+- lane-2 C2 frontend-prover follow-up (90e9393) gate-PASSED + MERGED (27b8a04). Reviewed the
+  opponent-mask design: each move proof relays its after-masks (p1/p2PlacedAfter in MoveProofData);
+  the receiver OR's them into a running pair (opponent's committed slot is private/underivable).
+  Turn-sequencing makes the running pair correct at proof-gen time; deferred moves capture
+  before-masks at placement. Verified the backend relays moveProof whole-object (no schema strip —
+  masks ride opaquely). proofWorker hash layout byte-matches the circuit; settlement canonical hash
+  now (0,0)/[5,5]/turn1 = the contract's compute_initial_state_hash. ⇒ C2 fix complete circuit +
+  contract + prover. Triggered playtest attempt 6 (C1 on the fixed stack).
+- LANE AUDIT (Zac: skeptical all-parked, CPU cold). Verified concretely (not STATUS lines):
+  catalog A1–A3/B/C/D1/E*/F1/G done; lane-4 abandoned-game gap actually implemented; lane-5
+  CAMPAIGN_BACKLOG real (10 campaigns). REAL available work found: (1) Item I onboarding (only
+  deploy-time fee-juice claim exists) → dispatched to lane-2 as a spike (design → docs/plan/
+  ITEM_I_ONBOARDING.md for go/no-go); (2) playtest campaigns C2–C10 — only C1 (full-game.spec.ts)
+  built; rest specced-not-built, gated on attempt 6 + lane-8 (single lane). Structural reason for
+  cold CPU: parallel build-out done, now in the serial integration tail; C2–C10 was downstream of
+  the move-format change (now landed). Open Zac calls surfaced: greenlight D2? parallelize C2–C10
+  (pull a 2nd lane to scaffold)? Confirmed all 8 agents alive (lane-2 + playtest took dispatches).
+
+## 06-13 — Item I spike DONE (lane-2 ITEM_I_ONBOARDING.md); go/no-go SURFACED to Zac
+- The real gap: on testnet a new browser user has no L1 wallet / Sepolia ETH, and Fee Juice is
+  non-transferable on L2, so a HOSTED faucet must pay the L1 bridge gas. Everything downstream
+  (deploy+mint+import in one tx via FeeJuicePaymentMethodWithClaim) already exists+tested — the
+  ONLY missing piece is obtaining a consumable FeeJuiceClaim for the new L2 address in-app.
+- Two backings: Option B (project backend faucet wrapping the proven bridgeFeeJuice with the
+  treasury L1 key + abuse limits, ~1d FE + 0.5d Lane-4) vs Option C (a hosted faucet API IF it's
+  CORS-open and returns a consumable claim — unverified; Zac dislikes Nethermind's).
+- Orchestrator context added: the Sepolia treasury ALREADY EXISTS + is funded (~0.4 ETH,
+  0xDA74…DEAa2) and bridgeFeeJuice is used by deploy-testnet → Option B is ~90% built. Recommend B.
+  Security note: B puts TREASURY_L1_KEY on the EC2 backend (new exposure) — Zac's call.
+- BLOCKED ON ZAC (legitimate park, like D2/F1b): (1) Option B vs verify-C first; (2) is ~0.4 ETH
+  enough for demo onboarding volume or top up + what rate limits; (3) priority — before launch or
+  fast-follow (non-gating for F3). lane-2 parked (was 100% context). Did NOT start integration
+  (treasury-key exposure + Zac's money + launch scope are all his).
+
+## 06-13 — Zac decisions: D2 post-launch · campaigns serial · Item I GO (Option B, existing treasury)
+- D2 house bot: **POST-LAUNCH** (decided, not greenlit) → lane-3/lane-4 stay parked re: D2.
+- Campaigns C2–C10: **SERIAL** → lane-8 builds them after C1 (attempt 6) goes green; no 2nd lane.
+- Item I: **GO, Option B** (backend faucet) reusing the existing funded Sepolia treasury 0xDA74…DEAa2.
+  Design doc merged to testnet (16f01b6). Dispatched in parallel:
+  - lane-4 (~0.5d): POST /faucet {l2Address}→{claim} wrapping bridgeFeeJuice with TREASURY_L1_KEY
+    from env (server-only), abuse limits (one claim/address via claim store + per-IP/day + capped mint).
+  - lane-2 (~1d): requestFeeJuiceClaim abstraction + useAztec testnet onboarding (request claim →
+    deployAndRegister → auto-continue, 'funding' status + progress screen, FundingPrompt fallback).
+    SponsoredFPC stays banned.
+- DEPLOY STEP (go-live): TREASURY_L1_KEY must be added to /etc/triad-backend.env on the EC2 box for
+  the faucet to work in prod (key currently lives only in ~/.aztec-triad-private/treasury-l1-key.txt).
+  Added to GO_LIVE.md.
+- Now 3 lanes active (lane-2 Item I FE, lane-4 Item I BE, playtest attempt 6); lane-1/3/5/6/7 parked.
+
+## 06-13 — Item I frontend MERGED (fbed226); attempt 6 validated C2, now probing an ordering race
+- lane-2 Item I frontend (62f3a5b) gate-PASSED + MERGED. requestFeeJuiceClaim abstraction +
+  useAztec testnet onboarding + FundingProgress UI + manual fallback (graceful degradation, not
+  flake-masking). Verified claimSecret hex-parsing matches feeJuiceBridge's Fr.toString()
+  serialization (real-Fr round-trip, proven by deploy-testnet — NOT the .simulate() decimal
+  footgun). Fork-skew caught: `diff testnet..lane/2` falsely showed TRIAL_LOG/GO_LIVE "removals";
+  merge-base diff confirmed lane-2 never touched them (used merge-base diff per the gate fix).
+  Live E2E awaits lane-4's /faucet — I'll verify lane-4 returns the matching hex SerializedClaim
+  at its merge.
+- Playtest attempt 6: C2 fix VALIDATED on REAL PROOFS (P2 4/4 clean, settlement completed) — the
+  game-breaker is fixed end-to-end. Agent is now empirically probing a possible move-proof ordering
+  race (bob generating his proof vs adopting alice's relayed after-mask). MOVE_PROVEN carries
+  gameState+moveProof atomically, so likely benign, but the check is right. If real → lane-2
+  follow-up (now free); if benign → attempt 6 green → go-live gate.
+- Active: lane-4 (Item I BE). Parked: lane-1/2/3/5/6/7. Playtest finishing attempt 6.
+
+## 06-13 — C2 round-2 (mask-chaining is broken) routed to lane-1; Item I COMPLETE (faucet merged)
+- CRITICAL (playtest attempt 6, INSTRUMENTED): the chained-mask C2 fix is fundamentally broken — P2
+  proofs carry stale p1_placed (0,0,0,7); privately-derived masks can't agree across async peers →
+  sortProofChain breaks at the P1→P2 boundary. **My gate review MISSED this** (assumed MOVE_PROVEN
+  atomicity prevented the lag; instrumentation disproved it). The playtest's real-proof E2E caught
+  what static review couldn't — exactly its purpose. Wrote docs/plan/BUG_C2_REPLAY_2.md, routed to
+  lane-1: REVERT the masks; replace with a SOUND self-contained move-circuit check — ORIGINAL-owner
+  (publicly-agreed, chain-safe), NOT current-owner (the finding-19 capture trap the playtest's own
+  proposal would have hit). Alt: aggregate per-player distinctness in process_game. lane-1 chooses +
+  specs lane-2's revert. Attempt 6 cleared EVERYTHING ELSE (deploy, P2 4/4, 9/9, canSettle,
+  settlement starts) — this is the LAST blocker for a complete 2-player game.
+- Item I COMPLETE: lane-4 backend faucet (ec308d4) gate-PASSED + MERGED (1f02092). POST /faucet
+  wraps feeJuiceBridge, server-only TREASURY_L1_KEY, abuse limits (one/address + per-IP/day + cap),
+  Aztec-free service + injected seam, 4 test files. claimSecret hex serialization VERIFIED matching
+  lane-2's parser. Item I = FE (fbed226) + BE (1f02092), interface confirmed end to end.
+- Faucet DEPLOY steps (go-live, only if Item I ships): (1) TREASURY_L1_KEY in /etc/triad-backend.env;
+  (2) uncomment ReadWritePaths=/home/ubuntu/.aztec-triad-private in triad-backend.service
+  (ProtectHome=read-only blocks the key read + claim-store write otherwise); (3) FAUCET_ENABLED=true.
+- lane-2 waits for lane-1's C2-r2 spec. lane-4 done/parked. playtest parked (blocked on C2 r2).
+
+## 06-13 — C2 round-2 fix MERGED (419f23e, circuit+contract); lane-2 prover revert dispatched
+- Gate-reviewed lane-1's round-2 fix IN CODE (the discipline I failed at round 1, per Zac):
+  hash_board_state preimage = 30-field [board18, scores2, turn, original_owners9] — masks GONE, all
+  values publicly-agreed → the chain assembles across peers (the exact property that broke, fixed).
+  Replay check uses original_owner (line 155), not current-owner → no capture trap. original_owners
+  forgery prevented by start_state_hash binding (line 271) + frame-rule asserts (placed→current_player
+  line 174; non-placed immutable line 247). Contract compute_initial_state_hash = [Field;30], both
+  anchors share it. test_proof_chain_assembles_across_player_boundary independently derives P2's start
+  from the PUBLIC board and asserts == P1's end (genuine regression for the failure, not a tautology).
+  30/30 circuit, 9/9 TXE, 40/40 engine. PASS → MERGED 419f23e.
+- Dispatched lane-2: revert prover masks (90e9393), mirror the 30-field hash + original_owners per
+  LANE_2_FRONTEND.md note 28 (computeBoardStateHash, generateGameMoveProof, useGamePlay,
+  useGameSettlement). lane-2 working.
+- NOT declaring C2 fixed until playtest attempt 7 confirms E2E chain assembly (gating my "done" on
+  E2E evidence, not review). After lane-2 merges → trigger attempt 7. testnet is temporarily
+  inconsistent (circuit 30-field, prover still 23-mask) until lane-2 lands — harmless (not run so).

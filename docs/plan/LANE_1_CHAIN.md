@@ -409,3 +409,34 @@ compiled JSON into `frontend/public/contracts/`, and answering proof-shape quest
     hash preimage has THREE consumers — the circuit, the frontend prover (Lane 2),
     and the contract settlement anchor — and a preimage change must sweep all
     three.** (BUG_C2_REPLAY only named the first two.)
+
+### C2 ROUND 2 — masks were fundamentally broken; switched to original-owner (2026-06-13)
+
+37. **The chained masks could not work and were reverted.** Playtest attempt 6
+    (instrumented) proved my gate-review reasoning wrong: a placed-slot mask is
+    PRIVATELY derived, so across async peers P2 only learns P1's mask from the
+    lagging relay (`0,0,0,7`). P1's `end_state_hash` (real mask) never matched
+    P2's `start_state_hash` (stale mask) → `sortProofChain` broke at the P1→P2
+    boundary. **Putting privately-derived per-player state into a hash that must
+    agree across async peers cannot work** — no ordering patch saves it.
+38. **Replacement: original-owner check (ticket a′).** Reject iff a board cell
+    holds the placed `card_id` AND its ORIGINAL owner is the mover. `original_owner`
+    is set at placement and never changes on capture, so it (i) blocks true replay
+    even after the card is captured back and forth and (ii) does NOT false-reject a
+    captured same-id card (original_owner = opponent) — the finding-19 trap a
+    *current*-owner check hits. Crucially it is **publicly agreed**: both peers
+    derive it from the shared move sequence, so the hash chains. Encoding: a
+    parallel `original_owners[9]` appended to the hash preimage (`[board[18],
+    scores[2], turn, original_owners[9]]` = 30 fields), leaving the board `(id,
+    owner)` layout + capture logic untouched. Public inputs stay 6.
+39. **Empirically re-verified, didn't just assert.** Temporarily swapped the check
+    to *current*-owner → `test_duplicate_deck_p2_plays_captured_collision` FAILS
+    (the trap); original-owner → passes. Added
+    `test_proof_chain_assembles_across_player_boundary` (P2's independently-derived
+    `start_hash` == P1's `end_hash`, no private state) — the round-2 acceptance.
+    `game_move` 30/30, `triple_triad_game` TXE 9/9, `game-logic` 40/40 (engine
+    already had `originalOwner` — no change).
+40. **Contract anchor 23 → 30 fields**; regression test now rejects BOTH the
+    21-field (pre-C2) and 23-field (mask-era) preimages. Lane 2 must revert its
+    note-28 mask code and mirror original-owners (LANE_2_FRONTEND.md note 30); not
+    end-to-end until that lands in the same merge.

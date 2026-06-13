@@ -5,8 +5,12 @@
  * without requiring actual network connections or Noir circuit execution.
  */
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { App } from '../App';
+
+// Mutable Aztec connection state so individual tests can drive the status the
+// App routes on (funding/deploying overlay, needs-funding fallback, item I).
+const azt = vi.hoisted(() => ({ status: 'unsupported' as string, accountAddress: null as string | null }));
 
 // Polyfill ResizeObserver for jsdom (required by React Three Fiber / react-use-measure)
 beforeAll(() => {
@@ -22,19 +26,22 @@ beforeAll(() => {
 // Mock useAztec (consumed by AztecProvider)
 vi.mock('../hooks/useAztec', () => ({
   useAztec: () => ({
-    status: 'unsupported' as const,
-    isConnecting: false,
-    hasConnected: false,
-    accountAddress: null,
+    status: azt.status,
+    isConnecting: azt.status === 'funding' || azt.status === 'deploying',
+    hasConnected: azt.status === 'connected',
+    accountAddress: azt.accountAddress,
     isAvailable: false,
     error: null,
     wallet: null,
     nodeClient: null,
     ownedCardIds: [],
     connect: vi.fn(),
+    confirmFunded: vi.fn(),
     disconnect: vi.fn(),
     refreshOwnedCards: vi.fn(),
     updateOwnedCards: vi.fn(),
+    tokenBalance: 0,
+    refreshTokenBalance: vi.fn(),
   }),
 }));
 
@@ -100,6 +107,8 @@ vi.mock('../aztec/contracts', () => ({
 describe('App Integration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    azt.status = 'unsupported';
+    azt.accountAddress = null;
   });
 
   it('renders the lobby screen by default', () => {
@@ -117,5 +126,28 @@ describe('App Integration', () => {
     expect(mapWinnerId('player1')).toBe(1);
     expect(mapWinnerId('player2')).toBe(2);
     expect(mapWinnerId('draw')).toBe(3);
+  });
+
+  // Item I: the auto-onboarding overlay shows while funding/deploying, and the
+  // manual FundingPrompt remains the fallback when the faucet is unavailable.
+  it('shows the auto-onboarding progress screen while funding', () => {
+    azt.status = 'funding';
+    render(<App />);
+    expect(screen.getByText('Getting You Set Up')).toBeTruthy();
+    expect(screen.queryByText('Fund Your Account')).toBeNull();
+  });
+
+  it('shows the progress screen while deploying', () => {
+    azt.status = 'deploying';
+    render(<App />);
+    expect(screen.getByText('Getting You Set Up')).toBeTruthy();
+  });
+
+  it('falls back to the manual FundingPrompt when funding is needed', () => {
+    azt.status = 'needs-funding';
+    azt.accountAddress = '0xABCDEF';
+    render(<App />);
+    expect(screen.getByText('Fund Your Account')).toBeTruthy();
+    expect(screen.queryByText('Getting You Set Up')).toBeNull();
   });
 });

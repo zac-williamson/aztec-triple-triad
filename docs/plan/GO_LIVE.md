@@ -20,6 +20,14 @@ gated actions remain.
 Until the frontend is validated AND the contract is updated, do not publish — an interim
 deploy would point the app at an unvalidated build / stale contract.
 
+4. **Item I faucet (ONLY if Item I ships with launch — non-gating; complete as of fbed226+1f02092).**
+   To enable `POST /faucet` on the box: (a) put `TREASURY_L1_KEY` (the funded Sepolia wallet
+   `0xDA74…DEAa2`; currently only in `~/.aztec-triad-private/treasury-l1-key.txt`) + `FAUCET_ENABLED=true`
+   in `/etc/triad-backend.env` — server-only, never to the browser; (b) uncomment
+   `ReadWritePaths=/home/ubuntu/.aztec-triad-private` in `triad-backend.service` (ProtectHome=read-only
+   otherwise blocks the key read + claim-store write), then `systemctl daemon-reload`; (c)
+   `systemctl restart triad-backend`. Skip all of this if Item I is fast-follow.
+
 ## Current state (already done)
 
 - Backend is LIVE on HTTP on `13.42.161.225`: systemd `triad-backend` active,

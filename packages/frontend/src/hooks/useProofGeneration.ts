@@ -24,6 +24,23 @@ export function encodeBoardState(board: GameState['board']): string[] {
   return flat;
 }
 
+/**
+ * Per-cell ORIGINAL owner (who first placed the card), flattened in the same
+ * cell order as encodeBoardState: 0=empty, 1=player1, 2=player2. This is the
+ * publicly-agreed state the game_move circuit hashes for the C2 round-2 replay
+ * guard — capture changes a cell's `owner` but never its `originalOwner`.
+ */
+export function encodeOriginalOwners(board: GameState['board']): number[] {
+  const owners: number[] = [];
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      const oo = board[r][c].originalOwner;
+      owners.push(oo === 'player1' ? 1 : oo === 'player2' ? 2 : 0);
+    }
+  }
+  return owners;
+}
+
 export interface UseProofGenerationReturn {
   generateHandProof: (
     cardIds: number[],
@@ -46,8 +63,6 @@ export interface UseProofGenerationReturn {
     gameEnded: boolean,
     winnerId: number,
     playerHandData: PlayerHandData,
-    p1PlacedBefore: number,
-    p2PlacedBefore: number,
   ) => Promise<MoveProofData>;
   reset: () => void;
 }
@@ -92,14 +107,16 @@ export function useProofGeneration(): UseProofGenerationReturn {
       gameEnded: boolean,
       winnerId: number,
       playerHandData: PlayerHandData,
-      p1PlacedBefore: number,
-      p2PlacedBefore: number,
     ): Promise<MoveProofData> => {
       return new Promise<MoveProofData>((resolve, reject) => {
         proofQueueRef.current = proofQueueRef.current.then(async () => {
           try {
             const boardBeforeEncoded = encodeBoardState(boardBefore);
             const boardAfterEncoded = encodeBoardState(boardAfter);
+            // Original owners are publicly derivable from each board snapshot —
+            // no chaining, no relay (the C2 round-2 fix).
+            const originalOwnersBefore = encodeOriginalOwners(boardBefore);
+            const originalOwnersAfter = encodeOriginalOwners(boardAfter);
 
             const { generateGameMoveProof } = await import('../aztec/proofWorker');
             const proofData = await generateGameMoveProof(
@@ -109,7 +126,7 @@ export function useProofGeneration(): UseProofGenerationReturn {
               cardCommit1, cardCommit2,
               gameEnded, winnerId,
               playerHandData,
-              p1PlacedBefore, p2PlacedBefore,
+              originalOwnersBefore, originalOwnersAfter,
             );
             resolve(proofData);
           } catch (err) {

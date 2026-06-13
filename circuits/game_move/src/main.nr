@@ -25,26 +25,29 @@ use card_data::get_card_ranks;
 // ====================== HASH FUNCTIONS ======================
 
 // Chained game state = board (9 cells x [id, owner]) + scores + whose turn +
-// each player's "placed hand-slot" bitmask. The masks record which of a player's
-// 5 committed hand cards they have already placed (bit i = hand slot i), so the
-// replay rule is enforced per player and is independent of the board (capture-
-// and duplicate-id-safe). They MUST be hashed so a prover cannot reset them.
+// per-cell ORIGINAL owner (who first placed the card on that cell, 0 if empty).
+// original_owners is publicly agreed -- both peers derive it identically from the
+// shared move sequence (the placer at placement time; capture never changes it),
+// so unlike the abandoned private placed-slot masks it cannot diverge across
+// async peers. It MUST be hashed so a prover cannot forge it to bypass the C2
+// replay check (section 4b). Layout: board[0..18], scores[18,19], turn[20],
+// original_owners[21..30].
 fn hash_board_state(
     board: [Field; 18],
     scores: [Field; 2],
     current_turn: Field,
-    p1_placed: Field,
-    p2_placed: Field,
+    original_owners: [Field; 9],
 ) -> Field {
-    let mut inputs: [Field; 23] = [0; 23];
+    let mut inputs: [Field; 30] = [0; 30];
     for i in 0..18 {
         inputs[i] = board[i];
     }
     inputs[18] = scores[0];
     inputs[19] = scores[1];
     inputs[20] = current_turn;
-    inputs[21] = p1_placed;
-    inputs[22] = p2_placed;
+    for i in 0..9 {
+        inputs[21 + i] = original_owners[i];
+    }
     std::hash::pedersen_hash(inputs)
 }
 
@@ -92,10 +95,11 @@ fn main(
     scores_before: [Field; 2],
     scores_after: [Field; 2],
     current_turn_before: Field,
-    // Private inputs - placed-hand-slot bitmasks BEFORE this move (part of the
-    // chained state). bit i set = that player has placed hand slot i.
-    p1_placed_before: Field,
-    p2_placed_before: Field,
+    // Private inputs - per-cell ORIGINAL owner before/after this move (part of the
+    // chained state, hashed). original_owners[i] = the player who first placed the
+    // card on cell i (0 if empty); set at placement, never changed by capture.
+    original_owners_before: [Field; 9],
+    original_owners_after: [Field; 9],
     // Private inputs - current player's hand commitment data
     player_card_ids: [Field; 5],
     blinding_factor: Field,
@@ -138,40 +142,37 @@ fn main(
     }
     assert(card_found, "Placed card not in committed hand");
 
-    // ===== 4b. Replay prevention (C2): each player places each committed hand
-    // card at most once. Find the placed card's hand slot (hand ids are distinct
-    // -- prove_hand enforces uniqueness -- so exactly one slot matches) and reject
-    // if THIS player has already placed that slot. This is the sound replacement
-    // for the old owner-blind board scan, which falsely rejected legitimate plays
-    // once STARTER_CARD_IDS = [1..5] are shared across players: P2's ids collide
-    // with P1's already-placed ids. The mask is per player and never touched by
-    // capture, so a captured card whose id matches a hand card cannot false-reject.
-    let mut slot: u32 = 0;
-    for j in 0..5 {
-        if player_card_ids[j] == card_id {
-            slot = j as u32;
-        }
+    // ===== 4b. Replay prevention (C2): a player may not place a card they have
+    // already placed this game. Reject if any cell holds this card_id AND was
+    // ORIGINALLY placed by current_player. This is self-contained (reads only the
+    // chained board state, no cross-player private data) and sound under shared
+    // STARTER_CARD_IDS = [1..5]: original_owner is fixed at placement and never
+    // changes on capture, so a captured opponent card whose id collides with a
+    // card still in this player's hand (original_owner = opponent) does NOT
+    // false-reject -- the finding-19 capture trap that a current-owner check hits.
+    for i in 0..9 {
+        let replays =
+            (board_before[i * 2] == card_id) & (original_owners_before[i] == current_player);
+        assert(!replays, "Card already placed by this player");
     }
-    let my_placed_before = if current_player == 1 { p1_placed_before } else { p2_placed_before };
-    let pow2: [u32; 5] = [1, 2, 4, 8, 16]; // slot in 0..5 (hand has 5 cards)
-    let slot_bit: u32 = pow2[slot];
-    assert((my_placed_before as u32) & slot_bit == 0, "Card already placed by this player");
-
-    // After-move masks: set this player's slot bit; the other player's is unchanged.
-    let my_placed_after: Field = (my_placed_before as u32 + slot_bit) as Field;
-    let p1_placed_after: Field = if current_player == 1 { my_placed_after } else { p1_placed_before };
-    let p2_placed_after: Field = if current_player == 2 { my_placed_after } else { p2_placed_before };
 
     // ===== 5. Verify the cell was empty before the move =====
     let cell_idx = r * 3 + c;
     assert(board_before[cell_idx * 2] == 0, "Cell not empty");
     assert(board_before[cell_idx * 2 + 1] == 0, "Cell not empty (owner)");
+    assert(original_owners_before[cell_idx] == 0, "Cell not empty (original owner)");
 
     // ===== 6. Verify the card was placed in board_after =====
     assert(board_after[cell_idx * 2] == card_id, "Card not placed correctly");
     assert(
         board_after[cell_idx * 2 + 1] == current_player,
         "Owner not set correctly",
+    );
+    // The placed cell's original owner is set to the mover (capture never changes
+    // it thereafter -- enforced for all other cells in section 8).
+    assert(
+        original_owners_after[cell_idx] == current_player,
+        "Original owner not set correctly",
     );
 
     // ===== 7. Chain capture logic =====
@@ -240,6 +241,13 @@ fn main(
             // Card ID must never change for non-placed cells
             assert(after_card == before_card, "Non-placed cell card_id changed");
 
+            // Original owner is immutable for every non-placed cell -- capture
+            // changes current owner but never who FIRST placed the card.
+            assert(
+                original_owners_after[i] == original_owners_before[i],
+                "Original owner changed on non-placed cell",
+            );
+
             if captured[i] {
                 // Captured cell: owner must change to current_player
                 assert(
@@ -258,8 +266,7 @@ fn main(
         board_before,
         scores_before,
         current_turn_before,
-        p1_placed_before,
-        p2_placed_before,
+        original_owners_before,
     );
     assert(computed_start == start_state_hash, "Start state hash mismatch");
 
@@ -269,8 +276,7 @@ fn main(
         board_after,
         scores_after,
         next_turn,
-        p1_placed_after,
-        p2_placed_after,
+        original_owners_after,
     );
     assert(computed_end == end_state_hash, "End state hash mismatch");
 
@@ -352,6 +358,35 @@ fn get_p2_commit() -> Field {
     test_card_commit(p2_card_ids(), P2_BLINDING)
 }
 
+// Test helper: original owners derived from a board whose cells have NOT been
+// captured (current owner == original placer). Use for board_before in tests
+// that don't pre-bake a capture; pass a manual array when they do.
+fn orig_owners(board: [Field; 18]) -> [Field; 9] {
+    let mut o: [Field; 9] = [0; 9];
+    for i in 0..9 {
+        o[i] = board[i * 2 + 1];
+    }
+    o
+}
+
+// Test helper: original owners after a move, derived from the before/after
+// boards. The placed cell is the one that went empty -> occupied; its original
+// owner is its board_after owner (the placer). Every other cell keeps its
+// original owner (captures change current owner, never original owner).
+fn orig_after(
+    board_before: [Field; 18],
+    board_after: [Field; 18],
+    orig_before: [Field; 9],
+) -> [Field; 9] {
+    let mut o = orig_before;
+    for i in 0..9 {
+        if (board_before[i * 2] == 0) & (board_after[i * 2] != 0) {
+            o[i] = board_after[i * 2 + 1];
+        }
+    }
+    o
+}
+
 
 // ====================== TESTS ======================
 
@@ -364,14 +399,16 @@ fn test_first_move_no_capture() {
     let board_before: [Field; 18] = [0; 18];
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1; // card_id = 1 (Mudwalker)
     board_after[1] = 1; // owner = player1
     let scores_after: [Field; 2] = [5, 5]; // 1 on board + 4 in hand = 5
 
-    let end_hash = hash_board_state(board_after, scores_after, 2, 1, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -383,7 +420,7 @@ fn test_first_move_no_capture() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -399,7 +436,8 @@ fn test_second_move_no_capture() {
     board_before[1] = 1;
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 2;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1;
@@ -408,7 +446,8 @@ fn test_second_move_no_capture() {
     board_after[9] = 2;
     let scores_after: [Field; 2] = [5, 5]; // p1: 1+4=5, p2: 1+4=5
 
-    let end_hash = hash_board_state(board_after, scores_after, 1, 0, 1);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
     main(
         cc1, cc2,
@@ -420,7 +459,7 @@ fn test_second_move_no_capture() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p2_card_ids(), P2_BLINDING,
     );
 }
@@ -439,7 +478,8 @@ fn test_capture_one_card() {
     board_before[2] = 10; board_before[3] = 2;  // (0,1) card 10, player 2
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1; board_after[1] = 1;     // (0,0) unchanged
@@ -447,7 +487,8 @@ fn test_capture_one_card() {
     board_after[8] = 4; board_after[9] = 1;     // (1,1) placed card 4, player 1
     let scores_after: [Field; 2] = [6, 4];
 
-    let end_hash = hash_board_state(board_after, scores_after, 2, 8, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -459,7 +500,7 @@ fn test_capture_one_card() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -481,7 +522,8 @@ fn test_capture_multiple_cards() {
     board_before[14] = 13; board_before[15] = 2; // (2,1) Neon
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[2] = 11; board_after[3] = 2;     // (0,1) unchanged
@@ -493,7 +535,8 @@ fn test_capture_multiple_cards() {
     // p1_score = 3 + (5-3) = 5, p2_score = 2 + (5-2) = 5
     let scores_after: [Field; 2] = [5, 5];
 
-    let end_hash = hash_board_state(board_after, scores_after, 2, 1, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -505,7 +548,7 @@ fn test_capture_multiple_cards() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -521,14 +564,16 @@ fn test_no_capture_higher_adjacent() {
     board_before[2] = 14; board_before[3] = 2;
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 3; board_after[1] = 1;
     board_after[2] = 14; board_after[3] = 2;
     let scores_after: [Field; 2] = [5, 5];
 
-    let end_hash = hash_board_state(board_after, scores_after, 2, 4, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -540,7 +585,7 @@ fn test_no_capture_higher_adjacent() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -562,7 +607,8 @@ fn test_final_move_game_ends_p1_wins() {
 
     let scores_before: [Field; 2] = [6, 4];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     for i in 0..16 {
@@ -575,7 +621,8 @@ fn test_final_move_game_ends_p1_wins() {
 
     let scores_after: [Field; 2] = [7, 3];
 
-    let end_hash = hash_board_state(board_after, scores_after, 2, 16, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -587,7 +634,7 @@ fn test_final_move_game_ends_p1_wins() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -609,7 +656,8 @@ fn test_game_ends_draw() {
     board_before2[14] = 11; board_before2[15] = 2; // Freckles [2,6,1,6]
     let scores_before2: [Field; 2] = [5, 5];
     let current_turn_before2: Field = 1;
-    let start_hash2 = hash_board_state(board_before2, scores_before2, current_turn_before2, 0, 0);
+    let oob = orig_owners(board_before2);
+    let start_hash2 = hash_board_state(board_before2, scores_before2, current_turn_before2, oob);
 
     let mut board_after2: [Field; 18] = [0; 18];
     for i in 0..16 {
@@ -620,7 +668,8 @@ fn test_game_ends_draw() {
     // (1,2) card 12 Camo: placed top=2 vs adj bottom=3 -> NO
     // (2,1) card 11 Freckles: placed left=5 vs adj right=6 -> NO
     let scores_after2: [Field; 2] = [5, 5];
-    let end_hash2 = hash_board_state(board_after2, scores_after2, 2, 16, 0);
+    let ooa = orig_after(board_before2, board_after2, oob);
+    let end_hash2 = hash_board_state(board_after2, scores_after2, 2, ooa);
 
     main(
         cc1, cc2,
@@ -632,7 +681,7 @@ fn test_game_ends_draw() {
         board_before2, board_after2,
         scores_before2, scores_after2,
         current_turn_before2,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -659,7 +708,8 @@ fn test_final_move_game_ends_p2_wins() {
     // Scores: P1 has 4 on board + 1 in hand = 5, P2 has 4 on board + 1 in hand = 5
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 2; // P2's turn
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     for i in 0..16 {
@@ -678,7 +728,8 @@ fn test_final_move_game_ends_p2_wins() {
     // p1_score = 2 + (5-5) = 2, p2_score = 7 + (5-4) = 8
     let scores_after: [Field; 2] = [2, 8];
 
-    let end_hash = hash_board_state(board_after, scores_after, 1, 0, 16);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
     main(
         cc1, cc2,
@@ -690,7 +741,7 @@ fn test_final_move_game_ends_p2_wins() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p2_card_ids(), P2_BLINDING,
     );
 }
@@ -707,13 +758,15 @@ fn test_fail_place_on_occupied_cell() {
     board_before[1] = 2;
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1;
     board_after[1] = 1;
     let scores_after: [Field; 2] = [5, 5];
-    let end_hash = hash_board_state(board_after, scores_after, 2, 0, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -724,7 +777,7 @@ fn test_fail_place_on_occupied_cell() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -738,13 +791,15 @@ fn test_fail_wrong_player_turn() {
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1; // P1's turn
 
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 10;
     board_after[1] = 2;
     let scores_after: [Field; 2] = [5, 5];
-    let end_hash = hash_board_state(board_after, scores_after, 1, 0, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
     main(
         cc1, cc2,
@@ -756,7 +811,7 @@ fn test_fail_wrong_player_turn() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p2_card_ids(), P2_BLINDING,
     );
 }
@@ -769,7 +824,8 @@ fn test_fail_row_out_of_bounds() {
     let board_before: [Field; 18] = [0; 18];
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
     let end_hash = start_hash;
 
     main(
@@ -781,7 +837,7 @@ fn test_fail_row_out_of_bounds() {
         board_before, board_before,
         scores_before, scores_before,
         current_turn_before,
-        0, 0,
+        oob, oob,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -794,13 +850,15 @@ fn test_fail_card_not_in_hand() {
     let board_before: [Field; 18] = [0; 18];
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 20;
     board_after[1] = 1;
     let scores_after: [Field; 2] = [5, 5];
-    let end_hash = hash_board_state(board_after, scores_after, 2, 0, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -811,7 +869,7 @@ fn test_fail_card_not_in_hand() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -824,13 +882,15 @@ fn test_fail_wrong_blinding_factor() {
     let board_before: [Field; 18] = [0; 18];
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1;
     board_after[1] = 1;
     let scores_after: [Field; 2] = [5, 5];
-    let end_hash = hash_board_state(board_after, scores_after, 2, 0, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -841,7 +901,7 @@ fn test_fail_wrong_blinding_factor() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(),
         999,        // WRONG blinding factor
     );
@@ -856,13 +916,15 @@ fn test_fail_false_capture() {
     board_before[2] = 14; board_before[3] = 2;
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 3; board_after[1] = 1;
     board_after[2] = 14; board_after[3] = 1;      // FALSE CAPTURE
     let scores_after: [Field; 2] = [6, 4];
-    let end_hash = hash_board_state(board_after, scores_after, 2, 0, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -873,7 +935,7 @@ fn test_fail_false_capture() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -887,13 +949,15 @@ fn test_fail_missing_capture() {
     board_before[2] = 11; board_before[3] = 2;
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[2] = 11; board_after[3] = 2;      // NOT captured (WRONG!)
     board_after[8] = 4; board_after[9] = 1;
     let scores_after: [Field; 2] = [5, 5];
-    let end_hash = hash_board_state(board_after, scores_after, 2, 0, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -904,7 +968,7 @@ fn test_fail_missing_capture() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -918,13 +982,15 @@ fn test_fail_card_id_changed() {
     board_before[2] = 14; board_before[3] = 2;
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1; board_after[1] = 1;
     board_after[2] = 99; board_after[3] = 2;      // card_id CHANGED
     let scores_after: [Field; 2] = [5, 5];
-    let end_hash = hash_board_state(board_after, scores_after, 2, 0, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -935,7 +1001,7 @@ fn test_fail_card_id_changed() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -952,14 +1018,16 @@ fn test_player2_move_with_capture() {
     board_before[0] = 1; board_before[1] = 1;
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 2;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1; board_after[1] = 2;      // CAPTURED by P2
     board_after[6] = 12; board_after[7] = 2;
     let scores_after: [Field; 2] = [4, 6];
 
-    let end_hash = hash_board_state(board_after, scores_after, 1, 0, 4);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
     main(
         cc1, cc2,
@@ -971,7 +1039,7 @@ fn test_player2_move_with_capture() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p2_card_ids(), P2_BLINDING,
     );
 }
@@ -987,14 +1055,16 @@ fn test_equal_ranks_no_capture() {
     board_before[2] = 10; board_before[3] = 2;
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1; board_after[1] = 1;
     board_after[2] = 10; board_after[3] = 2;      // NOT captured (equal ranks)
     let scores_after: [Field; 2] = [5, 5];
 
-    let end_hash = hash_board_state(board_after, scores_after, 2, 1, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -1005,7 +1075,7 @@ fn test_equal_ranks_no_capture() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -1020,14 +1090,16 @@ fn test_score_fabrication_rejected() {
     let board_before: [Field; 18] = [0; 18];
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1;
     board_after[1] = 1;
     // Fabricated scores: should be [5, 5] but attacker claims [8, 2]
     let scores_after: [Field; 2] = [8, 2];
-    let end_hash = hash_board_state(board_after, scores_after, 2, 1, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -1038,7 +1110,7 @@ fn test_score_fabrication_rejected() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -1057,7 +1129,8 @@ fn test_exact_scores_after_capture() {
     board_before[8] = 1; board_before[9] = 1;    // (1,1) Mudwalker P1
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 2;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 5; board_after[1] = 1;      // (0,0) Inkwell P1 - unchanged
@@ -1067,7 +1140,8 @@ fn test_exact_scores_after_capture() {
     // Exact scores: p1_board=1, p2_board=3, p1_hand=3, p2_hand=3
     let scores_after: [Field; 2] = [4, 6];
 
-    let end_hash = hash_board_state(board_after, scores_after, 1, 0, 8);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
     main(
         cc1, cc2,
@@ -1079,7 +1153,7 @@ fn test_exact_scores_after_capture() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p2_card_ids(), P2_BLINDING,
     );
 }
@@ -1088,8 +1162,8 @@ fn test_exact_scores_after_capture() {
 
 #[test(should_fail_with = "Card already placed by this player")]
 fn test_card_replay_rejected() {
-    // P1 has already placed their hand card 1 (slot 0 -> mask bit 0 set) and tries
-    // to play it again. Rejected by the per-player slot mask, NOT the board.
+    // P1 placed their card 1 earlier (cell 0, original owner P1) and tries to play
+    // it again. Rejected because a cell holds id 1 with original owner == P1.
     let cc1 = get_p1_commit();
     let cc2 = get_p2_commit();
 
@@ -1098,33 +1172,34 @@ fn test_card_replay_rejected() {
     board_before[2] = 10; board_before[3] = 2;  // (0,1) card 10, P2
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    // P1's slot 0 (card 1) already set in their placed-mask.
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 1, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1; board_after[1] = 1;
     board_after[2] = 10; board_after[3] = 2;
     board_after[8] = 1; board_after[9] = 1;    // (1,1) card 1 REPLAYED
     let scores_after: [Field; 2] = [5, 5];
-    let end_hash = hash_board_state(board_after, scores_after, 2, 1, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
-        1, 1,          // current_player=1, card_id=1 (P1 already placed slot 0!)
+        1, 1,          // current_player=1, card_id=1 (P1 already placed this card!)
         1, 1,
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        1, 0,          // p1_placed_before = bit0 set, p2_placed_before = 0
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
 
 // ===== P0 regression: shared starter decks [1..5] across both players =====
 // These FAIL on the old owner-blind board scan (it rejects any id already on the
-// board) and PASS with the per-player slot mask. The bug: STARTER_CARD_IDS are
+// board) and PASS with the original-owner check. The bug: STARTER_CARD_IDS are
 // the same for everyone, so P2's ids collide with P1's already-placed ids.
 
 #[test]
@@ -1136,18 +1211,19 @@ fn test_duplicate_deck_p2_plays_shared_id() {
     let cc2 = test_card_commit(p2_hand, p2_blinding);
 
     let mut board_before: [Field; 18] = [0; 18];
-    board_before[0] = 1; board_before[1] = 1;   // P1's card 1 at (0,0)
+    board_before[0] = 1; board_before[1] = 1;   // P1's card 1 at (0,0); original owner P1
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 2;
-    // P1 placed slot 0; P2 has placed nothing yet.
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 1, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     // P2 places its card 1 at (1,1) -- not adjacent to (0,0), so no capture.
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1; board_after[1] = 1;
     board_after[8] = 1; board_after[9] = 2;     // P2's card 1 at (1,1)
     let scores_after: [Field; 2] = [5, 5];       // 1 board + 4 hand each
-    let end_hash = hash_board_state(board_after, scores_after, 1, 1, 1); // P2 now placed slot 0
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
     main(
         cc1, cc2,
@@ -1159,7 +1235,7 @@ fn test_duplicate_deck_p2_plays_shared_id() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        1, 0,
+        oob, ooa,
         p2_hand, p2_blinding,
     );
 }
@@ -1167,26 +1243,32 @@ fn test_duplicate_deck_p2_plays_shared_id() {
 #[test]
 fn test_duplicate_deck_p2_plays_captured_collision() {
     // The capture trap that makes the current-owner check (option a) unsound: a
-    // card with id 1 sits on the board OWNED BY P2 (P2 captured P1's card 1). P2
-    // must still place its OWN hand card 1 -- the slot mask allows it (P2 never
-    // placed its hand card 1); a current-owner check would wrongly reject.
+    // card with id 1 sits on the board with CURRENT owner P2 but ORIGINAL owner
+    // P1 (P1 placed it, P2 captured it). P2 must still place its OWN hand card 1.
+    // The original-owner check allows it (cell's original owner is P1, not P2);
+    // a current-owner check would wrongly reject. This is the soundness guard --
+    // original_owner of cell 0 is P1 even though P2 currently owns it.
     let cc1 = get_p1_commit();
     let p2_hand: [Field; 5] = [1, 2, 3, 4, 5];
     let p2_blinding: Field = 333;
     let cc2 = test_card_commit(p2_hand, p2_blinding);
 
     let mut board_before: [Field; 18] = [0; 18];
-    board_before[0] = 1; board_before[1] = 2;   // card 1 OWNED BY P2 (captured)
+    board_before[0] = 1; board_before[1] = 2;   // card 1, CURRENT owner P2 (captured)
     let scores_before: [Field; 2] = [4, 6];
     let current_turn_before: Field = 2;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 1, 0);
+    // ORIGINAL owner of cell 0 is P1 (the placer) -- NOT derivable from the
+    // current owner, so set explicitly. This is exactly the capture case.
+    let oob: [Field; 9] = [1, 0, 0, 0, 0, 0, 0, 0, 0];
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     // P2 places its hand card 1 at (1,1) -- not adjacent, no capture.
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1; board_after[1] = 2;
     board_after[8] = 1; board_after[9] = 2;     // P2's hand card 1 at (1,1)
     let scores_after: [Field; 2] = [4, 6];       // P2: 2 board + 4 hand; P1: 0 board + 4 hand
-    let end_hash = hash_board_state(board_after, scores_after, 1, 1, 1);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
     main(
         cc1, cc2,
@@ -1198,7 +1280,7 @@ fn test_duplicate_deck_p2_plays_captured_collision() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        1, 0,           // p1 placed slot 0 (was P1's card), p2 placed nothing
+        oob, ooa,
         p2_hand, p2_blinding,
     );
 }
@@ -1214,7 +1296,8 @@ fn test_different_card_after_same_id_on_board() {
     board_before[2] = 10; board_before[3] = 2;  // (0,1) card 10, P2
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1; board_after[1] = 1;
@@ -1223,7 +1306,8 @@ fn test_different_card_after_same_id_on_board() {
     // filled=3, p1_board=3, p2_board=0, p1_played=2, p2_played=1
     // p1_score=3+3=6, p2_score=0+4=4
     let scores_after: [Field; 2] = [6, 4];
-    let end_hash = hash_board_state(board_after, scores_after, 2, 2, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -1234,7 +1318,7 @@ fn test_different_card_after_same_id_on_board() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -1256,7 +1340,8 @@ fn test_chain_capture_two_levels() {
 
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 11; board_after[1] = 1;  // (0,0) Freckles captured by P1
@@ -1266,7 +1351,8 @@ fn test_chain_capture_two_levels() {
     // filled=3: p1_played=2, p2_played=1, p1_hand=3, p2_hand=4
     // p1_board=3, p2_board=0: scores = [3+3, 0+4] = [6, 4]
     let scores_after: [Field; 2] = [6, 4];
-    let end_hash = hash_board_state(board_after, scores_after, 2, 8, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -1277,7 +1363,7 @@ fn test_chain_capture_two_levels() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -1302,7 +1388,8 @@ fn test_chain_capture_three_levels() {
 
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 11; board_after[1] = 1;   // captured
@@ -1313,7 +1400,8 @@ fn test_chain_capture_three_levels() {
     // filled=4: p1_played=2, p2_played=2, p1_hand=3, p2_hand=3
     // p1_board=4, p2_board=0: scores = [4+3, 0+3] = [7, 3]
     let scores_after: [Field; 2] = [7, 3];
-    let end_hash = hash_board_state(board_after, scores_after, 2, 8, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -1324,7 +1412,7 @@ fn test_chain_capture_three_levels() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -1343,7 +1431,8 @@ fn test_chain_capture_stops_when_rank_too_low() {
 
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 10; board_after[1] = 1;   // captured
@@ -1353,7 +1442,8 @@ fn test_chain_capture_stops_when_rank_too_low() {
     // filled=3: p1_played=2, p2_played=1, p1_hand=3, p2_hand=4
     // p1_board=2, p2_board=1: scores = [2+3, 1+4] = [5, 5]
     let scores_after: [Field; 2] = [5, 5];
-    let end_hash = hash_board_state(board_after, scores_after, 2, 2, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -1364,7 +1454,7 @@ fn test_chain_capture_stops_when_rank_too_low() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -1382,7 +1472,8 @@ fn test_chain_capture_missing_chain_rejected() {
 
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 11; board_after[1] = 1;   // captured
@@ -1391,7 +1482,8 @@ fn test_chain_capture_missing_chain_rejected() {
 
     // Scores as if chain DID NOT happen (wrong)
     let scores_after: [Field; 2] = [6, 4];
-    let end_hash = hash_board_state(board_after, scores_after, 2, 0, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -1402,7 +1494,7 @@ fn test_chain_capture_missing_chain_rejected() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
     );
 }
@@ -1422,7 +1514,8 @@ fn test_chain_capture_false_chain_rejected() {
 
     let scores_before: [Field; 2] = [5, 5];
     let current_turn_before: Field = 1;
-    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, 0, 0);
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
 
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 10; board_after[1] = 1;   // captured
@@ -1431,7 +1524,8 @@ fn test_chain_capture_false_chain_rejected() {
 
     // Scores as if both captured (wrong)
     let scores_after: [Field; 2] = [7, 3];
-    let end_hash = hash_board_state(board_after, scores_after, 2, 0, 0);
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
     main(
         cc1, cc2,
@@ -1442,7 +1536,62 @@ fn test_chain_capture_false_chain_rejected() {
         board_before, board_after,
         scores_before, scores_after,
         current_turn_before,
-        0, 0,
+        oob, ooa,
         p1_card_ids(), P1_BLINDING,
+    );
+}
+
+// ===== Round-2 acceptance: the proof chain must assemble across the P1<->P2
+// boundary. This is exactly what the abandoned chained-mask design broke: P2
+// could not reconstruct P1's PRIVATE placed-slot mask, so P2's start_state_hash
+// never matched P1's end_state_hash. original_owners is publicly derivable from
+// the shared board, so both peers compute the same boundary hash. =====
+#[test]
+fn test_proof_chain_assembles_across_player_boundary() {
+    let cc1 = get_p1_commit();
+    let cc2 = get_p2_commit();
+
+    // --- Move 0: P1 places card 1 at (0,0) on an empty board ---
+    let board0: [Field; 18] = [0; 18];
+    let scores0: [Field; 2] = [5, 5];
+    let oo0 = orig_owners(board0); // all zero -- empty board
+    let start0 = hash_board_state(board0, scores0, 1, oo0);
+
+    let mut board1: [Field; 18] = [0; 18];
+    board1[0] = 1; board1[1] = 1; // P1's card 1 at (0,0)
+    let scores1: [Field; 2] = [5, 5];
+    let oo1 = orig_after(board0, board1, oo0); // P1 computes [1,0,...]
+    let end0 = hash_board_state(board1, scores1, 2, oo1);
+
+    main(
+        cc1, cc2, start0, end0, 0, 0,
+        1, 1, 0, 0,
+        board0, board1, scores0, scores1, 1,
+        oo0, oo1,
+        p1_card_ids(), P1_BLINDING,
+    );
+
+    // --- Move 1: P2 derives its start state from the SHARED board (board1 +
+    // original owners it reads off the public placement), with NO access to any
+    // private P1 state. ---
+    let oo1_p2 = orig_owners(board1); // P2 independently derives [1,0,...]
+    let start1 = hash_board_state(board1, scores1, 2, oo1_p2);
+
+    // THE CHAIN LINK that the masks broke: P2's start hash == P1's end hash.
+    assert(start1 == end0, "Proof chain broken at P1->P2 boundary");
+
+    let mut board2: [Field; 18] = [0; 18];
+    board2[0] = 1; board2[1] = 1;
+    board2[8] = 10; board2[9] = 2; // P2's card 10 at (1,1)
+    let scores2: [Field; 2] = [5, 5];
+    let oo2 = orig_after(board1, board2, oo1_p2);
+    let end1 = hash_board_state(board2, scores2, 1, oo2);
+
+    main(
+        cc1, cc2, start1, end1, 0, 0,
+        2, 10, 1, 1,
+        board1, board2, scores1, scores2, 2,
+        oo1_p2, oo2,
+        p2_card_ids(), P2_BLINDING,
     );
 }

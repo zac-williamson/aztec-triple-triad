@@ -386,3 +386,107 @@ already imports `fundAccountOnDevnet` from frontend src), or replicate
     before-masks at queue time like the board; restore reconstructs the pair by
     OR-ing all saved proofs' after-masks. No backend/protocol-shape change —
     `MoveProofData` is forwarded as an opaque object.
+
+29. **DONE (2026-06-13) — Item I onboarding frontend (Option B, Zac GO).** The
+    testnet self-funding gap is closed on the frontend. New files:
+    `aztec/requestFeeJuiceClaim.ts` (faucet abstraction) +
+    `components/FundingProgress.tsx` (zero-action "Getting You Set Up" screen).
+    `useAztec.connect` testnet branch: when `AZTEC_CONFIG.faucetUrl` is set →
+    status `funding` → `requestFeeJuiceClaim(faucetUrl, l2Address)` →
+    `deployAndRegister({ feeJuiceClaim })` (the proven combined deploy+mint) →
+    `connected`, auto-continuing to the menu. The three deploy paths
+    (already-deployed restore, devnet, faucet) now share one local `runDeploy`
+    helper so fees/labels/wiring can't drift. **Degraded fallback preserved:** a
+    faucet *request* failure → `needs-funding` → existing `FundingPrompt` (manual
+    bridge). A deploy failure after a good claim is a real error (outer catch),
+    NOT a silent manual fallback. **SponsoredFPC stays banned** — the faucet
+    bridges real Fee Juice the account claims at deploy. New config:
+    `VITE_FAUCET_URL` (empty → manual-only, unchanged behavior). Tests:
+    `requestFeeJuiceClaim.test.ts` (claim deserialization, non-OK + incomplete
+    throws), `useAztec.faucet.test.ts` (testnet branch reaches `connected` with
+    the claim threaded; faucet error → `needs-funding` with no deploy; no-URL →
+    manual), App.integration adds funding/deploying-overlay + needs-funding
+    fallback routing. **Cross-lane dependency (Lane 4, ~0.5d):** `POST
+    {faucetUrl}/faucet { l2Address }` must bridge via the treasury and return a
+    JSON claim with at least `{ claimAmount, claimSecret, messageLeafIndex }` (a
+    superset of `scripts/lib/feeJuiceBridge.ts`'s `SerializedClaim` — extra
+    fields are ignored), responding ONLY after the L1→L2 message is included so
+    the claim is immediately consumable. Until that endpoint + `VITE_FAUCET_URL`
+    exist, testnet onboarding stays on the manual `FundingPrompt` (no
+    regression).
+
+### C2 replay fix ROUND 2 — REVERT the masks, mirror original-owners → FROM LANE 1 (REQUIRED)
+
+30. **Notes 27–28 are SUPERSEDED. The chained placed-slot masks are fundamentally
+    broken and Lane 1 has removed them.** Playtest attempt 6 proved it: a player's
+    mask is privately derived, so the opponent only learns it from the lagging
+    async relay (the `0,0,0,7` evidence) — P1's `endStateHash` never equals P2's
+    `startStateHash`, and `sortProofChain` fails (`Proof chain broken at step 1`).
+    The cross-player mask relay you added in note 28 (`MoveProofData.p1PlacedAfter`/
+    `p2PlacedAfter`, OR-ed into a running pair) cannot fix this — it always lags by
+    a move. Full analysis: `docs/plan/BUG_C2_REPLAY_2.md`.
+
+    Lane 1 replaced the masks with a **self-contained original-owner check**: a
+    move is rejected iff a board cell holds the placed `card_id` AND that cell's
+    ORIGINAL owner is the mover. `original_owner` is publicly agreed (both peers
+    derive it from the shared placements; capture never changes it), so the chain
+    assembles. Public-input count stays **6**. Required frontend changes (mostly
+    `src/aztec/proofWorker.ts`):
+    - **Re-sync the bytecode** — `npm run copy-circuits` to refresh
+      `public/circuits/game_move.json` (new `game_move` committed by Lane 1).
+      **Same commit/merge as the code below** — mismatched bytecode/prover
+      hard-errors.
+    - **Drop all mask state.** Remove `p1Placed`/`p2Placed` params, the
+      `(1 << slot)` after-mask math, the witness inputs `p1_placed_before`/
+      `p2_placed_before`, the `MoveProofData.p1PlacedAfter`/`p2PlacedAfter` fields,
+      the OR-relay in `useGamePlay`, and the running-pair chaining + restore. Revert
+      note-28's `MoveProofData` shape change.
+    - **`computeBoardStateHash`** — replace the two mask params with one
+      `originalOwners: number[] /*len 9*/`; preimage becomes
+      `[board[18], scores[0], scores[1], currentTurn, ...originalOwners]` = **30
+      fields** (masks were 23). Mirrors `hash_board_state`
+      (`circuits/game_move/src/main.nr:32-49`); original_owners occupy indices 21..30.
+    - **`generateGameMoveProof`** — pass `original_owners_before` and
+      `original_owners_after: Field[9]` to the witness and to the two hash calls.
+      Both come straight from the SHARED board state — no private data, no
+      chaining. Derive them from the game state's per-cell original owner (the
+      `game-logic` board cell already has `originalOwner`): `before[i]` = original
+      owner of cell `i` in the pre-move board (0 if empty); `after` = `before` with
+      the placed cell set to the mover (captures never change it).
+    - **`useGameSettlement.ts` initial hash** — pass `originalOwners = [0×9]` for
+      the empty board (replaces the `0, 0` masks).
+    - **Tests** — `proofIntegration.test.ts` executes the real circuit: update it
+      to the 30-field hash + original-owner inputs; KEEP the duplicate-deck and
+      same-slot-replay mirrors (they're the soundness guard) and ADD a P1→P2
+      boundary chain-assembly assertion (P2's `startStateHash` == P1's
+      `endStateHash`, derived without private state) — mirrors Lane 1's
+      `test_proof_chain_assembles_across_player_boundary`.
+
+    The original owner is well-defined from the public move history; you do NOT
+    need any private hand info to compute it (that was the masks' fatal flaw).
+
+31. **DONE (2026-06-13) — C2 round-2 prover revert landed.** Merged testnet
+    (419f23e) and reverted note-28's masks to mirror the original-owner check, in
+    one commit with the refreshed `public/circuits/game_move.json`. Changes:
+    `proofWorker.computeBoardStateHash` now hashes 30 fields `[board[18],
+    scores[2], current_turn, original_owners[9]]`; `generateGameMoveProof` drops
+    the `(1<<slot)` mask math and the `p1/p2PlacedAfter` return, takes
+    `originalOwnersBefore/After: number[9]` and threads them to the two hash
+    calls + the `original_owners_before/after` witness. `useProofGeneration`
+    gained `encodeOriginalOwners(board)` (parallels `encodeBoardState`, same cell
+    order) and derives both arrays from the structured before/after boards — so
+    `useGamePlay` lost ALL mask state (`placedMasksRef`, `committedCardIdsRef`,
+    `advanceOwnMask`, the `lastMoveProof` OR-relay, the deferred mask capture,
+    the restore reconstruction) with nothing threaded in its place. `types.ts`
+    dropped `MoveProofData.p1/p2PlacedAfter`; `useGameSettlement` initial hash
+    passes `originalOwners=[0×9]`. **Why this is simpler than the masks:**
+    original owners ride entirely in the publicly-agreed board snapshot the hook
+    already captures (immediate + deferred), so there is no per-player private
+    state, no cross-player relay, and no chaining — the bug class is gone, not
+    patched. Tests: `proofIntegration.test.ts` (real circuit, refreshed bytecode)
+    updated to 30-field + original-owner inputs; kept the capture +
+    original-owner-replay-reject mirrors, ADDED a finding-19 duplicate-deck
+    capture-collision POSITIVE test (a current-owner check would false-reject it)
+    and a P1→P2 boundary chain-assembly assertion (P2's start hash == P1's end
+    hash, derived without private state — the exact thing that broke).
+    `useGamePlay.placedMasks.test.tsx` deleted. Full suite 311/311, tsc clean.

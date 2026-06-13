@@ -160,25 +160,26 @@ export async function computeCardCommitPoseidon2(
 
 /**
  * Compute board state hash matching the circuit's hash_board_state.
- * Hash 23 fields: [board[18], scores[2], current_turn, p1_placed, p2_placed]
- * (`circuits/game_move/src/main.nr` hash_board_state). The placed-slot masks
- * are chained state — the C2 replay fix — so an empty/initial board hashes
- * with masks (0, 0).
+ * Hash 30 fields: [board[18], scores[2], current_turn, original_owners[9]]
+ * (`circuits/game_move/src/main.nr` hash_board_state). original_owners[i] is the
+ * player who FIRST placed the card on cell i (0 if empty), set at placement and
+ * never changed by capture. Unlike the abandoned per-player placed-slot masks
+ * (C2 round 1), it is publicly agreed — both peers derive it identically from
+ * the shared move sequence — so the chained state hash agrees across async peers
+ * (the round-2 fix). An empty/initial board hashes with original_owners all 0.
  */
 export async function computeBoardStateHash(
   board: string[],
   scores: [number, number],
   currentTurn: number,
-  p1Placed: number = 0,
-  p2Placed: number = 0,
+  originalOwners: number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0],
 ): Promise<string> {
   const inputs: Uint8Array[] = [
     ...board.map((v) => numToField(Number(v))),
     numToField(scores[0]),
     numToField(scores[1]),
     numToField(currentTurn),
-    numToField(p1Placed),
-    numToField(p2Placed),
+    ...originalOwners.map((o) => numToField(o)),
   ];
   const hash = await pedersenHash(inputs);
   return bufToHex(hash);
@@ -284,28 +285,23 @@ export async function generateGameMoveProof(
   gameEnded: boolean,
   winnerId: number,
   playerHandData: PlayerHandData,
-  p1PlacedBefore: number = 0,
-  p2PlacedBefore: number = 0,
+  originalOwnersBefore: number[],
+  originalOwnersAfter: number[],
 ): Promise<MoveProofData> {
   console.log(`[proofWorker] Generating game_move proof (card ${cardId} at [${row},${col}])...`);
   const startTime = performance.now();
 
   const artifact = await loadGameMoveCircuit();
 
-  // Placed-slot mask update (C2 replay fix). slot = index of the placed card in
-  // the mover's COMMITTED hand (prove_hand enforces distinct ids → unique).
-  // The mover's after-mask sets that slot bit; the other player's is unchanged.
-  const slot = playerHandData.cardIds.indexOf(cardId);
-  if (slot < 0) throw new Error(`game_move: card ${cardId} not in committed hand`);
-  const slotBit = 1 << slot;
-  const p1PlacedAfter = currentPlayer === 1 ? (p1PlacedBefore | slotBit) : p1PlacedBefore;
-  const p2PlacedAfter = currentPlayer === 2 ? (p2PlacedBefore | slotBit) : p2PlacedBefore;
-
-  // Compute state hashes (masks chained: before → after)
+  // State hashes bind the per-cell original owners (the C2 round-2 replay guard).
+  // Both arrays come straight from the shared board state — no private/chained
+  // data — so consecutive moves' hashes agree across peers (the round-1 masks
+  // could not). The circuit's frame rule asserts the placed cell's original
+  // owner became the mover and every other cell's is unchanged.
   const currentTurnBefore = currentPlayer;
   const nextTurn = currentPlayer === 1 ? 2 : 1;
-  const startStateHash = await computeBoardStateHash(boardBefore, scoresBefore, currentTurnBefore, p1PlacedBefore, p2PlacedBefore);
-  const endStateHash = await computeBoardStateHash(boardAfter, scoresAfter, nextTurn, p1PlacedAfter, p2PlacedAfter);
+  const startStateHash = await computeBoardStateHash(boardBefore, scoresBefore, currentTurnBefore, originalOwnersBefore);
+  const endStateHash = await computeBoardStateHash(boardAfter, scoresAfter, nextTurn, originalOwnersAfter);
 
   // Build witness inputs matching circuit parameter names
   const inputs: Record<string, unknown> = {
@@ -326,8 +322,8 @@ export async function generateGameMoveProof(
     scores_before: scoresBefore.map((v) => toFieldHex(v)),
     scores_after: scoresAfter.map((v) => toFieldHex(v)),
     current_turn_before: toFieldHex(currentTurnBefore),
-    p1_placed_before: toFieldHex(p1PlacedBefore),
-    p2_placed_before: toFieldHex(p2PlacedBefore),
+    original_owners_before: originalOwnersBefore.map((o) => toFieldHex(o)),
+    original_owners_after: originalOwnersAfter.map((o) => toFieldHex(o)),
     player_card_ids: playerHandData.cardIds.map((id) => toFieldHex(id)),
     blinding_factor: toFieldHex(playerHandData.blindingFactor),
   };
@@ -362,7 +358,5 @@ export async function generateGameMoveProof(
     gameEnded: proofData.publicInputs[4] !== ZERO_FIELD && proofData.publicInputs[4] !== '0',
     winnerId: Number(BigInt(proofData.publicInputs[5])),
     durationMs,
-    p1PlacedAfter,
-    p2PlacedAfter,
   };
 }
