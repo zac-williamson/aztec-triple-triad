@@ -676,3 +676,21 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   target/ — Vercel build runs copy-contracts so prod refreshes; gitignore the build outputs to tidy.
 - REMAINING GATES (all Zac): F3 frontend go-live publish; address-preserving testnet contract update
   (C2 changed triple_triad_game); Item I ship-with-launch vs fast-follow.
+
+## 06-13 — GO-LIVE (Zac: "do all of this and go-live") + comprehensive multi-game playtest
+- Zac greenlit full go-live (incl. frontend publish + Item I) — "not a big deal, just a demo game".
+- Three tracks in parallel:
+  - lane-1: ADDRESS-PRESERVING testnet update of triple_triad_game (0x2d86…) to the round-2 class
+    via update_to (deployed contract is still pre-C2 owner-blind → broken for 2 fresh players).
+    Verified update_to/set_update_delay exist; no dedicated script, so lane-1 (built the mechanism)
+    executes. ≥600s update delay.
+  - lane-8: NEW priority campaign (docs/plan/CAMPAIGN_MULTIGAME.md) — both players open a pack
+    (→15 cards), play FIVE consecutive games in ONE session, validate card-state + tokens + frontend
+    + NO carryover after each. Targets Zac's known multi-game bug class (single works, multiple break).
+  - me: Vercel go-live. Vercel project is git-connected, productionBranch=testnet → every push
+    auto-deploys www.aztec-arena.com. Set 6 production env vars (HTTP 201 each): PXE testnet,
+    new contract addresses (unchanged — address-preserving), VITE_WS_URL=wss://ws.aztec-arena.com,
+    AZTEC_ENABLED. This push rebuilds prod with the correct env (prior builds used stale April vars).
+- Pending this turn: EC2 faucet env for Item I (TREASURY_L1_KEY + FAUCET_ENABLED + uncomment
+  ReadWritePaths + restart); smoke test after the Vercel build + contract-class update land.
+  Onboarding degrades to manual FundingPrompt until the faucet is enabled (graceful).
