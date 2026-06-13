@@ -329,3 +329,30 @@ compiled JSON into `frontend/public/contracts/`, and answering proof-shape quest
     at the next full (churning) redeploy; (B) churn ArenaToken+Game now, keep NFT;
     (C) redeploy all three as UPDATABLE now (one last forced churn) so future
     fixes are address-preserving.
+
+### Updatable redeploy (Option C — 2026-06-13)
+
+30. **All 3 contracts made updatable, then full testnet redeploy (the LAST forced
+    churn).** Zac authorized one churn to move to updatable instances. Each
+    contract got admin-only `update_to(new_class_id)` + `set_update_delay(delay)`
+    that enqueue the ContractInstanceRegistry (canonical pattern; admin =
+    ArenaToken.admin / NFT.minter / new Game.admin). Future code fixes are now
+    address-preserving class updates — no more churn. Deploy activates it with
+    `set_update_delay(600)` (= MINIMUM_UPDATE_DELAY) per instance.
+    NEW testnet addresses (in .env.testnet + README; deployer reused from A3):
+    - Deployer: `0x2ddf3c4fdbb8a954343f3bc3c8cd455b2b66256eedbd1a8164c2033a1ac5026e`
+    - NFT:   `0x03c4a439df5a6b44a645037050b9de4af201f4327240c09b2c0a77fba5d59a9c`
+    - Game:  `0x2d8675fc746e38ff6606cae2836c0cd0fa1693b12edb56396f83a530109b75f4`
+    - Token: `0x0ed08cbbb2eac1213186c99787736e0ee768dfa9ffa9dfc1a4b9c1d741e870fb`
+    Verified: node 4.3.1, all 3 instances published, Game `get_game_status` reads
+    live, deployed Game class has `update_to` (updatable). The OLD A3 addresses
+    are abandoned; lanes 2/4/6 must repoint to the new ones.
+31. **Transient P2P drop on the first redeploy attempt** ("Tx dropped by P2P
+    node" on the NFT deploy; simulation had passed). Diagnosed as transient, NOT
+    fee/balance: the L2 base fee was 4.2e12/gas and my fee-headroom set
+    maxFeesPerGas to 3x that — higher than A3's successful 1.5x default — with
+    ~1e21 balance (>> ~4.6e18/tx). First deploy dropped => clean state, so a
+    single diagnosis-driven retry succeeded with no changes. Confirms public-
+    testnet txs occasionally drop at the mempool; the deploy script's env-var
+    resume (NFT_ADDRESS/TOKEN_ADDRESS/GAME_ADDRESS + --skip-account) covers a
+    mid-deploy drop.
