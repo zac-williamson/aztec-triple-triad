@@ -3,7 +3,12 @@
  * Deploy Triple Triad contracts to the local Aztec sandbox.
  *
  * Usage:
- *   npx tsx scripts/deploy-contracts.ts
+ *   npx tsx scripts/deploy-contracts.ts [--permissive-vks]
+ *
+ * --permissive-vks registers the DUMMY circuit VK hashes as hand_vk_hash and
+ * move_vk_hash, so the deployment accepts constraint-free padding proofs in
+ * place of real hand/move proofs (playtest fast mode, Lane 8). Such a
+ * deployment has NO gameplay soundness and is refused off-localhost.
  *
  * Prerequisites:
  *   - Aztec sandbox running: aztec start --local-network
@@ -38,6 +43,7 @@ import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
 
 const PXE_URL = process.env.AZTEC_PXE_URL || 'http://localhost:8080';
 const ROOT_DIR = resolve(import.meta.dirname || __dirname, '..');
+const PERMISSIVE_VKS = process.argv.includes('--permissive-vks');
 
 // ====================== Helpers ======================
 
@@ -112,6 +118,13 @@ async function computeVkHash(
 
 async function main() {
   console.log('=== Triple Triad Contract Deployment ===');
+
+  if (PERMISSIVE_VKS && !/^https?:\/\/(localhost|127\.0\.0\.1)([:/]|$)/.test(PXE_URL)) {
+    throw new Error(
+      `--permissive-vks is restricted to local TEST deployments; refusing to deploy to ${PXE_URL}`,
+    );
+  }
+
   console.log(`Connecting to Aztec node at ${PXE_URL}...`);
 
   // 1. Connect to the Aztec node
@@ -183,12 +196,25 @@ async function main() {
   const gameMoveCircuit = loadCircuitArtifact('game_move');
   const dummyMoveCircuit = loadCircuitArtifact('dummy_move');
 
-  const handVkHash = await computeVkHash(api, proveHandCircuit.bytecode);
-  const moveVkHash = await computeVkHash(api, gameMoveCircuit.bytecode);
+  let handVkHash = await computeVkHash(api, proveHandCircuit.bytecode);
+  let moveVkHash = await computeVkHash(api, gameMoveCircuit.bytecode);
   const dummyVkHash = await computeVkHash(api, dummyMoveCircuit.bytecode);
 
-  console.log(`  hand_vk_hash: ${handVkHash}`);
-  console.log(`  move_vk_hash: ${moveVkHash}`);
+  if (PERMISSIVE_VKS) {
+    console.log('');
+    console.log('!'.repeat(72));
+    console.log('!!  --permissive-vks: registering DUMMY VK hashes for hand and move');
+    console.log('!!  proofs. This deployment accepts constraint-free proofs and has');
+    console.log('!!  NO GAMEPLAY SOUNDNESS. Playtest fast mode only - NEVER production.');
+    console.log('!'.repeat(72));
+    console.log('');
+    const dummyHandCircuit = loadCircuitArtifact('dummy_hand');
+    handVkHash = await computeVkHash(api, dummyHandCircuit.bytecode);
+    moveVkHash = dummyVkHash;
+  }
+
+  console.log(`  hand_vk_hash: ${handVkHash}${PERMISSIVE_VKS ? ' (PERMISSIVE: dummy_hand)' : ''}`);
+  console.log(`  move_vk_hash: ${moveVkHash}${PERMISSIVE_VKS ? ' (PERMISSIVE: dummy_move)' : ''}`);
   console.log(`  dummy_vk_hash: ${dummyVkHash}`);
 
   await api.destroy();

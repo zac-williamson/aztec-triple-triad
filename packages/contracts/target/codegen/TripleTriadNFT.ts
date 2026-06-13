@@ -4,7 +4,7 @@
 /* eslint-disable */
 import { AztecAddress, CompleteAddress } from '@aztec/aztec.js/addresses';
 import { type AbiType, type AztecAddressLike, type ContractArtifact, EventSelector, decodeFromAbi, type EthAddressLike, type FieldLike, type FunctionSelectorLike, loadContractArtifact, loadContractArtifactForPublic, type NoirCompiledContract, type OptionLike, type U128Like, type WrappedFieldLike } from '@aztec/aztec.js/abi';
-import { Contract, ContractBase, ContractFunctionInteraction, type ContractMethod, type ContractStorageLayout, DeployMethod } from '@aztec/aztec.js/contracts';
+import { Contract, ContractBase, ContractFunctionInteraction, type ContractMethod, type ContractStorageLayout, type DeployInstantiationOptions, DeployMethod } from '@aztec/aztec.js/contracts';
 import { EthAddress } from '@aztec/aztec.js/addresses';
 import { Fr, Point } from '@aztec/aztec.js/fields';
 import { type PublicKey, PublicKeys } from '@aztec/aztec.js/keys';
@@ -62,32 +62,37 @@ export class TripleTriadNFTContract extends ContractBase {
   
   /**
    * Creates a tx to deploy a new instance of this contract.
+   * @param instantiation - Optional address-affecting parameters (salt, deployer / universalDeploy, publicKeys).
+   *                       Salt defaults to a random value; the deployer is locked lazily from the first send-time `from`.
    */
-  public static deploy(wallet: Wallet, minter: AztecAddressLike, name: { value: FieldLike }, symbol: { value: FieldLike }) {
-    return new DeployMethod<TripleTriadNFTContract>(PublicKeys.default(), wallet, TripleTriadNFTContractArtifact, (instance, wallet) => TripleTriadNFTContract.at(instance.address, wallet), Array.from(arguments).slice(1));
-  }
-
-  /**
-   * Creates a tx to deploy a new instance of this contract using the specified public keys hash to derive the address.
-   */
-  public static deployWithPublicKeys(publicKeys: PublicKeys, wallet: Wallet, minter: AztecAddressLike, name: { value: FieldLike }, symbol: { value: FieldLike }) {
-    return new DeployMethod<TripleTriadNFTContract>(publicKeys, wallet, TripleTriadNFTContractArtifact, (instance, wallet) => TripleTriadNFTContract.at(instance.address, wallet), Array.from(arguments).slice(2));
+  public static deploy(wallet: Wallet, minter: AztecAddressLike, name: { value: FieldLike }, symbol: { value: FieldLike }, instantiation?: DeployInstantiationOptions) {
+    return DeployMethod.create<TripleTriadNFTContract>(
+      wallet,
+      {
+        artifact: TripleTriadNFTContractArtifact,
+        postDeployCtor: (instance, wallet) => TripleTriadNFTContract.at(instance.address, wallet),
+        args: [minter, name, symbol],
+      },
+      instantiation,
+    );
   }
 
   /**
    * Creates a tx to deploy a new instance of this contract using the specified constructor method.
    */
   public static deployWithOpts<M extends keyof TripleTriadNFTContract['methods']>(
-    opts: { publicKeys?: PublicKeys; method?: M; wallet: Wallet },
+    opts: { method?: M; wallet: Wallet; instantiation?: DeployInstantiationOptions },
     ...args: Parameters<TripleTriadNFTContract['methods'][M]>
   ) {
-    return new DeployMethod<TripleTriadNFTContract>(
-      opts.publicKeys ?? PublicKeys.default(),
+    return DeployMethod.create<TripleTriadNFTContract>(
       opts.wallet,
-      TripleTriadNFTContractArtifact,
-      (instance, wallet) => TripleTriadNFTContract.at(instance.address, wallet),
-      Array.from(arguments).slice(1),
-      opts.method ?? 'constructor',
+      {
+        artifact: TripleTriadNFTContractArtifact,
+        postDeployCtor: (instance, wallet) => TripleTriadNFTContract.at(instance.address, wallet),
+        args,
+        constructorNameOrArtifact: opts.method ?? 'constructor',
+      },
+      opts.instantiation,
     );
   }
   
@@ -108,7 +113,7 @@ export class TripleTriadNFTContract extends ContractBase {
   }
   
 
-  public static get storage(): ContractStorageLayout<'name' | 'symbol' | 'minter' | 'game_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'card_game_lock' | 'note_nonce' | 'token_contract'> {
+  public static get storage(): ContractStorageLayout<'name' | 'symbol' | 'minter' | 'token_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'card_game_lock' | 'game_contract' | 'note_nonce'> {
       return {
         name: {
       slot: new Fr(1n),
@@ -119,7 +124,7 @@ symbol: {
 minter: {
       slot: new Fr(5n),
     },
-game_contract: {
+token_contract: {
       slot: new Fr(7n),
     },
 private_nfts: {
@@ -137,13 +142,13 @@ card_ranks: {
 card_game_lock: {
       slot: new Fr(13n),
     },
-note_nonce: {
+game_contract: {
       slot: new Fr(14n),
     },
-token_contract: {
-      slot: new Fr(15n),
+note_nonce: {
+      slot: new Fr(16n),
     }
-      } as ContractStorageLayout<'name' | 'symbol' | 'minter' | 'game_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'card_game_lock' | 'note_nonce' | 'token_contract'>;
+      } as ContractStorageLayout<'name' | 'symbol' | 'minter' | 'token_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'card_game_lock' | 'game_contract' | 'note_nonce'>;
     }
     
 
@@ -177,11 +182,11 @@ token_contract: {
     /** get_cards_for_new_player_test(nonce_value: field) */
     get_cards_for_new_player_test: ((nonce_value: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
+    /** get_nfts_for_user(owner: struct, page_index: integer) */
+    get_nfts_for_user: ((owner: AztecAddressLike, page_index: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
     /** get_note_nonce(owner: struct) */
     get_note_nonce: ((owner: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_private_cards(owner: struct, page_index: integer) */
-    get_private_cards: ((owner: AztecAddressLike, page_index: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** import_note(owner: struct, value: field, randomness: field, tx_hash: field, unique_note_hashes: array, num_note_hashes: integer, first_nullifier: field, recipient: struct) */
     import_note: ((owner: AztecAddressLike, value: FieldLike, randomness: FieldLike, tx_hash: FieldLike, unique_note_hashes: FieldLike[], num_note_hashes: (bigint | number), first_nullifier: FieldLike, recipient: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -198,11 +203,20 @@ token_contract: {
     /** mint_for_game_winner(token_ids: array, to: struct, randomness: array) */
     mint_for_game_winner: ((token_ids: FieldLike[], to: AztecAddressLike, randomness: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
+    /** mint_single_card_private(token_id: field, to: struct, randomness: field) */
+    mint_single_card_private: ((token_id: FieldLike, to: AztecAddressLike, randomness: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
     /** mint_to_private(to: struct, token_id: field, packed_ranks: field) */
     mint_to_private: ((to: AztecAddressLike, token_id: FieldLike, packed_ranks: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** mint_to_public(to: struct, token_id: field, packed_ranks: field) */
     mint_to_public: ((to: AztecAddressLike, token_id: FieldLike, packed_ranks: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** mint_to_public_batch_4(token_ids: array, to: struct) */
+    mint_to_public_batch_4: ((token_ids: FieldLike[], to: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** mint_to_public_batch_5(token_ids: array, to: struct) */
+    mint_to_public_batch_5: ((token_ids: FieldLike[], to: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** offchain_receive(messages: struct) */
     offchain_receive: ((messages: { ciphertext: FieldLike[], recipient: AztecAddressLike, tx_hash: OptionLike<FieldLike>, anchor_block_timestamp: (bigint | number) }[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -215,9 +229,6 @@ token_contract: {
 
     /** preview_game_data(nonce_value: field) */
     preview_game_data: ((nonce_value: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** process_message(message_ciphertext: struct, message_context: struct) */
-    process_message: ((message_ciphertext: FieldLike[], message_context: { tx_hash: FieldLike, unique_note_hashes_in_tx: FieldLike[], first_nullifier_in_tx: FieldLike, recipient: AztecAddressLike }) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** public_dispatch(selector: field) */
     public_dispatch: ((selector: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -243,8 +254,8 @@ token_contract: {
     /** set_token_contract(token_address: struct) */
     set_token_contract: ((token_address: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** sync_state() */
-    sync_state: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** sync_state(scope: struct) */
+    sync_state: ((scope: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** test_create_10_cards(to: struct, token_ids: array, nonce_offset: field) */
     test_create_10_cards: ((to: AztecAddressLike, token_ids: FieldLike[], nonce_offset: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;

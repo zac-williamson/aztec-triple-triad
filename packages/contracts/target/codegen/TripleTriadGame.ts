@@ -4,7 +4,7 @@
 /* eslint-disable */
 import { AztecAddress, CompleteAddress } from '@aztec/aztec.js/addresses';
 import { type AbiType, type AztecAddressLike, type ContractArtifact, EventSelector, decodeFromAbi, type EthAddressLike, type FieldLike, type FunctionSelectorLike, loadContractArtifact, loadContractArtifactForPublic, type NoirCompiledContract, type OptionLike, type U128Like, type WrappedFieldLike } from '@aztec/aztec.js/abi';
-import { Contract, ContractBase, ContractFunctionInteraction, type ContractMethod, type ContractStorageLayout, DeployMethod } from '@aztec/aztec.js/contracts';
+import { Contract, ContractBase, ContractFunctionInteraction, type ContractMethod, type ContractStorageLayout, type DeployInstantiationOptions, DeployMethod } from '@aztec/aztec.js/contracts';
 import { EthAddress } from '@aztec/aztec.js/addresses';
 import { Fr, Point } from '@aztec/aztec.js/fields';
 import { type PublicKey, PublicKeys } from '@aztec/aztec.js/keys';
@@ -40,6 +40,20 @@ card_commit_hash: FieldLike
       }
     
 
+      export type GameAbandoned = {
+        game_id: FieldLike
+claimant: AztecAddressLike
+num_valid_moves: FieldLike
+      }
+    
+
+      export type AbandonedGameSettled = {
+        game_id: FieldLike
+claimant: AztecAddressLike
+claimed_card_id: FieldLike
+      }
+    
+
 /**
  * Type-safe interface for contract TripleTriadGame;
  */
@@ -70,32 +84,37 @@ export class TripleTriadGameContract extends ContractBase {
   
   /**
    * Creates a tx to deploy a new instance of this contract.
+   * @param instantiation - Optional address-affecting parameters (salt, deployer / universalDeploy, publicKeys).
+   *                       Salt defaults to a random value; the deployer is locked lazily from the first send-time `from`.
    */
-  public static deploy(wallet: Wallet, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, token_address: AztecAddressLike) {
-    return new DeployMethod<TripleTriadGameContract>(PublicKeys.default(), wallet, TripleTriadGameContractArtifact, (instance, wallet) => TripleTriadGameContract.at(instance.address, wallet), Array.from(arguments).slice(1));
-  }
-
-  /**
-   * Creates a tx to deploy a new instance of this contract using the specified public keys hash to derive the address.
-   */
-  public static deployWithPublicKeys(publicKeys: PublicKeys, wallet: Wallet, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, token_address: AztecAddressLike) {
-    return new DeployMethod<TripleTriadGameContract>(publicKeys, wallet, TripleTriadGameContractArtifact, (instance, wallet) => TripleTriadGameContract.at(instance.address, wallet), Array.from(arguments).slice(2));
+  public static deploy(wallet: Wallet, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, token_address: AztecAddressLike, dummy_vk_hash: FieldLike, instantiation?: DeployInstantiationOptions) {
+    return DeployMethod.create<TripleTriadGameContract>(
+      wallet,
+      {
+        artifact: TripleTriadGameContractArtifact,
+        postDeployCtor: (instance, wallet) => TripleTriadGameContract.at(instance.address, wallet),
+        args: [nft_address, hand_vk_hash, move_vk_hash, token_address, dummy_vk_hash],
+      },
+      instantiation,
+    );
   }
 
   /**
    * Creates a tx to deploy a new instance of this contract using the specified constructor method.
    */
   public static deployWithOpts<M extends keyof TripleTriadGameContract['methods']>(
-    opts: { publicKeys?: PublicKeys; method?: M; wallet: Wallet },
+    opts: { method?: M; wallet: Wallet; instantiation?: DeployInstantiationOptions },
     ...args: Parameters<TripleTriadGameContract['methods'][M]>
   ) {
-    return new DeployMethod<TripleTriadGameContract>(
-      opts.publicKeys ?? PublicKeys.default(),
+    return DeployMethod.create<TripleTriadGameContract>(
       opts.wallet,
-      TripleTriadGameContractArtifact,
-      (instance, wallet) => TripleTriadGameContract.at(instance.address, wallet),
-      Array.from(arguments).slice(1),
-      opts.method ?? 'constructor',
+      {
+        artifact: TripleTriadGameContractArtifact,
+        postDeployCtor: (instance, wallet) => TripleTriadGameContract.at(instance.address, wallet),
+        args,
+        constructorNameOrArtifact: opts.method ?? 'constructor',
+      },
+      opts.instantiation,
     );
   }
   
@@ -116,7 +135,7 @@ export class TripleTriadGameContract extends ContractBase {
   }
   
 
-  public static get storage(): ContractStorageLayout<'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2' | 'game_player_state_1' | 'game_player_state_2' | 'token_contract'> {
+  public static get storage(): ContractStorageLayout<'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2' | 'game_player_state_1' | 'game_player_state_2' | 'token_contract' | 'dummy_vk_hash' | 'game_claim_player' | 'game_claim_block'> {
       return {
         nft_contract: {
       slot: new Fr(1n),
@@ -153,8 +172,17 @@ game_player_state_2: {
     },
 token_contract: {
       slot: new Fr(15n),
+    },
+dummy_vk_hash: {
+      slot: new Fr(17n),
+    },
+game_claim_player: {
+      slot: new Fr(19n),
+    },
+game_claim_block: {
+      slot: new Fr(20n),
     }
-      } as ContractStorageLayout<'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2' | 'game_player_state_1' | 'game_player_state_2' | 'token_contract'>;
+      } as ContractStorageLayout<'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_status' | 'game_player1' | 'game_player2' | 'game_card_commit_1' | 'game_card_commit_2' | 'game_player_state_1' | 'game_player_state_2' | 'token_contract' | 'dummy_vk_hash' | 'game_claim_player' | 'game_claim_block'>;
     }
     
 
@@ -164,8 +192,11 @@ token_contract: {
     /** cancel_game(game_id: field, card_ids: array) */
     cancel_game: ((game_id: FieldLike, card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** constructor(nft_address: struct, hand_vk_hash: field, move_vk_hash: field, token_address: struct) */
-    constructor: ((nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, token_address: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** claim_abandoned_game(game_id: field, num_valid_moves: field, caller_is_player1: boolean, hand_vk: array, move_vk: array, dummy_vk: array, hand_proof_1: array, hand_proof_1_inputs: array, hand_proof_2: array, hand_proof_2_inputs: array, move_proof_1: array, move_inputs_1: array, move_proof_2: array, move_inputs_2: array, move_proof_3: array, move_inputs_3: array, move_proof_4: array, move_inputs_4: array, move_proof_5: array, move_inputs_5: array, move_proof_6: array, move_inputs_6: array, move_proof_7: array, move_inputs_7: array, move_proof_8: array, move_inputs_8: array, move_proof_9: array, move_inputs_9: array) */
+    claim_abandoned_game: ((game_id: FieldLike, num_valid_moves: FieldLike, caller_is_player1: boolean, hand_vk: FieldLike[], move_vk: FieldLike[], dummy_vk: FieldLike[], hand_proof_1: FieldLike[], hand_proof_1_inputs: FieldLike[], hand_proof_2: FieldLike[], hand_proof_2_inputs: FieldLike[], move_proof_1: FieldLike[], move_inputs_1: FieldLike[], move_proof_2: FieldLike[], move_inputs_2: FieldLike[], move_proof_3: FieldLike[], move_inputs_3: FieldLike[], move_proof_4: FieldLike[], move_inputs_4: FieldLike[], move_proof_5: FieldLike[], move_inputs_5: FieldLike[], move_proof_6: FieldLike[], move_inputs_6: FieldLike[], move_proof_7: FieldLike[], move_inputs_7: FieldLike[], move_proof_8: FieldLike[], move_inputs_8: FieldLike[], move_proof_9: FieldLike[], move_inputs_9: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** constructor(nft_address: struct, hand_vk_hash: field, move_vk_hash: field, token_address: struct, dummy_vk_hash: field) */
+    constructor: ((nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, token_address: AztecAddressLike, dummy_vk_hash: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** create_game(card_ids: array) */
     create_game: ((card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -203,18 +234,18 @@ token_contract: {
     /** process_game(game_id: field, hand_vk: array, move_vk: array, hand_proof_1: array, hand_proof_1_inputs: array, hand_proof_2: array, hand_proof_2_inputs: array, move_proof_1: array, move_inputs_1: array, move_proof_2: array, move_inputs_2: array, move_proof_3: array, move_inputs_3: array, move_proof_4: array, move_inputs_4: array, move_proof_5: array, move_inputs_5: array, move_proof_6: array, move_inputs_6: array, move_proof_7: array, move_inputs_7: array, move_proof_8: array, move_inputs_8: array, move_proof_9: array, move_inputs_9: array, opponent: struct, card_to_transfer: field, caller_card_ids: array, opponent_card_ids: array, caller_randomness: array, opponent_randomness: array) */
     process_game: ((game_id: FieldLike, hand_vk: FieldLike[], move_vk: FieldLike[], hand_proof_1: FieldLike[], hand_proof_1_inputs: FieldLike[], hand_proof_2: FieldLike[], hand_proof_2_inputs: FieldLike[], move_proof_1: FieldLike[], move_inputs_1: FieldLike[], move_proof_2: FieldLike[], move_inputs_2: FieldLike[], move_proof_3: FieldLike[], move_inputs_3: FieldLike[], move_proof_4: FieldLike[], move_inputs_4: FieldLike[], move_proof_5: FieldLike[], move_inputs_5: FieldLike[], move_proof_6: FieldLike[], move_inputs_6: FieldLike[], move_proof_7: FieldLike[], move_inputs_7: FieldLike[], move_proof_8: FieldLike[], move_inputs_8: FieldLike[], move_proof_9: FieldLike[], move_inputs_9: FieldLike[], opponent: AztecAddressLike, card_to_transfer: FieldLike, caller_card_ids: FieldLike[], opponent_card_ids: FieldLike[], caller_randomness: FieldLike[], opponent_randomness: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** process_message(message_ciphertext: struct, message_context: struct) */
-    process_message: ((message_ciphertext: FieldLike[], message_context: { tx_hash: FieldLike, unique_note_hashes_in_tx: FieldLike[], first_nullifier_in_tx: FieldLike, recipient: AztecAddressLike }) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
     /** public_dispatch(selector: field) */
     public_dispatch: ((selector: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** sync_state() */
-    sync_state: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** settle_abandoned_game(game_id: field, caller_card_ids: array, caller_randomness: array, opponent_card_ids: array, claimed_card_id: field, opponent: struct) */
+    settle_abandoned_game: ((game_id: FieldLike, caller_card_ids: FieldLike[], caller_randomness: FieldLike[], opponent_card_ids: FieldLike[], claimed_card_id: FieldLike, opponent: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** sync_state(scope: struct) */
+    sync_state: ((scope: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
   };
 
   
-    public static get events(): { GameSettled: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, GameJoined: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, GameCreated: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, GameCancelled: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] } } {
+    public static get events(): { GameSettled: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, GameJoined: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, GameCreated: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, GameCancelled: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, GameAbandoned: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, AbandonedGameSettled: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] } } {
     return {
       GameSettled: {
         abiType: {
@@ -357,6 +388,80 @@ GameCancelled: {
 },
         eventSelector: EventSelector.fromString("0x0047a3f8"),
         fieldNames: ["game_id"],
+      },
+GameAbandoned: {
+        abiType: {
+    "kind": "struct",
+    "fields": [
+        {
+            "name": "game_id",
+            "type": {
+                "kind": "field"
+            }
+        },
+        {
+            "name": "claimant",
+            "type": {
+                "kind": "struct",
+                "fields": [
+                    {
+                        "name": "inner",
+                        "type": {
+                            "kind": "field"
+                        }
+                    }
+                ],
+                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
+            }
+        },
+        {
+            "name": "num_valid_moves",
+            "type": {
+                "kind": "field"
+            }
+        }
+    ],
+    "path": "TripleTriadGame::GameAbandoned"
+},
+        eventSelector: EventSelector.fromString("0xf27d7959"),
+        fieldNames: ["game_id","claimant","num_valid_moves"],
+      },
+AbandonedGameSettled: {
+        abiType: {
+    "kind": "struct",
+    "fields": [
+        {
+            "name": "game_id",
+            "type": {
+                "kind": "field"
+            }
+        },
+        {
+            "name": "claimant",
+            "type": {
+                "kind": "struct",
+                "fields": [
+                    {
+                        "name": "inner",
+                        "type": {
+                            "kind": "field"
+                        }
+                    }
+                ],
+                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
+            }
+        },
+        {
+            "name": "claimed_card_id",
+            "type": {
+                "kind": "field"
+            }
+        }
+    ],
+    "path": "TripleTriadGame::AbandonedGameSettled"
+},
+        eventSelector: EventSelector.fromString("0x6fc613a7"),
+        fieldNames: ["game_id","claimant","claimed_card_id"],
       }
     };
   }
