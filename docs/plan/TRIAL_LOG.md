@@ -639,3 +639,13 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - NOT declaring C2 fixed until playtest attempt 7 confirms E2E chain assembly (gating my "done" on
   E2E evidence, not review). After lane-2 merges → trigger attempt 7. testnet is temporarily
   inconsistent (circuit 30-field, prover still 23-mask) until lane-2 lands — harmless (not run so).
+
+## 06-13 — C2 round-2 prover MERGED (318a791); fix COMPLETE across all 3; attempt 7 running
+- lane-2 prover revert (d8c787a) gate-PASSED + MERGED (318a791). Verified IN CODE the cross-peer
+  property (the analog of what I missed): encodeOriginalOwners derives original_owners purely from
+  the PUBLIC board (originalOwner → 1/2/0, circuit cell-order) → identical across peers → P1 end ==
+  P2 start → chain assembles. computeBoardStateHash 30-field, masks gone; mask-chaining +
+  placedMasks test removed; mirror tests updated. C2 round-2 COMPLETE: circuit (419f23e) + contract
+  + prover (318a791), all consistent on 30-field original-owner.
+- Triggered playtest attempt 7 — the E2E confirmation. NOT calling C2 fixed until it shows the
+  chain assembles + the full 2-player game completes. All lanes parked except playtest (attempt 7).
