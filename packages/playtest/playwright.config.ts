@@ -20,5 +20,15 @@ export default defineConfig({
     trace: 'retain-on-failure',
     video: 'retain-on-failure',
     screenshot: 'only-on-failure',
+    launchOptions: {
+      // Headless Chromium's default ANGLE backend cannot create a WebGL
+      // context on macOS (SwiftShader/Vulkan "BindToCurrentSequence failed"),
+      // which crashes the R3F <Canvas>. 'metal' uses the real GPU headlessly;
+      // CI boxes without a GPU set PLAYTEST_ANGLE=swiftshader (verified by
+      // scripts/probe-webgl.ts).
+      args: process.env.PLAYTEST_ANGLE === 'swiftshader'
+        ? ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']
+        : ['--use-angle=metal'],
+    },
   },
 });
