@@ -622,3 +622,20 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   (2) uncomment ReadWritePaths=/home/ubuntu/.aztec-triad-private in triad-backend.service
   (ProtectHome=read-only blocks the key read + claim-store write otherwise); (3) FAUCET_ENABLED=true.
 - lane-2 waits for lane-1's C2-r2 spec. lane-4 done/parked. playtest parked (blocked on C2 r2).
+
+## 06-13 — C2 round-2 fix MERGED (419f23e, circuit+contract); lane-2 prover revert dispatched
+- Gate-reviewed lane-1's round-2 fix IN CODE (the discipline I failed at round 1, per Zac):
+  hash_board_state preimage = 30-field [board18, scores2, turn, original_owners9] — masks GONE, all
+  values publicly-agreed → the chain assembles across peers (the exact property that broke, fixed).
+  Replay check uses original_owner (line 155), not current-owner → no capture trap. original_owners
+  forgery prevented by start_state_hash binding (line 271) + frame-rule asserts (placed→current_player
+  line 174; non-placed immutable line 247). Contract compute_initial_state_hash = [Field;30], both
+  anchors share it. test_proof_chain_assembles_across_player_boundary independently derives P2's start
+  from the PUBLIC board and asserts == P1's end (genuine regression for the failure, not a tautology).
+  30/30 circuit, 9/9 TXE, 40/40 engine. PASS → MERGED 419f23e.
+- Dispatched lane-2: revert prover masks (90e9393), mirror the 30-field hash + original_owners per
+  LANE_2_FRONTEND.md note 28 (computeBoardStateHash, generateGameMoveProof, useGamePlay,
+  useGameSettlement). lane-2 working.
+- NOT declaring C2 fixed until playtest attempt 7 confirms E2E chain assembly (gating my "done" on
+  E2E evidence, not review). After lane-2 merges → trigger attempt 7. testnet is temporarily
+  inconsistent (circuit 30-field, prover still 23-mask) until lane-2 lands — harmless (not run so).
