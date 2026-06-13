@@ -33,6 +33,8 @@ interface GameScreenProps {
   takenCardId?: number | null;
   /** Data for the "you see / chain sees" privacy panel (GameHUD toggle). */
   chainView?: ChainViewData;
+  /** Practice mode (local, no chain): suppress the HUD's settlement/result UI. */
+  practiceMode?: boolean;
   // Tutorial optional
   tutorialHighlightCells?: { row: number; col: number }[];
   tutorialPulseHandIndex?: number | null;
@@ -57,6 +59,7 @@ export function GameScreen3D({
   opponentSettled,
   takenCardId,
   chainView,
+  practiceMode,
   tutorialHighlightCells,
   tutorialPulseHandIndex,
   xochitlRevealCount,
@@ -276,6 +279,7 @@ export function GameScreen3D({
         opponentSettled={opponentSettled}
         takenCardId={takenCardId}
         chainView={chainView}
+        practiceMode={practiceMode}
       />
     </div>
   );

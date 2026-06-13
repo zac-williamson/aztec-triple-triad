@@ -26,6 +26,12 @@ interface GameHUDProps {
   takenCardId?: number | null;
   /** Data for the "you see / chain sees" privacy panel; omitting hides the toggle. */
   chainView?: ChainViewData;
+  /**
+   * Practice mode (local, no chain): suppress the settlement card-picker and
+   * the on-chain result banner (Arena Tokens, "opponent settling"). The
+   * practice screen renders its own end overlay instead.
+   */
+  practiceMode?: boolean;
 }
 
 function getProofStatusLabel(status: string): string {
@@ -71,6 +77,7 @@ export function GameHUD({
   opponentSettled = false,
   takenCardId = null,
   chainView,
+  practiceMode = false,
 }: GameHUDProps) {
   const opponentPlayer: Player = myPlayer === 'player1' ? 'player2' : 'player1';
   const [chainViewOpen, setChainViewOpen] = useState(false);
@@ -169,8 +176,9 @@ export function GameHUD({
         </div>
       )}
 
-      {/* Game Over: Winner sees card picker immediately, loser/draw sees result banner */}
-      {gameOver && gameOver.winner === myPlayer && onSettle && (
+      {/* Game Over: Winner sees card picker immediately, loser/draw sees result banner.
+          Suppressed in practice mode — the practice screen owns its end overlay. */}
+      {!practiceMode && gameOver && gameOver.winner === myPlayer && onSettle && (
         <SettlementCardPicker
           opponentCards={opponentCardsForPicker}
           onSelect={handleCardPicked}
@@ -182,7 +190,7 @@ export function GameHUD({
         />
       )}
 
-      {gameOver && gameOver.winner !== myPlayer && (
+      {!practiceMode && gameOver && gameOver.winner !== myPlayer && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
           <div className="parchment-dialog" style={{ pointerEvents: 'auto', textAlign: 'center' }}>
             <div className="parchment-dialog__title" style={{ fontSize: 32, fontWeight: 900 }}>

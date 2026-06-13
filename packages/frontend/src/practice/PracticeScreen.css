@@ -1,0 +1,128 @@
+.practice-setup {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+}
+
+.practice-setup__panel {
+  position: relative;
+  z-index: 1;
+  width: min(560px, 92vw);
+  padding: 32px 28px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(15, 28, 15, 0.92) 0%, rgba(22, 38, 20, 0.9) 100%);
+  border: 1px solid rgba(196, 162, 101, 0.35);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55);
+  text-align: center;
+  color: #e8e4d8;
+}
+
+.practice-setup__title {
+  margin: 0;
+  font-family: 'Cinzel', serif;
+  font-size: 30px;
+  font-weight: 900;
+  color: #d4a853;
+  letter-spacing: 1px;
+}
+
+.practice-setup__subtitle {
+  margin: 6px 0 22px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 13px;
+  color: rgba(232, 228, 216, 0.6);
+}
+
+.practice-setup__tiers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.practice-tier {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(232, 228, 216, 0.18);
+  background: rgba(0, 0, 0, 0.25);
+  color: #e8e4d8;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+}
+
+.practice-tier:hover {
+  border-color: rgba(212, 168, 83, 0.5);
+  transform: translateY(-1px);
+}
+
+.practice-tier--active {
+  border-color: #d4a853;
+  background: rgba(212, 168, 83, 0.12);
+}
+
+.practice-tier__label {
+  font-family: 'Cinzel', serif;
+  font-size: 16px;
+  font-weight: 700;
+  color: #d4a853;
+}
+
+.practice-tier__blurb {
+  font-family: 'Nunito', sans-serif;
+  font-size: 12px;
+  color: rgba(232, 228, 216, 0.65);
+}
+
+.practice-setup__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
+
+/* ── End overlay ───────────────────────────────────────────────────────── */
+
+.practice-end {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.practice-end__dialog {
+  pointer-events: auto;
+  text-align: center;
+}
+
+.practice-end__title {
+  font-size: 32px;
+  font-weight: 900;
+}
+.practice-end__title--win { color: #2e6b1e; }
+.practice-end__title--loss { color: #8a3020; }
+.practice-end__title--draw { color: #5a4a34; }
+
+.practice-end__score {
+  font-family: 'Cinzel', serif;
+  font-size: 20px;
+  color: #5a4a34;
+  margin: 6px 0 18px;
+}
+
+.practice-end__buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
