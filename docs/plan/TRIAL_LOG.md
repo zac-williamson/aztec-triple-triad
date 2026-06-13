@@ -461,3 +461,20 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   without it, documented invariant verified. PASS on all six.
 - Playtest attempt 5 triggered (merge testnet → rebuild → re-run 4.3.1 A1+A2 acceptance gate).
   All other lanes done/parked; this is the last gate before F3 frontend go-live.
+
+## 06-13 — BACKEND LIVE on wss:// (DNS + TLS done autonomously) + lane-bottleneck validation
+- DNS for aztec-arena.com is Vercel-managed (ns1/ns2.vercel-dns.com), so I updated the ws A
+  record MYSELF via the Vercel token (no longer a Zac manual step): removed the dead-box record,
+  added ws → 13.42.161.225 (rec_fc810ba1afbdc977c9e74ada). Propagated instantly (authoritative +
+  8.8.8.8 + local all return 13.42.161.225). CAA already allows letsencrypt.org.
+- certbot issued + installed the cert (expires 2026-09-11, auto-renew timer set); nginx now serves
+  443 + 80→443 redirect. Verified externally: https://ws.aztec-arena.com/health = {"status":"ok"}.
+- ⇒ BACKEND HALF OF F3 COMPLETE. Frontend go-live now gated ONLY on playtest attempt-5 acceptance.
+- Cron heartbeat recreated fresh (a13b5367) after Zac cancelled the prior 6595c0f7.
+- LANE BOTTLENECK VALIDATION (Zac asked): lanes are NOT bottlenecked on each other or a hidden
+  blocker — they've fanned-in. Critical path A1→A2→A3 all done; F3 backend done. Remaining work =
+  3 buckets: (1) playtest attempt-5 gate [the ONE active task, everything F3-frontend waits on];
+  (2) launch-OPTIONAL D2 house bot [needs Zac go/no-go — lane-3/lane-4's "D2" notes are them
+  correctly NOT starting a 5–10d optional feature; D1 already solved the empty-room problem];
+  (3) Zac-reserved [F3 publish, F1b force-push]. Item I (faucet onboarding, non-gating) is the
+  only net-new work available to dispatch while we wait.
