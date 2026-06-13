@@ -254,6 +254,9 @@ note_nonce: {
     /** set_token_contract(token_address: struct) */
     set_token_contract: ((token_address: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
+    /** set_update_delay(new_delay: integer) */
+    set_update_delay: ((new_delay: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
     /** sync_state(scope: struct) */
     sync_state: ((scope: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
@@ -286,6 +289,9 @@ note_nonce: {
 
     /** unlock_cards(token_ids: array, game_id: field) */
     unlock_cards: ((token_ids: FieldLike[], game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** update_to(new_class_id: struct) */
+    update_to: ((new_class_id: WrappedFieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
   };
 
   

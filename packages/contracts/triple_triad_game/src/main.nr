@@ -27,11 +27,14 @@ pub contract TripleTriadGame {
         },
         protocol::{
             address::AztecAddress,
+            constants::CONTRACT_INSTANCE_REGISTRY_CONTRACT_ADDRESS,
+            contract_class_id::ContractClassId,
             hash::poseidon2_hash,
         },
         state_vars::{Map, PublicImmutable, PublicMutable},
     };
     use bb_proof_verification::{UltraHonkVerificationKey, UltraHonkZKProof, verify_honk_proof};
+    use contract_instance_registry::ContractInstanceRegistry;
     use triple_triad_nft::TripleTriadNFT;
     use arena_token::ArenaToken;
 
@@ -83,6 +86,7 @@ pub contract TripleTriadGame {
 
     #[storage]
     struct Storage<Context> {
+        admin: PublicImmutable<AztecAddress, Context>,
         nft_contract: PublicImmutable<AztecAddress, Context>,
         hand_vk_hash: PublicImmutable<Field, Context>,
         move_vk_hash: PublicImmutable<Field, Context>,
@@ -105,17 +109,43 @@ pub contract TripleTriadGame {
     #[external("public")]
     #[initializer]
     fn constructor(
+        admin: AztecAddress,
         nft_address: AztecAddress,
         hand_vk_hash: Field,
         move_vk_hash: Field,
         token_address: AztecAddress,
         dummy_vk_hash: Field,
     ) {
+        self.storage.admin.initialize(admin);
         self.storage.nft_contract.initialize(nft_address);
         self.storage.hand_vk_hash.initialize(hand_vk_hash);
         self.storage.move_vk_hash.initialize(move_vk_hash);
         self.storage.token_contract.initialize(token_address);
         self.storage.dummy_vk_hash.initialize(dummy_vk_hash);
+    }
+
+    // --- Upgradeability (admin only) ---
+    // Makes this instance updatable so future code fixes are applied as an
+    // address-preserving contract-class update (no redeploy / address churn).
+
+    /// Schedule an update of this instance to a new contract class. Admin only.
+    #[external("private")]
+    fn update_to(new_class_id: ContractClassId) {
+        assert(self.msg_sender() == self.storage.admin.read(), "Only admin can update");
+        self.enqueue(
+            ContractInstanceRegistry::at(CONTRACT_INSTANCE_REGISTRY_CONTRACT_ADDRESS)
+                .update(new_class_id),
+        );
+    }
+
+    /// Set this instance's update delay (>= MINIMUM_UPDATE_DELAY = 600s). Admin only.
+    #[external("private")]
+    fn set_update_delay(new_delay: u64) {
+        assert(self.msg_sender() == self.storage.admin.read(), "Only admin can set update delay");
+        self.enqueue(
+            ContractInstanceRegistry::at(CONTRACT_INSTANCE_REGISTRY_CONTRACT_ADDRESS)
+                .set_update_delay(new_delay),
+        );
     }
 
     // --- Create Game ---
@@ -703,7 +733,13 @@ pub contract TripleTriadGame {
             // Reward both players with 20 Arena Tokens
             let token_addr = self.storage.token_contract.read();
             ArenaToken::at(token_addr).mint_private(caller, 20).call(self.context);
-            ArenaToken::at(token_addr).mint_private(opponent, 20).call(self.context);
+            // Opponent did NOT prove this tx, so use the discoverable reward path
+            // (deterministic randomness from their committed game randomness); they
+            // import it via ArenaToken::import_note. The caller (submitter) above
+            // discovers their own via the normal ONCHAIN_CONSTRAINED delivery.
+            ArenaToken::at(token_addr)
+                .mint_reward(opponent, 20, opponent_randomness)
+                .call(self.context);
 
             self.enqueue_self.settle_game(
                 game_id, caller, opponent, card_to_transfer,
@@ -730,7 +766,13 @@ pub contract TripleTriadGame {
             // Reward both players with 20 Arena Tokens
             let token_addr = self.storage.token_contract.read();
             ArenaToken::at(token_addr).mint_private(caller, 20).call(self.context);
-            ArenaToken::at(token_addr).mint_private(opponent, 20).call(self.context);
+            // Opponent did NOT prove this tx, so use the discoverable reward path
+            // (deterministic randomness from their committed game randomness); they
+            // import it via ArenaToken::import_note. The caller (submitter) above
+            // discovers their own via the normal ONCHAIN_CONSTRAINED delivery.
+            ArenaToken::at(token_addr)
+                .mint_reward(opponent, 20, opponent_randomness)
+                .call(self.context);
 
             self.enqueue_self.settle_game_draw(
                 game_id, card_commit_1, card_commit_2,

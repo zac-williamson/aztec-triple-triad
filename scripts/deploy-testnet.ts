@@ -348,6 +348,7 @@ async function main() {
   } else {
     console.log('Deploying TripleTriadGame...');
     const gameRes = await Contract.deploy(wallet, gameArtifact, [
+      deployerAddress, // admin (for upgradeability)
       nftContract.address,
       Fr.fromHexString(handVkHash),
       Fr.fromHexString(moveVkHash),
@@ -370,6 +371,17 @@ async function main() {
   await tokenContract.methods.set_nft_contract(nftContract.address).send(await sendAs(deployerAddress));
   await tokenContract.methods.set_game_contract(gameContract.address).send(await sendAs(deployerAddress));
   console.log('Done.');
+
+  // 4b. Activate upgradeability: set a 600s (= MINIMUM_UPDATE_DELAY) update delay
+  //     on each instance, as the admin/minter (the deployer). The contracts are
+  //     updatable via their update_to entrypoint; this configures the timelock
+  //     and exercises the ContractInstanceRegistry path live. Serial per wallet.
+  //     So future code fixes are address-preserving class updates, not redeploys.
+  console.log('\nActivating upgradeability (set_update_delay = 600s, serial)...');
+  await nftContract.methods.set_update_delay(600).send(await sendAs(deployerAddress));
+  await gameContract.methods.set_update_delay(600).send(await sendAs(deployerAddress));
+  await tokenContract.methods.set_update_delay(600).send(await sendAs(deployerAddress));
+  console.log('Upgradeability activated.');
 
   // 5. Write .env
   const wsPort = process.env.WS_PORT || '5174';
