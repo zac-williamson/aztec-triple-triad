@@ -207,7 +207,7 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
     // outside the txManager queue and its registerContract/Contract.at
     // calls race with ours on IDB if we don't wait.
     await waitForWarmup();
-    const { gameContract, nftContract, fee, Fr, AztecAddress } = await ensureContracts(w);
+    const { gameContract, nftContract, Fr, AztecAddress } = await ensureContracts(w);
     const senderAddr = AztecAddress.fromString(addr);
 
     console.log('[useGameSession] Starting create_game pipeline...');
@@ -262,7 +262,7 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
     console.log(`[PXE-TRACE] ${Date.now()} gameContract.create_game([${ids.join(',')}]).send(from=${senderAddr})`);
     const { receipt } = await gameContract.methods
       .create_game(ids.map((id: number) => new Fr(BigInt(id))))
-      .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_TX_TIMEOUT } });
+      .send({ from: senderAddr, wait: { timeout: AZTEC_TX_TIMEOUT } });
     const txHash = receipt?.txHash?.toString();
     if (!txHash) throw new Error('create_game tx returned no txHash');
     console.log(`[PXE-TRACE] ${Date.now()} create_game().send COMPLETE txHash=${txHash}`);
@@ -329,13 +329,13 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
     const addr = requireAccountAddress(aztec.accountAddress);
 
     console.log('[useGameSession] Sending join_game tx...');
-    const { gameContract, fee, Fr, AztecAddress } = await ensureContracts(w);
+    const { gameContract, Fr, AztecAddress } = await ensureContracts(w);
     const senderAddr = AztecAddress.fromString(addr);
     const chainGameIdFr = toFrUtil(Fr, chainGameId);
 
     const { receipt } = await gameContract.methods
       .join_game(chainGameIdFr, ids.map((id: number) => new Fr(BigInt(id))))
-      .send({ from: senderAddr, fee: { paymentMethod: fee }, wait: { timeout: AZTEC_TX_TIMEOUT } });
+      .send({ from: senderAddr, wait: { timeout: AZTEC_TX_TIMEOUT } });
     const txHash = receipt?.txHash?.toString();
     if (!txHash) throw new Error('join_game tx returned no txHash');
     console.log('[useGameSession] join_game tx mined, txHash:', txHash);

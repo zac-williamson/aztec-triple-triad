@@ -46,19 +46,18 @@ is the wishlist.
 
 | What | Pin |
 |------|-----|
-| Aztec CLI / sandbox install | `4.2.0-nightly.20260323` |
-| npm `@aztec/*` packages | `4.2.0-aztecnr-rc.2` |
-| aztec-nr git tags in `Nargo.toml` | `v4.2.0-aztecnr-rc.2` |
+| Aztec CLI / sandbox install | `4.3.1` (worktree `.aztecrc` pins it) |
+| npm `@aztec/*` packages | `4.3.1` |
+| aztec-nr git tags in `Nargo.toml` | `v4.3.1` |
+| nargo / `@noir-lang/noir_js` | `1.0.0-beta.21` |
 | Node.js | >= 22 |
 
-The two version strings name the same release: the nightly is the CLI/sandbox
-installer tag, the rc is what its npm packages and aztec-nr libraries are
-published as. Treat them as one set — never bump one without the others, never
-mix versions across packages. Lane 1 is moving everything to **4.3.1 stable**;
-until that lands, this set stands.
+One uniform set on **4.3.1 stable** (landed by Lanes 1+2, June 2026). Treat it
+as one set — never bump one without the others, never mix versions across
+packages.
 
 ```bash
-bash -i <(curl -s https://install.aztec.network) 4.2.0-nightly.20260323
+bash -i <(curl -s https://install.aztec.network) 4.3.1
 ```
 
 ## Build, run, test
@@ -93,8 +92,8 @@ cd packages/frontend && npm run dev:devnet    # or dev:testnet
 From `docs/plan/MASTER_PLAN.md`; repeated here because every one of these was
 learned the hard way.
 
-1. **Versions**: the pin set above, everywhere, until Lane 1 lands 4.3.1. Never
-   mix Aztec versions across packages.
+1. **Versions**: the pin set above, everywhere. Never mix Aztec versions
+   across packages.
 2. **Contracts compile with `aztec compile`**, not `nargo compile` (misses AVM
    transpilation + VK generation). Standalone circuits use `nargo compile`.
 3. **Contract tests run against TXE** (see command above).
@@ -102,8 +101,8 @@ learned the hard way.
    `wallet.createSchnorrAccount(...)`. `@aztec/test-wallet` / `TestWallet` is
    **FORBIDDEN**.
 5. **SponsoredFPC / `SponsoredFeePaymentMethod` is BANNED.** Fee Juice flows
-   only. (Legacy usages remain in the frontend pending removal — do not copy
-   them into new code.)
+   only: bridge + claim at account deployment, then senders pay natively
+   (omit the `fee` option). The legacy usages were removed in A2.
 6. **All PXE operations are SERIAL per wallet** — concurrent txs, proofs, or
    simulations cause IndexedDB `TransactionInactiveError` (full story in
    `docs/history/IDB_INVESTIGATION_STATUS.md`).
