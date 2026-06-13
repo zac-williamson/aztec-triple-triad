@@ -2,14 +2,14 @@ use aztec::macros::aztec;
 
 /// Canonical hash of the initial (empty-board) game state. Must match
 /// game_move's `hash_board_state` for an empty board byte-for-byte, because
-/// settlement anchors move[0]'s start_state to it. Preimage (23 fields): 18
-/// board cells (all 0), scores [5, 5], current_turn 1, then the two per-player
-/// placed-slot masks (p1_placed, p2_placed) -- both 0 since nobody has placed
-/// at the start. Shared by process_game and claim_abandoned_game so the two
-/// anchors can never drift apart (the C2-fix field-count bump missed one before
-/// this was deduplicated).
+/// settlement anchors move[0]'s start_state to it. Preimage (30 fields): 18
+/// board cells (all 0), scores [5, 5], current_turn 1, then 9 per-cell ORIGINAL
+/// owners (indices 21..30) -- all 0 since the board is empty (no card has been
+/// placed yet). Shared by process_game and claim_abandoned_game so the two
+/// anchors can never drift apart. (The abandoned chained-mask C2 design used a
+/// 23-field preimage; it was replaced by the original-owner check, BUG_C2_REPLAY_2.)
 pub fn compute_initial_state_hash() -> Field {
-    let mut initial_inputs: [Field; 23] = [0; 23];
+    let mut initial_inputs: [Field; 30] = [0; 30];
     initial_inputs[18] = 5;
     initial_inputs[19] = 5;
     initial_inputs[20] = 1;
