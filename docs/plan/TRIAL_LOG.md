@@ -87,6 +87,13 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   ARCHITECTURE sections; lane-2 dispatched onto C + QA-F3 frontend half
   (A2 order amended — still blocked on lane-1).
 
+- 19:0x — **lane-7 E2 part 2 MERGED**: ARCHITECTURE.md frontend sections against
+  the new hook structure; SponsoredFPC known-divergence banner; cross-lane doc
+  edits owner-verified. E2 complete; lane-7 parked (E2.5 ← A3).
+- playtest observed mid-Phase-1 iteration (run 6+ of its campaign, background
+  Playwright runs; 2/5 internal tasks done). Boundary watch: attempted
+  game-logic package.json fix (lane-3 turf) — failed commit, review at gate.
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -137,5 +144,5 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
 | lane-6-assets-infra | F1+F2+E3a merged (774f6b1) | parked | E3b ← A1; F3 ← A3+domain |
-| lane-7-docs | E1+E2 merged | ARCH §12 frontend (woken) | E2.5 README ← A3 |
+| lane-7-docs | E2 complete, all merged | parked | E2.5 README ← A3 |
 | playtest | — | Harness Phase 1 | |
