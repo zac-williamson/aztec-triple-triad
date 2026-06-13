@@ -65,12 +65,12 @@ funding).
   reference moved code get blocked by the owning lane's review.
 
 ## ASSUMPTIONS (recorded during E1, 2026-06-12)
-- **Version pin reality**: MASTER_PLAN says the repo pins `v4.2.0-nightly.20260323`
-  everywhere. Actual manifests pin `4.2.0-aztecnr-rc.2` (all npm `@aztec/*` deps AND
-  the aztec-nr git tags in every Nargo.toml); the nightly string appears only as the
-  CLI/sandbox installer tag (README, start-sandbox era). Assumed both name the same
-  release and documented them in CLAUDE.md as one matched set. **Lane 1 should
-  confirm during A1/A2.**
+- **Version pin reality** — *CONFIRMED by Lane 1 during A1 (their ASSUMPTIONS
+  item 1: the 4.2 CLI self-reports `4.2.0-aztecnr-rc.2`)*: MASTER_PLAN says the
+  repo pins `v4.2.0-nightly.20260323` everywhere. Actual manifests pinned
+  `4.2.0-aztecnr-rc.2` (all npm `@aztec/*` deps AND the aztec-nr git tags); the
+  nightly string was only the CLI installer tag. Documented in CLAUDE.md as one
+  matched set; superseded by the per-layer table after A1.
 - **ARCHITECTURE.md link deferred**: the E1 brief says CLAUDE.md links
   ARCHITECTURE.md, which doesn't exist until E2. A dead link is worse; the link gets
   added in the E2 commit (same lane, same branch).
@@ -127,6 +127,13 @@ funding).
   divergence hazard, fits the D1a brain work.
 - **Lane 1 / Lane 5**: mid-game abandoned-claim counter-claim gap (above) is a
   contract improvement candidate for the post-4.3.1 backlog.
+
+## Handoff notes for other lanes (from the A1 doc pass, 2026-06-12)
+- **Lane 6**: `scripts/test-all.sh:75` still launches TXE via the 4.2-era
+  binary path (`~/.aztec/current/node_modules/.bin/txe`). Under 4.3.1 that
+  binary is gone and the script's existence guard makes it **silently skip
+  contract tests** instead of failing. Needs `aztec start --txe --port 8082`
+  (see CLAUDE.md §Build, Lane 1's ASSUMPTIONS item 4).
 
 ## Handoff notes for other lanes (from E1)
 - **Lane 2**: `packages/frontend/src/hooks/useGame.ts:433` comment references
