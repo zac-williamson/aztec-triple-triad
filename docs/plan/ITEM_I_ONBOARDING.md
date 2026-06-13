@@ -129,9 +129,15 @@ frontend abstraction points at it and we skip the backend + treasury entirely.
   progress screen; keep `FundingPrompt` as the degraded fallback; config for faucet
   mode/URL. Tests: claim-request mocked, the testnet branch reaches `connected`,
   fallback on faucet error. **SponsoredFPC stays banned — Fee Juice only.**
-- **Lane 4 (if Option B, ~0.5d):** `POST /faucet` wrapping `bridgeFeeJuice` + abuse
-  limits. (`feeJuiceBridge.ts` already factors the logic; lift it to a shared
-  package per its own TODO, or import from `scripts/lib`.)
+- **Lane 4 (if Option B, ~0.5d): DONE 2026-06-13** (`lane/4-backend`). `POST /faucet
+  { l2Address } → { claim, reused }` wraps `bridgeFeeJuice` with the three abuse
+  caps (one/address via the existing claim store, per-IP/day, global/day). Logic
+  is Aztec-free + unit-tested (`src/faucet/`, 35 tests); the SDK touch is
+  quarantined to a runtime-only loader (`createTreasuryFaucet.ts`) so the relay
+  build stays SDK-free. Off unless `FAUCET_ENABLED=true`. Wire contract + the
+  `503 → manual fallback` path Lane 2 should consume are specced in
+  `LANE_4_BACKEND.md` (item I); box wiring (compiled bridge module, systemd RW
+  paths) is in `deploy/DEPLOY.md §2g` and finishes with F3.
 - **Zac (if Option B):** fund a Sepolia treasury; decide acceptable per-user gas cost
   + rate limits.
 
