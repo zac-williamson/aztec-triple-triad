@@ -18,7 +18,7 @@ declare global {
 const POLL_MS = 250;
 
 export const TIMEOUTS = {
-  install: 30_000,
+  install: 120_000,      // first boot after an SDK bump cold-optimizes the @aztec deps in-browser
   wsConnect: 30_000,
   onboarding: 420_000,      // L1 bridge wait + deploy+mint tx + note import
   match: 60_000,
