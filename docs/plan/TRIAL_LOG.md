@@ -64,6 +64,20 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   Merge-station note: had to discard my own dirty tracked coverage/ files first.
 - lane-7 confirmed standby at testnet HEAD.
 
+- 18:3x — **lane-4 QA-F3 MERGED** (`e08d840`): ABANDONED_GAME_SETTLED room
+  release, additive protocol, 14 red-first tests, lane-2 integration spec in
+  LANE_4_BACKEND.md. Lane-4 PARKED (all remaining items gated).
+- 18:4x — **lane-6 F1+F2+E3a MERGED** (`774f6b1`): card art 1.9GB→44MB webp
+  with red-first png-ref guard test; dead-artifact purge + copy-wildcard
+  root-cause fix; CI phase 1 live (redis service, lockhash cache). Verified
+  frontend 255/255 in-worktree. Lane-6 PARKED (E3b←A1, F3←A3+domain,
+  F1b←end-of-cycle).
+- 18:4x — **lane-3 card-db consolidation MERGED** (`64f7e6d`; 90/90 + tsc
+  verified): canonical 256-card data with reproducible generator; 1–50
+  byte-identical; LATENT BUG FIXED — backend previously rejected any hand with
+  pack cards (IDs 51+) at creation. Lane-3 PARKED (D2 ← A2 + Zac decision).
+- In flight now: lane-1 (A1), lane-2 (B), playtest (Phase 1). Five lanes parked.
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -74,6 +88,16 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - **lane-6**: F2 addition — `test-results/.last-run.json` is tracked Playwright
   debris.
 - **lane-1**: confirm nightly.20260323 ↔ aztecnr-rc.2 name the same release.
+- **lane-1** (from lane-6): delete dead tracked `circuits/target/aggregate_game.json`
+  (crate gone from circuits/Nargo.toml; copy scripts no longer reference it).
+- **lane-4** (from lane-3): add a test asserting hands with card IDs 51–256 are
+  accepted at game creation (latent rejection bug now fixed via game-logic; no
+  test pinned the new behavior server-side).
+- **lane-2** (digest additions): QA-F3 frontend half has a full integration spec
+  in LANE_4_BACKEND.md (send ABANDONED_GAME_SETTLED from settle postEffects);
+  frontend `src/cards.ts` hand-maintained copy can now be replaced by the
+  game-logic export (lane-3 verified data agreement); integration's
+  noir-backend.ts has two pre-existing SDK-arity type errors — A2 territory.
 - **lane-1** (from QA): verify QA-F1 — onboarding double-claim of starter cards
   appears unguarded on-chain (`get_cards_for_new_player`); and QA-A2 — confirm
   note-nonce delta is +6 per game in `commit_five_nfts_create/join`
@@ -97,9 +121,9 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 |------|-------------|--------------|-------|
 | lane-1-chain | restarted fresh post-interruption | A1 | prior WIP uncommitted in worktree |
 | lane-2-frontend | — | B | |
-| lane-3-game-ai | done → merged 1afb48e | card-db consolidation | D2 gated on A2 + Zac scope decision |
-| lane-4-backend | done → merged bc50650 | QA-F3 (room release) | D2-hook + F3 gated |
+| lane-3-game-ai | both items merged (1afb48e, 64f7e6d) | parked | D2 ← A2 + Zac decision |
+| lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
-| lane-6-assets-infra | — | F1 | |
+| lane-6-assets-infra | F1+F2+E3a merged (774f6b1) | parked | E3b ← A1; F3 ← A3+domain |
 | lane-7-docs | E1+E2 merged (ade31c7, b249810) | standby | wake on lane-2 B merge (frontend sections), A3 (README) |
 | playtest | — | Harness Phase 1 | |

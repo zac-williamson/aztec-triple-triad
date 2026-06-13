@@ -126,7 +126,9 @@ Mainline branch: `testnet`. Lanes branch from it and merge back via PR/review.
   (`cp -Rc` from the main checkout — instant, ~zero disk until modified; do NOT use
   symlinks: git reports tracked files behind a symlink as deleted). Lane 6 runs
   `git sparse-checkout disable` temporarily when doing F1 (needs real files), then
-  re-enables.
+  re-enables. (Historical note: F1 landed 2026-06-12 — card art is now 44MB of
+  webp, so NEW worktrees no longer need the sparse/CoW machinery; existing ones
+  reconcile automatically on rebase.)
 - `node_modules` is NOT shared. Run `npm install --legacy-peer-deps` only in worktrees
   that need JS tooling (~1GB each); lanes 1 and 7 don't need it.
 - Each worktree has an untracked `LANE.md` at its root identifying the lane.
