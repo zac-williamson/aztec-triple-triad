@@ -412,3 +412,11 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - playtest re-running 4.3.1 acceptance — expect green (settlement reaches 9/9, loser-token
   test.fail flips). If green: full A1+A2 upgrade validated E2E → merge the harness (capstone).
 - lane-2 parked (item I faucet-onboarding available, not gating). lane-7 all done.
+
+## 06-13 — Vercel token secured
+- Zac-provided token validated (HTTP 200, zac-williamson), moved to
+  ~/.aztec-triad-private/vercel-token.txt (600), plaintext ./vercel.txt deleted,
+  vercel*.txt gitignored. Usage: read into VERCEL_TOKEN env at deploy, never commit/print.
+- F3 Vercel half now UNBLOCKED. F3 remaining: (1) playtest 4.3.1 acceptance green (re-running),
+  (2) backend EC2 instance IP + running-confirmation from Zac (eu-west-2; key ~/.ssh/aztec_deploy).
+  Holding actual go-live publish until acceptance green AND backend reachable (no premature publish).
