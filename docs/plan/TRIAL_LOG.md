@@ -227,12 +227,14 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
     (useGameSettlement — relay/import the loser's token note like the cards;
     main.nr:703-706 mints to both). Fix flips the sentinel green.
 
-- 06-13 — **4.3.1 ACCEPTANCE GATE CAUGHT UPGRADE BREAKAGE** (playtest, in flight):
-  merged 4.3.1 into lane/8-playtest clean, switched local stack to 4.3.1,
-  re-running full-game campaign → something in the A1/A2 migration broke
-  end-to-end. playtest diagnosing; this is the gate doing its job BEFORE A3 hits
-  real testnet. Await its report (do not un-park contract lanes until we know
-  what broke).
+- 06-13 — **4.3.1 ACCEPTANCE: "breakage" ROOT-CAUSED to tooling, NOT the
+  migration** — the A1/A2 upgrade (contracts/proofs/SDK/deploy) is sound. The
+  failure was a Vite dev-server race: cold .vite cache post-bump → dev server
+  lazily optimized @aztec deps while serving → test's first page load raced it →
+  force-reload mid-onboarding → wallet deploy+mint restart loop. Fixed at root
+  (pre-run `vite optimize` before serving; deterministic, not a retry). Re-run in
+  flight; awaiting the pass verdict = A1/A2 acceptance. Contract lanes stay
+  parked (no migration fix needed).
 - **loser-token bug re-routed**: lane-2 found it is NOT frontend-only — ArenaToken
   has no import_note / randomness-revealing fn, so the loser's PXE can't import
   the reward note. Contract gap → **lane-1** (add a discoverable-note path to
