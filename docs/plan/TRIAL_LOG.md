@@ -268,6 +268,11 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   paths) + lane-1 (scripts mirror, same multiplier). playtest holds, re-runs
   acceptance after the fix. This is the gate doing its job a 2nd time.
 
+- 06-13 — **lane-2 fee-headroom fix MERGED** (`7875d08`; 293/293+tsc): canonical
+  src/aztec/feeSettings helper (live base × 3) across all frontend send paths;
+  root-causes the gate flake. lane-1 mirroring in scripts. playtest re-runs
+  acceptance once lane-1's scripts fee fix lands. lane-2 parked.
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -315,7 +320,7 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
 | lane-1-chain | A3 merged (3ae3938) — contracts live | scripts fee-headroom mirror | then ArenaToken loser-token |
-| lane-2-frontend | parked; testkit signed off (prod-inert) | wires loser-token import after lane-1 ArenaToken | I ← A3 |
+| lane-2-frontend | fee fix merged (7875d08) | parked | I (unblocked, not gating) + loser-token wiring ← lane-1 |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
