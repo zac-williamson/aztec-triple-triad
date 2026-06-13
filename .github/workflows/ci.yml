@@ -80,6 +80,12 @@ jobs:
         run: npx vitest run
         working-directory: packages/frontend
 
+      # scripts/ isn't an npm workspace, so it's otherwise uncovered.
+      # The one live bridge test self-skips without Sepolia creds (it.skipIf
+      # on TESTNET_L1_RPC_URL + TREASURY_L1_KEY) → CI-safe: 8 pass, 1 skip.
+      - name: Scripts tests
+        run: npm run test:scripts
+
   noir-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 30
