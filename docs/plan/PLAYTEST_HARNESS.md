@@ -175,3 +175,9 @@ suite for the A1/A2 upgrade before any migration commit is trusted.
     3 settled, 4 cancelled, 5 abandoned_claimed) — the public-layer validator
     asserts 3 after settlement and that on-chain players match the two browser
     accounts.
+11. **Cross-lane packaging defect (Lane 3):** `@axolotl-arena/game-logic`
+    compiles to ESM (`module: ESNext`) but its package.json declares no
+    `"type"`, so plain-Node CJS consumers cannot `require()` it (vite/tsx/vitest
+    consumers tolerate it). The harness works around it with dynamic `import()`
+    (`packages/playtest/src/expected.ts`); the 1-line fix `"type": "module"`
+    belongs to Lane 3.
