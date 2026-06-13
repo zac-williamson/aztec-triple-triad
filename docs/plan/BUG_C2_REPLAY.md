@@ -98,6 +98,14 @@ chained state inside each move proof.
   addresses cards by hand slot and the board by position), so these are regression guards that lock
   the engine in lockstep with the circuit, not a behavior change.
 
+**Contract settlement anchor (Lane 1, done in this fix).** `process_game` and
+`claim_abandoned_game` each recompute the canonical initial board-state hash to validate
+`move[0].start_state`; both built a 21-field preimage. Bumped both to 23 fields (empty-board masks
+= 0) and deduplicated into a crate-root `compute_initial_state_hash()` so they can't drift again.
+Regression test in `triple_triad_game/src/test/initial_state.nr`; `aztec compile` clean, TXE suite
+8/8. The board-state hash preimage has **three** consumers — circuit, frontend prover, and this
+anchor — and a preimage change must sweep all three.
+
 **Cross-lane (Lane 2 frontend) — REQUIRED before this fix works end to end.** The state-hash
 preimage and `game_move`'s private inputs changed, so the browser prover must match:
 1. `packages/frontend/src/aztec/proofWorker.ts` `computeBoardStateHash` — append `p1_placed`,

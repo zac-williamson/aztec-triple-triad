@@ -392,3 +392,20 @@ compiled JSON into `frontend/public/contracts/`, and answering proof-shape quest
 35. **ARCHITECTURE.md updated same commit** (`:146`, `:155`): state-hash preimage
     now 23 fields; replay-prevention prose rewritten from owner-blind scan to the
     slot mask.
+36. **Gate caught a THIRD consumer I missed: the contract settlement anchor.**
+    `process_game` AND `claim_abandoned_game` each recompute the canonical initial
+    board-state hash to validate `move[0].start_state`, both building a 21-field
+    pedersen preimage. With the circuit hash now 23 fields, move 1's start_state
+    (masks 0,0) would not match → settlement reverts "First move start_state does
+    not match initial state" (would have surfaced at playtest attempt 6, not in
+    my isolated circuit tests). Fixed BOTH sites (the gate flagged one; the
+    `claim_abandoned_game` copy would have broken the abandoned-game path
+    identically) and DEDUPLICATED them into a crate-root
+    `compute_initial_state_hash()` so they can never drift again. Empty-board
+    masks are 0, so the only change is the field count (21→23). Added pure
+    regression tests (`src/test/initial_state.nr`): anchor must equal the 23-field
+    empty-board hash and must NOT equal the pre-fix 21-field hash. `aztec compile`
+    clean; full `triple_triad_game` TXE suite 8/8 green. **Lesson: the board-state
+    hash preimage has THREE consumers — the circuit, the frontend prover (Lane 2),
+    and the contract settlement anchor — and a preimage change must sweep all
+    three.** (BUG_C2_REPLAY only named the first two.)
