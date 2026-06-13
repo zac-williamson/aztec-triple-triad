@@ -9,6 +9,5 @@ export default defineConfig({
     // E2E tests (e2e-*) require a running Aztec sandbox — run them explicitly:
     //   npx vitest run tests/e2e-game-flow.test.ts
     include: ['tests/proof-utils.test.ts', 'tests/state.test.ts', 'tests/game-session.test.ts', 'tests/real-proof.test.ts'],
-    exclude: ['tests/debugging/**'],
   },
 });

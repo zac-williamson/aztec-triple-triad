@@ -147,3 +147,31 @@ the manual FundingPrompt flow. **SponsoredFPC remains banned** — Fee Juice onl
 16. **CLAUDE.md §Versions + ground rules updated in this commit** (stale
     4.2 pins + "legacy SponsoredFPC usages remain" parenthetical) — a
     1-section cross-lane touch on Lane 7's file, flagged at the gate.
+
+### From the A2 gate follow-up (integration SponsoredFPC — caught at gate)
+
+17. **My first "zero SponsoredFPC anywhere" was wrong**: I scoped the grep
+    to `packages/integration/src`, but the usage was in
+    `packages/integration/tests/`. Two compounding blind spots hid it:
+    integration's tsconfig `exclude: ["tests"]` (so the e2e files are in NO
+    `tsc` gate) and the `@ts-nocheck` header on each. Lesson: a ban scan
+    must be a plain repo-wide `grep`, never gated on tsc/test runs.
+18. **The two live e2e tests** (`e2e-aztec-settlement`, `e2e-full-game-flow`)
+    migrated to Fee Juice: a shared `fundAndDeployAccount` helper in
+    `e2e-helpers.ts` reuses the existing `fundAccountOnDevnet` bridge
+    (no duplication) — bridge + claim at account deploy, then native
+    payment (`sendAs` drops the `fee` option). Mirrors the proven, merged
+    `deploy-contracts.ts` pattern exactly.
+19. **Neither e2e test runs in CI**: vitest's `include` is a 4-file
+    allowlist that omits `e2e-*`, and they need a live PXE + Anvil L1 for
+    the bridge. So, like the real-proof gate, I verified them by transform
+    (esbuild bundle resolves the local import graph) + `tsx` import-graph
+    resolution, NOT execution. A Lane 8 / sandbox run is the true gate.
+20. **`tests/debugging/*` deleted (9 files), not archived**: diagnostic
+    repros from the closed nullifier/IDB/cooldown investigation — never run
+    (vitest excluded the dir), unreferenced, and the April test report
+    (`docs/history/test_report_2026-04.md:174`) itself prescribed deleting
+    them. Their findings already live in `docs/history` as narrative
+    reports; the executable `.test.ts` scratch is not doc-archaeology, so
+    `git rm` (history preserves them) over a move. The now-dead
+    `exclude: ['tests/debugging/**']` was removed from the vitest config.

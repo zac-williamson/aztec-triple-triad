@@ -135,23 +135,20 @@ import { createAztecNodeClient } from '@aztec/aztec.js/node';
 import { Fr } from '@aztec/aztec.js/fields';
 import { AztecAddress } from '@aztec/aztec.js/addresses';
 import { Contract } from '@aztec/aztec.js/contracts';
-import { SponsoredFeePaymentMethod } from '@aztec/aztec.js/fee';
 import { EmbeddedWallet } from '@aztec/wallets/embedded';
 import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
-import { SponsoredFPCContractArtifact } from '@aztec/noir-contracts.js/SponsoredFPC';
-import { SPONSORED_FPC_SALT } from '@aztec/constants';
-import { getContractInstanceFromInstantiationParams } from '@aztec/stdlib/contract';
 
 
 import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
 
 // ============================================================================
-// E2E helpers (only for contract deployment VK hashes)
+// E2E helpers (contract deployment VK hashes + Fee Juice account funding)
 // ============================================================================
 
 import {
   loadContractArtifact,
   computeVkHash,
+  fundAndDeployAccount,
 } from './e2e-helpers.js';
 
 // ============================================================================
@@ -337,17 +334,6 @@ async function connectClient(wsUrl: string): Promise<TestWSClient> {
 }
 
 // ============================================================================
-// SponsoredFPC setup
-// ============================================================================
-
-async function getSponsoredFPCContract() {
-  const instance = await getContractInstanceFromInstantiationParams(SponsoredFPCContractArtifact, {
-    salt: new Fr(SPONSORED_FPC_SALT),
-  });
-  return instance;
-}
-
-// ============================================================================
 // Test
 // ============================================================================
 
@@ -359,7 +345,6 @@ describe('E2E Full Game Flow -- Frontend Proofs + WebSocket + Aztec Settlement',
 
   let wallet: any;
   let node: any;
-  let fee: any;
   let deployerAddr: any;
   let p1Addr: any;
   let p2Addr: any;
@@ -382,9 +367,10 @@ describe('E2E Full Game Flow -- Frontend Proofs + WebSocket + Aztec Settlement',
 
   let wsGameId: string;
 
+  // No `fee` — each account pays natively from the Fee Juice it claimed at
+  // deploy (SponsoredFPC is BANNED).
   const sendAs = (addr: any) => ({
     from: addr,
-    fee: { paymentMethod: fee },
     wait: { timeout: SEND_TIMEOUT },
   });
 
@@ -411,48 +397,21 @@ describe('E2E Full Game Flow -- Frontend Proofs + WebSocket + Aztec Settlement',
     wallet = await EmbeddedWallet.create(node, { ephemeral: true });
     await new Promise(r => setTimeout(r, 5000));
 
-    console.log('Registering SponsoredFPC contract...');
-    const sponsoredFPCContract = await getSponsoredFPCContract();
-    await wallet.registerContract(sponsoredFPCContract, SponsoredFPCContractArtifact);
-    fee = new SponsoredFeePaymentMethod(sponsoredFPCContract.address);
-
-    async function deployAccount(account: any, label: string) {
-      const deployMethod = await account.getDeployMethod();
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          await deployMethod.send({
-            from: AztecAddress.ZERO,
-            fee: { paymentMethod: fee },
-            skipClassPublication: true,
-            skipInstancePublication: true,
-            wait: { timeout: SEND_TIMEOUT },
-          });
-          return;
-        } catch (err: any) {
-          const msg = err?.message || '';
-          if (msg.includes('expiration timestamp') && attempt < 2) {
-            console.log(`  ${label} deploy retry in 5s...`);
-            await new Promise((r) => setTimeout(r, 5000));
-            continue;
-          }
-          throw err;
-        }
-      }
-    }
-
+    // Fund each account with Fee Juice + deploy (Fee Juice only, SponsoredFPC
+    // BANNED). Each then pays its own txs natively.
     console.log('Creating accounts...');
     const deployerAccount = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
-    await deployAccount(deployerAccount, 'Deployer');
+    await fundAndDeployAccount(node, deployerAccount, 'Deployer', SEND_TIMEOUT);
     deployerAddr = deployerAccount.address;
     await wallet.registerSender(deployerAddr, 'deployer');
 
     const player1Account = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
-    await deployAccount(player1Account, 'Player1');
+    await fundAndDeployAccount(node, player1Account, 'Player1', SEND_TIMEOUT);
     p1Addr = player1Account.address;
     await wallet.registerSender(p1Addr, 'player1');
 
     const player2Account = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
-    await deployAccount(player2Account, 'Player2');
+    await fundAndDeployAccount(node, player2Account, 'Player2', SEND_TIMEOUT);
     p2Addr = player2Account.address;
     await wallet.registerSender(p2Addr, 'player2');
 

@@ -19,9 +19,63 @@ import {
   CARD_DATABASE,
 } from '@axolotl-arena/game-logic';
 import type { GameState, Card, Player } from '@axolotl-arena/game-logic';
+import { fundAccountOnDevnet } from '../../frontend/src/aztec/fundDevnet';
 
 // Re-export game-logic types for convenience
 export type { GameState, Card, Player };
+
+// ============================================================================
+// Fee Juice account funding + deploy
+// ============================================================================
+
+/**
+ * Fund an account with Fee Juice (L1→L2 bridge) and deploy it, claiming the
+ * bridged juice in the same deploy tx. The account then pays every later tx
+ * natively from its balance — callers omit the `fee` option entirely.
+ *
+ * Replaces the SponsoredFPC fee path, which is BANNED (MASTER_PLAN ground
+ * rules — Fee Juice only). Reuses the same `fundAccountOnDevnet` bridge the
+ * app onboarding and scripts/deploy-contracts.ts use. Requires the sandbox's
+ * empty-block production (SEQ_MIN_TX_PER_BLOCK=0, see start-sandbox.sh) so
+ * the L1→L2 claim message is included without a pending L2 tx.
+ *
+ * Retries the deploy on the PXE "expiration timestamp" sync race (same as
+ * the original SponsoredFPC deployAccount helper).
+ */
+export async function fundAndDeployAccount(
+  node: any,
+  account: any,
+  label: string,
+  sendTimeout: number,
+): Promise<void> {
+  const { FeeJuicePaymentMethodWithClaim } = await import('@aztec/aztec.js/fee');
+  const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+
+  const claim = await fundAccountOnDevnet(node, account.address.toString(), (m) => console.log(`  ${label}: ${m}`));
+  const claimFee = new FeeJuicePaymentMethodWithClaim(account.address, claim as never);
+
+  const deployMethod = await account.getDeployMethod();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await deployMethod.send({
+        from: AztecAddress.ZERO,
+        fee: { paymentMethod: claimFee },
+        skipClassPublication: true,
+        skipInstancePublication: true,
+        wait: { timeout: sendTimeout },
+      });
+      return;
+    } catch (err: any) {
+      const msg = err?.message || '';
+      if (msg.includes('expiration timestamp') && attempt < 2) {
+        console.log(`  ${label} deploy retry in 5s (PXE sync race)...`);
+        await new Promise((r) => setTimeout(r, 5000));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
 
 // ============================================================================
 // Types
