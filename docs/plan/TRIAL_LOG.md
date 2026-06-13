@@ -711,3 +711,19 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - Follow-ups: add the bridge-compile step to update-backend.sh (DEPLOY.md §2g flags it); public/
   artifact hygiene (lane-6); FAUCET_L1_RPC_URL is a public Sepolia node (swappable). NOTE: every
   testnet push auto-redeploys the frontend (productionBranch=testnet).
+
+## 06-13 — CONTRACT UPDATE mined, but rollup enforces 24h delay (not 600s) — testnet game broken ~24h
+- lane-1 update MINED: round-2 class published (block 114432) + update_to (block 114433), address
+  0x2d86…75f4 PRESERVED. lane-1 took the efficiency feedback (trimmed verify to single-shot, no
+  polling). Tooling merged 1f4da52 (update-game-class-testnet.ts + verify-game-update-testnet.ts).
+- CRITICAL: the rollup enforces an 86400s (24h) MINIMUM update delay; deploy-testnet.ts's
+  set_update_delay(600) was clamped to 24h. Class flips 2026-06-14T22:59:48Z (~24h); NOT flipped
+  yet (current still old 0x2364…). ⇒ On the LIVE testnet site a full game CANNOT settle until the
+  flip — frontend now emits round-2 (30-field original-owner) proofs but the deployed contract is
+  still pre-C2 → settlement mismatch. Self-heals at T. LOCAL sandbox unaffected (fresh round-2
+  deploy) → the multi-game playtest (lane-8) still validates the fix.
+- DECISION SURFACED TO ZAC (churn vs wait): (A) wait ~24h — address-preserving, zero work, game
+  works at T; (B) fresh-deploy the round-2 game contract NOW — new game address → update
+  VITE_GAME_CONTRACT_ADDRESS + Vercel redeploy; works immediately, one-time address change.
+  Recommend A unless the demo must work in the next 24h.
+- Minor follow-up: add a Vercel ignore-build-step so docs-only testnet pushes stop auto-redeploying.
