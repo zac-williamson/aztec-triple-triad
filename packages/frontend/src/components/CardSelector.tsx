@@ -113,7 +113,7 @@ export function CardSelector({ ownedCardIds, onConfirm, onBack }: CardSelectorPr
               >
                 <img
                   className="card-selector__card-img"
-                  src={`/cards/final/card-${card.id}.png`}
+                  src={`/cards/final/card-${card.id}.webp`}
                   alt={card.name}
                   draggable={false}
                 />
@@ -158,7 +158,7 @@ export function CardSelector({ ownedCardIds, onConfirm, onBack }: CardSelectorPr
                   >
                     <img
                       className="card-selector__card-img"
-                      src={`/cards/final/card-${card.id}.png`}
+                      src={`/cards/final/card-${card.id}.webp`}
                       alt={card.name}
                       draggable={false}
                     />

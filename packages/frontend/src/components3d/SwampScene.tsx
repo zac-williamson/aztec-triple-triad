@@ -79,8 +79,6 @@ function SceneContent(props: SwampSceneProps) {
     tutorialHighlightCells, tutorialPulseHandIndex, xochitlRevealCount,
   } = props;
 
-  const myCardImg = `/cards/card-${playerNumber}.png`;
-  const oppCardImg = `/cards/card-${playerNumber === 1 ? 2 : 1}.png`;
   const myName = `Player ${playerNumber}`;
   const oppName = `Player ${playerNumber === 1 ? 2 : 1}`;
 

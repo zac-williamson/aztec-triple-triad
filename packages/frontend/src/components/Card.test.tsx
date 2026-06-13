@@ -64,6 +64,12 @@ describe('Card component', () => {
     expect(container.querySelector('.card__rank--right')?.textContent).toBe('A');
   });
 
+  it('should load card art from the webp path', () => {
+    const { container } = render(<Card card={testCard} owner="player1" />);
+    expect(container.querySelector('.card__art-image')?.getAttribute('src'))
+      .toBe('/cards/final/card-1.webp');
+  });
+
   it('should apply size classes', () => {
     const { container: small } = render(<Card card={testCard} size="small" />);
     expect(small.querySelector('.card--small')).toBeTruthy();

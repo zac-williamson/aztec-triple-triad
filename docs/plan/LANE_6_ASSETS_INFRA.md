@@ -58,6 +58,60 @@ sane post-F1.
 lanes merge, coordinated with Zac. Alternative if force-push is unacceptable:
 fresh-start repo or keep originals in a GitHub Release.
 
+## ASSUMPTIONS (discovered during execution)
+
+- **F1 touches seven frontend files, not two.** The brief names `Card.tsx` +
+  `Card3D.tsx`, but `/cards/*.png` references also live in `CardSelector.tsx`,
+  `PackOpening.tsx`, `tutorial/tutorialCards.ts`, `assets/modelManifest.ts`
+  (the `cardBack` texture path). Switching only the named two would 404 the
+  rest once PNGs are deleted, so the same mechanical switch was applied to all
+  — read as the intent of the cross-lane exception in MASTER_PLAN. Lane 2's
+  rebase surface grows by file count, not by kind.
+- **`card_back.png` was outside the compression script's coverage** (lives at
+  `cards/` root, script handled only `final/` + `board/`). Added a third
+  variant to the script (400×567 q80, same aspect) rather than a one-off
+  conversion, so the pipeline stays reproducible.
+- **`SwampScene.tsx` lines 82–83 were dead code**: `myCardImg`/`oppCardImg`
+  referenced raw root-level `/cards/card-1.png`/`card-2.png` but were never
+  read. Removed the two lines instead of switching them. (`myName`/`oppName`
+  right below are also dead but reference no assets — left for Lane 2.)
+- **Raw root `cards/card-N.png` originals (256 files, 453MB) deleted too.**
+  Only referenced by the dead SwampScene lines; the brief's 40–80MB target is
+  unreachable keeping them. Full-res originals survive in git history until
+  F1b decides their fate (GitHub Release option noted there).
+- **Kept**: the 50 `card-*.prompt.txt` generation-provenance files (tiny, no
+  code refs) and `/ui-elements/card-pack.png` (UI element, not card art).
+- **`generate-card-art.ts` still emits PNG by design** — regeneration flow is
+  generate PNG → run `compress-card-assets.ts` → commit only the webp.
+  `.gitignore` now blocks accidental PNG commits under `public/cards/`.
+- **F2: `circuits/target/aggregate_game.json` is also tracked and equally dead**
+  (the `aggregate_game` crate is gone from `circuits/Nargo.toml`), but
+  `circuits/` is Lane 1's tree — flagged for them, not touched here. Both
+  copy-circuits scripts no longer reference it, so it can't repollute
+  `public/circuits/`.
+- **F2: no cross-named codegen JSONs are tracked.** The cross-named files
+  (`triple_triad_game-ArenaToken.json` etc.) are untracked symlinks that
+  `scripts/test-all.sh` creates for TXE runs. The real risk was the frontend
+  `copy-circuits`/`copy-contracts` `*.json` wildcards, which would sweep
+  symlinks and strays into `public/` — made both explicit (matching the root
+  scripts), which required one-line edits to root + frontend `package.json`
+  (shared files, minimal diff).
+
+- **E3a: one job, not three.** Wall-clock is install-dominated (suites run in
+  seconds: 71 + 179 + 255 tests ≈ 10s total); splitting jobs triples the
+  install/cache cost for no signal gain. CI checkout uses the same sparse
+  pattern as the dev worktrees (unit tests never read card art). Node 22 =
+  the documented floor (no `engines` field exists; CLAUDE.md says >= 22).
+  `node_modules` cached directly, keyed on `package-lock.json`; install
+  skipped on hit. `npm ci --legacy-peer-deps --dry-run` verified in-sync.
+- **E3a: all three suites verified green locally before authoring CI**
+  (game-logic 71, backend 179 with a real Redis, frontend 255 + clean
+  `tsc --noEmit` after building game-logic — workspace resolves via `dist/`,
+  hence the build step ordering). Item G's "3 test assertion fixes" do not
+  make today's backend suite red. `packages/integration` (proof generation)
+  is deliberately out of phase 1 per the brief; frontend's
+  proofIntegration.test.ts already gives circuit-execution signal.
+
 ## Cross-lane contracts
 - **Provide:** .webp switch commit (→2 rebases), CI signal (→all), Vercel deploy
   (→5 smoke).

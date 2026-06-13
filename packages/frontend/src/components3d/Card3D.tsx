@@ -19,9 +19,9 @@ function useCardTexture(cardId: number, faceDown: boolean, isBoard?: boolean, im
   if (faceDown) {
     texPath = TEXTURES.cardBack;
   } else if (isBoard) {
-    texPath = `/cards/board/card-${cardId}-board.png`;
+    texPath = `/cards/board/card-${cardId}-board.webp`;
   } else {
-    texPath = imageUrl ?? `/cards/final/card-${cardId}.png`;
+    texPath = imageUrl ?? `/cards/final/card-${cardId}.webp`;
   }
 
   const [texture, setTexture] = useState<any>(textureCache.get(texPath) ?? null);
