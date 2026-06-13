@@ -143,19 +143,29 @@ Every move produces one `game_move` proof
 [card_commit_1, card_commit_2, start_state_hash, end_state_hash, game_ended, winner_id]
 ```
 
-State hashes are `pedersen([board[18], score1, score2, current_turn])`
-(`hash_board_state`, `:27-36`); the board is 9 cells × `(card_id, owner)`
-(`:20,77`). The circuit constrains, in order:
+State hashes are
+`pedersen([board[18], score1, score2, current_turn, p1_placed, p2_placed])`
+(`hash_board_state`, `:32-48`, 23 fields); the board is 9 cells ×
+`(card_id, owner)` (`:20,77`). `p1_placed`/`p2_placed` are per-player 5-bit
+masks of which committed hand slots each player has already placed — chained
+state that is part of the hash but not a separate public input. The circuit
+constrains, in order:
 
 1. **Turn legality** — the mover matches `current_turn_before` (`:86-91`).
 2. **Hand binding** — recompute the mover's commitment from private
    `player_card_ids + blinding_factor`; it must equal `card_commit_1` or `_2`
    per the mover's seat (`:99-113`), and the placed card must be one of the 5
    committed ids (`:115-122`). You cannot play a card you didn't commit.
-3. **Replay prevention** — the placed card must not already be on the board
-   (`:124-129`): card ids are unique NFTs, and without this a player could
-   replay one committed card every turn (added during A1; the circuit now
-   matches the TS engine's each-card-once rule).
+3. **Replay prevention** — each player may place each of their 5 committed hand
+   cards at most once. The mover's placed card maps to a hand slot (ids in a
+   hand are distinct, enforced by `prove_hand`), and that slot's bit in the
+   mover's `*_placed` mask must be unset; the mask is then updated in the end
+   state (`:141-163`). This replaced an owner-blind board scan whose premise —
+   "card ids are globally unique NFTs" — was false: `STARTER_CARD_IDS=[1..5]`
+   are shared across players, so the scan rejected P2's legitimate plays of ids
+   already on the board (BUG_C2_REPLAY). The per-player slot mask is sound under
+   shared decks and immune to capture (masks track placement, not board
+   ownership), matching the TS engine's each-card-once rule.
 4. **Placement** — target cell empty before (`:131-134`), card+owner written
    after (`:136-141`).
 5. **Capture rules** — full Triple Triad chain capture, in-circuit: rank lookup

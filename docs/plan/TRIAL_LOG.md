@@ -441,3 +441,98 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   certbot auto-skips this run. Zac to update the A record → 13.42.161.225; then I finish TLS.
 - Frontend (Vercel) go-live still held until playtest acceptance is green (lane-2 on the 3rd
   settlement bug, P2/joiner board race).
+
+## 06-13 — backend LIVE on HTTP (two deploy bugs root-caused) + lane-2 merged + playtest attempt 5
+- provision-and-go.sh finished but surfaced TWO structural deploy bugs (not flakes), both fixed
+  in 122568d and verified on the box:
+  1. triad-backend.service hardcoded WorkingDirectory=/home/ubuntu/aztec-triple-triad/... but
+     both provision scripts clone into $HOME/axolotl-arena-server → systemd crash-loop
+     (status=200/CHDIR, restart #23). Fix: templated __REPO_DIR__, sed-substituted in both
+     provision-and-go.sh and provision-lightsail.sh (same pattern as nginx's ws.YOURDOMAIN.com).
+  2. nginx-triad.conf pre-baked a `listen 443 ssl` block referencing a cert that doesn't exist
+     pre-certbot → nginx -t failed, nginx never reloaded (chicken-and-egg). Fix: rewrote
+     HTTP-only; certbot --nginx --redirect injects the TLS block itself (step 6).
+  Verified on 13.42.161.225: service active; /health OK direct :5174 AND via nginx :80; port 80
+  reachable from internet (certbot HTTP-01 will work). Port 443 closed (no cert yet, expected).
+- STILL pending Zac: ws.aztec-arena.com A record → 13.42.161.225 (currently 16.60.85.104, old
+  box). Once it propagates I run certbot → wss://ws.aztec-arena.com. Backend already live on HTTP.
+- lane-2 bug-3 fix MERGED to testnet (d3b350c) through the 6-criteria gate: root-cause click-time
+  deep clone, reduces duplication (one preMoveState both paths), regression test that fails
+  without it, documented invariant verified. PASS on all six.
+- Playtest attempt 5 triggered (merge testnet → rebuild → re-run 4.3.1 A1+A2 acceptance gate).
+  All other lanes done/parked; this is the last gate before F3 frontend go-live.
+
+## 06-13 — BACKEND LIVE on wss:// (DNS + TLS done autonomously) + lane-bottleneck validation
+- DNS for aztec-arena.com is Vercel-managed (ns1/ns2.vercel-dns.com), so I updated the ws A
+  record MYSELF via the Vercel token (no longer a Zac manual step): removed the dead-box record,
+  added ws → 13.42.161.225 (rec_fc810ba1afbdc977c9e74ada). Propagated instantly (authoritative +
+  8.8.8.8 + local all return 13.42.161.225). CAA already allows letsencrypt.org.
+- certbot issued + installed the cert (expires 2026-09-11, auto-renew timer set); nginx now serves
+  443 + 80→443 redirect. Verified externally: https://ws.aztec-arena.com/health = {"status":"ok"}.
+- ⇒ BACKEND HALF OF F3 COMPLETE. Frontend go-live now gated ONLY on playtest attempt-5 acceptance.
+- Cron heartbeat recreated fresh (a13b5367) after Zac cancelled the prior 6595c0f7.
+- LANE BOTTLENECK VALIDATION (Zac asked): lanes are NOT bottlenecked on each other or a hidden
+  blocker — they've fanned-in. Critical path A1→A2→A3 all done; F3 backend done. Remaining work =
+  3 buckets: (1) playtest attempt-5 gate [the ONE active task, everything F3-frontend waits on];
+  (2) launch-OPTIONAL D2 house bot [needs Zac go/no-go — lane-3/lane-4's "D2" notes are them
+  correctly NOT starting a 5–10d optional feature; D1 already solved the empty-room problem];
+  (3) Zac-reserved [F3 publish, F1b force-push]. Item I (faucet onboarding, non-gating) is the
+  only net-new work available to dispatch while we wait.
+
+## 06-13 — playtest attempt 5: REAL game-breaker found (C2 owner-blind replay) + misdiagnosis correction
+- Attempt 5 root-caused the persistent P2 "Card already placed" failure to circuits/game_move/
+  src/main.nr:124-129: an owner-blind replay check `assert(board_before[i*2] != card_id)` whose
+  own comment assumes "card ids are unique NFTs" — FALSE: STARTER_CARD_IDS=[1,2,3,4,5] mints the
+  same ids to both players. P1 places 1–5, then P2's 1–4 are each already on the board → all 4 of
+  P2's move proofs rejected. applyMove (TS) only checks cell-occupancy so it passed; divergence
+  only ever surfaced in-circuit. Added since 4.2 (b72cf42/47912b8), absent at the 4.2 merge-base,
+  which is why phase-1 passed on 4.2. Verified the code directly.
+- HONEST CORRECTION: attempts 3/4 misattributed this to a board-capture race and routed fixes to
+  lane-2. That was wrong — the symptom was C2 id-collision all along. Lane-2's clone fixes (14df546,
+  0a06e2d) cannot affect it and stand on their own merits (a correct pre-move board legitimately
+  holds the opponent's cards); NOT reverting them. The playtest agent flagged its own error.
+- ⇒ This is game-breaking: no two fresh players can finish a game on 4.3.1. F3 frontend go-live is
+  now gated on the REAL fix, not a formality.
+- Routed to lane-1 (circuits+contracts) via docs/plan/BUG_C2_REPLAY.md with 3 fix options + my
+  soundness analysis: (a) current-owner-aware is a TRAP (false-rejects a hand card whose id was
+  captured back — unsound under capture); (a′) original-owner-aware is the surgical sound fix (adds
+  originalOwner to the circuit board encoding + TS mirror + board hash); (b) globally-unique
+  token_ids (correct NFT model, larger blast radius); (c) move the check to aggregation if card_id
+  is exposable there. Lane-1 to choose on soundness + blast radius, ship failing-first test
+  (circuit + TS engine together), then STATUS → I gate-review + merge → playtest attempt 6.
+- Fast-path monitors: b42xmvsqt (lane-1 fix), bwpefs259 (playtest attempt 6). Cron a13b5367 backstop.
+
+## 06-13 — lane-1 C2 fix gate-REVIEWED: sound design, REJECTED as incomplete (contract gap caught)
+- lane-1 shipped ca698e2: per-player placed-hand-slot bitmask (a 5th option — in-proof chained
+  state). Directly enforces "each player places each committed hand card at most once",
+  capture-immune + duplicate-deck-immune; public-input count stays 6 (masks fold into the 21→23
+  state-hash preimage, NOT new public inputs) so process_game/recursive verification is untouched.
+  29 circuit + 40 TS-engine tests; the C2 cases verified failing-first incl. the exact (a)
+  capture-collision trap. Verified the soundness dependency myself: prove_hand asserts distinct hand
+  ids (slot-find is unambiguous); dummy_move is a zero-constraint passthrough (6 pub inputs) — no gap.
+- GATE CAUGHT a missed consumer: triple_triad_game/src/main.nr:377 builds canonical_initial from
+  initial_inputs:[Field;21] and asserts move[0].start_state == it. With hash_board_state now 23-field,
+  move 1's start_state (masks 0,0) ≠ the 21-field canonical_initial → settlement would revert "First
+  move start_state does not match initial state" at attempt 6. lane-1's game_move tests passed in
+  isolation and missed it (no real-proof process_game test). Routed back: bump to [Field;23], aztec
+  compile, add a process_game initial-state test. NOT merged until fixed. (Exactly the
+  leaky/incomplete-change criterion the gate exists for.)
+- Cross-lane: lane-2 frontend prover follow-up still pending (LANE_2_FRONTEND.md); dispatch after
+  lane-1 re-passes the gate, then playtest attempt 6.
+
+## 06-13 — lane-1 C2 contract fix re-reviewed + MERGED (7b35e3b); lane-2 frontend follow-up dispatched
+- lane-1 fixed the contract gap excellently: found a SECOND anchor I'd missed (claim_abandoned_game
+  had the same inline 21-field hash as process_game) and, instead of patching both, extracted a
+  shared compute_initial_state_hash() (23-field) both call — removing the duplication that let the
+  bug hide. Added a contract regression test (initial_state.nr: anchor == 23-field empty-board hash
+  AND != the pre-fix 21-field hash). aztec compile ran (artifact regenerated).
+- Gate: PASS all six (criterion 5 exemplary — fix removed the duplication). MERGED to testnet 7b35e3b.
+- Dispatched lane-2 the frontend-prover follow-up (LANE_2_FRONTEND.md 5 steps: placed-slot bitmask
+  through computeBoardStateHash 21→23, generateGameMoveProof, the caller's per-game mask chaining,
+  useGameSettlement initial hash 0,0, mirror tests). lane-2 working now.
+- GO-LIVE CONSEQUENCE: the C2 fix changed triple_triad_game, so the DEPLOYED testnet contract
+  (0x2d86…) is now stale (21-field anchors) and would reject move-1 start_state. Before F3 go-live it
+  needs an address-preserving update to the new class (contracts are updatable — admin update_to).
+  NOT needed for the playtest (it deploys fresh contracts to a LOCAL sandbox). Noted in GO_LIVE.md.
+- Sequence: lane-2 done → gate-review + merge → playtest attempt 6 (local sandbox) → if green, F3
+  go-live incl. the testnet contract update. Monitor b6n308n3b (broad) + cron a13b5367.

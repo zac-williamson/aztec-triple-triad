@@ -323,3 +323,66 @@ directly from `packages/frontend/src/aztec/feeSettings.ts` (deploy-contracts.ts
 already imports `fundAccountOnDevnet` from frontend src), or replicate
 `base × 3`. If the canonical multiplier ever changes, change it in
 `feeSettings.ts` and re-announce to Lane 1.
+
+### C2 replay fix — board-state hash now carries placed-slot masks → FROM LANE 1 (REQUIRED)
+
+27. **The `game_move` circuit changed (BUG_C2_REPLAY P0 fix). The browser prover
+    must match or EVERY move proof will fail with a state-hash mismatch.** Root
+    cause recap: `STARTER_CARD_IDS=[1..5]` are shared across players, so the old
+    owner-blind board scan rejected P2's legitimate plays of ids already on the
+    board. Lane 1 replaced it with a **per-player placed-hand-slot bitmask**
+    (`p1_placed`, `p2_placed`) carried as chained state in each move proof. The
+    public-input count is unchanged (still 6); the masks fold into the existing
+    start/end state hashes and are two new *private* inputs to `game_move`.
+
+    Required frontend changes (all in `src/aztec/proofWorker.ts` unless noted):
+    - **Re-sync the circuit bytecode** — Lane 1 recompiled `game_move`
+      (`circuits/target/game_move.json`, committed). Run `npm run copy-circuits`
+      to refresh `packages/frontend/public/circuits/game_move.json` (the old
+      committed copy is stale and expects the old 17 inputs). **This must land in
+      the SAME commit/merge as the proofWorker changes below** — new bytecode
+      with old prover code (or vice versa) hard-errors on input/hash mismatch.
+    - **`computeBoardStateHash`** — append two params `p1Placed, p2Placed` and
+      add them to the pedersen preimage **after `currentTurn`**: the array is now
+      `[board[18], scores[0], scores[1], currentTurn, p1Placed, p2Placed]`
+      (21 → 23 fields). Mirrors `hash_board_state` (`circuits/game_move/src/main.nr:32-48`).
+    - **`generateGameMoveProof`** — accept `p1PlacedBefore, p2PlacedBefore`;
+      compute after-masks by setting the *mover's* placed-slot bit
+      (`afterMask = beforeMask | (1 << slot)`, where `slot` = index of `cardId`
+      in the mover's **committed** `player_card_ids`, NOT the shrinking live
+      hand); pass before-masks to the `boardBefore` hash and after-masks to the
+      `boardAfter` hash; add `p1_placed_before`/`p2_placed_before` to the witness
+      `inputs` map (the circuit's two new private inputs).
+    - **Caller** (`hooks/useGamePlay.ts` / `useProofGeneration.ts`) — track the
+      running `(p1Placed, p2Placed)` pair across the game and **chain** it: move
+      *i*'s after-masks are move *i+1*'s before-masks. First move's before-masks
+      are `(0, 0)`. Both players' masks live in every move's hash; only the
+      mover's changes per move.
+    - **`hooks/useGameSettlement.ts:781`** — the initial empty-board hash must
+      pass `0, 0` for the masks so it equals the first move's `boardBefore` hash.
+    - **Tests** — update the hash mirrors in `src/aztec/__tests__/proofWorker.test.ts`
+      and `src/__tests__/proofIntegration.test.ts` (any hardcoded 21-field hash
+      or `computeBoardStateHash` call). Add a duplicate-deck end-to-end mirror of
+      Lane 1's `test_duplicate_deck_*` if integration coverage allows.
+
+    Full rationale + the circuit-side test evidence are in
+    `docs/plan/BUG_C2_REPLAY.md` (Resolution section). The slot is well-defined
+    because `prove_hand` enforces distinct ids within a hand.
+
+28. **DONE (2026-06-13).** All 5 steps landed in one commit with the refreshed
+    `public/circuits/game_move.json`. `proofIntegration.test.ts` executes the
+    REAL circuit with the 23-field hash + mask inputs (incl. a new
+    same-slot-replay reject mirroring Lane 1's `test_card_replay_rejected`) —
+    the authoritative mirror, so no separate `proofWorker.test.ts` hash mirror
+    was needed (it only tests pure field utils). **Discovered requirement
+    beyond the 5 steps — cross-player mask relay:** the opponent's
+    committed-hand slot is underivable locally (the live hand is spliced, the
+    commit order is private), so the running pair can't be tracked from board
+    observation alone. The mover's after-mask pair is carried in `MoveProofData`
+    (`p1PlacedAfter`/`p2PlacedAfter`, optional) and rides opaquely through the
+    backend's `MOVE_PROVEN` relay; the receiver OR's it into the running pair
+    (OR is monotonic, so order-robust). Own moves advance our own slot bit
+    (committed-hand index, matching proofWorker). The deferred path captures
+    before-masks at queue time like the board; restore reconstructs the pair by
+    OR-ing all saved proofs' after-masks. No backend/protocol-shape change —
+    `MoveProofData` is forwarded as an opaque object.

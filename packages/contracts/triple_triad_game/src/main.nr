@@ -1,5 +1,21 @@
 use aztec::macros::aztec;
 
+/// Canonical hash of the initial (empty-board) game state. Must match
+/// game_move's `hash_board_state` for an empty board byte-for-byte, because
+/// settlement anchors move[0]'s start_state to it. Preimage (23 fields): 18
+/// board cells (all 0), scores [5, 5], current_turn 1, then the two per-player
+/// placed-slot masks (p1_placed, p2_placed) -- both 0 since nobody has placed
+/// at the start. Shared by process_game and claim_abandoned_game so the two
+/// anchors can never drift apart (the C2-fix field-count bump missed one before
+/// this was deduplicated).
+pub fn compute_initial_state_hash() -> Field {
+    let mut initial_inputs: [Field; 23] = [0; 23];
+    initial_inputs[18] = 5;
+    initial_inputs[19] = 5;
+    initial_inputs[20] = 1;
+    std::hash::pedersen_hash(initial_inputs)
+}
+
 /// Triple Triad Game contract.
 /// Manages on-chain game lifecycle: creation, joining, proof verification, and settlement.
 ///
@@ -374,11 +390,7 @@ pub contract TripleTriadGame {
         }
 
         // ===== 6. Validate initial state =====
-        let mut initial_inputs: [Field; 21] = [0; 21];
-        initial_inputs[18] = 5;
-        initial_inputs[19] = 5;
-        initial_inputs[20] = 1;
-        let canonical_initial = std::hash::pedersen_hash(initial_inputs);
+        let canonical_initial = crate::compute_initial_state_hash();
         assert(
             move_inputs[0][2] == canonical_initial,
             "First move start_state does not match initial state",
@@ -649,13 +661,7 @@ pub contract TripleTriadGame {
         }
 
         // ===== 6. Validate initial state (canonical empty board) =====
-        // Inline compute_initial_state_hash:
-        // pedersen_hash([board[18]=0s, scores=[5,5], current_turn=1])
-        let mut initial_inputs: [Field; 21] = [0; 21];
-        initial_inputs[18] = 5;
-        initial_inputs[19] = 5;
-        initial_inputs[20] = 1;
-        let canonical_initial = std::hash::pedersen_hash(initial_inputs);
+        let canonical_initial = crate::compute_initial_state_hash();
         assert(
             move_inputs[0][2] == canonical_initial,
             "First move start_state does not match initial state",

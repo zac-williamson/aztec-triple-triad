@@ -781,9 +781,11 @@ function sortProofChain<P extends { startStateHash: string; endStateHash: string
   return sorted;
 }
 
-/** Hash of the canonical initial game state: empty board, full hands, player 1 to move. */
+/** Hash of the canonical initial game state: empty board, full hands, player 1
+ *  to move, both placed-slot masks 0 — must equal the first move's boardBefore
+ *  hash (C2 replay fix). */
 async function computeCanonicalInitialHash(): Promise<string> {
   const { computeBoardStateHash } = await import('../aztec/proofWorker');
   const emptyBoard = Array(18).fill('0');
-  return computeBoardStateHash(emptyBoard, [CARDS_PER_HAND, CARDS_PER_HAND], 1);
+  return computeBoardStateHash(emptyBoard, [CARDS_PER_HAND, CARDS_PER_HAND], 1, 0, 0);
 }
