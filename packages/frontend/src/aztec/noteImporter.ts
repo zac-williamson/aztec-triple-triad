@@ -157,3 +157,93 @@ export async function importNotesFromTx(
   console.log(`[noteImporter] ${label}: Imported ${notes.length} notes`);
   return notes.map(n => n.tokenId);
 }
+
+/** Cached ArenaToken artifact + contract instance (keyed by wallet). */
+let _cachedTokenArtifact: any = null;
+let _tokenContractCache: { wallet: unknown; contract: any } | null = null;
+
+async function getTokenArtifact(): Promise<any> {
+  if (_cachedTokenArtifact) return _cachedTokenArtifact;
+  const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
+  const resp = await fetch('/contracts/arena_token-ArenaToken.json');
+  if (!resp.ok) throw new Error('Failed to load ArenaToken contract artifact');
+  _cachedTokenArtifact = loadContractArtifact(await resp.json());
+  return _cachedTokenArtifact;
+}
+
+/**
+ * Import a settlement reward balance note (ArenaToken) into the recipient's PXE.
+ *
+ * The loser's +20 reward is minted by the WINNER's process_game tx via
+ * mint_reward(loser, 20, loser_per_game_randomness) — a create_and_push note
+ * the loser's passive block scan never discovers (see the loser-token finding).
+ * Its randomness is derived deterministically from the recipient's OWN per-game
+ * randomness, so the loser computes it via compute_reward_randomness and injects
+ * the note with import_note — mirroring the NFT card flow.
+ *
+ * @param playerRandomness  the recipient's per-game randomness (6 Fr hex strings)
+ * @returns true if the note was imported, false if TxEffect was unavailable
+ */
+export async function importTokenRewardNote(
+  wallet: unknown,
+  nodeClient: unknown,
+  accountAddress: string,
+  txHashStr: string,
+  amount: number,
+  playerRandomness: string[],
+  txEffectData?: TxEffectData,
+): Promise<boolean> {
+  if (!AZTEC_CONFIG.tokenContractAddress) {
+    console.warn('[noteImporter] token reward: no token contract configured');
+    return false;
+  }
+  const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+  const { Fr } = await import('@aztec/aztec.js/fields');
+  const myAddr = AztecAddress.fromString(accountAddress);
+
+  if (!_tokenContractCache || _tokenContractCache.wallet !== wallet) {
+    const { Contract } = await import('@aztec/aztec.js/contracts');
+    const tokenAddr = AztecAddress.fromString(AZTEC_CONFIG.tokenContractAddress);
+    const artifact = await getTokenArtifact();
+    _tokenContractCache = { wallet, contract: await Contract.at(tokenAddr, artifact, wallet as never) };
+  }
+  const tokenContract = _tokenContractCache.contract;
+
+  const effectData = txEffectData ?? await fetchTxEffectData(nodeClient, txHashStr);
+  if (!effectData) {
+    console.error(`[noteImporter] token reward: could not get TxEffect for ${txHashStr}`);
+    return false;
+  }
+
+  // The note's randomness is derived in-contract from the recipient's per-game
+  // randomness; recompute it the same way to import the note.
+  const { result: rewardRandomness } = await tokenContract.methods
+    .compute_reward_randomness(playerRandomness.map((r) => toFr(Fr, r)))
+    .simulate({ from: myAddr });
+
+  const { noteHashes: uniqueNoteHashes, firstNullifier } = effectData;
+  const paddedHashes = new Array(64).fill(new Fr(0n));
+  for (let i = 0; i < uniqueNoteHashes.length && i < 64; i++) {
+    paddedHashes[i] = toFr(Fr, uniqueNoteHashes[i]);
+  }
+
+  try {
+    await tokenContract.methods
+      .import_note(
+        myAddr,
+        BigInt(amount),
+        toFr(Fr, rewardRandomness),
+        toFr(Fr, txHashStr),
+        paddedHashes,
+        uniqueNoteHashes.length,
+        toFr(Fr, firstNullifier),
+        myAddr,
+      )
+      .simulate({ from: myAddr });
+    console.log(`[noteImporter] token reward: imported +${amount} note from ${txHashStr}`);
+    return true;
+  } catch (e) {
+    console.warn(`[noteImporter] token reward: import_note failed:`, e);
+    return false;
+  }
+}
