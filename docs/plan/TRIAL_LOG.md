@@ -602,3 +602,23 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   gameState+moveProof atomically, so likely benign, but the check is right. If real → lane-2
   follow-up (now free); if benign → attempt 6 green → go-live gate.
 - Active: lane-4 (Item I BE). Parked: lane-1/2/3/5/6/7. Playtest finishing attempt 6.
+
+## 06-13 — C2 round-2 (mask-chaining is broken) routed to lane-1; Item I COMPLETE (faucet merged)
+- CRITICAL (playtest attempt 6, INSTRUMENTED): the chained-mask C2 fix is fundamentally broken — P2
+  proofs carry stale p1_placed (0,0,0,7); privately-derived masks can't agree across async peers →
+  sortProofChain breaks at the P1→P2 boundary. **My gate review MISSED this** (assumed MOVE_PROVEN
+  atomicity prevented the lag; instrumentation disproved it). The playtest's real-proof E2E caught
+  what static review couldn't — exactly its purpose. Wrote docs/plan/BUG_C2_REPLAY_2.md, routed to
+  lane-1: REVERT the masks; replace with a SOUND self-contained move-circuit check — ORIGINAL-owner
+  (publicly-agreed, chain-safe), NOT current-owner (the finding-19 capture trap the playtest's own
+  proposal would have hit). Alt: aggregate per-player distinctness in process_game. lane-1 chooses +
+  specs lane-2's revert. Attempt 6 cleared EVERYTHING ELSE (deploy, P2 4/4, 9/9, canSettle,
+  settlement starts) — this is the LAST blocker for a complete 2-player game.
+- Item I COMPLETE: lane-4 backend faucet (ec308d4) gate-PASSED + MERGED (1f02092). POST /faucet
+  wraps feeJuiceBridge, server-only TREASURY_L1_KEY, abuse limits (one/address + per-IP/day + cap),
+  Aztec-free service + injected seam, 4 test files. claimSecret hex serialization VERIFIED matching
+  lane-2's parser. Item I = FE (fbed226) + BE (1f02092), interface confirmed end to end.
+- Faucet DEPLOY steps (go-live, only if Item I ships): (1) TREASURY_L1_KEY in /etc/triad-backend.env;
+  (2) uncomment ReadWritePaths=/home/ubuntu/.aztec-triad-private in triad-backend.service
+  (ProtectHome=read-only blocks the key read + claim-store write otherwise); (3) FAUCET_ENABLED=true.
+- lane-2 waits for lane-1's C2-r2 spec. lane-4 done/parked. playtest parked (blocked on C2 r2).
