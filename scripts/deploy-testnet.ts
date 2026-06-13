@@ -31,10 +31,24 @@ import { createAztecNodeClient } from '@aztec/aztec.js/node';
 import { Fr } from '@aztec/aztec.js/fields';
 import { AztecAddress } from '@aztec/aztec.js/addresses';
 import { NO_FROM } from '@aztec/aztec.js/account';
+import { FeeJuicePaymentMethodWithClaim } from '@aztec/aztec.js/fee';
 import { EmbeddedWallet } from '@aztec/wallets/embedded';
 import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
 
 import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
+
+import {
+  bridgeFeeJuice,
+  serializeClaim,
+  deserializeClaim,
+  getStoredClaim,
+  loadClaimStore,
+  putStoredClaim,
+  markClaimConsumed,
+  claimStorePath,
+  readFunderKey,
+  type FeeJuiceClaim,
+} from './lib/feeJuiceBridge';
 
 const PXE_URL = process.env.AZTEC_PXE_URL || 'https://rpc.testnet.aztec-labs.com';
 const ROOT_DIR = resolve(import.meta.dirname || __dirname, '..');
@@ -75,6 +89,45 @@ async function computeVkHash(api: any, vkBuf: Uint8Array): Promise<string> {
   const inputBuffers = vkFields.map((f) => bigintToBuffer32(BigInt(f)));
   const result = await (api as any).poseidon2Hash({ inputs: inputBuffers });
   return bufferToHex(result.hash);
+}
+
+/**
+ * Get a Fee Juice claim to pay for the deployer account's own deployment.
+ * Prefers a persisted, unconsumed claim (from scripts/fund-testnet.ts). If none
+ * exists and treasury creds are in the env, bridges one inline and persists it.
+ * Otherwise throws with the exact command to run.
+ */
+async function obtainDeployerClaim(node: any, deployerAddress: string): Promise<FeeJuiceClaim> {
+  const storePath = claimStorePath();
+  const stored = getStoredClaim(loadClaimStore(storePath), deployerAddress);
+  if (stored && stored.status === 'pending') {
+    console.log(`\nUsing persisted Fee Juice claim for deployer (amount ${stored.claimAmount}).`);
+    return deserializeClaim(stored, Fr);
+  }
+  if (stored && stored.status === 'consumed') {
+    console.log('\nPersisted claim already consumed; bridging a fresh one.');
+  }
+
+  const l1RpcUrl = process.env.TESTNET_L1_RPC_URL;
+  if (!l1RpcUrl || !(process.env.TREASURY_L1_KEY || process.env.TREASURY_L1_KEY_FILE)) {
+    throw new Error(
+      `No Fee Juice claim for deployer ${deployerAddress}, and no treasury creds to bridge one.\n` +
+        `  Fund it first:  npx tsx scripts/fund-testnet.ts ${deployerAddress}\n` +
+        `  Or set TESTNET_L1_RPC_URL + TREASURY_L1_KEY (or TREASURY_L1_KEY_FILE) to bridge inline.`,
+    );
+  }
+
+  console.log('\nBridging a Fee Juice claim for the deployer inline...');
+  const claim = await bridgeFeeJuice({
+    node,
+    l1RpcUrl,
+    funderKey: readFunderKey(),
+    l2Address: deployerAddress,
+    log: (m) => console.log(`  ${m}`),
+    messageWaitSeconds: process.env.MESSAGE_WAIT_SECONDS ? Number(process.env.MESSAGE_WAIT_SECONDS) : 600,
+  });
+  putStoredClaim(storePath, deployerAddress, serializeClaim(deployerAddress, claim, new Date().toISOString()));
+  return claim;
 }
 
 // ====================== Main ======================
@@ -150,23 +203,32 @@ async function main() {
     wait: { timeout: 600 },
   });
 
-  // Deploy the deployer account (skip if already deployed or --skip-account)
+  // Deploy the deployer account (skip if already deployed or --skip-account).
+  // GAP FIX: on testnet there is no SponsoredFPC, and a brand-new account has no
+  // Fee Juice balance to pay for its own deployment. We claim bridged Fee Juice
+  // in the SAME tx via FeeJuicePaymentMethodWithClaim — the canonical fresh-
+  // account-init flow. The claim comes from the persisted store (run
+  // scripts/fund-testnet.ts first) or, if treasury creds are in the env, is
+  // bridged inline here. After the deploy lands, the account holds the claimed
+  // Fee Juice balance and pays for the contract deploys natively below.
   if (skipAccount) {
     console.log('\nSkipping account deployment (--skip-account).');
   } else {
-    console.log('\nDeploying account on-chain...');
+    const claim = await obtainDeployerClaim(node, deployerAddress.toString());
+    console.log('\nDeploying account on-chain (paying via bridged Fee Juice claim)...');
     console.log(`  Address: ${deployerAddress.toString()}`);
-    console.log('  (Fund this address with Fee Juice if not already funded)');
     try {
       const deployMethod = await deployerAccount.getDeployMethod();
       await deployMethod.send({
         from: NO_FROM,
+        fee: { paymentMethod: new FeeJuicePaymentMethodWithClaim(deployerAddress, claim) },
         wait: { timeout: 600 },
       });
-      console.log('Account deployed.');
+      markClaimConsumed(claimStorePath(), deployerAddress.toString());
+      console.log('Account deployed; claim consumed.');
     } catch (err: any) {
       if (err?.cause?.message?.includes('Existing nullifier') || err?.message?.includes('Existing nullifier')) {
-        console.log('Account already deployed, skipping.');
+        console.log('Account already deployed, skipping (claim left intact for reuse).');
       } else {
         throw err;
       }
