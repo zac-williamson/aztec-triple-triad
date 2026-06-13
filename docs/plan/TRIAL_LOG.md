@@ -141,6 +141,27 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   scrollback (fired a phantom MODEL-ERROR on lane-2 right after it finished A2);
   v5 drops it (all sessions confirmed on Opus).
 
+- 20:5x — **lane-1 QA-F1+QA-A2+aggregate-twin MERGED** (`29ecb92`): QA-F1 was a
+  REAL latent double-claim hole in get_cards_for_new_player — fix adds a
+  per-account STARTER_CLAIM nullifier (non-inclusion proof + push_nullifier
+  backstop, address-unlinkable) with a should_fail re-claim test (verified to
+  pass against the unguarded contract first); NFT TXE suite 15→17; dead
+  circuits/target/aggregate_game.json purged; QA-A2 nonce +6 confirmed. TXE
+  execution of the new test rides on lane-6 E3b CI. Lane-1 PARKED (A3 ← Zac
+  funding + lane-8 acceptance).
+- 20:5x — **lane-2 A2 gate-finding MERGED** (`a5c1a98`): live e2e tests migrated
+  to Fee Juice (shared fundAccountOnDevnet helper); 9 dead nullifier-diagnostic
+  scratch tests removed (~3.1k lines); zero active SponsoredFPC code refs remain.
+  Lane-2 → D1b (practice-mode UI, last queued item; chooseBotMove available).
+- Side-quest (Zac): identified **aztec-kit** (github.com/aztec-labs-eng/aztec-kit,
+  public) as the official successor to the grego* apps — gregoswap→apps/swap
+  (proof-of-password token faucet), gregojuice→apps/bridge (L1→L2 fee juice),
+  +fpc-operator. Its `e2e/` Playwright suite (test-base fixture, global-setup,
+  pump-l2-blocks, inject-l1-wallet, fee-juice-balance) is a strong reference for
+  lane-8; flagged to Zac, not yet fed to lane-8 (held under Phase-1 rebase
+  suspension). Its embedded-wallet initializerless/immutables_hash account is the
+  subject of a separate ACVM-sim error Zac is chasing (not a trial item).
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -148,8 +169,9 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - **lane-2**: remove live SponsoredFPC from `src/aztec/contracts.ts`,
   `hooks/useCardPacks.ts` (+ test) — banned pattern; fold into A2/I. Fix the
   `useGame.ts:433` comment path (report moved to docs/history/).
-- **lane-6**: F2 addition — `test-results/.last-run.json` is tracked Playwright
-  debris.
+- **lane-6**: F2 — `test-results/.last-run.json` (done) AND
+  `packages/integration/test.txt` (~2k-line committed PXE log debris) →
+  git rm + gitignore guard for stray integration *.txt logs.
 - **lane-1**: confirm nightly.20260323 ↔ aztecnr-rc.2 name the same release.
 - **lane-1** (from lane-6): delete dead tracked `circuits/target/aggregate_game.json`
   (crate gone from circuits/Nargo.toml; copy scripts no longer reference it).
@@ -185,8 +207,8 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
-| lane-1-chain | A1+A1.5 merged | QA-F1 + nonce + aggregate twin | then A2 support |
-| lane-2-frontend | A2 merged a952d22 | SponsoredFPC integration-test cleanup → D1b | — |
+| lane-1-chain | A1+A1.5+QA-F1 merged (29ecb92) | parked | A3 ← Zac funding + lane-8 acceptance |
+| lane-2-frontend | A2 + cleanup merged (a5c1a98) | D1b (practice UI) | last queued item |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
