@@ -129,3 +129,49 @@ suite for the A1/A2 upgrade before any migration commit is trusted.
 - Fast mode can mask proof-shape bugs → never ship an upgrade on fast-mode green alone.
 - Canvas projection assumes a deterministic camera (Phase 1 verification item).
 - WebGL in CI requires SwiftShader/headed-xvfb config — known-solvable, budget for it.
+
+## ASSUMPTIONS (Phase 1 implementation — discovered, written down per ground rules)
+
+1. **Lane 2 touchpoints are 4 one-liners + names/testids, not just the main.tsx
+   import.** Hook state (`aztec`, `game`) is only reachable inside `AppInner`, the
+   camera only inside the R3F Canvas, and click-gating state only inside
+   `GameScreen3D`. Footprint (all additive, all no-op without `VITE_TESTKIT=1`):
+   `main.tsx` install import (negotiated), `App.tsx` `useTestkitBridge(aztec, game)`,
+   `GameScreen3D` `useGameScreenBridge(...)`, `SwampScene` `<SceneBridge/>`,
+   `name=` props on the BoardCell3D click mesh + PlayerHand3D hit plane (the 3D
+   analog of the negotiated data-testids), and testids on menu/selector/settlement
+   DOM. Needs Lane 2 sign-off at merge.
+2. **Camera drift is benign.** The play camera oscillates ±0.03 m on a ~60 s period
+   (`CameraController.tsx`); projection reads the live camera at click time, so the
+   error within click latency is < 0.001 m against a 0.30 m cell half-width. Free
+   orbit is never enabled during play — no pinning needed.
+3. **Hand clicks are hover-proof.** `PlayerHand3D` hit-tests an invisible plane with
+   X-strip boundaries; the hover pop-up animation moves card visuals, not strips.
+   The testkit aims at strip centers from the same exported fan math the component
+   uses (`getCardFanTransform`).
+4. **The click-vs-animation race is gated, not retried.** The app drops cell clicks
+   while a fly/capture animation runs (by design). The driver requires
+   my-turn ∧ no-animation ∧ no-selection stable across 3 consecutive polls before
+   clicking — deterministic gating on real state; a dropped click then fails the
+   run loudly.
+5. **Testkit PXE reads ride the app's serial queue.** Private reads
+   (`get_nfts_for_user`, `get_balance`) are enqueued via `txManager.enqueuePxe`
+   FIFO (no gameId, lowest priority) — the per-wallet serial-PXE ground rule is
+   enforced by construction.
+6. **Backend "Redis flush" = fresh in-memory process.** The orchestrator starts the
+   backend without `REDIS_URL`; a fresh process is the deterministic clean slate.
+   Redis-backed parity is Lane 4's concern, not a Phase 1 campaign dependency.
+7. **The 4.2 sandbox path uses SponsoredFPC** (deploy script + in-app fees). The
+   master-plan ban governs new work and the 4.3.1 migration (Lane 1/2); the
+   harness drives the app as it exists on 4.2 and asserts behavior, not fee plumbing.
+8. **Deterministic baseline:** fresh deploy per campaign; onboarding mints cards
+   1–5 + 100 Arena Tokens per player; settlement pays +20 to BOTH players; pack
+   cost 100. The scripted policy (hand slot 0 → first empty cell, row-major) is
+   decisive: player1 wins 7–3; loser board cards {1,2,3,4}.
+9. **Private state after settlement is eventually consistent by design** (PXE
+   discovers token/card notes by block scanning). Settlement assertions poll those
+   reads to a deadline; public chain status (settled=3) is the immediate truth.
+10. **Eight known-good `game_status` values** (0 none, 1 created, 2 active,
+    3 settled, 4 cancelled, 5 abandoned_claimed) — the public-layer validator
+    asserts 3 after settlement and that on-chain players match the two browser
+    accounts.
