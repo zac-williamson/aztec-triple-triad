@@ -44,6 +44,12 @@ vi.mock('../../aztec/config', () => ({
   AZTEC_CONFIG: { nftContractAddress: '0xNFT' },
 }));
 
+// Fee headroom helper is unit-tested separately; stub it to a sentinel so the
+// pack send can be asserted without a real node base-fee lookup.
+vi.mock('../../aztec/feeSettings', () => ({
+  gasSettingsWithHeadroom: vi.fn(async () => ({ maxFeesPerGas: 'HEADROOM_MAX' })),
+}));
+
 // Mock Aztec SDK lazy imports
 vi.mock('@aztec/aztec.js/addresses', () => ({
   AztecAddress: { fromString: (s: string) => s },
@@ -124,11 +130,13 @@ describe('useCardPacks', () => {
     expect(huntResult.txHash).toBe('0xTX_HASH');
     expect(result.current.txStatus).toBe('done');
 
-    // SponsoredFPC is banned: the purchase is sent WITHOUT a fee option —
-    // the sender pays natively in Fee Juice (wallet default).
+    // SponsoredFPC is banned: the purchase pays natively in Fee Juice (no
+    // paymentMethod), but carries base-fee headroom via fee.gasSettings.
     expect(purchaseSend).toHaveBeenCalledTimes(1);
-    expect(purchaseSend.mock.calls[0][0]).not.toHaveProperty('fee');
-    expect(purchaseSend.mock.calls[0][0]).toMatchObject({ from: '0xACCOUNT' });
+    const sendArg = purchaseSend.mock.calls[0][0];
+    expect(sendArg).toMatchObject({ from: '0xACCOUNT' });
+    expect(sendArg.fee).toEqual({ gasSettings: { maxFeesPerGas: 'HEADROOM_MAX' } });
+    expect(sendArg.fee).not.toHaveProperty('paymentMethod');
 
     // Verify cards were persisted
     expect(addCards).toHaveBeenCalledWith(

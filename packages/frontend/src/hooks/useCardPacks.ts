@@ -4,6 +4,7 @@ import { importNotesFromTx, fetchTxEffectData, getNftArtifact } from '../aztec/n
 import { addCards, type StoredCard } from '../aztec/cardStore';
 import txManager from '../aztec/txManager';
 import { AZTEC_TX_TIMEOUT, CARDS_PER_PACK } from '../aztec/gameConstants';
+import { gasSettingsWithHeadroom, type BaseFeeNode } from '../aztec/feeSettings';
 
 export interface LocationInfo {
   id: number;
@@ -103,9 +104,11 @@ export function useCardPacks(
           const cardIds: number[] = Array.from({ length: CARDS_PER_PACK }, (_, i) => Number(previewResult[i]));
 
           setPhase('sending');
-          // Fee Juice paid natively by the sender (no fee option = wallet default)
+          // Fee Juice paid natively by the sender; maxFeesPerGas carries base-fee
+          // headroom so the tx survives a base-fee climb during proving.
           const { receipt } = await nftContract.methods.purchase_card_pack().send({
             from: addr,
+            fee: { gasSettings: await gasSettingsWithHeadroom(capturedNodeClient as BaseFeeNode) },
             wait: { timeout: AZTEC_TX_TIMEOUT },
           });
 

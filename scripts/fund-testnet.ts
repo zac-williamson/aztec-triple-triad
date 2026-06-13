@@ -8,6 +8,12 @@
  * Sepolia ETH for gas). Each claim is persisted; the account consumes it later
  * (e.g. deploy-testnet.ts uses FeeJuicePaymentMethodWithClaim for its deployer).
  *
+ * NOTE on L2 fee headroom: this script sends NO L2 transactions — it only does
+ * L1 bridge txs (gas handled by viem) plus L1->L2 message reads. So the L2
+ * maxFeesPerGas headroom in scripts/lib/feeSettings.ts does not apply here; it is
+ * consumed by deploy-testnet.ts, which DOES send L2 txs. If this script ever
+ * grows an L2 tx, route its fee through headroomMaxFeesPerGas().
+ *
  * Env (NOTHING is hardcoded — keys/RPCs come from the environment):
  *   TESTNET_L1_RPC_URL   (required)  Sepolia RPC URL.
  *   TREASURY_L1_KEY      0x L1 private key of the funder. If unset, read from

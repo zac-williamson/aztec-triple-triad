@@ -49,6 +49,7 @@ import {
   readFunderKey,
   type FeeJuiceClaim,
 } from './lib/feeJuiceBridge';
+import { headroomMaxFeesPerGas } from './lib/feeSettings';
 
 const PXE_URL = process.env.AZTEC_PXE_URL || 'https://rpc.testnet.aztec-labs.com';
 const ROOT_DIR = resolve(import.meta.dirname || __dirname, '..');
@@ -213,9 +214,14 @@ async function main() {
     return;
   }
 
-  // Testnet: no SponsoredFPC, use Fee Juice directly (default payment method)
-  const sendAs = (addr: any) => ({
+  // Testnet: no SponsoredFPC, use Fee Juice directly (default payment method).
+  // Cap maxFeesPerGas with headroom over the current L2 base fee (see
+  // scripts/lib/feeSettings.ts) so a rising base fee between estimation and
+  // inclusion doesn't reject the tx. Computed fresh per send. Async because it
+  // queries the node for the current min fee — call sites use `await sendAs(...)`.
+  const sendAs = async (addr: any) => ({
     from: addr,
+    fee: { gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) } },
     wait: { timeout: 600 },
   });
 
@@ -237,7 +243,10 @@ async function main() {
       const deployMethod = await deployerAccount.getDeployMethod();
       await deployMethod.send({
         from: NO_FROM,
-        fee: { paymentMethod: new FeeJuicePaymentMethodWithClaim(deployerAddress, claim) },
+        fee: {
+          paymentMethod: new FeeJuicePaymentMethodWithClaim(deployerAddress, claim),
+          gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) },
+        },
         wait: { timeout: 600 },
       });
       markClaimConsumed(claimStorePath(), deployerAddress.toString());
@@ -309,21 +318,22 @@ async function main() {
     console.log(`  NFT:   ${nftContract.address}`);
     console.log(`  Token: ${tokenContract.address}`);
   } else {
-    console.log('\nDeploying TripleTriadNFT + ArenaToken in parallel...');
-    const nftDeploy = Contract.deploy(wallet, nftArtifact, [
+    // Serial per wallet: concurrent txs/proofs through one PXE cause IndexedDB
+    // errors (binding ground rule). Deploy NFT, then Token.
+    console.log('\nDeploying TripleTriadNFT...');
+    const nftRes = await Contract.deploy(wallet, nftArtifact, [
       deployerAddress,
       encodeCompressedString('Axolotl Arena Cards'),
       encodeCompressedString('AXL'),
-    ]).send(sendAs(deployerAddress));
-
-    const tokenDeploy = Contract.deploy(wallet, tokenArtifact, [
-      deployerAddress,
-    ]).send(sendAs(deployerAddress));
-
-    const [nftRes, tokenRes] = await Promise.all([nftDeploy, tokenDeploy]);
+    ]).send(await sendAs(deployerAddress));
     nftContract = nftRes.contract;
-    tokenContract = tokenRes.contract;
     console.log(`  NFT:   ${nftContract.address}`);
+
+    console.log('Deploying ArenaToken...');
+    const tokenRes = await Contract.deploy(wallet, tokenArtifact, [
+      deployerAddress,
+    ]).send(await sendAs(deployerAddress));
+    tokenContract = tokenRes.contract;
     console.log(`  Token: ${tokenContract.address}`);
   }
 
@@ -343,25 +353,22 @@ async function main() {
       Fr.fromHexString(moveVkHash),
       tokenContract.address,
       Fr.fromHexString(dummyVkHash),
-    ]).send(sendAs(deployerAddress));
+    ]).send(await sendAs(deployerAddress));
     gameContract = gameRes.contract;
     console.log(`  Game:  ${gameContract.address}`);
   }
 
-  // 3. Register senders in parallel
-  await Promise.all([
-    wallet.registerSender(nftContract.address, 'nft'),
-    wallet.registerSender(tokenContract.address, 'token'),
-    wallet.registerSender(gameContract.address, 'game'),
-  ]);
+  // 3. Register senders (serial per wallet).
+  await wallet.registerSender(nftContract.address, 'nft');
+  await wallet.registerSender(tokenContract.address, 'token');
+  await wallet.registerSender(gameContract.address, 'game');
 
-  // 4. Wire contracts — send all 4 calls, then wait for all
-  console.log('\nWiring contracts...');
-  const wire1 = nftContract.methods.set_game_contract(gameContract.address).send(sendAs(deployerAddress));
-  const wire2 = nftContract.methods.set_token_contract(tokenContract.address).send(sendAs(deployerAddress));
-  const wire3 = tokenContract.methods.set_nft_contract(nftContract.address).send(sendAs(deployerAddress));
-  const wire4 = tokenContract.methods.set_game_contract(gameContract.address).send(sendAs(deployerAddress));
-  await Promise.all([wire1, wire2, wire3, wire4]);
+  // 4. Wire contracts — serial per wallet (one tx/proof at a time).
+  console.log('\nWiring contracts (serial)...');
+  await nftContract.methods.set_game_contract(gameContract.address).send(await sendAs(deployerAddress));
+  await nftContract.methods.set_token_contract(tokenContract.address).send(await sendAs(deployerAddress));
+  await tokenContract.methods.set_nft_contract(nftContract.address).send(await sendAs(deployerAddress));
+  await tokenContract.methods.set_game_contract(gameContract.address).send(await sendAs(deployerAddress));
   console.log('Done.');
 
   // 5. Write .env

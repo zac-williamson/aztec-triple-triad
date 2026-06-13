@@ -227,6 +227,64 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
     (useGameSettlement — relay/import the loser's token note like the cards;
     main.nr:703-706 mints to both). Fix flips the sentinel green.
 
+- 06-13 — **4.3.1 ACCEPTANCE: "breakage" ROOT-CAUSED to tooling, NOT the
+  migration** — the A1/A2 upgrade (contracts/proofs/SDK/deploy) is sound. The
+  failure was a Vite dev-server race: cold .vite cache post-bump → dev server
+  lazily optimized @aztec deps while serving → test's first page load raced it →
+  force-reload mid-onboarding → wallet deploy+mint restart loop. Fixed at root
+  (pre-run `vite optimize` before serving; deterministic, not a retry). Re-run in
+  flight; awaiting the pass verdict = A1/A2 acceptance. Contract lanes stay
+  parked (no migration fix needed).
+- **loser-token bug re-routed**: lane-2 found it is NOT frontend-only — ArenaToken
+  has no import_note / randomness-revealing fn, so the loser's PXE can't import
+  the reward note. Contract gap → **lane-1** (add a discoverable-note path to
+  ArenaToken mirroring the NFT contract's create_and_push_note + import_note
+  tagging); lane-2 wires the frontend import after. Queued for lane-1 AFTER the
+  playtest breakage diagnosis (avoid concurrent contract churn).
+- lane-2 testkit SIGN-OFF: VITE_TESTKIT touchpoints confirmed prod-inert →
+  clears one of playtest's two merge-coordination items. lane-2 parked.
+
+- 06-13 — **A3 GO**: treasury 0xDA74…EAa2 verified holding 0.43 Sepolia ETH
+  on-chain (Zac funded). lane-1 un-parked to run the full testnet deploy via the
+  funder: create deployer → fund-testnet mint+bridge Fee Juice (cover 8 txs) →
+  deploy-testnet (account + NFT/Game/Token + wiring) → write addresses to
+  .env.testnet + README. Live public-testnet op, in parallel with playtest's
+  local 4.3.1 acceptance re-run (no conflict: testnet vs local sandbox). Deployer
+  keys → ~/.aztec-triad-private/ (uncommitted).
+
+- 06-13 (~02:35) — **MONITORING GAP**: monitor v5 hit its 1h timeout and the
+  heartbeat didn't re-arm it → ~90 min blind (Zac flagged). Re-armed (monitor v6
+  bf2mzs99y). Going forward: heartbeat must re-arm the monitor before its 1h cap.
+- **A3 COMPLETE + MERGED** (`3ae3938`) — contracts LIVE on 4.3.1 testnet,
+  verified (node 4.3.1, get_game_status reads). New addresses:
+  NFT 0x0e42ec51…278f7c · Game 0x2325ef28…3af4ec · Token 0x1851bd7c…b22de8 ·
+  PXE rpc.testnet.aztec-labs.com. Two real bugs fixed live (bridge L1-chain/
+  race-free mint; serialized deploy-testnet Promise.all PXE ops = latent
+  serial-per-wallet violation). **Critical path A1→A2→A3 done.**
+- **2nd acceptance finding — REAL fee-headroom bug** (gate-blocking): maxFeesPerGas
+  computed with no headroom over the rising L2 base fee → intermittent tx
+  rejection in deploy/onboarding/settlement (PLAYTEST_HARNESS assumption 15).
+  Dispatched: lane-2 (canonical src/aztec/feeSettings helper, ~3x base, all send
+  paths) + lane-1 (scripts mirror, same multiplier). playtest holds, re-runs
+  acceptance after the fix. This is the gate doing its job a 2nd time.
+
+- 06-13 — **lane-2 fee-headroom fix MERGED** (`7875d08`; 293/293+tsc): canonical
+  src/aztec/feeSettings helper (live base × 3) across all frontend send paths;
+  root-causes the gate flake. lane-1 mirroring in scripts. playtest re-runs
+  acceptance once lane-1's scripts fee fix lands. lane-2 parked.
+
+- 06-13 — **both fee-headroom fixes MERGED** (frontend `7875d08`, scripts
+  `48c341b`). Multiplier=3 confirmed by Zac (typed into lane-1's window). Lanes
+  1+2 independently landed on the SAME canonical computation —
+  `getCurrentMinFees() × 3` — lane-1's scripts/lib/feeSettings mirrors lane-2's
+  src/aztec/feeSettings (node-vs-browser duplication, documented, source-of-truth
+  cited). playtest dispatched to rebase + RE-RUN the 4.3.1 acceptance — expected
+  green now (loser-token test.fail sentinel stays red until ArenaToken fix).
+- Monitor cleanup: killed duplicate v5 (bvwkjxy11); v6 (bf2mzs99y) is the single
+  live monitor. (v5 hadn't died during the 90-min gap — it only emits on state
+  CHANGE, and lanes were continuously BUSY; the gap was the heartbeat chain, now
+  re-armed each loop.)
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -273,11 +331,11 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
-| lane-1-chain | funder merged (b36f101) | parked | A3 ← Zac funds 0xDA74…EAa2 + lane-8 acceptance |
-| lane-2-frontend | all queued merged | testkit signoff + loser-token fix | I ← A3 |
+| lane-1-chain | A3 + scripts fee merged (48c341b) | parked (user in window) | ArenaToken loser-token next |
+| lane-2-frontend | fee fix merged (7875d08) | parked | I (unblocked, not gating) + loser-token wiring ← lane-1 |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
 | lane-6-assets-infra | all merged + CI wiring | parked | F3 ← A3+domain; F1b ← end-of-cycle |
 | lane-7-docs | all items merged | parked | E2.5 ← A3 |
-| playtest | Phase 1 done (4.2); not merged | 4.3.1 acceptance re-run | = A1/A2 acceptance gate |
+| playtest | re-running 4.3.1 acceptance | fee fixes in | verdict awaited = A1/A2 acceptance |

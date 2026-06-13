@@ -15,6 +15,7 @@ import { getNftArtifact, fetchTxEffectData, importNotesFromTx } from './noteImpo
 import { toFr } from './fieldUtils';
 import { addCards, loadCards, saveCards, type StoredCard } from './cardStore';
 import { AZTEC_TX_TIMEOUT, STARTER_CARD_IDS, STARTER_CARD_COUNT } from './gameConstants';
+import { gasSettingsWithHeadroom, type BaseFeeNode } from './feeSettings';
 import type { FeeJuiceClaim } from './fundDevnet';
 
 export interface AztecConnectResult {
@@ -237,7 +238,7 @@ export async function deployAndRegister(
 
     const { receipt } = await deployMethod.send({
       from: NO_FROM,
-      fee: { paymentMethod: combinedPaymentMethod },
+      fee: { paymentMethod: combinedPaymentMethod, gasSettings: await gasSettingsWithHeadroom(node as BaseFeeNode) },
       wait: { timeout: AZTEC_TX_TIMEOUT },
     });
     if (useStorage) {
@@ -280,11 +281,10 @@ export async function deployAndRegister(
       log('Deploying account...');
       const deployMethod = await accountManager.getDeployMethod();
       const sendOpts: any = { from: NO_FROM, wait: { timeout: AZTEC_TX_TIMEOUT } };
+      sendOpts.fee = { gasSettings: await gasSettingsWithHeadroom(node as BaseFeeNode) };
       if (options?.feeJuiceClaim) {
         const { FeeJuicePaymentMethodWithClaim } = await import('@aztec/aztec.js/fee');
-        sendOpts.fee = {
-          paymentMethod: new FeeJuicePaymentMethodWithClaim(accountManager.address, options.feeJuiceClaim),
-        };
+        sendOpts.fee.paymentMethod = new FeeJuicePaymentMethodWithClaim(accountManager.address, options.feeJuiceClaim);
       }
       await deployMethod.send(sendOpts);
       if (useStorage) localStorage.setItem(AZTEC_CONFIG.storageKeys.deploymentStatus, 'deployed');
@@ -300,7 +300,7 @@ export async function deployAndRegister(
     log('Minting starter cards...');
     const { receipt } = await nftContract.methods
       .get_cards_for_new_player()
-      .send({ from: accountManager.address, wait: { timeout: AZTEC_TX_TIMEOUT } });
+      .send({ from: accountManager.address, fee: { gasSettings: await gasSettingsWithHeadroom(node as BaseFeeNode) }, wait: { timeout: AZTEC_TX_TIMEOUT } });
     if (useStorage) localStorage.setItem(mintKey, 'true');
     const txHashStr = receipt?.txHash?.toString() || '';
     log(`Starter cards minted: ${txHashStr}`);

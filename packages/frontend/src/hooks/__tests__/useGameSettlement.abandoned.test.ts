@@ -121,6 +121,12 @@ vi.mock('../../aztec/gameConstants', () => ({
   HAND_PROOF_WAIT_TIMEOUT: 5000,
 }));
 
+// Fee headroom is unit-tested separately; stub so the claim/settle sends
+// don't need a real node base-fee lookup.
+vi.mock('../../aztec/feeSettings', () => ({
+  gasSettingsWithHeadroom: vi.fn(async () => ({ maxFeesPerGas: 'HEADROOM_MAX' })),
+}));
+
 import { useGameSettlement } from '../useGameSettlement';
 import type { UseWebSocketReturn } from '../useWebSocket';
 

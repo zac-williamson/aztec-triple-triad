@@ -51,6 +51,15 @@ Spike what faucet the 4.3.1 testnet exposes (node info shows a `feeAssetHandler`
 on Sepolia). Then: in-app "request funds" → poll balance → auto-continue, replacing
 the manual FundingPrompt flow. **SponsoredFPC remains banned** — Fee Juice only.
 
+**Reference (orchestrator, for when A3 unblocks this):** model the L1→L2
+Fee Juice flow on **aztec-kit `apps/bridge`** (gregojuice) — the canonical
+bridge implementation — and **aztec-kit `packages/common`**, which has
+bridging helpers worth reusing. Our existing `aztec/fundDevnet.ts`
+(`fundAccountOnDevnet`, used by `connectToAztec` + `deploy-contracts.ts`) is
+the devnet bridge; item I generalizes that into the testnet faucet/onboarding
+UX. Note gregojuice is already this repo's port source for
+`instrumentedWallet.ts`.
+
 ## Cross-lane contracts
 - **Consume:** artifacts/codegen + proof-shape notices (←1), `chooseBotMove` (←3),
   testkit spec coordination (←8: one `main.tsx` import + HUD `data-testid`s —
@@ -203,3 +212,98 @@ the manual FundingPrompt flow. **SponsoredFPC remains banned** — Fee Juice onl
     5 each) — practice is self-contained and does not read the player's
     on-chain collection. `dealHands` is new because the old frontend
     `getRandomHand*` helpers were removed in the cards.ts dedup (item b).
+
+## Open handoffs (playtest sweep, 2026-06-13)
+
+### Lane 8 testkit touchpoints — SIGNED OFF
+Reviewed `git show lane/8-playtest` on every file the testkit touches in this
+lane's ownership. **Acceptable — prod-inert.** Details:
+- All activation is gated behind `TESTKIT_ENABLED` (`testkit/enabled.ts`),
+  which is `import.meta.env.VITE_TESTKIT === '1'` — a static-false constant in
+  prod, so `install.ts`'s `import('./api')` (the heavy `api`/`contract`/
+  `project` graph) is dead-code-eliminated.
+- The touchpoints to my files are: (a) static `data-testid`s
+  (CardSelector/MainMenu/TutorialPrompt/GameHUD/SettlementCardPicker) and
+  Three.js mesh `name`s (BoardCell3D/PlayerHand3D via `testkit/names.ts`) —
+  fully inert attributes; (b) three integration points — `useTestkitBridge`
+  (App), `useGameScreenBridge` (GameScreen3D), `<SceneBridge/>` (SwampScene) —
+  each calls its hooks unconditionally (correct) but early-returns the effect
+  body on `!TESTKIT_ENABLED`. `registry.ts` is statically bundled but has no
+  module-load side effects, so it's inert when unpublished.
+- Two minor, non-blocking notes for Lane 8: (1) `enabled.ts`'s "every testkit
+  code path is dead-code-eliminated" is slightly overstated — the *bridge*
+  modules are statically imported (bundled but inert); only the dynamic
+  `import('./api')` graph is DCE'd. (2) Their GameHUD `data-testid="back-to-lobby"`
+  additions sit inside the gameOver block my D1b `practiceMode` change wrapped
+  in `!practiceMode && …` — a trivial rebase overlap when both land; the
+  testids belong on the chain-path buttons, unaffected by the practice path.
+
+### Loser +20 token reward — BLOCKED ON LANE 1 (contract change required)
+The harness `test.fail()` sentinel (`packages/playtest/.../full-game.spec.ts`,
+"loser +20 token reward is discovered in-session") is a real app bug. Root
+cause confirmed: **it is NOT frontend-fixable as-is.**
+
+- `process_game` rewards both players via `ArenaToken::mint_private(addr, 20)`
+  (`triple_triad_game/main.nr:704-706`), which does
+  `balances.at(to).add(20).deliver(MessageDelivery.ONCHAIN_CONSTRAINED)`
+  (`arena_token/main.nr:66`). The **winner** sees their note (their own PXE
+  proved the settle tx); the **loser** never discovers theirs in-session —
+  ONCHAIN_CONSTRAINED tagged-log scanning doesn't surface it for the
+  non-submitting party (harness assumption 13).
+- The card flow works cross-PXE only because the NFT contract exposes a
+  **recipient-importable** note: deterministic, recipient-derivable
+  randomness (`derive_note_randomness` /
+  `compute_note_randomness(nonce, count) -> [Field;10]`) + an
+  `import_note(owner, value, randomness, tx_hash, unique_note_hashes[64],
+  num_note_hashes, first_nullifier, recipient)` function. The winner relays
+  `(txHash, randomness)` and the loser injects the note via `import_note`
+  (`useGameSettlement.importNotes` → `noteImporter.importNotesFromTx`).
+- **ArenaToken exposes neither** `import_note` nor any randomness-revealing
+  getter (only `mint_private`/`burn_from`/`get_balance`/setters), so the loser
+  cannot import the reward note the way cards are imported, and the winner has
+  no randomness to relay.
+
+**What Lane 1 must add to ArenaToken (mirror the NFT pattern):**
+1. Mint the reward note with **deterministic, recipient-derivable randomness**
+   (same `derive_note_randomness` family the NFT uses) instead of an opaque
+   `ONCHAIN_CONSTRAINED` balance delivery — so the note hash lands in the tx
+   effects and is reconstructable by the recipient.
+2. A frontend-callable getter to obtain that randomness (NFT analog:
+   `compute_note_randomness`), so the winner can relay it / the loser derive it.
+3. An `import_note(...)` `unconstrained` function on ArenaToken mirroring the
+   NFT's, letting the recipient inject the balance note into their PXE from
+   `(txHash, randomness, tx-effect data)`.
+
+**Frontend half (this lane, once the contract lands):** relay the loser's
+token-reward `(tokenId-or-amount, randomness)` alongside the card notes in the
+winner's `handleSettle` postEffects (`useGameSettlement.ts:439`
+`capturedRelayNoteData`), and in the loser's `incomingNoteData` effect call the
+ArenaToken `import_note` next to the card import — then `refreshTokenBalance`
+reflects +20. Ship with a test; the harness sentinel flips green.
+
+### Fee headroom (4.3.1 playtest gate fix, 2026-06-13)
+
+26. **Every tx send sets `maxFeesPerGas = currentBaseFee × FEE_HEADROOM_MULTIPLIER`**
+    via `src/aztec/feeSettings.ts` (`gasSettingsWithHeadroom(node)`). The L2
+    base fee (`node.getCurrentMinFees()` — the 4.3.1 name for what the playtest
+    called `getCurrentBaseFees`) rises with demand; the wallet's default
+    `completeFeeOptions` sets `maxFeesPerGas` to base × a tiny `minFeePadding`,
+    so a tx computed against a momentarily-low base fee REJECTS when the fee
+    climbs during proving (observed `maxFeesPerGas.feePerL2Gas=21600000 <
+    gasFees.feePerL2Gas`; harness assumption 15). `completeFeeOptions` honors a
+    caller-provided `gasSettings.maxFeesPerGas`, so passing a partial
+    `fee: { gasSettings: { maxFeesPerGas } }` (the wallet fills gasLimits from
+    estimation) is all that's needed. Wired on all 9 frontend send paths:
+    onboarding deploy+mint / deploy-only / mint-only (`connectToAztec`),
+    `create_game`/`join_game` (`useGameSession`),
+    `process_game`/`claim_abandoned_game`/`settle_abandoned_game`
+    (`useGameSettlement`), `purchase_card_pack` (`useCardPacks`).
+
+**`FEE_HEADROOM_MULTIPLIER = 3` is the CANONICAL value → Lane 1 scripts.**
+`scripts/deploy-*.ts` send their own txs (account deploy, contract deploys,
+mints) and must use the same headroom so on-chain and in-app share one fee
+policy. They can import `gasSettingsWithHeadroom` / `FEE_HEADROOM_MULTIPLIER`
+directly from `packages/frontend/src/aztec/feeSettings.ts` (deploy-contracts.ts
+already imports `fundAccountOnDevnet` from frontend src), or replicate
+`base × 3`. If the canonical multiplier ever changes, change it in
+`feeSettings.ts` and re-announce to Lane 1.

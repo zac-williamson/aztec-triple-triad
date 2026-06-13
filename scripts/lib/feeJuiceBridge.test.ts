@@ -17,6 +17,7 @@ import { join } from 'path';
 
 import {
   parseL2Addresses,
+  parseChainIdHex,
   serializeClaim,
   deserializeClaim,
   claimStorePath,
@@ -49,6 +50,13 @@ describe('feeJuiceBridge helpers', () => {
   it('parseL2Addresses: rejects a malformed address loudly', () => {
     expect(() => parseL2Addresses(['0xdeadbeef'])).toThrow(/Not a valid L2 address/);
     expect(() => parseL2Addresses([ADDR_A.slice(0, -2)])).toThrow(/Not a valid L2 address/);
+  });
+
+  it('parseChainIdHex: Sepolia + Anvil, rejects garbage', () => {
+    expect(parseChainIdHex('0xaa36a7')).toBe(11155111); // Sepolia
+    expect(parseChainIdHex('0x7a69')).toBe(31337); // Anvil
+    expect(() => parseChainIdHex('0x0')).toThrow(/Invalid eth_chainId/);
+    expect(() => parseChainIdHex('nonsense')).toThrow(/Invalid eth_chainId/);
   });
 
   it('serialize/deserialize: round-trips claim shape', () => {
