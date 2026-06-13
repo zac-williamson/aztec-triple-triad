@@ -244,6 +244,14 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - lane-2 testkit SIGN-OFF: VITE_TESTKIT touchpoints confirmed prod-inert →
   clears one of playtest's two merge-coordination items. lane-2 parked.
 
+- 06-13 — **A3 GO**: treasury 0xDA74…EAa2 verified holding 0.43 Sepolia ETH
+  on-chain (Zac funded). lane-1 un-parked to run the full testnet deploy via the
+  funder: create deployer → fund-testnet mint+bridge Fee Juice (cover 8 txs) →
+  deploy-testnet (account + NFT/Game/Token + wiring) → write addresses to
+  .env.testnet + README. Live public-testnet op, in parallel with playtest's
+  local 4.3.1 acceptance re-run (no conflict: testnet vs local sandbox). Deployer
+  keys → ~/.aztec-triad-private/ (uncommitted).
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -290,7 +298,7 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
-| lane-1-chain | funder merged (b36f101) | parked | A3 ← Zac funds 0xDA74…EAa2 + lane-8 acceptance |
+| lane-1-chain | funder merged | RUNNING A3 testnet deploy | treasury funded ✓ |
 | lane-2-frontend | parked; testkit signed off (prod-inert) | wires loser-token import after lane-1 ArenaToken | I ← A3 |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
