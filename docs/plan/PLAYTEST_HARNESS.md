@@ -300,3 +300,37 @@ both packages typecheck on the 4.3.1 SDK, CLI/artifacts are 4.3.1.
     after an `await`. P1/P2 asymmetry (P1 proofs prompt, P2 lags) is why it's
     joiner-only. Real fast-play bug, not a harness artifact. BLOCKED on the
     live-path capture fix landing in Lane 2.
+
+### Acceptance attempt 5 — finding 19 + CORRECTION of findings 17/18
+
+19. **GATE-BLOCKING — the real cause was never board capture; it's the C2
+    card-replay check vs identical starter decks (Lane 1, circuit + card
+    model).** After lane-2's deferred + live-path board-clone fixes both
+    merged, P2 STILL generated 0/4 move proofs, same `Card already placed on
+    board`, unchanged. That ruled out board capture: a *correct* pre-move board
+    legitimately contains P1's cards. The actual assertion is
+    `circuits/game_move/src/main.nr:128`:
+    `for i in 0..9 { assert(board_before[i*2] != card_id, "Card already placed on board") }`
+    — a GLOBAL, owner-blind replay check (C2, added by `b72cf42`/`47912b8`,
+    ABSENT at the 4.2 merge-base; that's why Phase 1 on 4.2 passed). Its premise
+    ("card ids are unique NFTs") is false here: `STARTER_CARD_IDS = [1,2,3,4,5]`
+    mints the SAME ids to every player. So P1 places ids 1–5 first (no
+    collision, 5/5 proofs OK); P2 then places its ids 1–4, each already on the
+    board from P1 -> C2 rejects all 4. `applyMove` (TS) passes because it only
+    checks cell-occupancy, hence the failure surfaces only in the circuit.
+    **Consequence: no two fresh players can complete a game on 4.3.1** — a real
+    game-breaking bug, not a harness artifact (both fresh players genuinely hold
+    starter deck 1–5).
+    **CORRECTION:** my attempt-3/4 reports misattributed "Card already placed"
+    to a deferred/live board-capture race (Lane 2). That was wrong — the symptom
+    was C2 card-id collision from the start; lane-2's two clone fixes (`14df546`,
+    `0a06e2d`) cannot affect it and should be re-evaluated on their own merits.
+    **Fix (Lane 1), two options:**
+    (a) make C2 owner-aware — reject only when the same id is already on the
+    board AND owned by `current_player` (`board_before[i*2]==card_id &
+    board_before[i*2+1]==current_player`); lane-1 must confirm this still
+    prevents replay across capture-driven ownership flips; OR
+    (b) mint globally-unique token_ids per player so card_ids really are unique
+    NFTs (keeps C2 global/sound; needs a separate card-type lookup for
+    art/ranks). The harness could sidestep with disjoint decks, but that would
+    MASK a real game-breaking bug, so it does not. BLOCKED on the Lane 1 fix.
