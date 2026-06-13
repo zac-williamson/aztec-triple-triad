@@ -238,8 +238,9 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   the reward note. Contract gap → **lane-1** (add a discoverable-note path to
   ArenaToken mirroring the NFT contract's create_and_push_note + import_note
   tagging); lane-2 wires the frontend import after. Queued for lane-1 AFTER the
-  playtest breakage diagnosis (avoid concurrent contract churn). lane-2 hit a
-  transient API socket error mid-task; resumed.
+  playtest breakage diagnosis (avoid concurrent contract churn).
+- lane-2 testkit SIGN-OFF: VITE_TESTKIT touchpoints confirmed prod-inert →
+  clears one of playtest's two merge-coordination items. lane-2 parked.
 
 ## Pending handoffs (deliver at each lane's next idle)
 
@@ -288,7 +289,7 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
 | lane-1-chain | funder merged (b36f101) | parked | A3 ← Zac funds 0xDA74…EAa2 + lane-8 acceptance |
-| lane-2-frontend | all queued merged | testkit signoff + loser-token fix | I ← A3 |
+| lane-2-frontend | parked; testkit signed off (prod-inert) | wires loser-token import after lane-1 ArenaToken | I ← A3 |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
