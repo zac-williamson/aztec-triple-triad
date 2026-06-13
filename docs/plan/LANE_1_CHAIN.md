@@ -291,3 +291,41 @@ compiled JSON into `frontend/public/contracts/`, and answering proof-shape quest
     L1->L2 reads only; L1 gas is viem's), so the L2 maxFeesPerGas headroom does
     not apply there. Documented in its header; the shared helper is ready if it
     ever grows an L2 tx.
+
+### ArenaToken loser-token fix + redeploy infeasibility (2026-06-13)
+
+27. **Loser +20 reward made discoverable (playtest-gate bug).** process_game
+    rewarded both players via ArenaToken::mint_private (ONCHAIN_CONSTRAINED) —
+    only the settle submitter (winner) discovers their note; the loser can't.
+    Mirrored the NFT card pattern on ArenaToken's UintNote/BalanceSet model:
+    `mint_reward(to, amount, player_randomness)` creates a DISCOVERABLE balance
+    note (manual UintNote hash via its own compute_note_hash + notify_created_note
+    + push_note_hash; randomness derived from the recipient's PRIVATE per-game
+    randomness, so it's recipient-derivable but not public), `import_note(...)`
+    mirrors the NFT's, and `compute_reward_randomness(...)` is the relay/derive
+    getter. process_game mints the opponent's reward via mint_reward in win/loss
+    AND draw paths; the submitter keeps mint_private. The reward stays a real
+    balance note (spendable via burn_from). TXE test proves balance 0 -> 20 across
+    import. Game contract changed too (it calls mint_reward).
+28. **TXE flake root-caused (refines ASSUMPTIONS #12).** `mdb_txn_begin: 22 -
+    Invalid argument` is NOT only stale processes: even one clean TXE flakes
+    intermittently because `nargo test` runs multi-threaded by default and the
+    single TXE's LMDB world-state can't take concurrent write txns. Fix:
+    `nargo test --test-threads 1` — deterministically green (arena 11, game 6,
+    nft 17). Flag for Lane 6 CI (E3b): TXE tests MUST run single-threaded.
+29. **Address-preserving testnet redeploy is INFEASIBLE for the live instances
+    (STOP — reported to Zac via STATUS: question).** The fix changes BOTH
+    ArenaToken and Game (Game calls mint_reward), so both have new contract class
+    ids. A contract address derives from `originalContractClassId`; only an
+    UPDATABLE instance can change its `currentContractClassId` while keeping the
+    address. The A3 instances are NOT updatable: confirmed on-chain that all three
+    have original==current class id, the contracts contain no self-update code
+    (no set_update_delay / ContractInstanceRegistry calls), and the A3 deploy used
+    plain Contract.deploy with no update delay. You cannot redeploy over an
+    existing address (deployment nullifier), and you cannot update a
+    non-updatable instance. So NFT (unchanged) keeps its address for free, but
+    ArenaToken+Game addresses cannot be preserved while shipping the fix. Did NOT
+    churn. Options put to Zac: (A) don't redeploy now — fix lands on testnet only
+    at the next full (churning) redeploy; (B) churn ArenaToken+Game now, keep NFT;
+    (C) redeploy all three as UPDATABLE now (one last forced churn) so future
+    fixes are address-preserving.
