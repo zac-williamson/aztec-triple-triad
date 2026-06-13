@@ -263,6 +263,6 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
-| lane-6-assets-infra | merged (ef533cd) | test:scripts CI wiring | F3 ← A3+domain |
+| lane-6-assets-infra | all merged + CI wiring | parked | F3 ← A3+domain; F1b ← end-of-cycle |
 | lane-7-docs | all items merged | parked | E2.5 ← A3 |
 | playtest | — | Harness Phase 1 | |
