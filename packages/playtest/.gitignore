@@ -1,0 +1,2 @@
+# Per-run outputs: stack logs, browser logs, traces, videos, reports, bundles
+.artifacts/

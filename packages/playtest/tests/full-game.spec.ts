@@ -150,13 +150,6 @@ test('full click-driven game settles correctly across all three layers', async (
 
   await winnerDriver.expectEventually(
     'winner token reward', () => winnerDriver.tokenBalance(), STARTER_TOKENS + GAME_REWARD);
-  // DIAGNOSTIC ceiling (6 min): the loser's +20 arrives via tagged-log block
-  // scanning (the winner's own settle tx registers notes at execution, the
-  // loser is the only true scan consumer). Run 7 showed 100 after 120s — this
-  // run distinguishes slow discovery from never-discovered (app/SDK finding).
-  await loserDriver.expectEventually(
-    'loser token reward', () => loserDriver.tokenBalance(), STARTER_TOKENS + GAME_REWARD,
-    360_000);
 
   // ── Layer 2: public chain state via the harness's own node client ──────
   const chain = await ChainClient.connect(stack.addresses);
@@ -186,5 +179,31 @@ test('full click-driven game settles correctly across all three layers', async (
     expect(room.winner).toBe(winner);
   } else {
     expect(gameRes.status, 'room either finished or already cleaned up').toBe(404);
+  }
+
+  // ── Loser token reward — OPEN APP FINDING (lane brief, assumption 13) ───
+  // The loser's +20 is an ONCHAIN_CONSTRAINED note tagged by the game
+  // contract inside the WINNER's settle tx. Runs 7 & 9: the loser's PXE never
+  // discovers it in-session (100 after 120s and 360s of continuous polling).
+  // Last so it cannot shadow the layers above; on timeout, a reload-probe
+  // attributes the bug (fresh-session discovery ⇒ in-session scanning gap,
+  // lane 2; still missing ⇒ tag derivation, lane 1) before failing the run.
+  try {
+    await loserDriver.expectEventually(
+      'loser token reward', () => loserDriver.tokenBalance(), STARTER_TOKENS + GAME_REWARD,
+      120_000);
+  } catch (inSessionErr) {
+    await loserDriver.page.reload();
+    await loserDriver.waitConnected();
+    let reloadVerdict: string;
+    try {
+      await loserDriver.expectEventually(
+        'loser token reward after reload', () => loserDriver.tokenBalance(),
+        STARTER_TOKENS + GAME_REWARD, 120_000);
+      reloadVerdict = 'DISCOVERED AFTER RELOAD — in-session scanning gap (lane 2 frontend/PXE-session)';
+    } catch {
+      reloadVerdict = 'STILL MISSING AFTER RELOAD — tag derivation/delivery (lane 1 contract-side)';
+    }
+    throw new Error(`loser +20 token note not discovered in-session; reload probe: ${reloadVerdict}\n${inSessionErr}`);
   }
 });
