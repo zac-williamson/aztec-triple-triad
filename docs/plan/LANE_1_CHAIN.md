@@ -261,3 +261,33 @@ compiled JSON into `frontend/public/contracts/`, and answering proof-shape quest
 23. **Cross-lane touches (A3, orchestrator-directed):** README.md (Lane 7) and
     packages/frontend/.env.testnet (frontend) — both explicitly in the A3
     instructions; flagged for those lanes at the merge gate.
+
+### Fee-headroom fix in deploy/fund scripts (2026-06-13, paired with lane-2)
+
+24. **L2 maxFeesPerGas now has headroom over the rising base fee.** Root cause
+    (traced in the SDK): the stock wallet's completeFeeOptions sets
+    `maxFeesPerGas = gasSettings?.maxFeesPerGas ?? getCurrentMinFees().mul(1 +
+    minFeePadding)`, and `minFeePadding` defaults to 0.5 — i.e. only 1.5x the
+    current L2 min fee. If the base fee rises more than that between estimation
+    and inclusion, the tx is rejected. Crucially the `??` means a caller-supplied
+    maxFeesPerGas IS respected, so the stock wallet CAN take headroom — no
+    instrumented wallet needed in the scripts. New scripts/lib/feeSettings.ts:
+    `headroomMaxFeesPerGas(node) = (await node.getCurrentMinFees()).mul(
+    FEE_HEADROOM_MULTIPLIER)`, computed fresh per tx. deploy-testnet passes it as
+    `fee.gasSettings.maxFeesPerGas` on every send (account deploy + 3 deploys + 4
+    wiring). Unit test in feeSettings.test.ts.
+25. **MULTIPLIER COORDINATION (needs orchestrator/lane-2 confirmation).** lane-2's
+    `src/aztec/feeSettings.ts` is the named source of truth but does not exist yet,
+    so I DEFINED the canonical computation for them to mirror exactly:
+    **base = `node.getCurrentMinFees()`, multiplier = `FEE_HEADROOM_MULTIPLIER = 3`**
+    (3x = double the stock 1.5x). maxFeesPerGas is only a CEILING — the tx still
+    pays the actual base fee — so a generous multiple costs nothing but needs Fee
+    Juice to cover the (maxFeesPerGas * gasLimit) reservation (abundant: deployer
+    holds ~1e21). lane-2 MUST adopt the same base + multiplier; flagged for the
+    merge gate. Did not re-deploy to exercise it live (that would churn the live
+    A3 addresses) — verified by SDK source trace + typecheck + unit test; the next
+    redeploy / the frontend exercises it for real.
+26. **fund-testnet is L1-only — headroom N/A.** It sends NO L2 txs (L1 bridge +
+    L1->L2 reads only; L1 gas is viem's), so the L2 maxFeesPerGas headroom does
+    not apply there. Documented in its header; the shared helper is ready if it
+    ever grows an L2 tx.
