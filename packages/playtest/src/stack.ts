@@ -9,7 +9,7 @@
  * whole tree — `aztec start` forks anvil and node workers.
  */
 import { spawn, type ChildProcess } from 'child_process';
-import { createWriteStream, mkdirSync, openSync, closeSync, writeFileSync } from 'fs';
+import { mkdirSync, openSync, closeSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import net from 'net';
 import {
@@ -22,7 +22,8 @@ const BOOT_TIMEOUTS = {
   sandboxMs: 300_000,   // cold image pulls can be slow
   deployMs: 900_000,    // VK hashing + 8 txs on a fresh chain
   backendMs: 30_000,
-  frontendMs: 120_000,  // first vite optimize pass is heavy (aztec deps)
+  optimizeMs: 300_000,  // cold pre-bundle of the @aztec/three dep graph
+  frontendMs: 120_000,
 };
 
 function log(msg: string): void {
@@ -143,27 +144,36 @@ export class Stack {
     await waitFor('sandbox (node producing blocks)', nodeIsUp, BOOT_TIMEOUTS.sandboxMs, proc);
   }
 
-  async deployContracts(): Promise<void> {
-    log('deploying contracts...');
-    const logPath = resolve(this.logsDir, 'deploy.log');
-    const out = createWriteStream(logPath);
-    await new Promise<void>((resolveDeploy, reject) => {
-      const proc = spawn('npx', ['tsx', 'scripts/deploy-contracts.ts'], {
-        cwd: ROOT,
-        env: { ...process.env, AZTEC_PXE_URL: PXE_URL, WS_PORT: String(BACKEND_PORT) },
-        stdio: ['ignore', 'pipe', 'pipe'],
+  /** Run a one-shot command to completion (logged), rejecting on nonzero exit or timeout. */
+  private runToCompletion(name: string, command: string, args: string[], opts: {
+    cwd: string;
+    env?: Record<string, string | undefined>;
+    timeoutMs: number;
+  }): Promise<void> {
+    const logPath = resolve(this.logsDir, `${name}.log`);
+    const fd = openSync(logPath, 'a');
+    return new Promise<void>((resolveRun, reject) => {
+      const proc = spawn(command, args, {
+        cwd: opts.cwd,
+        env: { ...process.env, ...opts.env },
+        stdio: ['ignore', fd, fd],
       });
-      proc.stdout!.pipe(out);
-      proc.stderr!.pipe(out);
       const timer = setTimeout(() => {
         proc.kill('SIGKILL');
-        reject(new Error(`deploy-contracts.ts timed out after ${BOOT_TIMEOUTS.deployMs / 1000}s — see ${logPath}`));
-      }, BOOT_TIMEOUTS.deployMs);
-      proc.once('exit', code => {
-        clearTimeout(timer);
-        if (code === 0) resolveDeploy();
-        else reject(new Error(`deploy-contracts.ts exited with code ${code} — see ${logPath}`));
-      });
+        reject(new Error(`${name} timed out after ${opts.timeoutMs / 1000}s — see ${logPath}`));
+      }, opts.timeoutMs);
+      const finish = (err?: Error) => { clearTimeout(timer); closeSync(fd); err ? reject(err) : resolveRun(); };
+      proc.once('exit', code => finish(code === 0 ? undefined : new Error(`${name} exited with code ${code} — see ${logPath}`)));
+      proc.once('error', err => finish(err));
+    });
+  }
+
+  async deployContracts(): Promise<void> {
+    log('deploying contracts...');
+    await this.runToCompletion('deploy', 'npx', ['tsx', 'scripts/deploy-contracts.ts'], {
+      cwd: ROOT,
+      env: { AZTEC_PXE_URL: PXE_URL, WS_PORT: String(BACKEND_PORT) },
+      timeoutMs: BOOT_TIMEOUTS.deployMs,
     });
     const addrs = readContractAddresses();
     log(`deployed: game=${addrs.game.slice(0, 14)}… nft=${addrs.nft.slice(0, 14)}… token=${addrs.token.slice(0, 14)}…`);
@@ -179,8 +189,22 @@ export class Stack {
   }
 
   async bootFrontend(): Promise<void> {
+    // Pre-bundle the dep graph BEFORE serving. On a cold cache (every first
+    // boot after an SDK bump) the dev server optimizes the dynamically-imported
+    // @aztec deps in the BACKGROUND while already serving; if the test's first
+    // page load wins that race, Vite force-reloads the page mid-onboarding and
+    // restarts the wallet deploy+mint, which never finishes inside the budget
+    // (the 4.3.1 acceptance-run break). A completed `vite optimize` under the
+    // same env leaves a warm cache, so the server starts reload-free.
+    const frontendCwd = resolve(ROOT, 'packages/frontend');
+    log('pre-optimizing frontend deps (warm vite cache)...');
+    await this.runToCompletion('frontend-optimize', 'npx', ['vite', 'optimize'], {
+      cwd: frontendCwd,
+      env: { VITE_TESTKIT: '1' },
+      timeoutMs: BOOT_TIMEOUTS.optimizeMs,
+    });
     const proc = this.spawnLogged('frontend', 'npx', ['vite', '--port', String(FRONTEND_PORT), '--strictPort'], {
-      cwd: resolve(ROOT, 'packages/frontend'),
+      cwd: frontendCwd,
       env: { VITE_TESTKIT: '1' },
     });
     await waitFor('frontend (vite)', () => httpOk(FRONTEND_URL), BOOT_TIMEOUTS.frontendMs, proc);
