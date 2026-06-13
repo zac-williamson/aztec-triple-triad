@@ -26,7 +26,10 @@ export const REUSE_STACK = process.env.PLAYTEST_REUSE_STACK === '1';
 
 export const PLAYTEST_DIR = resolve(ROOT, 'packages/playtest');
 export const ARTIFACTS_DIR = resolve(PLAYTEST_DIR, '.artifacts');
+/** Per-test-run handoff (globalSetup → tests → globalTeardown). */
 export const STACK_INFO_PATH = resolve(ARTIFACTS_DIR, 'stack.json');
+/** Registry for a long-lived stack from scripts/boot-stack.ts (stop-stack.ts kills it). */
+export const STANDALONE_INFO_PATH = resolve(ARTIFACTS_DIR, 'standalone-stack.json');
 export const FRONTEND_ENV_PATH = resolve(ROOT, 'packages/frontend/.env');
 
 export interface ContractAddresses {
@@ -50,13 +53,21 @@ export function readContractAddresses(): ContractAddresses {
   };
 }
 
+/**
+ * Stack ownership:
+ *  - 'run':        booted by this test run's globalSetup — globalTeardown kills it
+ *  - 'standalone': booted by scripts/boot-stack.ts — only scripts/stop-stack.ts kills it
+ *  - 'attached':   reuse mode — nobody in this run kills anything
+ */
+export type StackMode = 'run' | 'standalone' | 'attached';
+
 export interface StackInfo {
+  mode: StackMode;
   pids: { sandbox?: number; backend?: number; frontend?: number };
-  addresses: ContractAddresses;
+  addresses: ContractAddresses | null;
   logsDir: string;
-  reused: boolean;
 }
 
-export function readStackInfo(): StackInfo {
-  return JSON.parse(readFileSync(STACK_INFO_PATH, 'utf-8'));
+export function readStackInfo(path: string = STACK_INFO_PATH): StackInfo {
+  return JSON.parse(readFileSync(path, 'utf-8'));
 }

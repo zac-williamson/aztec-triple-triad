@@ -23,6 +23,16 @@ export default async function globalSetup(): Promise<void> {
   mkdirSync(ARTIFACTS_DIR, { recursive: true });
 
   if (REUSE_STACK) {
+    // Mark the run as attached FIRST: globalTeardown runs even when setup
+    // throws, and it must never kill a stack this run does not own.
+    const info: StackInfo = {
+      mode: 'attached',
+      pids: {},
+      addresses: null,
+      logsDir: ARTIFACTS_DIR,
+    };
+    writeFileSync(STACK_INFO_PATH, JSON.stringify(info, null, 2));
+
     await assertReachable('aztec node', PXE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -30,17 +40,12 @@ export default async function globalSetup(): Promise<void> {
     });
     await assertReachable('backend', `${BACKEND_URL}/health`);
     await assertReachable('frontend', FRONTEND_URL);
-    const info: StackInfo = {
-      pids: {},
-      addresses: readContractAddresses(),
-      logsDir: ARTIFACTS_DIR,
-      reused: true,
-    };
+
+    info.addresses = readContractAddresses();
     writeFileSync(STACK_INFO_PATH, JSON.stringify(info, null, 2));
     console.log('[stack] attached to running stack (reuse mode)');
     return;
   }
 
-  const stack = new Stack();
-  await stack.bootAll();
+  await new Stack('run', STACK_INFO_PATH).bootAll();
 }

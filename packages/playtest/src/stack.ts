@@ -9,13 +9,13 @@
  * whole tree — `aztec start` forks anvil and node workers.
  */
 import { spawn, type ChildProcess } from 'child_process';
-import { createWriteStream, mkdirSync, writeFileSync } from 'fs';
+import { createWriteStream, mkdirSync, openSync, closeSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import net from 'net';
 import {
   ROOT, PXE_URL, NODE_PORT, ANVIL_PORT, BACKEND_PORT, FRONTEND_PORT,
-  BACKEND_URL, FRONTEND_URL, ARTIFACTS_DIR, STACK_INFO_PATH,
-  readContractAddresses, type StackInfo,
+  BACKEND_URL, FRONTEND_URL, ARTIFACTS_DIR,
+  readContractAddresses, type StackInfo, type StackMode,
 } from './env.js';
 
 const BOOT_TIMEOUTS = {
@@ -82,28 +82,45 @@ export class Stack {
   private children: { name: string; proc: ChildProcess }[] = [];
   readonly logsDir: string;
 
-  constructor() {
+  constructor(private readonly mode: StackMode, private readonly infoPath: string) {
     this.logsDir = resolve(ARTIFACTS_DIR, `run-${new Date().toISOString().replace(/[:.]/g, '-')}`);
     mkdirSync(this.logsDir, { recursive: true });
   }
 
+  /**
+   * Spawn a detached child with stdio bound directly to its log file.
+   * Never pipe a detached child through this process: when the parent exits
+   * the pipe closes and the child dies on its next write (EPIPE) — this is
+   * exactly how the sandbox died out from under the first campaign run.
+   */
   private spawnLogged(name: string, command: string, args: string[], opts: {
     cwd: string;
     env?: Record<string, string | undefined>;
   }): ChildProcess {
     const logPath = resolve(this.logsDir, `${name}.log`);
-    const out = createWriteStream(logPath);
+    const fd = openSync(logPath, 'a');
     const proc = spawn(command, args, {
       cwd: opts.cwd,
       env: { ...process.env, ...opts.env },
       detached: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', fd, fd],
     });
-    proc.stdout!.pipe(out);
-    proc.stderr!.pipe(out);
+    closeSync(fd); // child holds its own duplicate
     this.children.push({ name, proc });
+    this.writeInfo(); // record pids incrementally so a mid-boot failure can still be cleaned up
     log(`${name} spawned (pid ${proc.pid}) → ${logPath}`);
     return proc;
+  }
+
+  private writeInfo(addresses?: StackInfo['addresses']): StackInfo {
+    const info: StackInfo = {
+      mode: this.mode,
+      pids: Object.fromEntries(this.children.map(c => [c.name, c.proc.pid])),
+      addresses: addresses ?? null,
+      logsDir: this.logsDir,
+    };
+    writeFileSync(this.infoPath, JSON.stringify(info, null, 2));
+    return info;
   }
 
   /** Fail loudly if a stack port is already taken — no silent reuse. */
@@ -175,14 +192,7 @@ export class Stack {
     await this.deployContracts();
     await this.bootBackend();
     await this.bootFrontend();
-    const info: StackInfo = {
-      pids: Object.fromEntries(this.children.map(c => [c.name, c.proc.pid])),
-      addresses: readContractAddresses(),
-      logsDir: this.logsDir,
-      reused: false,
-    };
-    writeFileSync(STACK_INFO_PATH, JSON.stringify(info, null, 2));
-    return info;
+    return this.writeInfo(readContractAddresses());
   }
 }
 

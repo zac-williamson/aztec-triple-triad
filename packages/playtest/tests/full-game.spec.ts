@@ -35,6 +35,7 @@ async function newDriver(browser: Browser, name: string, logsDir: string): Promi
 
 test('full click-driven game settles correctly across all three layers', async ({ browser }) => {
   const stack = readStackInfo();
+  if (!stack.addresses) throw new Error('stack.json has no contract addresses — setup incomplete');
 
   // ── Onboarding: two isolated tabs, each with its own embedded PXE ──────
   const alice = await newDriver(browser, 'alice', stack.logsDir);
