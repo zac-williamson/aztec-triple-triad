@@ -1,0 +1,2 @@
+# Vitest run-logs captured to files are debris, never artifacts.
+*.txt
