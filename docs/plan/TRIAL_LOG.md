@@ -306,6 +306,17 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   must not churn. Still RESERVED for Zac: F3 go-live, F1b force-push, git push,
   D2 scope. Directive queued to lane-1 (mid ArenaToken fix).
 
+- 06-13 — **No-churn proven INFEASIBLE; Zac chose C (full updatable redeploy).**
+  lane-1's analysis: A3 instances aren't updatable + set-once PublicImmutable
+  wiring → any contract change forces all-3 churn. Zac chose C: full redeploy
+  with all 3 made UPDATABLE (guarded admin update + set_update_delay) so this is
+  the LAST forced churn; future fixes become address-preserving class updates.
+  ArenaToken loser-token fix is done + TXE-green. lane-1 executing C now
+  (updatable contracts → recompile → full testnet redeploy → re-wire →
+  .env.testnet/README → report new addresses). This ONE churn authorized by Zac.
+  When new addresses land → notify lane-2 (.env build), lane-6 (Vercel env/F3);
+  playtest acceptance uses a LOCAL deploy so unaffected.
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -352,7 +363,7 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
-| lane-1-chain | A3 + fee merged | ArenaToken fix + ADDRESS-PRESERVING testnet redeploy | no-churn or STOP |
+| lane-1-chain | ArenaToken fix done; executing C | updatable contracts + full testnet redeploy | new addresses incoming |
 | lane-2-frontend | fee fix merged (7875d08) | parked | I (unblocked, not gating) + loser-token wiring ← lane-1 |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
