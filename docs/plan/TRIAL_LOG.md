@@ -660,3 +660,19 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   + resent fresh, confirmation rerun now running.
 - On green confirmation → merge the playtest harness (capstone: validates A1+A2 E2E). Then the only
   remaining gates are F3 frontend go-live (Zac) + the address-preserving testnet contract update.
+
+## 06-13 — Playtest harness MERGED to testnet (squash, 3a9b625) — CAPSTONE; .artifacts blob root-caused
+- First merge attempt (--no-ff, cb58e5b, LOCAL-only) hung the push: it dragged in 225MB of
+  .artifacts test blobs from lane/8's INTERMEDIATE commits (incl. a 157MB zip GitHub hard-rejects
+  >100MB). ROOT-CAUSED, not band-aided: origin was still clean at 5129e49 (no force-push needed);
+  lane/8's FINAL tree has 0 .artifacts (gitignored at tip); the blobs lived only in old commits.
+  Fix: reset local to origin → re-merge --squash (final clean tree only, drops blob history) →
+  verified no .artifacts/large blobs staged (biggest 555KB package-lock) → pushed clean → 3a9b625,
+  origin synced 0/0.
+- CAPSTONE COMPLETE: the full A1+A2 4.3.1 upgrade AND its autonomous E2E acceptance harness are on
+  testnet. Game validated GREEN end-to-end x2 (attempts 7+8). testkit production-gated (verified
+  install.ts dynamic-import behind static-false VITE_TESTKIT → tree-shaken in prod).
+- Follow-up (low priority, lane-6, NOT go-live-blocking): committed public/ build artifacts can lag
+  target/ — Vercel build runs copy-contracts so prod refreshes; gitignore the build outputs to tidy.
+- REMAINING GATES (all Zac): F3 frontend go-live publish; address-preserving testnet contract update
+  (C2 changed triple_triad_game); Item I ship-with-launch vs fast-follow.
