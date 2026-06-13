@@ -70,7 +70,8 @@ the manual FundingPrompt flow. **SponsoredFPC remains banned** — Fee Juice onl
    `VALID_TRANSITIONS`, `OnChainPhase`, `mapWinnerId`, `TxStatus`,
    `ProofStatus` from their new homes. `GameScreen.tsx` also imports
    `TxStatus` from `useGame` — that re-export is load-bearing.
-2. **Dead refs removed (commit 6ef1daa).** `pipelineDoneResolveRef` was
+2. **Dead refs removed** (commit "refactor(frontend): remove dead
+   pipelineDoneResolveRef and lastSettleTxHashRef"). `pipelineDoneResolveRef` was
    resolved in pipeline postEffects but no code ever registered a waiter;
    `lastSettleTxHashRef` was written on settle/loser-import and no-op
    cleared, never read for a decision. Verified by grep before removal; no
