@@ -464,3 +464,29 @@ already imports `fundAccountOnDevnet` from frontend src), or replicate
 
     The original owner is well-defined from the public move history; you do NOT
     need any private hand info to compute it (that was the masks' fatal flaw).
+
+31. **DONE (2026-06-13) — C2 round-2 prover revert landed.** Merged testnet
+    (419f23e) and reverted note-28's masks to mirror the original-owner check, in
+    one commit with the refreshed `public/circuits/game_move.json`. Changes:
+    `proofWorker.computeBoardStateHash` now hashes 30 fields `[board[18],
+    scores[2], current_turn, original_owners[9]]`; `generateGameMoveProof` drops
+    the `(1<<slot)` mask math and the `p1/p2PlacedAfter` return, takes
+    `originalOwnersBefore/After: number[9]` and threads them to the two hash
+    calls + the `original_owners_before/after` witness. `useProofGeneration`
+    gained `encodeOriginalOwners(board)` (parallels `encodeBoardState`, same cell
+    order) and derives both arrays from the structured before/after boards — so
+    `useGamePlay` lost ALL mask state (`placedMasksRef`, `committedCardIdsRef`,
+    `advanceOwnMask`, the `lastMoveProof` OR-relay, the deferred mask capture,
+    the restore reconstruction) with nothing threaded in its place. `types.ts`
+    dropped `MoveProofData.p1/p2PlacedAfter`; `useGameSettlement` initial hash
+    passes `originalOwners=[0×9]`. **Why this is simpler than the masks:**
+    original owners ride entirely in the publicly-agreed board snapshot the hook
+    already captures (immediate + deferred), so there is no per-player private
+    state, no cross-player relay, and no chaining — the bug class is gone, not
+    patched. Tests: `proofIntegration.test.ts` (real circuit, refreshed bytecode)
+    updated to 30-field + original-owner inputs; kept the capture +
+    original-owner-replay-reject mirrors, ADDED a finding-19 duplicate-deck
+    capture-collision POSITIVE test (a current-owner check would false-reject it)
+    and a P1→P2 boundary chain-assembly assertion (P2's start hash == P1's end
+    hash, derived without private state — the exact thing that broke).
+    `useGamePlay.placedMasks.test.tsx` deleted. Full suite 311/311, tsc clean.
