@@ -94,6 +94,20 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   Playwright runs; 2/5 internal tasks done). Boundary watch: attempted
   game-logic package.json fix (lane-3 turf) — failed commit, review at gate.
 
+- 19:2x — **lane-1 A1+A1.5 MERGED** (conflicts: .bak modify/delete kept deleted;
+  copy-circuits combined = explicit list + dummy_hand, minus purged aggregate).
+  Noir side on 4.3.1; proof shapes unchanged (500/115); version set confirmed;
+  **circuit soundness hole fixed** (card-replay constraint was missing —
+  orchestrator-verified 27/27 under 4.3.1 nargo); toolchain footguns documented;
+  dummy_hand + --permissive-vks (localhost-only) delivered. CASCADE: lane-6
+  woken (E3b), lane-7 woken (CLAUDE.md §Versions), lane-2 owes A2 after C,
+  lane-1 dispatched leftover queue (QA-F1, nonce-delta, aggregate twin).
+  **PLAYTEST REBASE SUSPENSION**: do NOT rebase past the A1 merge until Phase 1
+  completes on the 4.2 stack; 4.3.1 stack switch happens at the post-A2
+  acceptance rerun.
+- ESCALATION (Zac): A3 needs a funded deployer account once A2 lands; D2
+  launch-scope decision still open.
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -138,11 +152,11 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
-| lane-1-chain | restarted fresh post-interruption | A1 | prior WIP uncommitted in worktree |
+| lane-1-chain | A1+A1.5 merged | QA-F1 + nonce + aggregate twin | then A2 support |
 | lane-2-frontend | B merged cdf5caf | C + QA-F3 frontend half | A2 next once lane-1 lands |
 | lane-3-game-ai | both items merged (1afb48e, 64f7e6d) | parked | D2 ← A2 + Zac decision |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
-| lane-6-assets-infra | F1+F2+E3a merged (774f6b1) | parked | E3b ← A1; F3 ← A3+domain |
-| lane-7-docs | E2 complete, all merged | parked | E2.5 README ← A3 |
+| lane-6-assets-infra | F1+F2+E3a merged | E3b (woken) | F3 ← A3+domain |
+| lane-7-docs | E2 complete | CLAUDE.md §Versions update (woken) | E2.5 ← A3 |
 | playtest | — | Harness Phase 1 | |
