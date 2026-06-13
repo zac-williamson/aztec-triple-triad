@@ -399,3 +399,10 @@ on 4.3.1. NOTE for go-live hygiene: the committed `packages/frontend/public/`
 contract/circuit copies lag `target/` after contract changes — the harness syncs
 them at boot, but lane-6/the build should commit them in sync (or gitignore the
 public build outputs).
+
+### Attempt 8 — confirmation pass GREEN ✅
+
+Second consecutive fresh-stack green on 4.3.1 (`2 passed`, 5.9m), run to rule out
+the earlier intermittent deploy fee-headroom race — it did NOT recur (deploy: 0
+`-32702`, clean settle on-chain + loser +20). Two consecutive green (att.7 6.3m,
+att.8 5.9m) → A1+A2 upgrade validated repeatably; harness ready to merge.
