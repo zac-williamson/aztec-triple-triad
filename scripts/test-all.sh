@@ -69,69 +69,85 @@ header "Integration (proof generation)"
 cd "$ROOT/packages/integration"
 run_or_fail npx vitest run
 
-# ── Contract tests (TXE) ────────────────────────────────
-header "Starting TXE"
+# ── Noir toolchain (pinned via .aztecrc) ────────────────
+# The bare `aztec`/`nargo` on PATH can silently resolve to a different
+# installed version (.aztecrc is only honored in $PWD; bare nargo lives in
+# internal-bin, off PATH — docs/plan/LANE_1_CHAIN.md ASSUMPTIONS #3/#4).
+# Always use the versioned binaries for the pinned toolchain.
+AZTEC_VERSION="$(grep -v '^#' "$ROOT/.aztecrc" | tr -d '[:space:]')"
+AZTEC_BIN="$HOME/.aztec/versions/$AZTEC_VERSION/bin"
 
-TXE_BIN="/Users/zac/.aztec/current/node_modules/.bin/txe"
-if [[ ! -x "$TXE_BIN" ]]; then
-  echo "  TXE not found at $TXE_BIN -- skipping contract tests"
-  echo "  Install Aztec toolchain to enable contract tests"
-else
-  # Ensure contracts are compiled with AVM transpilation
-  if [[ ! -f "$ROOT/packages/contracts/target/arena_token-ArenaToken.json" ]]; then
-    echo "  Compiling contracts (aztec compile)..."
-    cd "$ROOT/packages/contracts"
-    aztec compile
-  fi
+if [[ ! -x "$AZTEC_BIN/aztec" ]]; then
+  echo "ERROR: Aztec toolchain $AZTEC_VERSION not found at $AZTEC_BIN"
+  echo "Install it with: VERSION=$AZTEC_VERSION bash <(curl -fsSL https://install.aztec.network)"
+  exit 1
+fi
 
-  # Ensure cross-crate symlinks exist
-  cd "$ROOT/packages/contracts/target"
-  ln -sf arena_token-ArenaToken.json triple_triad_nft-ArenaToken.json 2>/dev/null || true
-  ln -sf arena_token-ArenaToken.json triple_triad_game-ArenaToken.json 2>/dev/null || true
-  ln -sf triple_triad_nft-TripleTriadNFT.json triple_triad_game-TripleTriadNFT.json 2>/dev/null || true
-
-  # Kill any existing TXE
-  pkill -f "txe" 2>/dev/null || true
-  sleep 1
-
-  TXE_PORT=$TXE_PORT "$TXE_BIN" &
+TXE_LAUNCH_COUNT=0
+start_txe() {
+  TXE_LAUNCH_COUNT=$((TXE_LAUNCH_COUNT + 1))
+  local logfile="/tmp/txe-$$-$TXE_LAUNCH_COUNT.log"
+  "$AZTEC_BIN/aztec" start --txe --port "$TXE_PORT" > "$logfile" 2>&1 &
   TXE_PID=$!
   CLEANUP_PIDS+=("$TXE_PID")
-  sleep 3
+  # Ready = process still alive AND the port actually accepts a connection.
+  # Don't trust the "listening" log line alone — verify reachability, and bail
+  # immediately (with the log) if the process dies, rather than waiting 60s.
+  for _ in $(seq 1 60); do
+    if ! kill -0 "$TXE_PID" 2>/dev/null; then
+      echo "ERROR: TXE process exited during startup on port $TXE_PORT:"
+      cat "$logfile"
+      exit 1
+    fi
+    if grep -q "listening on port $TXE_PORT" "$logfile" \
+       && curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$TXE_PORT"; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "ERROR: TXE did not become ready on port $TXE_PORT within 60s:"
+  cat "$logfile"
+  exit 1
+}
 
-  if ! curl -s "http://127.0.0.1:$TXE_PORT" >/dev/null 2>&1; then
-    echo "  TXE failed to start -- skipping contract tests"
-  else
-    echo "  TXE ready on port $TXE_PORT"
+stop_txe() {
+  kill "$TXE_PID" 2>/dev/null || true
+  wait "$TXE_PID" 2>/dev/null || true
+}
 
-    header "ArenaToken contracts"
-    cd "$ROOT/packages/contracts/arena_token"
-    run_or_fail nargo test --oracle-resolver "http://127.0.0.1:$TXE_PORT"
+header "Circuit tests"
+cd "$ROOT/circuits"
+run_or_fail "$AZTEC_BIN/aztec-nargo" test
 
-    # Restart TXE between contract suites (avoids state bleed)
-    kill "$TXE_PID" 2>/dev/null || true
-    sleep 2
-    TXE_PORT=$TXE_PORT "$TXE_BIN" &
-    TXE_PID=$!
-    CLEANUP_PIDS+=("$TXE_PID")
-    sleep 3
-
-    header "TripleTriadNFT contracts"
-    cd "$ROOT/packages/contracts/triple_triad_nft"
-    run_or_fail nargo test --oracle-resolver "http://127.0.0.1:$TXE_PORT"
-
-    kill "$TXE_PID" 2>/dev/null || true
-    sleep 2
-    TXE_PORT=$TXE_PORT "$TXE_BIN" &
-    TXE_PID=$!
-    CLEANUP_PIDS+=("$TXE_PID")
-    sleep 3
-
-    header "TripleTriadGame contracts"
-    cd "$ROOT/packages/contracts/triple_triad_game"
-    run_or_fail nargo test --oracle-resolver "http://127.0.0.1:$TXE_PORT"
-  fi
+# ── Contract tests (TXE) ────────────────────────────────
+# Ensure contracts are compiled with AVM transpilation
+if [[ ! -f "$ROOT/packages/contracts/target/arena_token-ArenaToken.json" ]]; then
+  echo "  Compiling contracts (aztec compile)..."
+  cd "$ROOT/packages/contracts"
+  "$AZTEC_BIN/aztec" compile
 fi
+
+# Each contract package gets a fresh TXE — suites assume clean TXE state.
+# --test-threads 1: parallel test functions race TXE's per-test LMDB store
+# setup (mdb_txn_begin EINVAL under load) — same serial-execution constraint
+# as PXE (ground rule #6). Diagnosis in LANE_6_ASSETS_INFRA.md ASSUMPTIONS.
+header "ArenaToken contracts"
+start_txe
+cd "$ROOT/packages/contracts/arena_token"
+run_or_fail "$AZTEC_BIN/aztec-nargo" test --test-threads 1 --oracle-resolver "http://127.0.0.1:$TXE_PORT"
+stop_txe
+
+header "TripleTriadNFT contracts"
+start_txe
+cd "$ROOT/packages/contracts/triple_triad_nft"
+run_or_fail "$AZTEC_BIN/aztec-nargo" test --test-threads 1 --oracle-resolver "http://127.0.0.1:$TXE_PORT"
+stop_txe
+
+header "TripleTriadGame contracts"
+start_txe
+cd "$ROOT/packages/contracts/triple_triad_game"
+run_or_fail "$AZTEC_BIN/aztec-nargo" test --test-threads 1 --oracle-resolver "http://127.0.0.1:$TXE_PORT"
+stop_txe
 
 # ── Summary ──────────────────────────────────────────────
 header "Summary"

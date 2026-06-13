@@ -13,7 +13,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "copy-circuits": "mkdir -p public/circuits && cp ../../circuits/target/prove_hand.json ../../circuits/target/game_move.json ../../circuits/target/dummy_move.json public/circuits/",
+    "copy-circuits": "mkdir -p public/circuits && cp ../../circuits/target/prove_hand.json ../../circuits/target/game_move.json ../../circuits/target/dummy_move.json ../../circuits/target/dummy_hand.json public/circuits/",
     "copy-contracts": "mkdir -p public/contracts && cp ../../packages/contracts/target/triple_triad_nft-TripleTriadNFT.json ../../packages/contracts/target/triple_triad_game-TripleTriadGame.json ../../packages/contracts/target/arena_token-ArenaToken.json public/contracts/"
   },
   "dependencies": {
