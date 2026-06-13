@@ -27,6 +27,7 @@ pub unconstrained fn setup_game() -> (TestEnvironment, AztecAddress, AztecAddres
 
     // Deploy TripleTriadGame (vk hashes are dummy values for TXE tests)
     let game_init = TripleTriadGame::interface().constructor(
+        admin,
         nft_addr,
         1,     // hand_vk_hash (dummy)
         2,     // move_vk_hash (dummy)
