@@ -38,10 +38,15 @@ test('full click-driven game settles correctly across all three layers', async (
   if (!stack.addresses) throw new Error('stack.json has no contract addresses — setup incomplete');
 
   // ── Onboarding: two isolated tabs, each with its own embedded PXE ──────
+  // SERIAL on purpose: devnet auto-funding bridges from one hardcoded anvil
+  // account (fundDevnet.ts), so two concurrent onboardings race on the same
+  // ERC20 allowance (approve/deposit interleave → ERC20InsufficientAllowance,
+  // seen in run 8). Finding reported to lane 2; the campaign schedules
+  // onboardings sequentially, as real players arrive.
   const alice = await newDriver(browser, 'alice', stack.logsDir);
+  const alicePhase = await alice.waitConnected();
   const bob = await newDriver(browser, 'bob', stack.logsDir);
-
-  const [alicePhase, bobPhase] = await Promise.all([alice.waitConnected(), bob.waitConnected()]);
+  const bobPhase = await bob.waitConnected();
   expect(alicePhase.accountAddress).not.toBeNull();
   expect(bobPhase.accountAddress).not.toBeNull();
   expect(alicePhase.accountAddress).not.toEqual(bobPhase.accountAddress);
