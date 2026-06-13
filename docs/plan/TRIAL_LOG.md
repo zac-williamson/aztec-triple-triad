@@ -429,3 +429,15 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   too, mirror P1. loser-token sentinel stays expect-pass (didn't run; serial skip after test 1).
 - playtest blocked pending this lane-2 fix; re-runs attempt 5 after. (Stale-monitor-timeout
   noise from completed runs is harmless; agent ignores it.)
+
+## 06-13 — F3 backend provisioning underway
+- SSH validated to the existing EC2 box (13.42.161.225, Ubuntu 26.04, ~4GB/17G free) via
+  aztec_deploy after Zac pasted the pubkey through EC2 Instance Connect. EIP held across a
+  stop/start (no key reactivation needed).
+- provision-and-go.sh running DETACHED on the box (WS_DOMAIN=ws.aztec-arena.com,
+  FRONTEND_ORIGIN=https://www.aztec-arena.com, LE_EMAIL=zac@aztec.foundation), log /tmp/provision.log.
+  Background watcher bvzsgew7b notifies on completion.
+- DNS GAP: ws.aztec-arena.com still resolves to 16.60.85.104 (OLD instance), not 13.42.161.225 →
+  certbot auto-skips this run. Zac to update the A record → 13.42.161.225; then I finish TLS.
+- Frontend (Vercel) go-live still held until playtest acceptance is green (lane-2 on the 3rd
+  settlement bug, P2/joiner board race).
