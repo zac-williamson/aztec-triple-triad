@@ -85,6 +85,13 @@ export function parseL2Addresses(args: string[]): string[] {
   return out;
 }
 
+/** Parse an `eth_chainId` JSON-RPC hex result (e.g. "0xaa36a7") to a number. */
+export function parseChainIdHex(hex: string): number {
+  const n = Number.parseInt(hex, 16);
+  if (!Number.isInteger(n) || n <= 0) throw new Error(`Invalid eth_chainId result: ${hex}`);
+  return n;
+}
+
 /** Serialize a runtime claim for persistence. */
 export function serializeClaim(
   l2Address: string,
@@ -234,9 +241,25 @@ export async function bridgeFeeJuice(params: BridgeParams): Promise<FeeJuiceClai
 
   const l2 = AztecAddress.fromString(l2Address);
 
-  // createExtendedL1Client accepts a raw private key (not just a mnemonic) and
-  // auto-detects the chain from the RPC's eth_chainId, so no chain arg needed.
-  const l1Client = createExtendedL1Client([l1RpcUrl], funderKey);
+  // Determine the L1 chain id from the RPC and pass it EXPLICITLY. Without a
+  // chain, createExtendedL1Client defaults to Anvil's 31337, so any non-Anvil L1
+  // (e.g. Sepolia) rejects the signed tx with "invalid chain id for signer".
+  // Reads (getMintAmount) don't sign, so this only bites the bridge write.
+  const { defineChain } = await import('viem');
+  const chainIdResp: any = await fetch(l1RpcUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_chainId', params: [], id: 1 }),
+  }).then((r) => r.json());
+  const chainId = parseChainIdHex(chainIdResp.result);
+  log(`L1 chain id: ${chainId}`);
+  const chain = defineChain({
+    id: chainId,
+    name: `l1-${chainId}`,
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    rpcUrls: { default: { http: [l1RpcUrl] } },
+  });
+  const l1Client = createExtendedL1Client([l1RpcUrl], funderKey, chain);
 
   const portalManager = await L1FeeJuicePortalManager.new(node, l1Client, {
     info: log,
@@ -246,8 +269,43 @@ export async function bridgeFeeJuice(params: BridgeParams): Promise<FeeJuiceClai
     verbose: () => {},
   } as any);
 
-  log(`Bridging Fee Juice -> ${l2Address.slice(0, 18)}... (mint via FeeAssetHandler)`);
-  const result = await portalManager.bridgeTokensPublic(l2, undefined, true);
+  // Ensure the funder holds enough Fee Juice ERC20, THEN bridge with mint=false.
+  //
+  // We do NOT use bridgeTokensPublic(..., mint=true): that path calls the SDK's
+  // tokenManager.mint(), which submits the mint tx but (unlike approve/deposit)
+  // does NOT await its receipt, so the immediately-following approve races it on
+  // the nonce. On a load-balanced RPC the approve's nonce is computed from a
+  // backend that hasn't seen the pending mint and reuses the mint's nonce ->
+  // "replacement transaction underpriced". Instead we mint (if needed) and poll
+  // the ERC20 balance until it lands (proving the mint mined), then bridge the
+  // existing balance with mint=false — where approve() awaits its receipt before
+  // the deposit, so the two are correctly sequenced on ANY RPC.
+  const tokenManager = portalManager.getTokenManager();
+  const target: bigint = await tokenManager.getMintAmount();
+  const funderAddr: string = l1Client.account.address;
+  let bal: bigint = await tokenManager.getL1TokenBalance(funderAddr as any);
+  if (bal < target) {
+    log(`Funder Fee Juice ERC20 balance ${bal} < ${target}; minting...`);
+    await tokenManager.mint(funderAddr as any);
+    let landed = false;
+    for (let i = 0; i < 90; i++) {
+      bal = await tokenManager.getL1TokenBalance(funderAddr as any);
+      if (bal >= target) {
+        landed = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (!landed) {
+      throw new Error(`Mint did not land: funder balance ${bal} < ${target} after wait.`);
+    }
+    log(`Mint confirmed; funder balance ${bal}.`);
+  } else {
+    log(`Funder already holds ${bal} Fee Juice ERC20 (>= ${target}); skipping mint.`);
+  }
+
+  log(`Bridging ${target} Fee Juice -> ${l2Address.slice(0, 18)}... (mint=false)`);
+  const result = await portalManager.bridgeTokensPublic(l2, target, false);
   log(`Bridged. claimAmount=${result.claimAmount} leafIndex=${result.messageLeafIndex}`);
 
   const claim: FeeJuiceClaim = {

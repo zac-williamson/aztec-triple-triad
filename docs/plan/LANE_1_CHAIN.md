@@ -219,3 +219,45 @@ compiled JSON into `frontend/public/contracts/`, and answering proof-shape quest
     `tsc` clean against 4.3.1, and `FeeJuicePaymentMethodWithClaim`'s ctor is
     unchanged from 4.2 (`(sender, Pick<L2AmountClaim,
     'claimAmount'|'claimSecret'|'messageLeafIndex'>)`) — no funder API drift.
+
+### A3 — testnet deploy EXECUTED (2026-06-13)
+
+20. **Deployed to the live 4.3.1 testnet (Sepolia L1).** One-key funding + the
+    claim-gap fix worked end to end. Addresses (also in
+    packages/frontend/.env.testnet + README §Testnet):
+    - Deployer: `0x2ddf3c4fdbb8a954343f3bc3c8cd455b2b66256eedbd1a8164c2033a1ac5026e`
+    - NFT:   `0x0e42ec512f2a63e47d43ed2824628dff4fc5a38873d87afa261768e2c1278f7c`
+    - Game:  `0x2325ef2879aed75990c6190b6db3ac455f8737cc18ab2133cd7acdfd8c3af4ec`
+    - Token: `0x1851bd7c15d78bf29e159f3db3ab871dad80e8891922357d529bb0d8ebb22de8`
+    Verified: node_getNodeInfo nodeVersion=4.3.1, l1ChainId=11155111; Game
+    instance published on-chain; `get_game_status(123456)` returns cleanly
+    (live + queryable). Deployer keys at ~/.aztec-triad-private/
+    deployer-testnet-key.txt (600, uncommitted); claim store likewise outside
+    the repo. NOTE: deploy-testnet.ts writes the gitignored `.env`; the tracked
+    config is `.env.testnet`, updated by hand here.
+21. **Two SDK-integration bugs found via the live deploy (fixed in
+    feeJuiceBridge.ts):**
+    - `createExtendedL1Client` does NOT auto-detect the chain (my earlier
+      ASSUMPTION #14 was WRONG): with no chain it defaults to Anvil's 31337, so
+      Sepolia rejects the signed tx ("invalid chain id for signer: have 31337
+      want 11155111"). Fixed by reading the L1 chain id from the RPC
+      (eth_chainId) and passing an explicit `defineChain`. Reads don't sign, so
+      the mint-amount probe had worked — only the bridge write failed.
+    - The SDK's `tokenManager.mint()` submits its tx but does NOT await the
+      receipt (unlike approve/deposit), so `bridgeTokensPublic(..., mint=true)`
+      fires the approve before the mint mines → nonce collision → "replacement
+      transaction underpriced" on the load-balanced publicnode RPC (the approve's
+      nonce came from a backend that hadn't seen the pending mint). Fixed by
+      NOT using mint=true: ensure the funder holds the Fee Juice ERC20 (mint +
+      poll-until-balance-lands only if needed), then bridge with mint=false,
+      where approve() awaits its receipt before the deposit — race-free on any
+      RPC. publicnode.com was fine once the un-awaited mint was removed, so no
+      RPC change was needed.
+22. **Serialized deploy-testnet's concurrent PXE ops** (ground rule: SERIAL per
+    wallet). NFT+Token deploy, registerSender batch, and the 4 wiring txs were
+    `Promise.all` — now sequential awaits. The VK-hash `Promise.all` is bb.js
+    (not a wallet op) and left parallel. With real proofs each tx took ~1-2 min;
+    all 8 txs (account + 3 deploys + 4 wiring) landed with revertCode 0.
+23. **Cross-lane touches (A3, orchestrator-directed):** README.md (Lane 7) and
+    packages/frontend/.env.testnet (frontend) — both explicitly in the A3
+    instructions; flagged for those lanes at the merge gate.
