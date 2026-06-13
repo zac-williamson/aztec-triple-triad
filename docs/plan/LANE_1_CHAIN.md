@@ -440,3 +440,34 @@ compiled JSON into `frontend/public/contracts/`, and answering proof-shape quest
     21-field (pre-C2) and 23-field (mask-era) preimages. Lane 2 must revert its
     note-28 mask code and mirror original-owners (LANE_2_FRONTEND.md note 30); not
     end-to-end until that lands in the same merge.
+
+### Go-live: address-preserving testnet class update (2026-06-13)
+
+41. **Updated the live game contract to the round-2 class WITHOUT address churn**
+    via `scripts/update-game-class-testnet.ts` (admin = deployer). Flow: compute
+    the new class id from the artifact, `publishContractClass` (register the new
+    class on-chain), then the instance's admin-only `update_to(new_class_id)`.
+    - Instance (UNCHANGED): `0x2d8675fc746e38ff6606cae2836c0cd0fa1693b12edb56396f83a530109b75f4`
+      — so `.env.testnet` + README addresses do NOT change.
+    - New (round-2) class id: `0x1e841b1e5554e2b647d3cf92b27354fff0ea947d49c7b7a63a9aff67cf13f690`.
+    - Old (pre-C2 owner-blind) class: `0x236405f73a97cc46d12399783b508719184a9fff108d8f10e8c553e047335e3f`.
+    - Txs (both mined/checkpointed): publish `0x24b5bafb…` (block 114432),
+      `update_to` `0x15fe07cf…` (block 114433).
+42. **The instance update delay is 86400s (24h), NOT 600s.** `set_update_delay(600)`
+    in `deploy-testnet.ts` is below the protocol-enforced minimum, so the registry
+    applied 86400s. From the `ContractInstanceUpdatedEvent.timestampOfChange`, the
+    class flips at **unix 1781477988 = 2026-06-14T22:59:48Z** (~24h after update_to).
+    Until then `currentContractClassId` stays the old class (verified). Re-run
+    `scripts/verify-game-update-testnet.ts` after that time to confirm the flip
+    (single getContract query, no polling). **Implication for go-live: playtest
+    attempt 7 against testnet can't exercise the fix until ~24h out** — local
+    sandbox is unaffected. To shorten future class swaps, raise the deploy's
+    `set_update_delay` understanding (the floor here is 24h on this rollup).
+43. **To CALL `update_to` on the live instance you must register it with the
+    DEPLOYED (old) artifact** — the PXE validates the artifact against the
+    instance's current class. The script loads it from `DEPLOYED_ARTIFACT`
+    (default `/tmp/ttg_deployed.json`); regenerate with
+    `git show 321f73c:packages/contracts/target/triple_triad_game-TripleTriadGame.json`.
+    `update_to` is identical across both classes, so calling via the old artifact
+    is correct. Pitfall avoided: `.send({…wait})` already resolves to the receipt —
+    do not chain `.wait()`.
