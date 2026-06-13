@@ -227,6 +227,20 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
     (useGameSettlement — relay/import the loser's token note like the cards;
     main.nr:703-706 mints to both). Fix flips the sentinel green.
 
+- 06-13 — **4.3.1 ACCEPTANCE GATE CAUGHT UPGRADE BREAKAGE** (playtest, in flight):
+  merged 4.3.1 into lane/8-playtest clean, switched local stack to 4.3.1,
+  re-running full-game campaign → something in the A1/A2 migration broke
+  end-to-end. playtest diagnosing; this is the gate doing its job BEFORE A3 hits
+  real testnet. Await its report (do not un-park contract lanes until we know
+  what broke).
+- **loser-token bug re-routed**: lane-2 found it is NOT frontend-only — ArenaToken
+  has no import_note / randomness-revealing fn, so the loser's PXE can't import
+  the reward note. Contract gap → **lane-1** (add a discoverable-note path to
+  ArenaToken mirroring the NFT contract's create_and_push_note + import_note
+  tagging); lane-2 wires the frontend import after. Queued for lane-1 AFTER the
+  playtest breakage diagnosis (avoid concurrent contract churn). lane-2 hit a
+  transient API socket error mid-task; resumed.
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -280,4 +294,4 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
 | lane-6-assets-infra | all merged + CI wiring | parked | F3 ← A3+domain; F1b ← end-of-cycle |
 | lane-7-docs | all items merged | parked | E2.5 ← A3 |
-| playtest | Phase 1 done (4.2); not merged | 4.3.1 acceptance re-run | = A1/A2 acceptance gate |
+| playtest | 4.3.1 acceptance run IN FLIGHT — caught breakage | diagnosing | report awaited |
