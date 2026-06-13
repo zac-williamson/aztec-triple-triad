@@ -206,6 +206,12 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   unset (vs silent hardcoded-default-key fallback). Rebase onto post-A2 4.3.1
   + re-typecheck.
 
+- 22:0x — **funder MERGED after bounce** (`b36f101`): test:scripts green (8/1skip,
+  no spurious suite), deploy-testnet loud-fails on missing DEPLOYER_* + no secret
+  echo, rebased+re-typechecked on 4.3.1. Shared feeJuiceBridge core (reusable by
+  I + D2). Lane-1 PARKED (A3 ← treasury Sepolia ETH + lane-8 acceptance).
+  Lane-6 un-parked for the one-line `npm run test:scripts` CI wiring.
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -252,11 +258,11 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
-| lane-1-chain | A1/A1.5/QA-F1 merged | fund-testnet.ts + deploy claim-fix | A3 ← Zac funds 0xDA74…EAa2 + lane-8 acceptance |
+| lane-1-chain | funder merged (b36f101) | parked | A3 ← Zac funds 0xDA74…EAa2 + lane-8 acceptance |
 | lane-2-frontend | all queued merged (e502768) | parked | I (faucet onboarding) ← A3 |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
-| lane-6-assets-infra | F1/F2/E3a/E3b merged (ef533cd) | parked | F3 ← A3+domain; F1b ← end-of-cycle |
+| lane-6-assets-infra | merged (ef533cd) | test:scripts CI wiring | F3 ← A3+domain |
 | lane-7-docs | all items merged | parked | E2.5 ← A3 |
 | playtest | — | Harness Phase 1 | |
