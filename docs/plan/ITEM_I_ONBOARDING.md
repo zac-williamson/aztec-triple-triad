@@ -112,10 +112,19 @@ frontend abstraction points at it and we skip the backend + treasury entirely.
 
 ## Go/no-go questions for the orchestrator / Zac
 
-1. **Funding source:** Option B (backend treasury faucet — reliable, needs a funded
-   Sepolia treasury + a Lane 4 endpoint) or first verify Option C (a hosted faucet
-   API that returns a consumable claim — frontend-only if it exists)?
-2. If B: is Zac willing to fund + top up a Sepolia treasury, and what abuse limits
-   (one claim/address + per-IP/day) are acceptable?
+> **Update (orchestrator, 2026-06-13):** the Sepolia **treasury already exists and is
+> funded (~0.4 ETH)**, and `bridgeFeeJuice` is proven (used by `deploy-testnet`), so
+> **Option B is ~90% there** — what remains is the Lane-4 `/faucet` endpoint + abuse
+> limits, and the one real tradeoff to weigh: **Option B puts `TREASURY_L1_KEY` on the
+> backend** (mitigations: dedicated low-balance hot treasury, per-address/IP rate
+> limits, capped mint amount). Go/no-go + launch priority are Zac's call; surfaced to
+> him. Lane 2 is parked until the decision lands.
+
+1. **Funding source:** Option B (backend treasury faucet — reliable, treasury already
+   funded; remaining: Lane-4 endpoint + the backend-key security tradeoff) or first
+   verify Option C (a hosted faucet API that returns a consumable claim — frontend-only
+   if it exists)?
+2. If B: acceptable abuse limits (one claim/address + per-IP/day) and hot-treasury
+   balance cap?
 3. Priority: item I is non-gating for F3 — slot it before launch for the demo's
    first-minute, or fast-follow after F3?
