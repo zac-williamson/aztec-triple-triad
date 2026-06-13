@@ -348,8 +348,15 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
       }
     }
 
-    // boardBefore for the proof = the exact board the move is applied to.
-    const boardBefore = ws.gameState.board;
+    // Capture the pre-move board as a DEEP CLONE at click time. Move-proof
+    // generation is async/queued, so passing the live ws.gameState.board into
+    // it lets a later board update change what the proof encodes → game_move
+    // "Card already placed". (P1's early moves go through the deferred path,
+    // which already clones at queue time; P2/the joiner moves with both hand
+    // proofs ready and hits THIS immediate path — same bug, different player.)
+    // Nothing below reads live ws.gameState.board.
+    const preMoveState: GameState = { ...ws.gameState, board: structuredClone(ws.gameState.board) };
+    const boardBefore = preMoveState.board;
 
     ws.placeCard(handIndex, row, col);
 
@@ -357,9 +364,9 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
       try {
         const { placeCard: applyMove } = await import('@axolotl-arena/game-logic');
         const myPlayer = ws.playerNumber === 1 ? 'player1' : 'player2';
-        const result = applyMove(ws.gameState, myPlayer, handIndex, row, col);
+        const result = applyMove(preMoveState, myPlayer, handIndex, row, col);
         const boardAfter = result.newState.board;
-        const scoresBefore: [number, number] = [ws.gameState.player1Score, ws.gameState.player2Score];
+        const scoresBefore: [number, number] = [preMoveState.player1Score, preMoveState.player2Score];
         const scoresAfter: [number, number] = [result.newState.player1Score, result.newState.player2Score];
         const gameEnded = result.newState.status === 'finished';
         const winnerId = mapWinnerId(result.newState.winner);
@@ -373,16 +380,17 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
           );
           ws.submitMoveProof(ws.gameId, handIndex, row, col, moveProof, moveNumber);
         } else {
-          // Capture the full pre-move state (deep-cloned board) so the deferred
-          // processor replays against the exact board, hands, scores, and turn
-          // the player acted on — independent of later ws.gameState changes.
+          // Queue the full pre-move state (the board is already a deep clone)
+          // so the deferred processor replays against the exact board, hands,
+          // scores, and turn the player acted on — independent of later
+          // ws.gameState changes.
           pendingMovesRef.current.push({
             card,
-            board: structuredClone(ws.gameState.board),
-            p1Hand: [...ws.gameState.player1Hand],
-            p2Hand: [...ws.gameState.player2Hand],
-            scores: [ws.gameState.player1Score, ws.gameState.player2Score],
-            currentTurn: ws.gameState.currentTurn,
+            board: preMoveState.board,
+            p1Hand: [...preMoveState.player1Hand],
+            p2Hand: [...preMoveState.player2Hand],
+            scores: [preMoveState.player1Score, preMoveState.player2Score],
+            currentTurn: preMoveState.currentTurn,
             handIndex, row, col, moveNumber,
           });
         }

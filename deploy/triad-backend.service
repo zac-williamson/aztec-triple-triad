@@ -6,7 +6,10 @@ Requires=redis-server.service
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/aztec-triple-triad/packages/backend
+# __REPO_DIR__ is substituted by the provision script (sed) with the actual
+# clone dir ($HOME/axolotl-arena-server by default). Do not hardcode a repo
+# name here — the clone target is parameterized via $REPO_DIR.
+WorkingDirectory=__REPO_DIR__/packages/backend
 
 # Environment file holds REDIS_URL, WS_PORT, ALLOWED_ORIGINS, NODE_ENV.
 # See deploy/triad-backend.env.example for the template.

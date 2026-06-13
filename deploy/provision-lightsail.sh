@@ -56,6 +56,7 @@ npm run build --workspace=@axolotl-arena/backend
 
 echo "=== 4. Install systemd unit ==="
 sudo cp deploy/triad-backend.service /etc/systemd/system/triad-backend.service
+sudo sed -i "s|__REPO_DIR__|${REPO_DIR}|g" /etc/systemd/system/triad-backend.service
 sudo systemctl daemon-reload
 echo "systemd unit installed. NOT started yet — you still need to:"
 echo "  sudo cp deploy/triad-backend.env.example /etc/triad-backend.env"

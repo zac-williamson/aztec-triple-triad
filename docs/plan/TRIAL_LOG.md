@@ -412,3 +412,32 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - playtest re-running 4.3.1 acceptance — expect green (settlement reaches 9/9, loser-token
   test.fail flips). If green: full A1+A2 upgrade validated E2E → merge the harness (capstone).
 - lane-2 parked (item I faucet-onboarding available, not gating). lane-7 all done.
+
+## 06-13 — Vercel token secured
+- Zac-provided token validated (HTTP 200, zac-williamson), moved to
+  ~/.aztec-triad-private/vercel-token.txt (600), plaintext ./vercel.txt deleted,
+  vercel*.txt gitignored. Usage: read into VERCEL_TOKEN env at deploy, never commit/print.
+- F3 Vercel half now UNBLOCKED. F3 remaining: (1) playtest 4.3.1 acceptance green (re-running),
+  (2) backend EC2 instance IP + running-confirmation from Zac (eu-west-2; key ~/.ssh/aztec_deploy).
+  Holding actual go-live publish until acceptance green AND backend reachable (no premature publish).
+
+## 06-13 — playtest attempt 4: 3rd settlement bug caught (P2/joiner board race)
+- Validated working on 4.3.1: deploy fee headroom (lane-1) ✓, deferred-move fix for P1 ✓.
+- NEW finding (real, gate-caught): P2/joiner move proofs re-read ws.gameState.board at proof
+  time → 0/4 proofs ("Card already placed") → no 9/9 → canSettle stalls. P1 unaffected (it
+  captures the pre-move board at click time). → lane-2: capture pre-move board for joiner path
+  too, mirror P1. loser-token sentinel stays expect-pass (didn't run; serial skip after test 1).
+- playtest blocked pending this lane-2 fix; re-runs attempt 5 after. (Stale-monitor-timeout
+  noise from completed runs is harmless; agent ignores it.)
+
+## 06-13 — F3 backend provisioning underway
+- SSH validated to the existing EC2 box (13.42.161.225, Ubuntu 26.04, ~4GB/17G free) via
+  aztec_deploy after Zac pasted the pubkey through EC2 Instance Connect. EIP held across a
+  stop/start (no key reactivation needed).
+- provision-and-go.sh running DETACHED on the box (WS_DOMAIN=ws.aztec-arena.com,
+  FRONTEND_ORIGIN=https://www.aztec-arena.com, LE_EMAIL=zac@aztec.foundation), log /tmp/provision.log.
+  Background watcher bvzsgew7b notifies on completion.
+- DNS GAP: ws.aztec-arena.com still resolves to 16.60.85.104 (OLD instance), not 13.42.161.225 →
+  certbot auto-skips this run. Zac to update the A record → 13.42.161.225; then I finish TLS.
+- Frontend (Vercel) go-live still held until playtest acceptance is green (lane-2 on the 3rd
+  settlement bug, P2/joiner board race).
