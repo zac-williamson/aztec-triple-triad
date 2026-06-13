@@ -66,7 +66,7 @@ test('full click-driven game settles correctly across all three layers', async (
   expect(byNumber.size, 'server assigned distinct player numbers').toBe(2);
 
   // ── Play all 9 moves via real canvas clicks, cross-checking every board ─
-  const mirror = await ExpectedGame.create(STARTER_CARDS, STARTER_CARDS);
+  const mirror = new ExpectedGame(STARTER_CARDS, STARTER_CARDS);
 
   for (let moveNumber = 0; moveNumber < 9; moveNumber++) {
     const player = mirror.state.currentTurn;
