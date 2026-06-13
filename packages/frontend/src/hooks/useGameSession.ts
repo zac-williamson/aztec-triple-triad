@@ -307,7 +307,7 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
     const senderAddr = AztecAddress.fromString(addr);
     const chainGameIdFr = toFrUtil(Fr, chainGameId);
 
-    // PXE does not support concurrent simulate() calls (see IDB_TRANSACTION_ERROR_REPORT.md)
+    // PXE does not support concurrent simulate() calls (see docs/history/IDB_TRANSACTION_ERROR_REPORT.md)
     const { result: nonceResult } = await nftContract.methods.get_note_nonce(senderAddr).simulate({ from: senderAddr });
     const { result: blindingResult } = await nftContract.methods.compute_blinding_factor(chainGameIdFr).simulate({ from: senderAddr });
     const nonceFr = toFrUtil(Fr, nonceResult);
