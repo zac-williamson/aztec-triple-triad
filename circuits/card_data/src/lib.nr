@@ -2,263 +2,304 @@
 /// 256 cards with ranks [top, right, bottom, left], IDs 1-256.
 ///
 /// Used by both prove_hand and game_move circuits.
+///
+/// Stored as a flat lookup table: the previous 256-arm nested if/else
+/// expression overflows noirc's TYPE_RECURSION_LIMIT (100) during
+/// type-checking on nargo 1.0.0-beta.21 whenever another dependency
+/// (e.g. poseidon) shares the compilation unit.
+global CARD_RANKS: [[Field; 4]; 256] = [
+    [1, 4, 1, 5], // 1 Mudwalker
+    [5, 1, 1, 3], // 2 Blushy
+    [1, 3, 3, 5], // 3 Snowdrop
+    [6, 1, 1, 2], // 4 Sunny
+    [2, 3, 1, 5], // 5 Inkwell
+    [2, 1, 4, 4], // 6 Stripes
+    [1, 5, 4, 1], // 7 Barkeeper
+    [3, 1, 5, 2], // 8 Dotty
+    [2, 1, 6, 1], // 9 Penny
+    [4, 3, 2, 4], // 10 Peaches
+    [2, 6, 1, 6], // 11 Freckles
+    [7, 1, 3, 1], // 12 Camo
+    [6, 2, 2, 3], // 13 Neon
+    [5, 3, 3, 4], // 14 Glow Bug
+    [6, 1, 4, 3], // 15 Limelight
+    [3, 4, 5, 3], // 16 Marble
+    [5, 3, 2, 5], // 17 Sapphire
+    [5, 1, 3, 5], // 18 Jefferson
+    [5, 2, 5, 2], // 19 Longfoot
+    [4, 2, 4, 5], // 20 Featherfin
+    [3, 7, 2, 5], // 21 Lilac
+    [5, 2, 5, 5], // 22 Patches
+    [6, 6, 3, 3], // 23 Faded
+    [6, 3, 6, 3], // 24 Gold Dust
+    [3, 5, 5, 5], // 25 Phantom
+    [7, 5, 1, 3], // 26 Ash
+    [7, 1, 5, 3], // 27 Cocoa
+    [5, 3, 6, 3], // 28 Ringmaster
+    [5, 6, 2, 4], // 29 Goldrush
+    [4, 4, 7, 2], // 30 Swampling
+    [3, 6, 4, 7], // 31 Glitter
+    [7, 2, 3, 7], // 32 Starfield
+    [2, 3, 7, 7], // 33 Specter
+    [6, 5, 5, 5], // 34 Saffron
+    [4, 7, 6, 2], // 35 Stardust
+    [2, 3, 7, 8], // 36 Achoque
+    [1, 7, 6, 4], // 37 Zacapu
+    [7, 3, 1, 6], // 38 Laguna
+    [7, 4, 4, 4], // 39 Streamwalker
+    [3, 7, 3, 6], // 40 Digger
+    [6, 7, 3, 7], // 41 Eclipse
+    [6, 5, 8, 4], // 42 Kaleidoscope
+    [6, 5, 6, 6], // 43 Twinned
+    [3, 6, 7, 8], // 44 Sparkletail
+    [7, 6, 5, 6], // 45 Riddler
+    [3, 10, 2, 1], // 46 Rosita
+    [6, 2, 6, 7], // 47 Brooklet
+    [5, 5, 7, 6], // 48 Whisper
+    [7, 7, 4, 2], // 49 Misty
+    [7, 2, 7, 4], // 50 Lerma
+    [4, 2, 6, 3], // 51 Puddle
+    [2, 5, 3, 6], // 52 Trickle
+    [5, 1, 4, 5], // 53 Dewdrop
+    [2, 4, 1, 6], // 54 Sprout
+    [3, 2, 4, 5], // 55 Nibbles
+    [4, 2, 5, 2], // 56 Pebble
+    [2, 1, 5, 5], // 57 Clover
+    [6, 1, 6, 3], // 58 Dapple
+    [5, 1, 6, 3], // 59 Flicker
+    [1, 5, 2, 6], // 60 Rustle
+    [4, 5, 2, 2], // 61 Wisp
+    [4, 3, 6, 3], // 62 Bramble
+    [4, 1, 6, 4], // 63 Thistle
+    [4, 4, 2, 5], // 64 Burrow
+    [5, 2, 6, 2], // 65 Cricket
+    [2, 4, 5, 1], // 66 Minnow
+    [2, 4, 1, 5], // 67 Pinecone
+    [3, 3, 1, 6], // 68 Acorn
+    [3, 5, 2, 3], // 69 Mushroom
+    [4, 3, 3, 4], // 70 Fiddlehead
+    [5, 6, 2, 2], // 71 Tadpole
+    [2, 3, 5, 4], // 72 Drizzle
+    [2, 6, 3, 1], // 73 Duskweed
+    [2, 6, 3, 5], // 74 Cattail
+    [1, 2, 6, 6], // 75 Bulrush
+    [1, 4, 6, 5], // 76 Lichen
+    [2, 3, 4, 6], // 77 Toadskin
+    [4, 1, 5, 2], // 78 Barnacle
+    [2, 3, 6, 1], // 79 Kelp
+    [3, 5, 2, 5], // 80 Driftwood
+    [6, 2, 2, 4], // 81 Ripple
+    [1, 6, 5, 3], // 82 Current
+    [6, 3, 1, 4], // 83 Eddy
+    [1, 6, 2, 5], // 84 Brook
+    [5, 1, 6, 2], // 85 Mossheart
+    [3, 4, 6, 1], // 86 Reedling
+    [6, 5, 1, 1], // 87 Fernback
+    [5, 3, 2, 4], // 88 Cobble
+    [6, 1, 1, 6], // 89 Shingle
+    [6, 4, 1, 2], // 90 Dampfoot
+    [3, 6, 1, 5], // 91 Mudskipper
+    [2, 5, 3, 5], // 92 Puddlejump
+    [4, 1, 3, 6], // 93 Bogbean
+    [1, 4, 6, 4], // 94 Waterlily
+    [6, 5, 4, 1], // 95 Pondweed
+    [1, 2, 6, 6], // 96 Duckweed
+    [3, 2, 3, 5], // 97 Silverfin
+    [2, 6, 1, 6], // 98 Quicksand
+    [4, 6, 4, 2], // 99 Rainfall
+    [3, 5, 3, 2], // 100 Foghorn
+    [6, 3, 2, 5], // 101 Mistletoe
+    [5, 5, 2, 1], // 102 Juniper
+    [1, 4, 5, 6], // 103 Hazelnut
+    [1, 5, 5, 2], // 104 Walnut
+    [6, 5, 1, 2], // 105 Chestnut
+    [2, 3, 5, 4], // 106 Birchbark
+    [2, 2, 4, 5], // 107 Pinewood
+    [6, 3, 3, 4], // 108 Willowbend
+    [2, 5, 4, 5], // 109 Elmshade
+    [3, 4, 4, 3], // 110 Ashleaf
+    [3, 3, 1, 5], // 111 Oakmoss
+    [3, 4, 2, 3], // 112 Cedarbloom
+    [5, 2, 1, 6], // 113 Magnolia
+    [5, 3, 4, 2], // 114 Dahlia
+    [4, 6, 1, 5], // 115 Poppy
+    [1, 6, 2, 5], // 116 Marigold
+    [1, 6, 2, 6], // 117 Buttercup
+    [3, 2, 6, 4], // 118 Bluebell
+    [4, 6, 2, 3], // 119 Foxglove
+    [5, 3, 2, 5], // 120 Harebell
+    [5, 4, 3, 3], // 121 Primrose
+    [2, 4, 5, 5], // 122 Snapdragon
+    [2, 6, 1, 6], // 123 Aster
+    [2, 5, 1, 4], // 124 Zinnia
+    [4, 1, 5, 5], // 125 Viola
+    [5, 4, 2, 3], // 126 Petunia
+    [6, 4, 3, 3], // 127 Hyacinth
+    [6, 3, 3, 3], // 128 Crocus
+    [4, 5, 6, 1], // 129 Tulip
+    [5, 2, 6, 3], // 130 Iris
+    [5, 4, 5, 2], // 131 Orchid
+    [4, 4, 2, 6], // 132 Pansy
+    [2, 4, 4, 4], // 133 Jasmine
+    [1, 6, 2, 4], // 134 Lavender
+    [3, 1, 6, 5], // 135 Rosemary
+    [6, 1, 5, 3], // 136 Thyme
+    [3, 2, 5, 6], // 137 Basil
+    [3, 6, 3, 1], // 138 Sage
+    [4, 4, 1, 5], // 139 Parsley
+    [1, 6, 6, 3], // 140 Fennel
+    [3, 3, 4, 3], // 141 Dill
+    [2, 4, 3, 5], // 142 Chive
+    [1, 6, 4, 1], // 143 Oregano
+    [2, 6, 1, 4], // 144 Tarragon
+    [6, 4, 2, 1], // 145 Anise
+    [4, 3, 6, 1], // 146 Cardamom
+    [5, 5, 1, 3], // 147 Cinnamon
+    [1, 4, 1, 6], // 148 Ginger
+    [6, 3, 6, 1], // 149 Nutmeg
+    [4, 1, 1, 6], // 150 Saffie
+    [1, 4, 5, 5], // 151 Tumeric
+    [4, 5, 1, 3], // 152 Cayenne
+    [1, 1, 5, 6], // 153 Paprika
+    [6, 5, 3, 1], // 154 Cumin
+    [4, 4, 1, 6], // 155 Coriander
+    [6, 1, 3, 3], // 156 Clove
+    [5, 3, 3, 3], // 157 Allspice
+    [1, 4, 4, 6], // 158 Pimento
+    [3, 6, 2, 4], // 159 Sumac
+    [2, 3, 1, 6], // 160 Sesame
+    [1, 6, 1, 5], // 161 Starflower
+    [2, 6, 2, 3], // 162 Moonpetal
+    [1, 5, 4, 5], // 163 Sundew
+    [1, 5, 6, 1], // 164 Nightbloom
+    [5, 2, 5, 4], // 165 Dawnbreeze
+    [5, 4, 5, 1], // 166 Duskbell
+    [2, 4, 6, 1], // 167 Twilight
+    [2, 3, 2, 5], // 168 Gloaming
+    [3, 5, 2, 6], // 169 Haze
+    [5, 2, 3, 6], // 170 Vapor
+    [4, 1, 6, 4], // 171 Cloudburst
+    [6, 4, 1, 5], // 172 Sleet
+    [5, 3, 5, 3], // 173 Drizzletail
+    [2, 2, 4, 6], // 174 Steamvent
+    [6, 2, 5, 2], // 175 Fogcrawler
+    [3, 5, 3, 2], // 176 Mistwalker
+    [5, 6, 5, 3], // 177 Abyssal
+    [8, 3, 5, 2], // 178 Tidecaller
+    [5, 5, 7, 2], // 179 Moonshadow
+    [8, 3, 3, 8], // 180 Stormwarden
+    [4, 7, 4, 3], // 181 Deeproot
+    [8, 5, 6, 2], // 182 Crystalvein
+    [2, 5, 6, 5], // 183 Nightfall
+    [3, 4, 8, 7], // 184 Thornweaver
+    [7, 7, 5, 2], // 185 Emberclaw
+    [2, 7, 5, 5], // 186 Frostfang
+    [2, 3, 6, 7], // 187 Ironbark
+    [8, 4, 3, 4], // 188 Silverscale
+    [7, 6, 2, 7], // 189 Goldmane
+    [8, 3, 6, 2], // 190 Bronzewing
+    [3, 7, 8, 4], // 191 Coppertail
+    [5, 4, 6, 2], // 192 Steelheart
+    [3, 2, 5, 7], // 193 Cobaltfin
+    [7, 5, 3, 3], // 194 Chromatic
+    [8, 5, 2, 5], // 195 Prismatic
+    [7, 4, 8, 3], // 196 Opalescent
+    [5, 7, 5, 2], // 197 Pearlshine
+    [2, 8, 2, 7], // 198 Amethyst
+    [6, 2, 7, 3], // 199 Emeraldine
+    [6, 4, 5, 3], // 200 Rubythorn
+    [4, 3, 4, 7], // 201 Topazglow
+    [7, 2, 6, 5], // 202 Garnetflare
+    [4, 4, 5, 7], // 203 Obsidian
+    [6, 8, 2, 2], // 204 Onyx
+    [5, 2, 3, 8], // 205 Turquoise
+    [4, 4, 8, 6], // 206 Malachite
+    [8, 8, 3, 3], // 207 Lazuli
+    [8, 6, 2, 4], // 208 Aquamarine
+    [3, 7, 4, 7], // 209 Beryl
+    [8, 3, 6, 3], // 210 Zircon
+    [2, 2, 6, 7], // 211 Agate
+    [2, 7, 2, 6], // 212 Jasper
+    [7, 3, 8, 2], // 213 Carnelian
+    [4, 7, 5, 3], // 214 Moonstone
+    [2, 2, 7, 8], // 215 Sunstone
+    [4, 7, 6, 2], // 216 Bloodstone
+    [7, 3, 6, 3], // 217 Thunderjaw
+    [5, 3, 6, 8], // 218 Stormscale
+    [2, 5, 8, 7], // 219 Windwalker
+    [7, 3, 2, 5], // 220 Firebrand
+    [7, 4, 4, 3], // 221 Iceveil
+    [8, 3, 2, 6], // 222 Voidtouched
+    [8, 2, 5, 6], // 223 Netherbloom
+    [6, 5, 4, 5], // 224 Spiritfang
+    [6, 8, 6, 2], // 225 Soulreaver
+    [3, 8, 4, 5], // 226 Doomhowl
+    [6, 3, 9, 4], // 227 Oblivion
+    [4, 9, 9, 4], // 228 Cataclysm
+    [8, 9, 3, 3], // 229 Apocalypse
+    [7, 3, 4, 9], // 230 Ragnarok
+    [6, 4, 9, 4], // 231 Armageddon
+    [7, 9, 7, 3], // 232 Leviathan
+    [4, 3, 6, 9], // 233 Behemoth
+    [6, 8, 4, 4], // 234 Colossus
+    [7, 7, 4, 7], // 235 Juggernaut
+    [9, 3, 6, 4], // 236 Titan
+    [8, 8, 3, 3], // 237 Seraphim
+    [9, 9, 4, 5], // 238 Nephilim
+    [9, 3, 8, 4], // 239 Archon
+    [3, 6, 8, 9], // 240 Sovereign
+    [9, 3, 8, 3], // 241 Imperator
+    [8, 3, 8, 8], // 242 Nexus
+    [4, 9, 4, 7], // 243 Singularity
+    [8, 9, 6, 3], // 244 Infinity
+    [4, 4, 7, 8], // 245 Eternity
+    [6, 7, 8, 3], // 246 Genesis
+    [6, 7, 3, 7], // 247 Eclipse
+    [6, 5, 8, 4], // 248 Kaleidoscope
+    [6, 5, 6, 6], // 249 Twinned
+    [3, 6, 7, 8], // 250 Sparkletail
+    [7, 6, 5, 6], // 251 Riddler
+    [3, 10, 2, 1], // 252 Rosita
+    [6, 2, 6, 7], // 253 Brooklet
+    [5, 5, 7, 6], // 254 Whisper
+    [7, 7, 4, 2], // 255 Misty
+    [7, 2, 7, 4], // 256 Lerma
+];
+
 pub fn get_card_ranks(card_id: u32) -> [Field; 4] {
     assert((card_id >= 1) & (card_id <= 256), "Invalid card ID for rank lookup");
+    CARD_RANKS[card_id - 1]
+}
 
-    if card_id == 1 { [1, 4, 1, 5] }   // Mudwalker
-    else if card_id == 2 { [5, 1, 1, 3] }   // Blushy
-    else if card_id == 3 { [1, 3, 3, 5] }   // Snowdrop
-    else if card_id == 4 { [6, 1, 1, 2] }   // Sunny
-    else if card_id == 5 { [2, 3, 1, 5] }   // Inkwell
-    else if card_id == 6 { [2, 1, 4, 4] }   // Stripes
-    else if card_id == 7 { [1, 5, 4, 1] }   // Barkeeper
-    else if card_id == 8 { [3, 1, 5, 2] }   // Dotty
-    else if card_id == 9 { [2, 1, 6, 1] }   // Penny
-    else if card_id == 10 { [4, 3, 2, 4] }   // Peaches
-    else if card_id == 11 { [2, 6, 1, 6] }   // Freckles
-    else if card_id == 12 { [7, 1, 3, 1] }   // Camo
-    else if card_id == 13 { [6, 2, 2, 3] }   // Neon
-    else if card_id == 14 { [5, 3, 3, 4] }   // Glow Bug
-    else if card_id == 15 { [6, 1, 4, 3] }   // Limelight
-    else if card_id == 16 { [3, 4, 5, 3] }   // Marble
-    else if card_id == 17 { [5, 3, 2, 5] }   // Sapphire
-    else if card_id == 18 { [5, 1, 3, 5] }   // Jefferson
-    else if card_id == 19 { [5, 2, 5, 2] }   // Longfoot
-    else if card_id == 20 { [4, 2, 4, 5] }   // Featherfin
-    else if card_id == 21 { [3, 7, 2, 5] }   // Lilac
-    else if card_id == 22 { [5, 2, 5, 5] }   // Patches
-    else if card_id == 23 { [6, 6, 3, 3] }   // Faded
-    else if card_id == 24 { [6, 3, 6, 3] }   // Gold Dust
-    else if card_id == 25 { [3, 5, 5, 5] }   // Phantom
-    else if card_id == 26 { [7, 5, 1, 3] }   // Ash
-    else if card_id == 27 { [7, 1, 5, 3] }   // Cocoa
-    else if card_id == 28 { [5, 3, 6, 3] }   // Ringmaster
-    else if card_id == 29 { [5, 6, 2, 4] }   // Goldrush
-    else if card_id == 30 { [4, 4, 7, 2] }   // Swampling
-    else if card_id == 31 { [3, 6, 4, 7] }   // Glitter
-    else if card_id == 32 { [7, 2, 3, 7] }   // Starfield
-    else if card_id == 33 { [2, 3, 7, 7] }   // Specter
-    else if card_id == 34 { [6, 5, 5, 5] }   // Saffron
-    else if card_id == 35 { [4, 7, 6, 2] }   // Stardust
-    else if card_id == 36 { [2, 3, 7, 8] }   // Achoque
-    else if card_id == 37 { [1, 7, 6, 4] }   // Zacapu
-    else if card_id == 38 { [7, 3, 1, 6] }   // Laguna
-    else if card_id == 39 { [7, 4, 4, 4] }   // Streamwalker
-    else if card_id == 40 { [3, 7, 3, 6] }   // Digger
-    else if card_id == 41 { [6, 7, 3, 7] }   // Eclipse
-    else if card_id == 42 { [6, 5, 8, 4] }   // Kaleidoscope
-    else if card_id == 43 { [6, 5, 6, 6] }   // Twinned
-    else if card_id == 44 { [3, 6, 7, 8] }   // Sparkletail
-    else if card_id == 45 { [7, 6, 5, 6] }   // Riddler
-    else if card_id == 46 { [3, 10, 2, 1] }   // Rosita
-    else if card_id == 47 { [6, 2, 6, 7] }   // Brooklet
-    else if card_id == 48 { [5, 5, 7, 6] }   // Whisper
-    else if card_id == 49 { [7, 7, 4, 2] }   // Misty
-    else if card_id == 50 { [7, 2, 7, 4] }   // Lerma
-    else if card_id == 51 { [4, 2, 6, 3] }   // Puddle
-    else if card_id == 52 { [2, 5, 3, 6] }   // Trickle
-    else if card_id == 53 { [5, 1, 4, 5] }   // Dewdrop
-    else if card_id == 54 { [2, 4, 1, 6] }   // Sprout
-    else if card_id == 55 { [3, 2, 4, 5] }   // Nibbles
-    else if card_id == 56 { [4, 2, 5, 2] }   // Pebble
-    else if card_id == 57 { [2, 1, 5, 5] }   // Clover
-    else if card_id == 58 { [6, 1, 6, 3] }   // Dapple
-    else if card_id == 59 { [5, 1, 6, 3] }   // Flicker
-    else if card_id == 60 { [1, 5, 2, 6] }   // Rustle
-    else if card_id == 61 { [4, 5, 2, 2] }   // Wisp
-    else if card_id == 62 { [4, 3, 6, 3] }   // Bramble
-    else if card_id == 63 { [4, 1, 6, 4] }   // Thistle
-    else if card_id == 64 { [4, 4, 2, 5] }   // Burrow
-    else if card_id == 65 { [5, 2, 6, 2] }   // Cricket
-    else if card_id == 66 { [2, 4, 5, 1] }   // Minnow
-    else if card_id == 67 { [2, 4, 1, 5] }   // Pinecone
-    else if card_id == 68 { [3, 3, 1, 6] }   // Acorn
-    else if card_id == 69 { [3, 5, 2, 3] }   // Mushroom
-    else if card_id == 70 { [4, 3, 3, 4] }   // Fiddlehead
-    else if card_id == 71 { [5, 6, 2, 2] }   // Tadpole
-    else if card_id == 72 { [2, 3, 5, 4] }   // Drizzle
-    else if card_id == 73 { [2, 6, 3, 1] }   // Duskweed
-    else if card_id == 74 { [2, 6, 3, 5] }   // Cattail
-    else if card_id == 75 { [1, 2, 6, 6] }   // Bulrush
-    else if card_id == 76 { [1, 4, 6, 5] }   // Lichen
-    else if card_id == 77 { [2, 3, 4, 6] }   // Toadskin
-    else if card_id == 78 { [4, 1, 5, 2] }   // Barnacle
-    else if card_id == 79 { [2, 3, 6, 1] }   // Kelp
-    else if card_id == 80 { [3, 5, 2, 5] }   // Driftwood
-    else if card_id == 81 { [6, 2, 2, 4] }   // Ripple
-    else if card_id == 82 { [1, 6, 5, 3] }   // Current
-    else if card_id == 83 { [6, 3, 1, 4] }   // Eddy
-    else if card_id == 84 { [1, 6, 2, 5] }   // Brook
-    else if card_id == 85 { [5, 1, 6, 2] }   // Mossheart
-    else if card_id == 86 { [3, 4, 6, 1] }   // Reedling
-    else if card_id == 87 { [6, 5, 1, 1] }   // Fernback
-    else if card_id == 88 { [5, 3, 2, 4] }   // Cobble
-    else if card_id == 89 { [6, 1, 1, 6] }   // Shingle
-    else if card_id == 90 { [6, 4, 1, 2] }   // Dampfoot
-    else if card_id == 91 { [3, 6, 1, 5] }   // Mudskipper
-    else if card_id == 92 { [2, 5, 3, 5] }   // Puddlejump
-    else if card_id == 93 { [4, 1, 3, 6] }   // Bogbean
-    else if card_id == 94 { [1, 4, 6, 4] }   // Waterlily
-    else if card_id == 95 { [6, 5, 4, 1] }   // Pondweed
-    else if card_id == 96 { [1, 2, 6, 6] }   // Duckweed
-    else if card_id == 97 { [3, 2, 3, 5] }   // Silverfin
-    else if card_id == 98 { [2, 6, 1, 6] }   // Quicksand
-    else if card_id == 99 { [4, 6, 4, 2] }   // Rainfall
-    else if card_id == 100 { [3, 5, 3, 2] }   // Foghorn
-    else if card_id == 101 { [6, 3, 2, 5] }   // Mistletoe
-    else if card_id == 102 { [5, 5, 2, 1] }   // Juniper
-    else if card_id == 103 { [1, 4, 5, 6] }   // Hazelnut
-    else if card_id == 104 { [1, 5, 5, 2] }   // Walnut
-    else if card_id == 105 { [6, 5, 1, 2] }   // Chestnut
-    else if card_id == 106 { [2, 3, 5, 4] }   // Birchbark
-    else if card_id == 107 { [2, 2, 4, 5] }   // Pinewood
-    else if card_id == 108 { [6, 3, 3, 4] }   // Willowbend
-    else if card_id == 109 { [2, 5, 4, 5] }   // Elmshade
-    else if card_id == 110 { [3, 4, 4, 3] }   // Ashleaf
-    else if card_id == 111 { [3, 3, 1, 5] }   // Oakmoss
-    else if card_id == 112 { [3, 4, 2, 3] }   // Cedarbloom
-    else if card_id == 113 { [5, 2, 1, 6] }   // Magnolia
-    else if card_id == 114 { [5, 3, 4, 2] }   // Dahlia
-    else if card_id == 115 { [4, 6, 1, 5] }   // Poppy
-    else if card_id == 116 { [1, 6, 2, 5] }   // Marigold
-    else if card_id == 117 { [1, 6, 2, 6] }   // Buttercup
-    else if card_id == 118 { [3, 2, 6, 4] }   // Bluebell
-    else if card_id == 119 { [4, 6, 2, 3] }   // Foxglove
-    else if card_id == 120 { [5, 3, 2, 5] }   // Harebell
-    else if card_id == 121 { [5, 4, 3, 3] }   // Primrose
-    else if card_id == 122 { [2, 4, 5, 5] }   // Snapdragon
-    else if card_id == 123 { [2, 6, 1, 6] }   // Aster
-    else if card_id == 124 { [2, 5, 1, 4] }   // Zinnia
-    else if card_id == 125 { [4, 1, 5, 5] }   // Viola
-    else if card_id == 126 { [5, 4, 2, 3] }   // Petunia
-    else if card_id == 127 { [6, 4, 3, 3] }   // Hyacinth
-    else if card_id == 128 { [6, 3, 3, 3] }   // Crocus
-    else if card_id == 129 { [4, 5, 6, 1] }   // Tulip
-    else if card_id == 130 { [5, 2, 6, 3] }   // Iris
-    else if card_id == 131 { [5, 4, 5, 2] }   // Orchid
-    else if card_id == 132 { [4, 4, 2, 6] }   // Pansy
-    else if card_id == 133 { [2, 4, 4, 4] }   // Jasmine
-    else if card_id == 134 { [1, 6, 2, 4] }   // Lavender
-    else if card_id == 135 { [3, 1, 6, 5] }   // Rosemary
-    else if card_id == 136 { [6, 1, 5, 3] }   // Thyme
-    else if card_id == 137 { [3, 2, 5, 6] }   // Basil
-    else if card_id == 138 { [3, 6, 3, 1] }   // Sage
-    else if card_id == 139 { [4, 4, 1, 5] }   // Parsley
-    else if card_id == 140 { [1, 6, 6, 3] }   // Fennel
-    else if card_id == 141 { [3, 3, 4, 3] }   // Dill
-    else if card_id == 142 { [2, 4, 3, 5] }   // Chive
-    else if card_id == 143 { [1, 6, 4, 1] }   // Oregano
-    else if card_id == 144 { [2, 6, 1, 4] }   // Tarragon
-    else if card_id == 145 { [6, 4, 2, 1] }   // Anise
-    else if card_id == 146 { [4, 3, 6, 1] }   // Cardamom
-    else if card_id == 147 { [5, 5, 1, 3] }   // Cinnamon
-    else if card_id == 148 { [1, 4, 1, 6] }   // Ginger
-    else if card_id == 149 { [6, 3, 6, 1] }   // Nutmeg
-    else if card_id == 150 { [4, 1, 1, 6] }   // Saffie
-    else if card_id == 151 { [1, 4, 5, 5] }   // Tumeric
-    else if card_id == 152 { [4, 5, 1, 3] }   // Cayenne
-    else if card_id == 153 { [1, 1, 5, 6] }   // Paprika
-    else if card_id == 154 { [6, 5, 3, 1] }   // Cumin
-    else if card_id == 155 { [4, 4, 1, 6] }   // Coriander
-    else if card_id == 156 { [6, 1, 3, 3] }   // Clove
-    else if card_id == 157 { [5, 3, 3, 3] }   // Allspice
-    else if card_id == 158 { [1, 4, 4, 6] }   // Pimento
-    else if card_id == 159 { [3, 6, 2, 4] }   // Sumac
-    else if card_id == 160 { [2, 3, 1, 6] }   // Sesame
-    else if card_id == 161 { [1, 6, 1, 5] }   // Starflower
-    else if card_id == 162 { [2, 6, 2, 3] }   // Moonpetal
-    else if card_id == 163 { [1, 5, 4, 5] }   // Sundew
-    else if card_id == 164 { [1, 5, 6, 1] }   // Nightbloom
-    else if card_id == 165 { [5, 2, 5, 4] }   // Dawnbreeze
-    else if card_id == 166 { [5, 4, 5, 1] }   // Duskbell
-    else if card_id == 167 { [2, 4, 6, 1] }   // Twilight
-    else if card_id == 168 { [2, 3, 2, 5] }   // Gloaming
-    else if card_id == 169 { [3, 5, 2, 6] }   // Haze
-    else if card_id == 170 { [5, 2, 3, 6] }   // Vapor
-    else if card_id == 171 { [4, 1, 6, 4] }   // Cloudburst
-    else if card_id == 172 { [6, 4, 1, 5] }   // Sleet
-    else if card_id == 173 { [5, 3, 5, 3] }   // Drizzletail
-    else if card_id == 174 { [2, 2, 4, 6] }   // Steamvent
-    else if card_id == 175 { [6, 2, 5, 2] }   // Fogcrawler
-    else if card_id == 176 { [3, 5, 3, 2] }   // Mistwalker
-    else if card_id == 177 { [5, 6, 5, 3] }   // Abyssal
-    else if card_id == 178 { [8, 3, 5, 2] }   // Tidecaller
-    else if card_id == 179 { [5, 5, 7, 2] }   // Moonshadow
-    else if card_id == 180 { [8, 3, 3, 8] }   // Stormwarden
-    else if card_id == 181 { [4, 7, 4, 3] }   // Deeproot
-    else if card_id == 182 { [8, 5, 6, 2] }   // Crystalvein
-    else if card_id == 183 { [2, 5, 6, 5] }   // Nightfall
-    else if card_id == 184 { [3, 4, 8, 7] }   // Thornweaver
-    else if card_id == 185 { [7, 7, 5, 2] }   // Emberclaw
-    else if card_id == 186 { [2, 7, 5, 5] }   // Frostfang
-    else if card_id == 187 { [2, 3, 6, 7] }   // Ironbark
-    else if card_id == 188 { [8, 4, 3, 4] }   // Silverscale
-    else if card_id == 189 { [7, 6, 2, 7] }   // Goldmane
-    else if card_id == 190 { [8, 3, 6, 2] }   // Bronzewing
-    else if card_id == 191 { [3, 7, 8, 4] }   // Coppertail
-    else if card_id == 192 { [5, 4, 6, 2] }   // Steelheart
-    else if card_id == 193 { [3, 2, 5, 7] }   // Cobaltfin
-    else if card_id == 194 { [7, 5, 3, 3] }   // Chromatic
-    else if card_id == 195 { [8, 5, 2, 5] }   // Prismatic
-    else if card_id == 196 { [7, 4, 8, 3] }   // Opalescent
-    else if card_id == 197 { [5, 7, 5, 2] }   // Pearlshine
-    else if card_id == 198 { [2, 8, 2, 7] }   // Amethyst
-    else if card_id == 199 { [6, 2, 7, 3] }   // Emeraldine
-    else if card_id == 200 { [6, 4, 5, 3] }   // Rubythorn
-    else if card_id == 201 { [4, 3, 4, 7] }   // Topazglow
-    else if card_id == 202 { [7, 2, 6, 5] }   // Garnetflare
-    else if card_id == 203 { [4, 4, 5, 7] }   // Obsidian
-    else if card_id == 204 { [6, 8, 2, 2] }   // Onyx
-    else if card_id == 205 { [5, 2, 3, 8] }   // Turquoise
-    else if card_id == 206 { [4, 4, 8, 6] }   // Malachite
-    else if card_id == 207 { [8, 8, 3, 3] }   // Lazuli
-    else if card_id == 208 { [8, 6, 2, 4] }   // Aquamarine
-    else if card_id == 209 { [3, 7, 4, 7] }   // Beryl
-    else if card_id == 210 { [8, 3, 6, 3] }   // Zircon
-    else if card_id == 211 { [2, 2, 6, 7] }   // Agate
-    else if card_id == 212 { [2, 7, 2, 6] }   // Jasper
-    else if card_id == 213 { [7, 3, 8, 2] }   // Carnelian
-    else if card_id == 214 { [4, 7, 5, 3] }   // Moonstone
-    else if card_id == 215 { [2, 2, 7, 8] }   // Sunstone
-    else if card_id == 216 { [4, 7, 6, 2] }   // Bloodstone
-    else if card_id == 217 { [7, 3, 6, 3] }   // Thunderjaw
-    else if card_id == 218 { [5, 3, 6, 8] }   // Stormscale
-    else if card_id == 219 { [2, 5, 8, 7] }   // Windwalker
-    else if card_id == 220 { [7, 3, 2, 5] }   // Firebrand
-    else if card_id == 221 { [7, 4, 4, 3] }   // Iceveil
-    else if card_id == 222 { [8, 3, 2, 6] }   // Voidtouched
-    else if card_id == 223 { [8, 2, 5, 6] }   // Netherbloom
-    else if card_id == 224 { [6, 5, 4, 5] }   // Spiritfang
-    else if card_id == 225 { [6, 8, 6, 2] }   // Soulreaver
-    else if card_id == 226 { [3, 8, 4, 5] }   // Doomhowl
-    else if card_id == 227 { [6, 3, 9, 4] }   // Oblivion
-    else if card_id == 228 { [4, 9, 9, 4] }   // Cataclysm
-    else if card_id == 229 { [8, 9, 3, 3] }   // Apocalypse
-    else if card_id == 230 { [7, 3, 4, 9] }   // Ragnarok
-    else if card_id == 231 { [6, 4, 9, 4] }   // Armageddon
-    else if card_id == 232 { [7, 9, 7, 3] }   // Leviathan
-    else if card_id == 233 { [4, 3, 6, 9] }   // Behemoth
-    else if card_id == 234 { [6, 8, 4, 4] }   // Colossus
-    else if card_id == 235 { [7, 7, 4, 7] }   // Juggernaut
-    else if card_id == 236 { [9, 3, 6, 4] }   // Titan
-    else if card_id == 237 { [8, 8, 3, 3] }   // Seraphim
-    else if card_id == 238 { [9, 9, 4, 5] }   // Nephilim
-    else if card_id == 239 { [9, 3, 8, 4] }   // Archon
-    else if card_id == 240 { [3, 6, 8, 9] }   // Sovereign
-    else if card_id == 241 { [9, 3, 8, 3] }   // Imperator
-    else if card_id == 242 { [8, 3, 8, 8] }   // Nexus
-    else if card_id == 243 { [4, 9, 4, 7] }   // Singularity
-    else if card_id == 244 { [8, 9, 6, 3] }   // Infinity
-    else if card_id == 245 { [4, 4, 7, 8] }   // Eternity
-    else if card_id == 246 { [6, 7, 8, 3] }   // Genesis
-    else if card_id == 247 { [6, 7, 3, 7] }   // Eclipse
-    else if card_id == 248 { [6, 5, 8, 4] }   // Kaleidoscope
-    else if card_id == 249 { [6, 5, 6, 6] }   // Twinned
-    else if card_id == 250 { [3, 6, 7, 8] }   // Sparkletail
-    else if card_id == 251 { [7, 6, 5, 6] }   // Riddler
-    else if card_id == 252 { [3, 10, 2, 1] }   // Rosita
-    else if card_id == 253 { [6, 2, 6, 7] }   // Brooklet
-    else if card_id == 254 { [5, 5, 7, 6] }   // Whisper
-    else if card_id == 255 { [7, 7, 4, 2] }   // Misty
-    else { [7, 2, 7, 4] }   // Lerma (card_id == 256)
+// ====================== TESTS ======================
+
+#[test]
+fn test_known_card_ranks() {
+    // Spot-checks transcribed by hand from the pre-table if/else implementation.
+    assert(get_card_ranks(1) == [1, 4, 1, 5]); // Mudwalker
+    assert(get_card_ranks(46) == [3, 10, 2, 1]); // Rosita
+    assert(get_card_ranks(137) == [3, 2, 5, 6]); // Basil
+    assert(get_card_ranks(230) == [7, 3, 4, 9]); // Ragnarok
+    assert(get_card_ranks(256) == [7, 2, 7, 4]); // Lerma
+}
+
+#[test]
+fn test_all_ranks_in_range() {
+    for i in 1..257 {
+        let ranks = get_card_ranks(i as u32);
+        for j in 0..4 {
+            let r = ranks[j] as u32;
+            assert((r >= 1) & (r <= 10));
+        }
+    }
+}
+
+#[test(should_fail_with = "Invalid card ID for rank lookup")]
+fn test_card_id_zero_rejected() {
+    let _ = get_card_ranks(0);
+}
+
+#[test(should_fail_with = "Invalid card ID for rank lookup")]
+fn test_card_id_257_rejected() {
+    let _ = get_card_ranks(257);
 }
