@@ -61,3 +61,48 @@ compiled JSON into `frontend/public/contracts/`, and answering proof-shape quest
 - game_id/randomness stay in-circuit (`derive_game_id`/`derive_game_randomness`).
 - Do not refactor contract logic during A1 — mechanical migration only, diff review
   must stay readable.
+
+## ASSUMPTIONS (discovered during A1, 2026-06-12)
+
+1. **Version-set confirmed.** The 4.2 CLI installed from tag
+   `4.2.0-nightly.20260323` self-reports `4.2.0-aztecnr-rc.2` — the two strings
+   name one release, as CLAUDE.md §Versions states. The 4.3.1 set is uniform:
+   installer/CLI `4.3.1`, aztec-nr git tag `v4.3.1`, nargo `1.0.0-beta.21`
+   (noir commit 1d9727a6), npm tag presumed `4.3.1` (Lane 2 to confirm on A2).
+2. **No proof-shape change 4.2 → 4.3.1.** `bb_proof_verification` is
+   byte-identical across the tags: UltraHonkZKProof stays 500 fields, VK 115
+   fields. `process_game` and `proofWorker.ts` need no size changes. VK
+   *hashes* still change with the recompile — A3 registers fresh ones.
+3. **Toolchain switching has two footguns** (worked around with absolute
+   paths; .aztecrc committed for post-merge use):
+   - The 4.2 CLI wrapper honors `.aztecrc` only in `$PWD`, not ancestors —
+     `aztec test` from `packages/contracts/` under a 4.2 `current` silently
+     runs 4.2 (observed: 1334-error macro explosion).
+   - `aztec-up env` omits `internal-bin`, where 4.3.1 keeps bare `nargo` —
+     after eval, `nargo` falls through to 4.2's beta.18 (observed: poseidon /
+     EmbeddedCurvePoint stdlib mismatches). Once `current` itself is 4.3.1
+     (post-merge `aztec-up use 4.3.1` or install), both footguns vanish.
+4. **The 4.3.1 binary names changed**: bare `nargo`/`txe` became
+   `internal-bin/nargo` (wrapper-injected) and `aztec start --txe --port N`.
+   CLAUDE.md §Build/test command snippets need updating when A1 merges
+   (Lane 7 owns CLAUDE.md — handoff noted in TRIAL coordination).
+5. **TXE deploy resolution changed in 4.3.1**: `env.deploy("Name")` resolves
+   to `target/{current-package}-Name.json`; cross-package deploys must use
+   `env.deploy("@package/Name")`. Bare-name cross-package deploys crash the
+   TXE process (ENOENT, unhandled stream error — upstream bug, worth reporting).
+6. **noirc beta.21 type-checker limit**: a 256-arm nested if/else in card_data
+   hit `TYPE_RECURSION_LIMIT` (panic) when poseidon shared the compilation
+   unit; rewritten as a flat table (identical data, same API). Any future
+   large decision chain in circuits should be a table.
+7. **test_card_replay_rejected was red before the upgrade** (verified on
+   April code + beta.18): the C2 constraint it specifies was never in
+   game_move. Constraint added during A1 — circuit semantics now match the
+   TS engine's "each card playable once". Not an upgrade regression.
+8. **Cross-lane file touches** (negotiated via lane brief A1.5, announced):
+   `scripts/deploy-contracts.ts` (--permissive-vks; scripts/ is Lane 6's) and
+   this brief (docs/plan is Lane 7's; ASSUMPTIONS section was orchestrator-
+   mandated). deploy-contracts.ts still uses SponsoredFPC (banned) — legacy
+   from April, flagged for the owning lane; not expanded by the flag change.
+9. **Tracked target/*.json.bak files** get rewritten by every compile and are
+   committed alongside artifacts (April convention). Lane 6's F2 purge should
+   drop them from git; until then they bloat artifact diffs.
