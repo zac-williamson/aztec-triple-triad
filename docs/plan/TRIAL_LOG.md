@@ -404,3 +404,11 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
     token or `vercel login`. Project ID known; domain previously attached to that project.
   - Lightsail/AWS: NO access (~/.aws absent). Need AWS keys OR SSH to the (April?) instance if still up.
   - Contracts were redeployed → Vercel env + backend need the NEW addresses (sync-vercel-env.ts).
+
+## 06-13 — both acceptance-blocking bugs fixed
+- bug 1 (deploy-contracts fee mirror) merged 234c344; bug 2 (useGamePlay deferred-move keying
+  "Card already placed") + loser-token import merged 009d5ee (296/296+tsc; removed a masking
+  refresh-poll → deterministic import). Both pushed to origin.
+- playtest re-running 4.3.1 acceptance — expect green (settlement reaches 9/9, loser-token
+  test.fail flips). If green: full A1+A2 upgrade validated E2E → merge the harness (capstone).
+- lane-2 parked (item I faucet-onboarding available, not gating). lane-7 all done.
