@@ -386,3 +386,31 @@ already imports `fundAccountOnDevnet` from frontend src), or replicate
     before-masks at queue time like the board; restore reconstructs the pair by
     OR-ing all saved proofs' after-masks. No backend/protocol-shape change —
     `MoveProofData` is forwarded as an opaque object.
+
+29. **DONE (2026-06-13) — Item I onboarding frontend (Option B, Zac GO).** The
+    testnet self-funding gap is closed on the frontend. New files:
+    `aztec/requestFeeJuiceClaim.ts` (faucet abstraction) +
+    `components/FundingProgress.tsx` (zero-action "Getting You Set Up" screen).
+    `useAztec.connect` testnet branch: when `AZTEC_CONFIG.faucetUrl` is set →
+    status `funding` → `requestFeeJuiceClaim(faucetUrl, l2Address)` →
+    `deployAndRegister({ feeJuiceClaim })` (the proven combined deploy+mint) →
+    `connected`, auto-continuing to the menu. The three deploy paths
+    (already-deployed restore, devnet, faucet) now share one local `runDeploy`
+    helper so fees/labels/wiring can't drift. **Degraded fallback preserved:** a
+    faucet *request* failure → `needs-funding` → existing `FundingPrompt` (manual
+    bridge). A deploy failure after a good claim is a real error (outer catch),
+    NOT a silent manual fallback. **SponsoredFPC stays banned** — the faucet
+    bridges real Fee Juice the account claims at deploy. New config:
+    `VITE_FAUCET_URL` (empty → manual-only, unchanged behavior). Tests:
+    `requestFeeJuiceClaim.test.ts` (claim deserialization, non-OK + incomplete
+    throws), `useAztec.faucet.test.ts` (testnet branch reaches `connected` with
+    the claim threaded; faucet error → `needs-funding` with no deploy; no-URL →
+    manual), App.integration adds funding/deploying-overlay + needs-funding
+    fallback routing. **Cross-lane dependency (Lane 4, ~0.5d):** `POST
+    {faucetUrl}/faucet { l2Address }` must bridge via the treasury and return a
+    JSON claim with at least `{ claimAmount, claimSecret, messageLeafIndex }` (a
+    superset of `scripts/lib/feeJuiceBridge.ts`'s `SerializedClaim` — extra
+    fields are ignored), responding ONLY after the L1→L2 message is included so
+    the claim is immediately consumable. Until that endpoint + `VITE_FAUCET_URL`
+    exist, testnet onboarding stays on the manual `FundingPrompt` (no
+    regression).

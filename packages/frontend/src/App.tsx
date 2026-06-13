@@ -11,6 +11,7 @@ import { TutorialScreen } from './components/TutorialScreen';
 import { TutorialPrompt } from './components/TutorialPrompt';
 import { PracticeScreen } from './practice/PracticeScreen';
 import { FundingPrompt } from './components/FundingPrompt';
+import { FundingProgress } from './components/FundingProgress';
 import { TxNotificationCenter } from './components/TxNotificationCenter';
 import { GameScreen3D as GameScreen } from './components3d/GameScreen3D';
 import './App.css';
@@ -60,6 +61,10 @@ function AppInner() {
 
       {showMenuScene && <MenuScene />}
 
+      {(aztec.status === 'funding' || aztec.status === 'deploying') && (
+        <FundingProgress status={aztec.status} />
+      )}
+
       {aztec.status === 'needs-funding' && aztec.accountAddress && (
         <FundingPrompt
           accountAddress={aztec.accountAddress}
@@ -67,9 +72,13 @@ function AppInner() {
         />
       )}
 
-      {showTutorialPrompt && game.screen === 'main-menu' && aztec.status !== 'needs-funding' && (
-        <TutorialPrompt onLearnToPlay={handleTutorial} onSkip={handlePromptSkip} />
-      )}
+      {showTutorialPrompt &&
+        game.screen === 'main-menu' &&
+        aztec.status !== 'needs-funding' &&
+        aztec.status !== 'funding' &&
+        aztec.status !== 'deploying' && (
+          <TutorialPrompt onLearnToPlay={handleTutorial} onSkip={handlePromptSkip} />
+        )}
 
       {game.screen === 'main-menu' && (
         <MainMenu

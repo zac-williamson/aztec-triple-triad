@@ -1,8 +1,17 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { AZTEC_CONFIG } from '../aztec/AztecContext';
 import { prepareConnection, deployAndRegister, type PreparedConnection } from '../aztec/connectToAztec';
+import type { FeeJuiceClaim } from '../aztec/fundDevnet';
 import txManager from '../aztec/txManager';
-type ConnectionStatus = 'disconnected' | 'connecting' | 'needs-funding' | 'deploying' | 'connected' | 'error' | 'unsupported';
+type ConnectionStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'funding' // testnet: requesting Fee Juice from the backend faucet (item I)
+  | 'needs-funding' // faucet unavailable/failed → manual funding fallback
+  | 'deploying'
+  | 'connected'
+  | 'error'
+  | 'unsupported';
 
 export interface UseAztecReturn {
   status: ConnectionStatus;
@@ -54,43 +63,55 @@ export function useAztec(): UseAztecReturn {
       preparedRef.current = prepared;
       setAccountAddress(prepared.accountAddress);
 
-      if (prepared.alreadyDeployed) {
-        // Account already deployed — go straight to Phase 2
+      // Phase 2 — deploy (+ mint starter cards) and mark connected. Shared by
+      // every funding path so fees/labels/post-deploy wiring can't drift.
+      const runDeploy = async (label: string, feeJuiceClaim?: FeeJuiceClaim) => {
         setStatus('deploying');
         const result = await txManager.runTx({
           type: 'deploy_account',
-          label: 'Restoring account...',
+          label,
           execute: async (setPhase) => {
             setPhase('sending');
-            return deployAndRegister(prepared, { log });
+            return deployAndRegister(prepared, { log, feeJuiceClaim });
           },
         });
         walletRef.current = result.wallet;
         nodeClientRef.current = result.node;
         setOwnedCardIds(result.ownedCardIds);
         setStatus('connected');
+      };
+
+      if (prepared.alreadyDeployed) {
+        // Account already deployed — restore, no funding needed.
+        await runDeploy('Restoring account...');
       } else {
         const isLocalDevnet = AZTEC_CONFIG.pxeUrl.includes('localhost') || AZTEC_CONFIG.pxeUrl.includes('127.0.0.1');
         if (isLocalDevnet) {
-          // Local devnet — auto-fund via L1 Fee Juice bridge, then deploy
+          // Local devnet — auto-fund via Anvil's free L1 Fee Juice bridge.
           log('Auto-funding account on local devnet...');
           const { fundAccountOnDevnet } = await import('../aztec/fundDevnet');
           const claim = await fundAccountOnDevnet(prepared.node, prepared.accountAddress, log);
-          setStatus('deploying');
-          const result = await txManager.runTx({
-            type: 'deploy_account',
-            label: 'Deploying account & minting starter cards...',
-            execute: async (setPhase) => {
-              setPhase('sending');
-              return deployAndRegister(prepared, { log, feeJuiceClaim: claim });
-            },
-          });
-          walletRef.current = result.wallet;
-          nodeClientRef.current = result.node;
-          setOwnedCardIds(result.ownedCardIds);
-          setStatus('connected');
+          await runDeploy('Deploying account & minting starter cards...', claim);
+        } else if (AZTEC_CONFIG.faucetUrl) {
+          // Testnet — auto-fund via the backend treasury faucet (item I,
+          // Option B), then deploy+mint in one tx. A faucet *request* failure
+          // degrades to the manual FundingPrompt so onboarding never dead-ends;
+          // a deploy failure after a good claim is a real error (outer catch).
+          let claim: FeeJuiceClaim | null = null;
+          try {
+            setStatus('funding');
+            log('Requesting Fee Juice from the faucet...');
+            const { requestFeeJuiceClaim } = await import('../aztec/requestFeeJuiceClaim');
+            claim = await requestFeeJuiceClaim(AZTEC_CONFIG.faucetUrl, prepared.accountAddress);
+          } catch (faucetErr) {
+            console.warn('[useAztec] Faucet funding failed; falling back to manual funding:', faucetErr);
+            setStatus('needs-funding');
+          }
+          if (claim) {
+            await runDeploy('Deploying account & minting starter cards...', claim);
+          }
         } else {
-          // Testnet — show funding prompt, user funds manually
+          // No faucet configured — manual funding prompt.
           setStatus('needs-funding');
         }
       }
@@ -200,7 +221,7 @@ export function useAztec(): UseAztecReturn {
 
   return {
     status,
-    isConnecting: status === 'connecting' || status === 'deploying',
+    isConnecting: status === 'connecting' || status === 'funding' || status === 'deploying',
     hasConnected: status === 'connected',
     accountAddress,
     isAvailable: status === 'connected',

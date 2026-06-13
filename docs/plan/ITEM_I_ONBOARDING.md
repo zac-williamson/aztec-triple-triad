@@ -1,8 +1,33 @@
 # Item I — Funding / onboarding path (live testnet)
 
-**Status:** SPIKE complete — go/no-go below. **Lane:** 2 (frontend) + a cross-lane
-dependency. **Non-gating** for F3, but it IS the difference between "a stranger
-plays in a minute" and "a stranger gives up at the bridge."
+**Status:** Zac GO → **Option B**. **Lane-2 frontend BUILT (2026-06-13)** — awaiting
+gate-review + the Lane-4 `POST /faucet` endpoint to go live (see "Lane-2 status"
+below). **Lane:** 2 (frontend) + a cross-lane dependency. **Non-gating** for F3, but
+it IS the difference between "a stranger plays in a minute" and "a stranger gives up
+at the bridge."
+
+## Lane-2 status (built — what landed)
+
+The frontend integration is complete and tested behind `VITE_FAUCET_URL` (empty →
+unchanged manual funding, so this is a no-op until Lane 4 ships + the env is set):
+
+- `aztec/requestFeeJuiceClaim.ts` — POSTs `{ l2Address }` to `{faucetUrl}/faucet`,
+  deserializes the JSON claim to `{ claimAmount, claimSecret, messageLeafIndex }`,
+  throws on non-OK / incomplete (so the caller can fall back).
+- `useAztec.connect` testnet branch → `funding` status → request claim →
+  `deployAndRegister({ feeJuiceClaim })` (proven combined deploy+mint) → `connected`,
+  auto-continue. Faucet *request* failure → `needs-funding` → manual `FundingPrompt`
+  (degraded fallback, preserved). Deploy failure after a good claim → real error.
+- `components/FundingProgress.tsx` — the zero-action "Getting you set up…" screen,
+  shown for `funding`/`deploying`.
+- Tests: `requestFeeJuiceClaim.test.ts`, `useAztec.faucet.test.ts`,
+  App.integration overlay/fallback routing. SponsoredFPC stays banned.
+
+**Lane-4 contract to implement:** `POST {faucetUrl}/faucet { l2Address }` bridges via
+the treasury (`bridgeFeeJuice`) and returns JSON with at least `{ claimAmount,
+claimSecret, messageLeafIndex }` (superset of `SerializedClaim`; extra fields
+ignored), responding ONLY after L1→L2 inclusion so the claim is consumable. Plus
+abuse limits (one claim/address via the claim store + per-IP/day; capped mint).
 
 ## The real gap
 
