@@ -309,21 +309,22 @@ async function main() {
     console.log(`  NFT:   ${nftContract.address}`);
     console.log(`  Token: ${tokenContract.address}`);
   } else {
-    console.log('\nDeploying TripleTriadNFT + ArenaToken in parallel...');
-    const nftDeploy = Contract.deploy(wallet, nftArtifact, [
+    // Serial per wallet: concurrent txs/proofs through one PXE cause IndexedDB
+    // errors (binding ground rule). Deploy NFT, then Token.
+    console.log('\nDeploying TripleTriadNFT...');
+    const nftRes = await Contract.deploy(wallet, nftArtifact, [
       deployerAddress,
       encodeCompressedString('Axolotl Arena Cards'),
       encodeCompressedString('AXL'),
     ]).send(sendAs(deployerAddress));
+    nftContract = nftRes.contract;
+    console.log(`  NFT:   ${nftContract.address}`);
 
-    const tokenDeploy = Contract.deploy(wallet, tokenArtifact, [
+    console.log('Deploying ArenaToken...');
+    const tokenRes = await Contract.deploy(wallet, tokenArtifact, [
       deployerAddress,
     ]).send(sendAs(deployerAddress));
-
-    const [nftRes, tokenRes] = await Promise.all([nftDeploy, tokenDeploy]);
-    nftContract = nftRes.contract;
     tokenContract = tokenRes.contract;
-    console.log(`  NFT:   ${nftContract.address}`);
     console.log(`  Token: ${tokenContract.address}`);
   }
 
@@ -348,20 +349,17 @@ async function main() {
     console.log(`  Game:  ${gameContract.address}`);
   }
 
-  // 3. Register senders in parallel
-  await Promise.all([
-    wallet.registerSender(nftContract.address, 'nft'),
-    wallet.registerSender(tokenContract.address, 'token'),
-    wallet.registerSender(gameContract.address, 'game'),
-  ]);
+  // 3. Register senders (serial per wallet).
+  await wallet.registerSender(nftContract.address, 'nft');
+  await wallet.registerSender(tokenContract.address, 'token');
+  await wallet.registerSender(gameContract.address, 'game');
 
-  // 4. Wire contracts — send all 4 calls, then wait for all
-  console.log('\nWiring contracts...');
-  const wire1 = nftContract.methods.set_game_contract(gameContract.address).send(sendAs(deployerAddress));
-  const wire2 = nftContract.methods.set_token_contract(tokenContract.address).send(sendAs(deployerAddress));
-  const wire3 = tokenContract.methods.set_nft_contract(nftContract.address).send(sendAs(deployerAddress));
-  const wire4 = tokenContract.methods.set_game_contract(gameContract.address).send(sendAs(deployerAddress));
-  await Promise.all([wire1, wire2, wire3, wire4]);
+  // 4. Wire contracts — serial per wallet (one tx/proof at a time).
+  console.log('\nWiring contracts (serial)...');
+  await nftContract.methods.set_game_contract(gameContract.address).send(sendAs(deployerAddress));
+  await nftContract.methods.set_token_contract(tokenContract.address).send(sendAs(deployerAddress));
+  await tokenContract.methods.set_nft_contract(nftContract.address).send(sendAs(deployerAddress));
+  await tokenContract.methods.set_game_contract(gameContract.address).send(sendAs(deployerAddress));
   console.log('Done.');
 
   // 5. Write .env
