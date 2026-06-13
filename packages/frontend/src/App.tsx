@@ -9,6 +9,7 @@ import { CardPacks } from './components/CardPacks';
 import { PackOpening } from './components/PackOpening';
 import { TutorialScreen } from './components/TutorialScreen';
 import { TutorialPrompt } from './components/TutorialPrompt';
+import { PracticeScreen } from './practice/PracticeScreen';
 import { FundingPrompt } from './components/FundingPrompt';
 import { TxNotificationCenter } from './components/TxNotificationCenter';
 import { GameScreen3D as GameScreen } from './components3d/GameScreen3D';
@@ -24,6 +25,7 @@ function AppInner() {
     () => !localStorage.getItem('tutorial_seen'),
   );
   const [tutorialScreen, setTutorialScreen] = useState(false);
+  const [practiceScreen, setPracticeScreen] = useState(false);
 
   const handleTutorial = () => {
     localStorage.setItem('tutorial_seen', 'true');
@@ -41,9 +43,12 @@ function AppInner() {
     setShowTutorialPrompt(false);
   };
 
-  // Tutorial screen replaces all other screens
+  // Tutorial + practice are local, chainless screens that replace everything else.
   if (tutorialScreen) {
     return <TutorialScreen onExit={handleExitTutorial} />;
+  }
+  if (practiceScreen) {
+    return <PracticeScreen onExit={() => setPracticeScreen(false)} />;
   }
 
   const showMenuScene = game.screen === 'main-menu' || game.screen === 'card-selector'
@@ -77,6 +82,7 @@ function AppInner() {
           hasGameInProgress={game.hasGameInProgress}
           onPlay={game.handlePlay}
           onTutorial={handleTutorial}
+          onPractice={() => setPracticeScreen(true)}
           onCardPacks={game.handleCardPacks}
         />
       )}

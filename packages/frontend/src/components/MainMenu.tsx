@@ -11,6 +11,7 @@ interface MainMenuProps {
   hasGameInProgress: boolean;
   onPlay: () => void;
   onTutorial: () => void;
+  onPractice: () => void;
   onCardPacks: () => void;
 }
 
@@ -24,6 +25,7 @@ export function MainMenu({
   hasGameInProgress,
   onPlay,
   onTutorial,
+  onPractice,
   onCardPacks,
 }: MainMenuProps) {
   const [showNotEnoughCards, setShowNotEnoughCards] = useState(false);
@@ -88,6 +90,14 @@ export function MainMenu({
         >
           <span className="main-menu__btn-icon">&#128214;</span>
           Tutorial
+        </button>
+
+        <button
+          className="main-menu__btn main-menu__btn--practice"
+          onClick={onPractice}
+        >
+          <span className="main-menu__btn-icon">&#129302;</span>
+          Practice vs Bot
         </button>
 
         <button

@@ -175,3 +175,31 @@ the manual FundingPrompt flow. **SponsoredFPC remains banned** — Fee Juice onl
     reports; the executable `.test.ts` scratch is not doc-archaeology, so
     `git rm` (history preserves them) over a move. The now-dead
     `exclude: ['tests/debugging/**']` was removed from the vitest config.
+
+### From item D1b (practice-mode UI)
+
+21. **Practice mirrors the tutorial's chainless full-screen pattern**, not a
+    `useGame` `Screen`. Like `tutorialScreen`, `practiceScreen` is local
+    `AppInner` boolean state that early-returns before the menu/game routing —
+    so practice touches neither the `Screen` union nor `useGame`. No chain,
+    no backend, no `useGame` involvement at all.
+22. **`usePractice` is the generalized tutorial loop**: same
+    `createGame`/`placeCard` core with the scripted scenes/dialogue/triggers
+    stripped and `pickCpuCell` replaced by game-logic `chooseBotMove`
+    (random/greedy/lookahead). The human is player1 and moves first
+    (createGame's default turn); the bot replies on a short timer so the
+    placed card is visible first.
+23. **Seed threads to BOTH deal and bot**: `createSeededRng(seed)` deals the
+    hands and `chooseBotMove({ seed: seed + moveCount })` picks each bot move,
+    so a fixed seed reproduces the entire match (pinned by a test). The UI
+    passes no seed → `Math.random` for varied play; tests pass `seed` +
+    `botDelayMs: 0`.
+24. **GameScreen3D/GameHUD reused as-is except one additive `practiceMode`
+    prop** that suppresses GameHUD's chain-coupled game-over UI (settlement
+    card-picker + "+20 Arena Tokens" banner + "opponent settling"). Practice
+    renders its own win/loss/draw overlay. The prop defaults false, so the
+    real-game path is untouched; the suppression has its own GameHUD test.
+25. **Hands are dealt from the full `CARD_DATABASE`** (10 distinct cards,
+    5 each) — practice is self-contained and does not read the player's
+    on-chain collection. `dealHands` is new because the old frontend
+    `getRandomHand*` helpers were removed in the cards.ts dedup (item b).
