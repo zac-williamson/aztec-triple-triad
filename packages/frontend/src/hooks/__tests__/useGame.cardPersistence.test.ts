@@ -85,6 +85,7 @@ vi.mock('../../aztec/config', () => ({
 vi.mock('../../aztec/noteImporter', () => ({
   importNotesFromTx: hoisted.importNotesFromTxMock,
   fetchTxEffectData: hoisted.fetchTxEffectDataMock,
+  importTokenRewardNote: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('../../aztec/cardStore', () => ({

@@ -238,10 +238,26 @@ lane's ownership. **Acceptable — prod-inert.** Details:
   in `!practiceMode && …` — a trivial rebase overlap when both land; the
   testids belong on the chain-path buttons, unaffected by the practice path.
 
-### Loser +20 token reward — BLOCKED ON LANE 1 (contract change required)
+### Loser +20 token reward — RESOLVED (Lane 1 contract + this lane's import)
+**Update (2026-06-13):** Lane 1 shipped the ArenaToken change (live on testnet
+via the updatable redeploy): `mint_reward(to, amount, player_randomness)`
+(create_and_push with recipient-derivable randomness), the
+`compute_reward_randomness(player_randomness) -> Field` getter, and
+`import_note(owner, value: u128, randomness, tx_hash, …)`. `process_game` now
+mints the loser via `mint_reward(opponent, 20, opponent_randomness)`. This lane
+wired the frontend import: on the loser side, `useGameSettlement`'s
+`incomingNoteData` effect calls `importTokenRewardNote` (in `noteImporter.ts`),
+which recomputes the note randomness from the loser's OWN per-game randomness
+(`session.getSettlementInfo().gameRandomness`) and injects it via the token
+contract's `import_note` — mirroring the card import. The old 5×2s
+refresh-poll (which masked the never-discovered note) is gone; one
+`refreshTokenBalance` after the deterministic import suffices. Pinned by
+`useGameSettlement.loserToken.test.ts`; the harness sentinel flips green.
+
+The original finding (kept for context):
 The harness `test.fail()` sentinel (`packages/playtest/.../full-game.spec.ts`,
-"loser +20 token reward is discovered in-session") is a real app bug. Root
-cause confirmed: **it is NOT frontend-fixable as-is.**
+"loser +20 token reward is discovered in-session") was a real app bug. Root
+cause: **it was NOT frontend-fixable as-is.**
 
 - `process_game` rewards both players via `ArenaToken::mint_private(addr, 20)`
   (`triple_triad_game/main.nr:704-706`), which does

@@ -2,12 +2,12 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import type { UseWebSocketReturn } from './useWebSocket';
 import type { OnChainPhase, SettlementInfo } from './useGameSession';
 import { useAztecContext } from '../aztec/AztecContext';
-import { importNotesFromTx, fetchTxEffectData } from '../aztec/noteImporter';
+import { importNotesFromTx, fetchTxEffectData, importTokenRewardNote } from '../aztec/noteImporter';
 import { addCards, type StoredCard } from '../aztec/cardStore';
 import txManager from '../aztec/txManager';
 import { ensureContracts, contractCache } from '../aztec/contracts';
 import { toFr as toFrUtil, toHexString, bytesToFrArray, base64ToFrArray, hexToFr } from '../aztec/fieldUtils';
-import { AZTEC_TX_TIMEOUT, AZTEC_SETTLE_TX_TIMEOUT, CARDS_PER_HAND, TOTAL_MOVES, MOVE_PROOF_WAIT_TIMEOUT, HAND_PROOF_WAIT_TIMEOUT } from '../aztec/gameConstants';
+import { AZTEC_TX_TIMEOUT, AZTEC_SETTLE_TX_TIMEOUT, CARDS_PER_HAND, TOTAL_MOVES, MOVE_PROOF_WAIT_TIMEOUT, HAND_PROOF_WAIT_TIMEOUT, GAME_TOKEN_REWARD } from '../aztec/gameConstants';
 import { requireWallet, requireAccountAddress } from '../aztec/walletGuards';
 import { gasSettingsWithHeadroom, type BaseFeeNode } from '../aztec/feeSettings';
 import type { HandProofData, MoveProofData, PlaintextNoteData } from '../types';
@@ -157,20 +157,27 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
 
     (async () => {
       await importNotes(txHash, notes, 'Loser import');
-      // Settlement mints 20 Arena Tokens to BOTH players (see game contract
-      // main.nr:703-706). The loser's PXE may not have finished scanning
-      // the settlement block's tagged logs, so poll a few times until the
-      // balance reflects the reward.
-      await aztec.refreshTokenBalance().catch(() => {});
-      for (let i = 0; i < 5; i++) {
-        await new Promise(r => setTimeout(r, 2000));
-        try { await aztec.refreshTokenBalance(); } catch {}
+
+      // Settlement mints +20 ArenaToken to the loser via mint_reward — a
+      // create_and_push note the loser's passive block scan never discovers.
+      // Import it explicitly (like the cards): its randomness is derived from
+      // the loser's OWN per-game randomness, so recompute + import_note.
+      const myRandomness = session.getSettlementInfo()?.gameRandomness;
+      if (aztec.wallet && aztec.nodeClient && myRandomness && myRandomness.length === 6) {
+        await importTokenRewardNote(
+          aztec.wallet, aztec.nodeClient, aztec.accountAddress!,
+          txHash, GAME_TOKEN_REWARD, myRandomness,
+        ).catch((e) => console.warn('[useGameSettlement] loser token reward import failed:', e));
+      } else {
+        console.warn('[useGameSettlement] loser token reward: missing randomness/node, skipping import');
       }
+
+      await aztec.refreshTokenBalance().catch(() => {});
     })();
 
     // Settlement complete on loser side — release the game lifecycle
     session.transitionPhase('idle');
-  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, aztec.nodeClient, importNotes, cardIds, aztec.refreshTokenBalance, session.transitionPhase]);
+  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, aztec.nodeClient, importNotes, cardIds, aztec.refreshTokenBalance, session.transitionPhase, session.getSettlementInfo]);
 
   // Track opponent's settlement on the loser's side via txManager.
   // When the winner starts settling, the loser receives OPPONENT_SETTLING via WS.
