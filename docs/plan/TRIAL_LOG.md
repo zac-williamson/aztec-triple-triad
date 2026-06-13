@@ -285,6 +285,19 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   CHANGE, and lanes were continuously BUSY; the gap was the heartbeat chain, now
   re-armed each loop.)
 
+- 06-13 (~03:20) — **Zac AFK; autonomous mode**. Directive: do not stall.
+  Operating rules while AFK: (1) heartbeat sweep every ~20min is the reliable
+  backstop (reads all panes directly), monitor re-armed if dead. (2) Merge
+  completed lanes through the gate autonomously. (3) NO outward/irreversible
+  actions without Zac: no testnet redeploy, no F3 go-live, no F1b force-push, no
+  git push, no new faucet/funding. (4) Decisions reserved for Zac: D2 scope, F3
+  domain, F1b, testnet ArenaToken redeploy.
+  Autonomous plan: playtest acceptance green → merge harness (capstone);
+  lane-1 ArenaToken loser-token fix → merge (codebase only, NO testnet
+  redeploy). Then quiet — most lanes parked on Zac decisions.
+  TUI note: long pasted dispatches can fail to submit (collapse to "paste again
+  to expand"); use SHORT send-keys messages.
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -331,7 +344,7 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
-| lane-1-chain | A3 + scripts fee merged (48c341b) | parked (user in window) | ArenaToken loser-token next |
+| lane-1-chain | A3 + fee merged | ArenaToken loser-token fix (codebase only) | no testnet redeploy w/o Zac |
 | lane-2-frontend | fee fix merged (7875d08) | parked | I (unblocked, not gating) + loser-token wiring ← lane-1 |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
