@@ -78,6 +78,15 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   pack cards (IDs 51+) at creation. Lane-3 PARKED (D2 ← A2 + Zac decision).
 - In flight now: lane-1 (A1), lane-2 (B), playtest (Phase 1). Five lanes parked.
 
+- 18:5x — **lane-2 B MERGED** (`cdf5caf`): useGame (1834 lines) → useGameSession/
+  useGamePlay/useGameSettlement behind a thin facade. Gate: cross-hook contracts
+  are identity-stable functions (no raw refs), 9 test files pass UNMODIFIED,
+  catch/setTimeout audit 28→27+1 pure relocation (zero new fallbacks), one
+  stale comment path bounced and fixed same-turn. Dead refs + 3 duplication
+  clusters removed, all documented in ASSUMPTIONS. Lane-7 woken for frontend
+  ARCHITECTURE sections; lane-2 dispatched onto C + QA-F3 frontend half
+  (A2 order amended — still blocked on lane-1).
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -112,6 +121,9 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   (cards.ts 50-set; axolotlCards.ts 256/4-tier vs contract's 5-tier). Canonical
   chain is scripts/card-database-256.json → circuits/card_data →
   frontend/src/cards.ts. Consolidate after D1a (duplication criterion).
+- **playtest**: rebase over B when convenient — hook structure changed
+  (testkit read-hooks should target the new useGameSession/Play/Settlement
+  surfaces via the unchanged useGame facade).
 - **playtest** (from QA): C3 requires real-proof mode — dummy VKs collapse
   `claim_abandoned_game`'s real-vs-dummy discrimination (CAMPAIGN_BACKLOG §5).
 
@@ -120,10 +132,10 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
 | lane-1-chain | restarted fresh post-interruption | A1 | prior WIP uncommitted in worktree |
-| lane-2-frontend | — | B | |
+| lane-2-frontend | B merged cdf5caf | C + QA-F3 frontend half | A2 next once lane-1 lands |
 | lane-3-game-ai | both items merged (1afb48e, 64f7e6d) | parked | D2 ← A2 + Zac decision |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
 | lane-6-assets-infra | F1+F2+E3a merged (774f6b1) | parked | E3b ← A1; F3 ← A3+domain |
-| lane-7-docs | E1+E2 merged (ade31c7, b249810) | standby | wake on lane-2 B merge (frontend sections), A3 (README) |
+| lane-7-docs | E1+E2 merged | ARCH §12 frontend (woken) | E2.5 README ← A3 |
 | playtest | — | Harness Phase 1 | |
