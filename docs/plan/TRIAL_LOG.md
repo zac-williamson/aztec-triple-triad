@@ -441,3 +441,23 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   certbot auto-skips this run. Zac to update the A record → 13.42.161.225; then I finish TLS.
 - Frontend (Vercel) go-live still held until playtest acceptance is green (lane-2 on the 3rd
   settlement bug, P2/joiner board race).
+
+## 06-13 — backend LIVE on HTTP (two deploy bugs root-caused) + lane-2 merged + playtest attempt 5
+- provision-and-go.sh finished but surfaced TWO structural deploy bugs (not flakes), both fixed
+  in 122568d and verified on the box:
+  1. triad-backend.service hardcoded WorkingDirectory=/home/ubuntu/aztec-triple-triad/... but
+     both provision scripts clone into $HOME/axolotl-arena-server → systemd crash-loop
+     (status=200/CHDIR, restart #23). Fix: templated __REPO_DIR__, sed-substituted in both
+     provision-and-go.sh and provision-lightsail.sh (same pattern as nginx's ws.YOURDOMAIN.com).
+  2. nginx-triad.conf pre-baked a `listen 443 ssl` block referencing a cert that doesn't exist
+     pre-certbot → nginx -t failed, nginx never reloaded (chicken-and-egg). Fix: rewrote
+     HTTP-only; certbot --nginx --redirect injects the TLS block itself (step 6).
+  Verified on 13.42.161.225: service active; /health OK direct :5174 AND via nginx :80; port 80
+  reachable from internet (certbot HTTP-01 will work). Port 443 closed (no cert yet, expected).
+- STILL pending Zac: ws.aztec-arena.com A record → 13.42.161.225 (currently 16.60.85.104, old
+  box). Once it propagates I run certbot → wss://ws.aztec-arena.com. Backend already live on HTTP.
+- lane-2 bug-3 fix MERGED to testnet (d3b350c) through the 6-criteria gate: root-cause click-time
+  deep clone, reduces duplication (one preMoveState both paths), regression test that fails
+  without it, documented invariant verified. PASS on all six.
+- Playtest attempt 5 triggered (merge testnet → rebuild → re-run 4.3.1 A1+A2 acceptance gate).
+  All other lanes done/parked; this is the last gate before F3 frontend go-live.
