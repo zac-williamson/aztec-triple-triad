@@ -178,6 +178,20 @@ suite for the A1/A2 upgrade before any migration commit is trusted.
 11. **Cross-lane packaging defect (Lane 3):** `@axolotl-arena/game-logic`
     compiles to ESM (`module: ESNext`) but its package.json declares no
     `"type"`, so plain-Node CJS consumers cannot `require()` it (vite/tsx/vitest
-    consumers tolerate it). The harness works around it with dynamic `import()`
-    (`packages/playtest/src/expected.ts`); the 1-line fix `"type": "module"`
-    belongs to Lane 3.
+    consumers tolerate it). The harness esbuild-bundles the package's own
+    source per run (`global-setup.ts` → `expected.ts`); the 1-line root fix
+    `"type": "module"` belongs to Lane 3 (diff reported to the orchestrator).
+12. **Devnet funding race (Lane 2 finding):** two concurrent onboardings both
+    bridge Fee Juice from the SAME hardcoded anvil account (`fundDevnet.ts`),
+    and ERC20 `approve` is owner+spender-keyed — player A's deposit consumes
+    player B's allowance between B's approve and deposit
+    (`ERC20InsufficientAllowance`, campaign run 8). The campaign onboards
+    players sequentially; a real fix is per-player L1 accounts (anvil derives
+    many) or approve-per-deposit atomicity in the funding helper.
+13. **Loser token discovery (open finding, lanes 1/2):** settlement mints +20
+    to both players as ONCHAIN_CONSTRAINED notes tagged by the game contract.
+    The winner sees theirs immediately (their own PXE proved the settle tx);
+    the loser depends on tagged-log block scanning and read 100 (not 120) for
+    the full 120s window in run 7. Diagnostic 6-min ceiling added to determine
+    slow-vs-never; if never, the loser's reward is undiscoverable in-session —
+    exactly the class of bug the harness exists to catch.
