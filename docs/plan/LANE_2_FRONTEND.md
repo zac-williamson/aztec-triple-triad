@@ -368,3 +368,21 @@ already imports `fundAccountOnDevnet` from frontend src), or replicate
     Full rationale + the circuit-side test evidence are in
     `docs/plan/BUG_C2_REPLAY.md` (Resolution section). The slot is well-defined
     because `prove_hand` enforces distinct ids within a hand.
+
+28. **DONE (2026-06-13).** All 5 steps landed in one commit with the refreshed
+    `public/circuits/game_move.json`. `proofIntegration.test.ts` executes the
+    REAL circuit with the 23-field hash + mask inputs (incl. a new
+    same-slot-replay reject mirroring Lane 1's `test_card_replay_rejected`) —
+    the authoritative mirror, so no separate `proofWorker.test.ts` hash mirror
+    was needed (it only tests pure field utils). **Discovered requirement
+    beyond the 5 steps — cross-player mask relay:** the opponent's
+    committed-hand slot is underivable locally (the live hand is spliced, the
+    commit order is private), so the running pair can't be tracked from board
+    observation alone. The mover's after-mask pair is carried in `MoveProofData`
+    (`p1PlacedAfter`/`p2PlacedAfter`, optional) and rides opaquely through the
+    backend's `MOVE_PROVEN` relay; the receiver OR's it into the running pair
+    (OR is monotonic, so order-robust). Own moves advance our own slot bit
+    (committed-hand index, matching proofWorker). The deferred path captures
+    before-masks at queue time like the board; restore reconstructs the pair by
+    OR-ing all saved proofs' after-masks. No backend/protocol-shape change —
+    `MoveProofData` is forwarded as an opaque object.

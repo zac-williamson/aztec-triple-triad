@@ -110,16 +110,46 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
   // Promise-based hand proof wait (same pattern as moveProofsCompleteRef)
   const handProofsCompleteRef = useRef<(() => void) | null>(null);
 
+  // Running per-player placed-hand-slot bitmasks (C2 replay fix), chained
+  // across ALL moves in global order: each move's after-masks are the next
+  // move's before-masks. Advanced on our own moves (we know our committed
+  // slot) and OR'd from the opponent's relayed after-masks (their committed
+  // slot is otherwise underivable). OR is monotonic — masks only set bits —
+  // so the running pair is robust to relay ordering.
+  const placedMasksRef = useRef<{ p1: number; p2: number }>({ p1: 0, p2: 0 });
+
+  // Always-current committed hand ids (the order baked into card_commit and
+  // used by proofWorker as player_card_ids). Backs advanceOwnMask so a deferred
+  // move — queued before the hand proof sets cardIdsRef — still resolves the
+  // slot, and handlePlaceCard's memoization can't make it stale.
+  const committedCardIdsRef = useRef<number[]>(cardIds);
+  committedCardIdsRef.current = cardIds;
+
+  /** Advance the running masks for OUR move: set our committed-hand slot bit. */
+  const advanceOwnMask = (cardId: number, player: 1 | 2): { p1: number; p2: number } => {
+    const before = { ...placedMasksRef.current };
+    const slot = committedCardIdsRef.current.indexOf(cardId); // committed-hand order (matches proofWorker)
+    if (slot >= 0) {
+      const bit = 1 << slot;
+      placedMasksRef.current = player === 1
+        ? { p1: before.p1 | bit, p2: before.p2 }
+        : { p1: before.p1, p2: before.p2 | bit };
+    }
+    return before;
+  };
+
   // Queue of moves made before hand proofs were ready. Each entry captures the
-  // FULL pre-move game state (board + hands + scores + turn) at queue time, so
-  // the deferred processor can replay the move against the exact board the
-  // player acted on — no later board-state lookup (the snapshot-keying bug:
-  // a count-keyed history map returned a board that already contained the
-  // queued card under 4.3.1 broadcast timing → game_move "Card already placed").
+  // FULL pre-move game state (board + hands + scores + turn) AND the before-masks
+  // at queue time, so the deferred processor can replay the move against the
+  // exact board the player acted on — no later board-state lookup (the
+  // snapshot-keying bug: a count-keyed history map returned a board that already
+  // contained the queued card under 4.3.1 broadcast timing → game_move "Card
+  // already placed").
   const pendingMovesRef = useRef<Array<{
     card: Card;
     board: GameState['board']; p1Hand: Card[]; p2Hand: Card[];
     scores: [number, number]; currentTurn: 'player1' | 'player2';
+    p1PlacedBefore: number; p2PlacedBefore: number;
     handIndex: number; row: number; col: number;
     moveNumber: number;
   }>>([]);
@@ -170,6 +200,8 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
       scoresAfter: [number, number],
       gameEnded: boolean,
       winnerId: number,
+      p1PlacedBefore: number,
+      p2PlacedBefore: number,
     ): Promise<MoveProofData> => {
       if (!myHandProof || !opponentHandProof) throw new Error('Cannot generate move proof: hand proofs not ready');
       if (!myCardCommit || !opponentCardCommit) throw new Error('Cannot generate move proof: card commits missing');
@@ -192,6 +224,7 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
           commit1, commit2,
           gameEnded, winnerId,
           handData,
+          p1PlacedBefore, p2PlacedBefore,
         );
         addMoveProof(proof);
         setMoveProofStatus('ready');
@@ -222,7 +255,12 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
   // Receive opponent move proof from WebSocket
   useEffect(() => {
     if (!ws.lastMoveProof) return;
-    addMoveProof(ws.lastMoveProof.moveProof);
+    const mp = ws.lastMoveProof.moveProof;
+    // Adopt the opponent's relayed after-masks into the running pair (their
+    // committed-hand slot is otherwise underivable). OR is monotonic.
+    if (mp.p1PlacedAfter !== undefined) placedMasksRef.current.p1 |= mp.p1PlacedAfter;
+    if (mp.p2PlacedAfter !== undefined) placedMasksRef.current.p2 |= mp.p2PlacedAfter;
+    addMoveProof(mp);
   }, [ws.lastMoveProof, addMoveProof]);
 
   // Auto-generate hand proof when blinding factor + opponent randomness are available
@@ -310,6 +348,7 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
             move.board, boardAfter,
             scoresBefore, scoresAfter,
             gameEnded, winnerId,
+            move.p1PlacedBefore, move.p2PlacedBefore,
           );
           if (moveProof && ws.gameId) {
             ws.submitMoveProof(ws.gameId, move.handIndex, move.row, move.col, moveProof, move.moveNumber);
@@ -371,19 +410,25 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
         const gameEnded = result.newState.status === 'finished';
         const winnerId = mapWinnerId(result.newState.winner);
 
+        // Capture the before-masks and advance the running pair NOW (in global
+        // move order), so this move's effect is visible to the next move whether
+        // it's proven immediately or deferred.
+        const before = advanceOwnMask(card.id, ws.playerNumber);
+
         if (myHandProof && opponentHandProof) {
           const moveProof = await generateMoveProofForPlacement(
             card.id, row, col, ws.playerNumber,
             boardBefore, boardAfter,
             scoresBefore, scoresAfter,
             gameEnded, winnerId,
+            before.p1, before.p2,
           );
           ws.submitMoveProof(ws.gameId, handIndex, row, col, moveProof, moveNumber);
         } else {
           // Queue the full pre-move state (the board is already a deep clone)
           // so the deferred processor replays against the exact board, hands,
-          // scores, and turn the player acted on — independent of later
-          // ws.gameState changes.
+          // scores, turn, AND before-masks the player acted on — independent of
+          // later ws.gameState changes.
           pendingMovesRef.current.push({
             card,
             board: preMoveState.board,
@@ -391,6 +436,7 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
             p2Hand: [...preMoveState.player2Hand],
             scores: [preMoveState.player1Score, preMoveState.player2Score],
             currentTurn: preMoveState.currentTurn,
+            p1PlacedBefore: before.p1, p2PlacedBefore: before.p2,
             handIndex, row, col, moveNumber,
           });
         }
@@ -440,6 +486,15 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
     if (saved.opponentHandProof) setOpponentHandProof(saved.opponentHandProof);
     if (saved.collectedMoveProofs) {
       for (const mp of saved.collectedMoveProofs) addMoveProof(mp);
+      // Reconstruct the running masks from every restored proof's after-masks.
+      // OR is order-independent (masks only set bits), so this recovers the
+      // exact pair regardless of move order.
+      let p1 = 0, p2 = 0;
+      for (const mp of saved.collectedMoveProofs) {
+        p1 |= mp.p1PlacedAfter ?? 0;
+        p2 |= mp.p2PlacedAfter ?? 0;
+      }
+      placedMasksRef.current = { p1, p2 };
     }
   }, [addMoveProof]);
 
@@ -449,6 +504,7 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
     handProofGeneratedRef.current = false;
     moveProofsCompleteRef.current = null;
     handProofsCompleteRef.current = null;
+    placedMasksRef.current = { p1: 0, p2: 0 };
     setMyHandProof(null);
     setOpponentHandProof(null);
     setCollectedMoveProofs([]);
