@@ -252,6 +252,22 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   local 4.3.1 acceptance re-run (no conflict: testnet vs local sandbox). Deployer
   keys → ~/.aztec-triad-private/ (uncommitted).
 
+- 06-13 (~02:35) — **MONITORING GAP**: monitor v5 hit its 1h timeout and the
+  heartbeat didn't re-arm it → ~90 min blind (Zac flagged). Re-armed (monitor v6
+  bf2mzs99y). Going forward: heartbeat must re-arm the monitor before its 1h cap.
+- **A3 COMPLETE + MERGED** (`3ae3938`) — contracts LIVE on 4.3.1 testnet,
+  verified (node 4.3.1, get_game_status reads). New addresses:
+  NFT 0x0e42ec51…278f7c · Game 0x2325ef28…3af4ec · Token 0x1851bd7c…b22de8 ·
+  PXE rpc.testnet.aztec-labs.com. Two real bugs fixed live (bridge L1-chain/
+  race-free mint; serialized deploy-testnet Promise.all PXE ops = latent
+  serial-per-wallet violation). **Critical path A1→A2→A3 done.**
+- **2nd acceptance finding — REAL fee-headroom bug** (gate-blocking): maxFeesPerGas
+  computed with no headroom over the rising L2 base fee → intermittent tx
+  rejection in deploy/onboarding/settlement (PLAYTEST_HARNESS assumption 15).
+  Dispatched: lane-2 (canonical src/aztec/feeSettings helper, ~3x base, all send
+  paths) + lane-1 (scripts mirror, same multiplier). playtest holds, re-runs
+  acceptance after the fix. This is the gate doing its job a 2nd time.
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -298,11 +314,11 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
-| lane-1-chain | funder merged | RUNNING A3 testnet deploy | treasury funded ✓ |
+| lane-1-chain | A3 merged (3ae3938) — contracts live | scripts fee-headroom mirror | then ArenaToken loser-token |
 | lane-2-frontend | parked; testkit signed off (prod-inert) | wires loser-token import after lane-1 ArenaToken | I ← A3 |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
 | lane-6-assets-infra | all merged + CI wiring | parked | F3 ← A3+domain; F1b ← end-of-cycle |
 | lane-7-docs | all items merged | parked | E2.5 ← A3 |
-| playtest | 4.3.1 acceptance run IN FLIGHT — caught breakage | diagnosing | report awaited |
+| playtest | 4.3.1 acceptance blocked on fee bug | hold for fee fix | re-run after lanes 1+2 |
