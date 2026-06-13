@@ -703,7 +703,13 @@ pub contract TripleTriadGame {
             // Reward both players with 20 Arena Tokens
             let token_addr = self.storage.token_contract.read();
             ArenaToken::at(token_addr).mint_private(caller, 20).call(self.context);
-            ArenaToken::at(token_addr).mint_private(opponent, 20).call(self.context);
+            // Opponent did NOT prove this tx, so use the discoverable reward path
+            // (deterministic randomness from their committed game randomness); they
+            // import it via ArenaToken::import_note. The caller (submitter) above
+            // discovers their own via the normal ONCHAIN_CONSTRAINED delivery.
+            ArenaToken::at(token_addr)
+                .mint_reward(opponent, 20, opponent_randomness)
+                .call(self.context);
 
             self.enqueue_self.settle_game(
                 game_id, caller, opponent, card_to_transfer,
@@ -730,7 +736,13 @@ pub contract TripleTriadGame {
             // Reward both players with 20 Arena Tokens
             let token_addr = self.storage.token_contract.read();
             ArenaToken::at(token_addr).mint_private(caller, 20).call(self.context);
-            ArenaToken::at(token_addr).mint_private(opponent, 20).call(self.context);
+            // Opponent did NOT prove this tx, so use the discoverable reward path
+            // (deterministic randomness from their committed game randomness); they
+            // import it via ArenaToken::import_note. The caller (submitter) above
+            // discovers their own via the normal ONCHAIN_CONSTRAINED delivery.
+            ArenaToken::at(token_addr)
+                .mint_reward(opponent, 20, opponent_randomness)
+                .call(self.context);
 
             self.enqueue_self.settle_game_draw(
                 game_id, card_commit_1, card_commit_2,

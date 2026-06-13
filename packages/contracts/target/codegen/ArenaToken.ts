@@ -119,14 +119,23 @@ balances: {
     /** burn_from(from: struct, amount: integer) */
     burn_from: ((from: AztecAddressLike, amount: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
+    /** compute_reward_randomness(player_randomness: array) */
+    compute_reward_randomness: ((player_randomness: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
     /** constructor(admin: struct) */
     constructor: ((admin: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** get_balance(owner: struct) */
     get_balance: ((owner: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
+    /** import_note(owner: struct, value: integer, randomness: field, tx_hash: field, unique_note_hashes: array, num_note_hashes: integer, first_nullifier: field, recipient: struct) */
+    import_note: ((owner: AztecAddressLike, value: (bigint | number), randomness: FieldLike, tx_hash: FieldLike, unique_note_hashes: FieldLike[], num_note_hashes: (bigint | number), first_nullifier: FieldLike, recipient: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
     /** mint_private(to: struct, amount: integer) */
     mint_private: ((to: AztecAddressLike, amount: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** mint_reward(to: struct, amount: integer, player_randomness: array) */
+    mint_reward: ((to: AztecAddressLike, amount: (bigint | number), player_randomness: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** offchain_receive(messages: struct) */
     offchain_receive: ((messages: { ciphertext: FieldLike[], recipient: AztecAddressLike, tx_hash: OptionLike<FieldLike>, anchor_block_timestamp: (bigint | number) }[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
