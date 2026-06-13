@@ -76,6 +76,30 @@ New `packages/bot/`: a headless Node player with real stakes.
    legal move; hand/board parity is not checked, so crafted positions (tests,
    belief-states) are accepted.
 
+## ASSUMPTIONS (card-DB consolidation — June 2026 handoff from lane 7)
+
+8. **Kept the legacy export surface** (`CARD_DATABASE`, `getCardById`,
+   `getCardsByIds`, `packRanks`, `unpackRanks`, `verifyCardRankConsistency`):
+   backend `GameManager`, `packages/integration` tests, and
+   `scripts/e2e-contract-test.ts` all import these names. Canonical ids 1-50
+   were verified byte-identical (names + ranks) to the old 50-set, so the swap
+   is a pure data extension — no consumer breaks, which is why this shipped
+   without a question gate. Both outside consumers still typecheck (integration
+   has two pre-existing `noir-backend.ts` SDK-arity errors, untouched by this).
+9. **Intended backend behavior delta:** `getCardsByIds` now resolves ids
+   51-256 instead of throwing, so `GameManager.validateCardIds` accepts the
+   full canonical range its own WS validation (1-256) already advertises.
+   Until now, any hand with a card above 50 was rejected at game creation.
+10. **The ten duplicate legendaries are canonical:** ids 247-256 re-issue the
+    original legendaries (ids 41-50, `oldId` in the JSON) with identical
+    ranks. Tests document the duplication rather than deduping it.
+11. **cards.ts is generated, not authored** (`npm run generate:cards`, pinned
+    against `scripts/card-database-256.json` by tests). `axolotlCards.ts` was
+    deleted outright: zero consumers outside this package, and its 4-tier
+    `determineRarity` contradicted the NFT contract's 5-tier
+    `CARDS_PER_POOL`/banding scheme. The 5-tier `Rarity` type now lives in
+    `types.ts` and each generated card carries its `rarity`.
+
 ## Constraints
 - game-logic stays pure TS, zero Aztec deps — that purity is what makes it reusable
   in-circuit-checking (harness) and in Node (bot).
