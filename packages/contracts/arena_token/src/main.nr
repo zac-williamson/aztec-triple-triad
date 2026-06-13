@@ -42,8 +42,7 @@ pub contract ArenaToken {
         oracle::notes::notify_created_note,
         protocol::{
             address::AztecAddress,
-            constants::{CONTRACT_INSTANCE_REGISTRY_CONTRACT_ADDRESS, MAX_NOTE_HASHES_PER_TX},
-            contract_class_id::ContractClassId,
+            constants::MAX_NOTE_HASHES_PER_TX,
             hash::poseidon2_hash,
             traits::{Packable, ToField},
         },
@@ -51,7 +50,6 @@ pub contract ArenaToken {
     };
 
     use balance_set::BalanceSet;
-    use contract_instance_registry::ContractInstanceRegistry;
     use uint_note::UintNote;
 
     use super::REWARD_NOTE_IV;
@@ -144,30 +142,8 @@ pub contract ArenaToken {
         self.storage.balances.at(owner).balance_of()
     }
 
-    // --- Upgradeability (admin only) ---
-    // Makes this instance updatable so future code fixes are applied as an
-    // address-preserving contract-class update (no redeploy / address churn).
-
-    /// Schedule an update of this instance to a new contract class. Admin only.
-    /// Takes effect after the instance's update delay (DelayedPublicMutable).
-    #[external("private")]
-    fn update_to(new_class_id: ContractClassId) {
-        assert(self.msg_sender() == self.storage.admin.read(), "Only admin can update");
-        self.enqueue(
-            ContractInstanceRegistry::at(CONTRACT_INSTANCE_REGISTRY_CONTRACT_ADDRESS)
-                .update(new_class_id),
-        );
-    }
-
-    /// Set this instance's update delay (>= MINIMUM_UPDATE_DELAY = 600s). Admin only.
-    #[external("private")]
-    fn set_update_delay(new_delay: u64) {
-        assert(self.msg_sender() == self.storage.admin.read(), "Only admin can set update delay");
-        self.enqueue(
-            ContractInstanceRegistry::at(CONTRACT_INSTANCE_REGISTRY_CONTRACT_ADDRESS)
-                .set_update_delay(new_delay),
-        );
-    }
+    // Updates are applied by FRESH REDEPLOY (new addresses), not the Aztec
+    // contract-class upgrade pattern. See docs/plan/UPDATE_MODEL.md.
 
     /// Frontend getter: compute a reward note's randomness from the recipient's
     /// per-game randomness, so the winner can relay it (or the loser derive it).
