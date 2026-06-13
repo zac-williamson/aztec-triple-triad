@@ -100,8 +100,23 @@ funding).
   structurally impossible today (status no longer `active` after the first
   claim). Recorded in FUTURE_IMPROVEMENTS.md as a contract-change candidate.
 
+## ASSUMPTIONS (recorded during E2 part 2, 2026-06-12)
+- **§12 anchors target the post-B layout** as instructed; they drift if Lane 2
+  refactors again — the same owning-lane review contract applies.
+- **`proofWorker.ts` runs on the main thread** (no `Worker` anywhere in
+  frontend src). §12.3 states this explicitly rather than letting the filename
+  imply otherwise; whether to rename the module is Lane 2's call.
+- **Fee-path divergence documented, not hidden**: §12.7 carries a "known
+  divergence" banner — game txs still pay via SponsoredFPC
+  (`aztec/contracts.ts:9-26`) pending work item I. The doc describes what IS,
+  with the ban and the migration path stated.
+- **Lane 3's §11 edit reviewed**: the four-copy must-agree list and
+  `npm run generate:cards` match their consolidation commit (f2f716a).
+  Cross-lane review contract satisfied in both directions.
+
 ## Handoff notes for other lanes (from E2)
-- **Lane 3 (game-logic owner)**: `packages/game-logic` exports TWO stale card
+- **Lane 3 (game-logic owner)** — *ACTIONED in f2f716a (consolidation +
+  generator + pinning tests)*: `packages/game-logic` exports TWO stale card
   databases from `index.ts` — `cards.ts` (legacy 50-card set: ids 1–50,
   "Lerma" at id 50 vs canonical id 256) and `axolotlCards.ts` (256 different
   cards, 4-tier rarity scheme; canonical is 5-tier per `generate_card`,
