@@ -104,14 +104,33 @@ layer on top.
 
 ## Phases
 
-| Phase | Deliverable | Est. |
-|-------|------------|------|
-| 1 | Orchestrator + one full click-driven game on the 4.2 sandbox, two contexts, three-layer settlement assertions | 3–4d |
-| 2 | Campaign DSL, collection/pack flows, fast-proof mode (needs Lane 1's dummy_hand + deploy flag) | 2–3d |
-| 3 | CI wiring (fast campaigns per-merge, real-proof nightly; Chromium needs SwiftShader for WebGL in CI) + artifact pipeline | 1–2d |
+| Phase | Deliverable | Est. | Status |
+|-------|------------|------|--------|
+| 1 | Orchestrator + one full click-driven game on the 4.2 sandbox, two contexts, three-layer settlement assertions | 3–4d | **COMPLETE** (2026-06-12) |
+| 2 | Campaign DSL, collection/pack flows, fast-proof mode (needs Lane 1's dummy_hand + deploy flag) | 2–3d | blocked on Lane 1 dummy_hand |
+| 3 | CI wiring (fast campaigns per-merge, real-proof nightly; Chromium needs SwiftShader for WebGL in CI) + artifact pipeline | 1–2d | not started |
 
 Build Phase 1 against the STILL-WORKING 4.2 local sandbox — it becomes the acceptance
 suite for the A1/A2 upgrade before any migration commit is trusted.
+
+### Phase 1 evidence (against 4.2 sandbox, `v4.2.0-aztecnr-rc.2`)
+
+`packages/playtest/tests/full-game.spec.ts` — `describe.serial` of two tests:
+- **Deliverable** (test 1): onboard two contexts → matchmake → 9 real canvas
+  clicks with per-move board cross-check vs the rules mirror → winner claims a
+  loser card → assert all three layers: private cards (winner +1 incl. the
+  specific claimed card, loser −1 incl. its absence) + winner token, public
+  `game_status == settled` and on-chain players == the two browser accounts,
+  backend room finished/released. **Passes.**
+- **Tracked finding** (test 2, `test.fail`): loser +20 token reward discovery —
+  see assumption 13. Stays green-as-expected; flips red when fixed.
+
+Repeatability: two consecutive full fresh-stack runs (own sandbox boot + deploy
++ teardown each) green — run A 9.0m, run B 8.1m — plus a reuse-mode run. Real
+proving puts a game at ~5–6 min; that is proving physics, the Phase-2 fast-proof
+tier (Lane 1 `dummy_hand`) is the inner-loop accelerator. WebGL in headless
+Chromium needs `--use-angle=metal` locally / SwiftShader-GL in CI
+(`scripts/probe-webgl.ts`, `PLAYTEST_ANGLE=swiftshader`).
 
 ## Constraints & notes
 
