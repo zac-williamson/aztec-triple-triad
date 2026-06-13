@@ -334,3 +334,41 @@ both packages typecheck on the 4.3.1 SDK, CLI/artifacts are 4.3.1.
     NFTs (keeps C2 global/sound; needs a separate card-type lookup for
     art/ranks). The harness could sidestep with disjoint decks, but that would
     MASK a real game-breaking bug, so it does not. BLOCKED on the Lane 1 fix.
+
+### Acceptance attempt 6 — finding 20 (the C2 fix's chosen approach breaks proof chaining)
+
+The C2 fix shipped as a per-player placed-slot mask folded into a new 23-field
+state-hash anchor (lane-1 `ca698e2`/`8d4e528` + lane-2 prover `90e9393`).
+Result: **P2's move proofs now generate (4/4, zero "Card already placed") and
+both players submit 9/9 → `canSettle` reached → winner picks a card →
+settlement starts.** Every earlier blocker is cleared. But settlement then
+fails CLIENT-SIDE assembling the proof chain (no tx sent):
+`Error: Proof chain broken at step 1` (`useGameSettlement.ts` sortProofChain).
+
+20. **GATE-BLOCKING — per-player placed masks in the SHARED chained state hash
+    can't agree across players (lanes 1 + 2).** sortProofChain links proofs by
+    `endStateHash[i] == startStateHash[i+1]`; the C2 anchor now folds both
+    players' placed-slot masks into that hash. Instrumented dump (reverted):
+    - step 0 = P1 move 0: `end=…3117`, `p1_placed_after=1, p2=0` (P1 placed slot 0).
+    - step 1 wants `start=…3117`; the intended next proof is **P2's move 1**, but
+      its proof encodes `p1_placed=0` (P2 thought P1 had placed NOTHING). P2's
+      proofs carry `p1a = 0,0,0,7` — it only learns P1's mask move-by-move from
+      received proofs, lagging.
+    Root cause: a player's placed mask is derived from its OWN private hand-slot
+    usage; the opponent learns it only via the relayed move proof
+    (`useGamePlay.ts:261` OR-ing `p1/p2PlacedAfter` into a local ref), which is
+    async and lags under normal/fast play. So P1's `endStateHash` (real P1 mask)
+    never equals P2's `startStateHash` (stale P1 mask) at the boundary — the
+    chain is unassemblable. This is inherent to putting per-player,
+    privately-derived masks into a SHARED hash that must chain across players.
+    **Fix direction (lanes 1/2):** don't chain the masks. Do C2 replay-prevention
+    self-contained inside each move circuit using the current player's private
+    committed card_ids + the board's per-cell owner field (both already private
+    inputs) — "the placed card_id is not already on a board cell owned by
+    current_player" — needing NO mask in the shared state hash and reverting the
+    21→23-field anchor. BLOCKED on this.
+
+(Harness robustness, fixed in-lane this attempt: the orchestrator now syncs
+`public/` circuit+contract artifacts from `target/` before serving — the
+committed `public/contracts` copy was stale after the C2 merge and would
+mismatch the deployed ABI once a run reaches `process_game`.)
