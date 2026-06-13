@@ -121,6 +121,13 @@ fn main(
     }
     assert(card_found, "Placed card not in committed hand");
 
+    // ===== 4b. Verify the card is not already on the board (C2: replay prevention) =====
+    // Card ids are unique NFTs, so a card can occupy at most one cell. Without this
+    // check a player could replay an already-placed committed card on every turn.
+    for i in 0..9 {
+        assert(board_before[i * 2] != card_id, "Card already placed on board");
+    }
+
     // ===== 5. Verify the cell was empty before the move =====
     let cell_idx = r * 3 + c;
     assert(board_before[cell_idx * 2] == 0, "Cell not empty");

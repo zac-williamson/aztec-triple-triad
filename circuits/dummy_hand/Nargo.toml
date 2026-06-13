@@ -1,0 +1,5 @@
+[package]
+name = "dummy_hand"
+type = "bin"
+authors = [""]
+compiler_version = ">=0.36.0"

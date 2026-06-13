@@ -56,6 +56,11 @@ export type ClientMessage =
   | { type: 'RELAY_NOTE_DATA'; gameId: string; txHash: string; notes: PlaintextNoteData[] }
   // Settlement lifecycle
   | { type: 'SETTLE_STARTED'; gameId: string; selectedCardId: number }
+  // Sent by the claimant after settle_abandoned_game is mined on-chain.
+  // The server marks the room finished (winner = sender) and unbinds both
+  // players; it cannot verify the claim (Aztec-free relay) — the chain is
+  // the source of truth for cards and rewards.
+  | { type: 'ABANDONED_GAME_SETTLED'; gameId: string }
   // Matchmaking
   | { type: 'QUEUE_MATCHMAKING'; cardIds: number[] }
   | { type: 'CANCEL_MATCHMAKING' }

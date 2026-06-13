@@ -137,3 +137,29 @@ unconstrained fn get_nfts_for_user_returns_correct_set() {
     assert(found_30, "Expected card 30");
 }
 
+
+// --- get_cards_for_new_player (starter claim) ---
+
+#[test]
+unconstrained fn starter_claim_mints_starter_tokens() {
+    let (mut env, nft_address, token_address, _minter, player) = utils::setup_full();
+
+    env.call_private(player, TripleTriadNFT::at(nft_address).get_cards_for_new_player());
+
+    // The 5 starter card notes are relay-delivered (create_and_push_note, no
+    // tagging) so they are invisible to note discovery here by design; the
+    // token mint is the claim's discoverable on-chain observable.
+    let balance: u128 =
+        env.execute_utility(arena_token::ArenaToken::at(token_address).get_balance(player));
+    assert(balance == 100, "Expected 100 starter tokens");
+}
+
+#[test(should_fail_with = "Cannot prove nullifier non-inclusion")]
+unconstrained fn starter_claim_rejects_second_claim() {
+    let (mut env, nft_address, _token_address, _minter, player) = utils::setup_full();
+
+    env.call_private(player, TripleTriadNFT::at(nft_address).get_cards_for_new_player());
+    // QA-F1: without an on-chain guard a second direct call mints another
+    // starter set + 100 tokens and corrupts the nonce-note set.
+    env.call_private(player, TripleTriadNFT::at(nft_address).get_cards_for_new_player());
+}

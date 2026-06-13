@@ -20,31 +20,31 @@ export const TIMMY_TUTORIAL_HAND: Card[] = [
     id: 201,
     name: "Timmy's Friend",
     ranks: { top: 1, right: 2, bottom: 1, left: 1 },
-    imageUrl: '/cards/final/card-201.png',
+    imageUrl: '/cards/final/card-201.webp',
   },
   {
     id: 202,
     name: "Timmy's Other Friend",
     ranks: { top: 2, right: 1, bottom: 1, left: 1 },
-    imageUrl: '/cards/final/card-202.png',
+    imageUrl: '/cards/final/card-202.webp',
   },
   {
     id: 203,
     name: 'Timmy',
     ranks: { top: 2, right: 2, bottom: 2, left: 2 },
-    imageUrl: '/cards/final/card-203.png',
+    imageUrl: '/cards/final/card-203.webp',
   },
   {
     id: 204,
     name: 'Old Boot',
     ranks: { top: 1, right: 1, bottom: 1, left: 1 },
-    imageUrl: '/cards/final/card-204.png',
+    imageUrl: '/cards/final/card-204.webp',
   },
   {
     id: 205,
     name: 'Lost Cat',
     ranks: { top: 1, right: 1, bottom: 1, left: 1 },
-    imageUrl: '/cards/final/card-205.png',
+    imageUrl: '/cards/final/card-205.webp',
   },
 ];
 

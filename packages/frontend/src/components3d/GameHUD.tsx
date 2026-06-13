@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import type { GameState, Player, Card } from '../types';
 import type { ProofStatusInfo, SettleTxStatus } from './GameScreen3D';
 import { SettlementCardPicker } from './SettlementCardPicker';
+import { ChainViewPanel, type ChainViewData } from './ChainViewPanel';
 import '../components/GameScreen.css';
 
 interface GameHUDProps {
@@ -22,6 +24,14 @@ interface GameHUDProps {
   settleTxStatus?: SettleTxStatus;
   opponentSettled?: boolean;
   takenCardId?: number | null;
+  /** Data for the "you see / chain sees" privacy panel; omitting hides the toggle. */
+  chainView?: ChainViewData;
+  /**
+   * Practice mode (local, no chain): suppress the settlement card-picker and
+   * the on-chain result banner (Arena Tokens, "opponent settling"). The
+   * practice screen renders its own end overlay instead.
+   */
+  practiceMode?: boolean;
 }
 
 function getProofStatusLabel(status: string): string {
@@ -66,8 +76,14 @@ export function GameHUD({
   settleTxStatus = 'idle',
   opponentSettled = false,
   takenCardId = null,
+  chainView,
+  practiceMode = false,
 }: GameHUDProps) {
   const opponentPlayer: Player = myPlayer === 'player1' ? 'player2' : 'player1';
+  const [chainViewOpen, setChainViewOpen] = useState(false);
+
+  const myHand = playerNumber === 1 ? gameState.player1Hand : gameState.player2Hand;
+  const opponentHand = playerNumber === 1 ? gameState.player2Hand : gameState.player1Hand;
 
   const getWinnerText = () => {
     if (!gameOver) return '';
@@ -105,10 +121,30 @@ export function GameHUD({
         <div className="game-screen__game-id">
           Game: {gameId.slice(0, 8)}
         </div>
+        {chainView && (
+          <button
+            className="btn btn--ghost btn--small"
+            onClick={() => setChainViewOpen(open => !open)}
+            data-testid="chain-view-toggle"
+            title="What can the blockchain see?"
+            aria-pressed={chainViewOpen}
+          >
+            ◈ Chain view
+          </button>
+        )}
         <div className={`game-screen__turn ${isMyTurn ? 'game-screen__turn--yours' : ''}`}>
           {isFinished ? 'Game Over' : isMyTurn ? 'Your Turn' : "Opponent's Turn"}
         </div>
       </div>
+
+      {chainViewOpen && chainView && (
+        <ChainViewPanel
+          data={chainView}
+          myHand={myHand}
+          opponentHandCount={opponentHand.length}
+          onClose={() => setChainViewOpen(false)}
+        />
+      )}
 
       {opponentDisconnected && (
         <div className="game-screen__alert" style={{ position: 'fixed', top: 40, left: 0, right: 0, zIndex: 10 }}>
@@ -140,8 +176,9 @@ export function GameHUD({
         </div>
       )}
 
-      {/* Game Over: Winner sees card picker immediately, loser/draw sees result banner */}
-      {gameOver && gameOver.winner === myPlayer && onSettle && (
+      {/* Game Over: Winner sees card picker immediately, loser/draw sees result banner.
+          Suppressed in practice mode — the practice screen owns its end overlay. */}
+      {!practiceMode && gameOver && gameOver.winner === myPlayer && onSettle && (
         <SettlementCardPicker
           opponentCards={opponentCardsForPicker}
           onSelect={handleCardPicked}
@@ -153,7 +190,7 @@ export function GameHUD({
         />
       )}
 
-      {gameOver && gameOver.winner !== myPlayer && (
+      {!practiceMode && gameOver && gameOver.winner !== myPlayer && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
           <div className="parchment-dialog" style={{ pointerEvents: 'auto', textAlign: 'center' }}>
             <div className="parchment-dialog__title" style={{ fontSize: 32, fontWeight: 900 }}>

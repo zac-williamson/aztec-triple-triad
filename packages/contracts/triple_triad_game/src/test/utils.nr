@@ -15,7 +15,7 @@ pub unconstrained fn setup_game() -> (TestEnvironment, AztecAddress, AztecAddres
 
     // Deploy ArenaToken
     let token_init = ArenaToken::interface().constructor(admin);
-    let token_addr = env.deploy("ArenaToken").with_public_initializer(admin, token_init);
+    let token_addr = env.deploy("@arena_token/ArenaToken").with_public_initializer(admin, token_init);
 
     // Deploy TripleTriadNFT
     let nft_init = TripleTriadNFT::interface().constructor(
@@ -23,7 +23,7 @@ pub unconstrained fn setup_game() -> (TestEnvironment, AztecAddress, AztecAddres
         FieldCompressedString::from_string("TripleTriadNFT00000000000000000"),
         FieldCompressedString::from_string("TTNFT00000000000000000000000000"),
     );
-    let nft_addr = env.deploy("TripleTriadNFT").with_public_initializer(admin, nft_init);
+    let nft_addr = env.deploy("@triple_triad_nft/TripleTriadNFT").with_public_initializer(admin, nft_init);
 
     // Deploy TripleTriadGame (vk hashes are dummy values for TXE tests)
     let game_init = TripleTriadGame::interface().constructor(

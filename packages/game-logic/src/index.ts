@@ -1,9 +1,5 @@
-export type { Card, CardRanks, Board, BoardCell, GameState, Player, PlaceCardResult } from './types.js';
+export type { Card, CardRanks, Rarity, Board, BoardCell, GameState, Player, PlaceCardResult } from './types.js';
 export { CARD_DATABASE, getCardById, getCardsByIds, packRanks, unpackRanks, verifyCardRankConsistency } from './cards.js';
 export { createGame, placeCard, getValidPlacements, isGameOver, calculateScores } from './game.js';
-export type { AxolotlCard, Rarity } from './axolotlCards.js';
-export {
-  AXOLOTL_CARDS, RARITY_TIERS, CARDS_PER_POOL,
-  getAxolotlCardById, getAxolotlCardsByRarity,
-  determineRarity, selectCardFromPool,
-} from './axolotlCards.js';
+export type { Move, BotDifficulty, ChooseBotMoveOptions } from './bot.js';
+export { chooseBotMove, createSeededRng } from './bot.js';

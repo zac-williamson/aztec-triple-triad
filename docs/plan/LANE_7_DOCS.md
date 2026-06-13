@@ -63,3 +63,84 @@ funding).
   the front page must read like a reference implementation.
 - Every claim in ARCHITECTURE.md gets a file:line anchor. No drift: doc PRs that
   reference moved code get blocked by the owning lane's review.
+
+## ASSUMPTIONS (recorded during E1, 2026-06-12)
+- **Version pin reality** — *CONFIRMED by Lane 1 during A1 (their ASSUMPTIONS
+  item 1: the 4.2 CLI self-reports `4.2.0-aztecnr-rc.2`)*: MASTER_PLAN says the
+  repo pins `v4.2.0-nightly.20260323` everywhere. Actual manifests pinned
+  `4.2.0-aztecnr-rc.2` (all npm `@aztec/*` deps AND the aztec-nr git tags); the
+  nightly string was only the CLI installer tag. Documented in CLAUDE.md as one
+  matched set; superseded by the per-layer table after A1.
+- **ARCHITECTURE.md link deferred**: the E1 brief says CLAUDE.md links
+  ARCHITECTURE.md, which doesn't exist until E2. A dead link is worse; the link gets
+  added in the E2 commit (same lane, same branch).
+- **Untracked originals not deleted**: `architecture_report.md.m`, `test_report.md.m`,
+  `test-batch-deploy-mint.mjs` were committed into `docs/history/` byte-identical
+  (cmp-verified) from the main checkout; the untracked originals still sit at the
+  main-checkout root — another worktree's working dir, not Lane 7's to clean. Safe
+  to delete after this branch merges.
+- **Kept at root deliberately** (not in the E1 move list, read as current material):
+  `GAME_LIFECYCLE_SPEC.md`, `TUTORIAL_SCRIPT.md`, `FUTURE_IMPROVEMENTS.md`.
+
+## ASSUMPTIONS (recorded during E2 part 1, 2026-06-12)
+- **GAME_LIFECYCLE_SPEC.md archived beyond the E1 list**: it described the
+  abandoned design — caller-supplied `game_id` (what ground rule #10 bans) and a
+  `prepare_for_game` escrow flow the game contract never calls (verified:
+  `triple_triad_game/src/main.nr` references none of
+  `prepare_for_game`/`reclaim_card`/`unlock_cards`/`game_transfer`). A root spec
+  contradicting ARCHITECTURE.md would be worse than a relocation outside the
+  brief's letter. Archived with a superseded marker in docs/history/README.md.
+- **ARCHITECTURE.md anchor convention**: full `path:line` on first mention,
+  bare `:line` within a paragraph whose file is unambiguous. Anchors were
+  machine bounds-checked and 21 load-bearing lines content-verified at commit
+  time; they will drift only if contracts/circuits change (owning lanes review
+  doc PRs per the constraint above — same applies in reverse).
+- **Dispute-window semantics documented from code, not spec**: the window only
+  remedies false claims against finished games; mid-game counter-claims are
+  structurally impossible today (status no longer `active` after the first
+  claim). Recorded in FUTURE_IMPROVEMENTS.md as a contract-change candidate.
+
+## ASSUMPTIONS (recorded during E2 part 2, 2026-06-12)
+- **§12 anchors target the post-B layout** as instructed; they drift if Lane 2
+  refactors again — the same owning-lane review contract applies.
+- **`proofWorker.ts` runs on the main thread** (no `Worker` anywhere in
+  frontend src). §12.3 states this explicitly rather than letting the filename
+  imply otherwise; whether to rename the module is Lane 2's call.
+- **Fee-path divergence documented, not hidden**: §12.7 carries a "known
+  divergence" banner — game txs still pay via SponsoredFPC
+  (`aztec/contracts.ts:9-26`) pending work item I. The doc describes what IS,
+  with the ban and the migration path stated.
+- **Lane 3's §11 edit reviewed**: the four-copy must-agree list and
+  `npm run generate:cards` match their consolidation commit (f2f716a).
+  Cross-lane review contract satisfied in both directions.
+
+## Handoff notes for other lanes (from E2)
+- **Lane 3 (game-logic owner)** — *ACTIONED in f2f716a (consolidation +
+  generator + pinning tests)*: `packages/game-logic` exports TWO stale card
+  databases from `index.ts` — `cards.ts` (legacy 50-card set: ids 1–50,
+  "Lerma" at id 50 vs canonical id 256) and `axolotlCards.ts` (256 different
+  cards, 4-tier rarity scheme; canonical is 5-tier per `generate_card`,
+  `triple_triad_nft/src/main.nr:17-49`). The canonical chain is
+  `scripts/card-database-256.json` → `circuits/card_data/src/lib.nr` →
+  `packages/frontend/src/cards.ts` (verified matching at ids 1 and 256).
+  Anything importing game-logic's databases gets wrong data — duplication +
+  divergence hazard, fits the D1a brain work.
+- **Lane 1 / Lane 5**: mid-game abandoned-claim counter-claim gap (above) is a
+  contract improvement candidate for the post-4.3.1 backlog.
+
+## Handoff notes for other lanes (from the A1 doc pass, 2026-06-12)
+- **Lane 6**: `scripts/test-all.sh:75` still launches TXE via the 4.2-era
+  binary path (`~/.aztec/current/node_modules/.bin/txe`). Under 4.3.1 that
+  binary is gone and the script's existence guard makes it **silently skip
+  contract tests** instead of failing. Needs `aztec start --txe --port 8082`
+  (see CLAUDE.md §Build, Lane 1's ASSUMPTIONS item 4).
+
+## Handoff notes for other lanes (from E1)
+- **Lane 2**: `packages/frontend/src/hooks/useGame.ts:433` comment references
+  `IDB_TRANSACTION_ERROR_REPORT.md`, now at `docs/history/` — fix the path during B.
+  SponsoredFPC is still used in `src/aztec/contracts.ts` and `hooks/useCardPacks.ts`
+  (+ its test) despite the ban — CLAUDE.md flags them do-not-copy; removal lands
+  with A2/I.
+- **Lane 6 (F2)**: `test-results/.last-run.json` is tracked Playwright debris.
+- **E2.5 self-note**: README's "copy arena_token artifact" step is redundant —
+  `npm run copy-contracts` already includes all three artifacts.

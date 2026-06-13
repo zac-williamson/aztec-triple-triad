@@ -221,6 +221,48 @@ export class GameManager {
     }
   }
 
+  /**
+   * Mark a started game finished because `playerId` settled it on-chain as
+   * abandoned, then release both players' game bindings so they can start
+   * new games immediately (QA-F3). Trusts the reporting client like
+   * TX_CONFIRMED does — the backend is Aztec-free, so the chain remains the
+   * source of truth for cards and rewards. Idempotent: re-reports return the
+   * stored outcome unchanged (the first reporter stays the winner) and
+   * re-release the bindings.
+   */
+  async settleAbandonedGame(gameId: string, playerId: string): Promise<StoredGameRoom> {
+    const acquired = await this.store.acquireGameLock(gameId, LOCK_TTL_MS);
+    if (!acquired) {
+      throw new Error('Game is currently processing another move');
+    }
+
+    try {
+      const room = await this.store.getGame(gameId);
+      if (!room) {
+        throw new Error('Game not found');
+      }
+      const player: Player | null =
+        room.player1Id === playerId ? 'player1' : room.player2Id === playerId ? 'player2' : null;
+      if (!player) {
+        throw new Error('Player not in this game');
+      }
+      if (!room.state) {
+        throw new Error('Game has not started');
+      }
+
+      if (room.state.status !== 'finished') {
+        room.state = { ...room.state, status: 'finished', winner: player };
+        room.lastActivity = Date.now();
+        await this.store.setGame(gameId, room);
+      }
+
+      await this.releasePlayersFromGame(gameId);
+      return room;
+    } finally {
+      await this.store.releaseGameLock(gameId);
+    }
+  }
+
   async cleanupStaleGames(): Promise<number> {
     return this.store.cleanupStaleGames(GAME_TIMEOUT_MS);
   }

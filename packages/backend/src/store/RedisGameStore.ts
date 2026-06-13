@@ -1,4 +1,5 @@
 import Redis from 'ioredis';
+import { SESSION_TTL_MS } from './GameStore.js';
 import type { GameStore, StoredGameRoom, SessionData, QueueEntryData } from './GameStore.js';
 
 /**
@@ -14,10 +15,12 @@ import type { GameStore, StoredGameRoom, SessionData, QueueEntryData } from './G
  */
 
 const GAME_TTL_S = 30 * 60; // 30 minutes
-const SESSION_TTL_S = 2 * 60 * 60; // 2 hours
+const SESSION_TTL_S = SESSION_TTL_MS / 1000;
 
-// Prefix for SCAN-based operations
+// Prefixes for SCAN-based operations
 const GAME_PREFIX = 'game:';
+const SESSION_PREFIX = 'session:';
+const SESSION_PLAYER_PREFIX = 'session:player:';
 
 export class RedisGameStore implements GameStore {
   private redis: Redis;
@@ -234,6 +237,31 @@ export class RedisGameStore implements GameStore {
         if (room.player2Id) await this.deletePlayerGame(room.player2Id);
         await this.clearInbox(room.player1Id);
         if (room.player2Id) await this.clearInbox(room.player2Id);
+        cleaned++;
+      }
+    }
+    return cleaned;
+  }
+
+  async cleanupStaleSessions(staleMs: number): Promise<number> {
+    // Redis TTLs expire sessions on their own; this sweep is the uniform
+    // GameStore-contract path (and catches lastSeen staleness if a future
+    // code path ever refreshes a key's TTL without rewriting lastSeen).
+    const keys = await this.scanKeys(`${SESSION_PREFIX}*`);
+    const sessionKeys = keys.filter(k => !k.startsWith(SESSION_PLAYER_PREFIX));
+    const now = Date.now();
+    let cleaned = 0;
+    for (const key of sessionKeys) {
+      const raw = await this.redis.get(key);
+      if (!raw) continue; // expired between SCAN and GET
+      const session = JSON.parse(raw) as SessionData;
+      if (now - session.lastSeen > staleMs) {
+        const token = key.slice(SESSION_PREFIX.length);
+        await this.redis.del(key);
+        const mappedToken = await this.redis.get(`${SESSION_PLAYER_PREFIX}${session.playerId}`);
+        if (mappedToken === token) {
+          await this.redis.del(`${SESSION_PLAYER_PREFIX}${session.playerId}`);
+        }
         cleaned++;
       }
     }

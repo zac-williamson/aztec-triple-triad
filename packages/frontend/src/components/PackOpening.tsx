@@ -111,7 +111,7 @@ export function PackOpening({ location, cardIds, onComplete }: PackOpeningProps)
                 <div className="pack-opening__card-back">
                   <img
                     className="pack-opening__card-back-img"
-                    src="/cards/card_back.png"
+                    src="/cards/card_back.webp"
                     alt="Card back"
                     draggable={false}
                     style={{ '--wobble-delay': `${idx * 0.15}s` } as React.CSSProperties}
@@ -120,7 +120,7 @@ export function PackOpening({ location, cardIds, onComplete }: PackOpeningProps)
                 <div className={`pack-opening__card-front ${isFlipped ? 'pack-opening__card-glow' : ''}`}>
                   <img
                     className="pack-opening__card-front-img"
-                    src={card ? `/cards/final/card-${card.id}.png` : ''}
+                    src={card ? `/cards/final/card-${card.id}.webp` : ''}
                     alt={card?.name || 'Unknown card'}
                     draggable={false}
                   />

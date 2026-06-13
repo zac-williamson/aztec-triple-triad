@@ -31,14 +31,20 @@ export class NoirProofBackend implements ProofBackend {
 
     // Dynamically import to support both Node.js and browser
     const { Noir } = await import('@noir-lang/noir_js');
-    const { UltraHonkBackend } = await import('@aztec/bb.js');
+    const { UltraHonkBackend, Barretenberg } = await import('@aztec/bb.js');
+
+    // 4.3.1: UltraHonkBackend requires an explicit Barretenberg api;
+    // one multithreaded instance is shared by both circuits.
+    const api = await Barretenberg.new({
+      threads: typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4,
+    });
 
     // Initialize prove_hand circuit
-    backend.bbHand = new UltraHonkBackend(proveHandArtifact.bytecode);
+    backend.bbHand = new UltraHonkBackend(proveHandArtifact.bytecode, api);
     backend.noirHand = new Noir(proveHandArtifact);
 
     // Initialize game_move circuit
-    backend.bbMove = new UltraHonkBackend(gameMoveArtifact.bytecode);
+    backend.bbMove = new UltraHonkBackend(gameMoveArtifact.bytecode, api);
     backend.noirMove = new Noir(gameMoveArtifact);
 
     return backend;

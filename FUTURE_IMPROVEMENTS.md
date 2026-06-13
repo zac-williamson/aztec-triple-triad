@@ -1,20 +1,37 @@
 # Future Improvements
 
-## Backend session staleness (2026-04-15)
+## Abandoned-game counter-claim (2026-06-12)
 
-The current session system has gaps in how staleness is detected:
+The 5-block dispute window after `claim_abandoned_game`
+(`packages/contracts/triple_triad_game/src/main.nr:491-494`) currently protects
+against exactly one attack: a false abandonment claim against a *finished* game,
+which the accused defeats by running `process_game` inside the window
+(`settle_game` gates on the `game_settled` flag only, `main.nr:761-762`; the
+abandonment settle then fails its `!settled` assert, `main.nr:496-497`).
 
-- **`SessionData.lastSeen` is dead data.** Stored on create/RESUME but never read by any code path. No comparison or expiry check uses it.
-- **MemoryGameStore has no session TTL.** Only Redis sessions auto-expire (2h). In-memory sessions persist forever until explicit `deleteSession`.
-- **No `cleanupStaleSessions` in the periodic cleanup loop.** The 5-minute cleanup runs `cleanupStaleGames` and `cleanupStaleQueue` but not sessions.
-- **RESUME accepts any session returned by `getSession`.** No check that the session is "fresh" (e.g., `lastSeen` within 24h). After a server crash, a 2-hour-old session with a stale `clients` map gap is accepted unconditionally.
+There is no recourse for a false claim *mid-game*: a counter-claim presenting a
+longer valid move chain is impossible because `claim_abandoned_game_public`
+requires status `active` (`main.nr:385-386`), which the first claim already
+consumed. A fix would allow a counter-claim while status is `abandoned_claimed`
+that supersedes the original iff it presents strictly more valid moves, resetting
+the dispute clock. Until then, the dispute window is a delay, not a remedy, for
+mid-game disputes. See `docs/ARCHITECTURE.md` §8.
 
-**Recommended fixes:**
+## ~~Backend session staleness (2026-04-15)~~ — RESOLVED 2026-06-12 (Lane 4, item G)
 
-1. Enforce `lastSeen` on RESUME — reject sessions older than `SESSION_STALE_MS` (e.g., 24h), create a new session instead, log the event.
-2. Add session TTL equivalent to MemoryGameStore (match Redis 2h behavior) or remove the memory path in favor of Redis-only.
-3. Add `cleanupStaleSessions` to the `CLEANUP_INTERVAL_MS` loop.
-4. If `lastSeen` is kept, wire it into all the above. If we decide not to use it, delete the field from `SessionData` rather than leave dead state.
+All four recommended fixes landed on `lane/4-backend`:
+
+1. RESUME now rejects sessions whose `lastSeen` is older than `SESSION_STALE_MS`
+   (24h), deletes them, logs the rejection, and issues a fresh session
+   (`server.ts`, defense-in-depth behind the store TTL).
+2. `MemoryGameStore` enforces the shared `SESSION_TTL_MS` (2h) — lazily on
+   `getSession` plus via the periodic sweep. The memory path was kept (tests and
+   local dev depend on it); Redis derives its key TTL from the same constant.
+3. `cleanupStaleSessions` is part of the `GameStore` contract (both stores) and
+   runs in the periodic cleanup loop alongside games and queue.
+4. `lastSeen` is now load-bearing: read by the RESUME check, the lazy TTL, and
+   the sweep — and refreshed on PING so a long-lived connection's session
+   cannot expire out from under it mid-game.
 
 ## Full settlement E2E test (2026-04-16)
 

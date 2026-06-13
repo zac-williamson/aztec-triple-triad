@@ -9,6 +9,7 @@
  * Targets:
  *   public/cards/final/card-*.png     → card-*.webp   (400×567, q80)
  *   public/cards/board/card-*-board.png → card-*-board.webp (512×512, q85)
+ *   public/cards/card_back.png        → card_back.webp (400×567, q80)
  *
  * Usage:
  *   npx tsx scripts/compress-card-assets.ts            # do the work
@@ -54,6 +55,16 @@ const VARIANTS: Variant[] = [
     width: 512,
     height: 512,
     quality: 85,
+    fit: 'inside',
+  },
+  {
+    name: 'card_back',
+    inputDir: join(PUBLIC, 'cards'),
+    inputSuffix: 'card_back.png',
+    outputSuffix: 'card_back.webp',
+    width: 400,
+    height: 567,
+    quality: 80,
     fit: 'inside',
   },
 ];

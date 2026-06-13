@@ -49,26 +49,11 @@ export function useCardPacks(
 
   const getSDK = useCallback(async () => {
     if (sdkCacheRef.current) return sdkCacheRef.current;
-    const [
-      { AztecAddress },
-      { SponsoredFeePaymentMethod },
-      { getContractInstanceFromInstantiationParams },
-      { SponsoredFPCContractArtifact },
-      { SPONSORED_FPC_SALT },
-      { Fr },
-    ] = await Promise.all([
+    const [{ AztecAddress }, { Fr }] = await Promise.all([
       import('@aztec/aztec.js/addresses'),
-      import('@aztec/aztec.js/fee'),
-      import('@aztec/stdlib/contract'),
-      import('@aztec/noir-contracts.js/SponsoredFPC'),
-      import('@aztec/constants'),
       import('@aztec/aztec.js/fields'),
     ]);
-    const sponsoredFPC = await getContractInstanceFromInstantiationParams(SponsoredFPCContractArtifact, {
-      salt: new Fr(SPONSORED_FPC_SALT),
-    });
-    const paymentMethod = new SponsoredFeePaymentMethod(sponsoredFPC.address);
-    sdkCacheRef.current = { AztecAddress, paymentMethod, Fr };
+    sdkCacheRef.current = { AztecAddress, Fr };
     return sdkCacheRef.current;
   }, []);
 
@@ -104,7 +89,7 @@ export function useCardPacks(
 
         execute: async (setPhase) => {
           setPhase('simulating');
-          const { AztecAddress, paymentMethod, Fr } = await getSDK();
+          const { AztecAddress, Fr } = await getSDK();
           const nftContract = await getNftContract();
           const addr = AztecAddress.fromString(capturedAccountAddress);
 
@@ -118,9 +103,9 @@ export function useCardPacks(
           const cardIds: number[] = Array.from({ length: CARDS_PER_PACK }, (_, i) => Number(previewResult[i]));
 
           setPhase('sending');
+          // Fee Juice paid natively by the sender (no fee option = wallet default)
           const { receipt } = await nftContract.methods.purchase_card_pack().send({
             from: addr,
-            fee: { paymentMethod },
             wait: { timeout: AZTEC_TX_TIMEOUT },
           });
 

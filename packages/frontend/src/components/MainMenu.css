@@ -137,6 +137,10 @@
   color: rgba(232, 228, 216, 0.7);
 }
 
+.main-menu__btn--practice {
+  color: rgba(232, 228, 216, 0.85);
+}
+
 .main-menu__btn--packs {
   color: #e8dcc0;
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6), 0 0 12px rgba(196, 162, 101, 0.2);

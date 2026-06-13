@@ -1,5 +1,50 @@
 import { describe, it, expect } from 'vitest';
 import { CARD_DATABASE, getCardById, getCardsByIds, packRanks, unpackRanks, verifyCardRankConsistency } from '../src/cards.js';
+import canonicalCards from '../../../scripts/card-database-256.json';
+
+describe('canonical database agreement', () => {
+  // scripts/card-database-256.json is the source of truth for card data; the
+  // card_data circuit and the frontend database are generated from it. This
+  // package's CARD_DATABASE must agree card-for-card or moves would simulate
+  // one way and prove another. Regenerate with `npm run generate:cards`.
+  it('matches scripts/card-database-256.json exactly', () => {
+    expect(CARD_DATABASE.length).toBe(canonicalCards.length);
+    for (let i = 0; i < canonicalCards.length; i++) {
+      const canonical = canonicalCards[i];
+      const card = CARD_DATABASE[i];
+      expect({ id: card.id, name: card.name, ranks: card.ranks, rarity: card.rarity }).toEqual({
+        id: canonical.id,
+        name: canonical.name,
+        ranks: canonical.ranks,
+        rarity: canonical.rarity,
+      });
+    }
+  });
+
+  it('ids 1-256 are dense and in order', () => {
+    expect(CARD_DATABASE.length).toBe(256);
+    for (let i = 0; i < 256; i++) {
+      expect(CARD_DATABASE[i].id).toBe(i + 1);
+    }
+  });
+
+  it('rarity bands match the NFT contract pool layout', () => {
+    // CARDS_PER_POOL in triple_triad_nft/src/main.nr: [10, 166, 50, 20, 10];
+    // global_card_id = pool_offset + index + 1.
+    const bands: [number, number, string][] = [
+      [1, 10, 'common'],
+      [11, 176, 'uncommon'],
+      [177, 226, 'rare'],
+      [227, 246, 'epic'],
+      [247, 256, 'legendary'],
+    ];
+    for (const [from, to, rarity] of bands) {
+      for (let id = from; id <= to; id++) {
+        expect(getCardById(id)!.rarity).toBe(rarity);
+      }
+    }
+  });
+});
 
 describe('Card Database', () => {
   it('should have at least 30 cards', () => {
@@ -11,9 +56,25 @@ describe('Card Database', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('should have unique names', () => {
-    const names = CARD_DATABASE.map((c) => c.name);
-    expect(new Set(names).size).toBe(names.length);
+  it('should have unique names except the ten re-issued legendaries', () => {
+    // The canonical 256-set kept the original 50 cards at ids 1-50 (now banded
+    // as commons/uncommons) and re-issued the ten original legendaries into
+    // the legendary band 247-256 (oldId 41-50 in the JSON), so exactly those
+    // ten names appear twice — with identical ranks.
+    const byName = new Map<string, number[]>();
+    for (const c of CARD_DATABASE) {
+      byName.set(c.name, [...(byName.get(c.name) ?? []), c.id]);
+    }
+    const duplicated = [...byName.entries()].filter(([, ids]) => ids.length > 1);
+    expect(duplicated.length).toBe(10);
+    for (const [, ids] of duplicated) {
+      expect(ids.length).toBe(2);
+      const [originalId, reissueId] = ids;
+      expect(originalId).toBeGreaterThanOrEqual(41);
+      expect(originalId).toBeLessThanOrEqual(50);
+      expect(reissueId).toBe(originalId + 206);
+      expect(getCardById(reissueId)!.ranks).toEqual(getCardById(originalId)!.ranks);
+    }
   });
 
   it('should have ranks between 1 and 10', () => {
@@ -96,8 +157,8 @@ describe('verifyCardRankConsistency (V7 Fix 5.2)', () => {
     expect(errors).toEqual([]);
   });
 
-  it('should verify all 50 cards have valid ranks', () => {
-    expect(CARD_DATABASE.length).toBe(50);
+  it('should verify all 256 cards have valid ranks', () => {
+    expect(CARD_DATABASE.length).toBe(256);
     for (const card of CARD_DATABASE) {
       const { top, right, bottom, left } = card.ranks;
       expect(top).toBeGreaterThanOrEqual(1);

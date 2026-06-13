@@ -3,7 +3,12 @@
  * Deploy Triple Triad contracts to the local Aztec sandbox.
  *
  * Usage:
- *   npx tsx scripts/deploy-contracts.ts
+ *   npx tsx scripts/deploy-contracts.ts [--permissive-vks]
+ *
+ * --permissive-vks registers the DUMMY circuit VK hashes as hand_vk_hash and
+ * move_vk_hash, so the deployment accepts constraint-free padding proofs in
+ * place of real hand/move proofs (playtest fast mode, Lane 8). Such a
+ * deployment has NO gameplay soundness and is refused off-localhost.
  *
  * Prerequisites:
  *   - Aztec sandbox running: aztec start --local-network
@@ -22,14 +27,14 @@ import { resolve } from 'path';
 import { createAztecNodeClient } from '@aztec/aztec.js/node';
 import { Fr } from '@aztec/aztec.js/fields';
 import { AztecAddress } from '@aztec/aztec.js/addresses';
-import { SponsoredFeePaymentMethod } from '@aztec/aztec.js/fee';
+import { FeeJuicePaymentMethodWithClaim } from '@aztec/aztec.js/fee';
 import { NO_FROM } from '@aztec/aztec.js/account';
 
 import { EmbeddedWallet } from '@aztec/wallets/embedded';
 import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
-import { getContractInstanceFromInstantiationParams } from '@aztec/stdlib/contract';
-import { SponsoredFPCContractArtifact } from '@aztec/noir-contracts.js/SponsoredFPC';
-import { SPONSORED_FPC_SALT } from '@aztec/constants';
+
+// L1→L2 Fee Juice bridge (shared with the in-app devnet onboarding flow)
+import { fundAccountOnDevnet } from '../packages/frontend/src/aztec/fundDevnet';
 
 // bb.js for VK hash computation
 import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
@@ -38,6 +43,7 @@ import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
 
 const PXE_URL = process.env.AZTEC_PXE_URL || 'http://localhost:8080';
 const ROOT_DIR = resolve(import.meta.dirname || __dirname, '..');
+const PERMISSIVE_VKS = process.argv.includes('--permissive-vks');
 
 // ====================== Helpers ======================
 
@@ -112,6 +118,13 @@ async function computeVkHash(
 
 async function main() {
   console.log('=== Triple Triad Contract Deployment ===');
+
+  if (PERMISSIVE_VKS && !/^https?:\/\/(localhost|127\.0\.0\.1)([:/]|$)/.test(PXE_URL)) {
+    throw new Error(
+      `--permissive-vks is restricted to local TEST deployments; refusing to deploy to ${PXE_URL}`,
+    );
+  }
+
   console.log(`Connecting to Aztec node at ${PXE_URL}...`);
 
   // 1. Connect to the Aztec node
@@ -125,38 +138,31 @@ async function main() {
   console.log('Waiting for PXE to sync...');
   await new Promise(r => setTimeout(r, 5000));
 
-  // Register SponsoredFPC for fee payments
-  console.log('Registering SponsoredFPC...');
-  const sponsoredFPC = await getContractInstanceFromInstantiationParams(SponsoredFPCContractArtifact, {
-    salt: new Fr(SPONSORED_FPC_SALT),
-  });
-  await wallet.registerContract(sponsoredFPC, SponsoredFPCContractArtifact);
-  const fee = new SponsoredFeePaymentMethod(sponsoredFPC.address);
-
-  // For contract deploys and method calls — publish class/instance on-chain
-  const sendAs = (addr: any) => ({
-    from: addr,
-    fee: { paymentMethod: fee },
-    wait: { timeout: 300 },
-  });
-
-  // For account deploys only — class already registered, skip publication
-  const sendAsAccount = (addr: any) => ({
-    from: addr,
-    fee: { paymentMethod: fee },
-    wait: { timeout: 300 },
-    skipClassPublication: true,
-    skipInstancePublication: true,
-  });
-
+  // Fees: bridge Fee Juice from L1 to the deployer, claim it in the account
+  // deployment, then pay every subsequent tx natively from the deployer's
+  // balance. SponsoredFPC is BANNED (MASTER_PLAN ground rules). Requires
+  // the sandbox's empty-block production (SEQ_MIN_TX_PER_BLOCK=0) for the
+  // L1→L2 claim message — same constraint as start-sandbox.sh documents.
   console.log('Creating deployer account...');
   const deployerAccount = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
   const deployerAddress = deployerAccount.address;
-  // Deploy account with retry for PXE sync race
+
+  console.log('Bridging Fee Juice to deployer...');
+  const claim = await fundAccountOnDevnet(node, deployerAddress.toString(), (msg) => console.log(`  ${msg}`));
+  const claimFee = new FeeJuicePaymentMethodWithClaim(deployerAddress, claim as never);
+
+  // Contract deploys and method calls: no fee option — the deployer pays
+  // natively in Fee Juice from its bridged balance (wallet default).
+  const sendAs = (addr: any) => ({
+    from: addr,
+    wait: { timeout: 300 },
+  });
+
+  // Deploy account with retry for PXE sync race (claims the bridged juice)
   const deployMethod = await deployerAccount.getDeployMethod();
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      await deployMethod.send({ from: NO_FROM, fee: { paymentMethod: fee }, wait: { timeout: 300 } });
+      await deployMethod.send({ from: NO_FROM, fee: { paymentMethod: claimFee }, wait: { timeout: 300 } });
       break;
     } catch (err: any) {
       if (err?.message?.includes('expiration timestamp') && attempt < 2) {
@@ -183,12 +189,25 @@ async function main() {
   const gameMoveCircuit = loadCircuitArtifact('game_move');
   const dummyMoveCircuit = loadCircuitArtifact('dummy_move');
 
-  const handVkHash = await computeVkHash(api, proveHandCircuit.bytecode);
-  const moveVkHash = await computeVkHash(api, gameMoveCircuit.bytecode);
+  let handVkHash = await computeVkHash(api, proveHandCircuit.bytecode);
+  let moveVkHash = await computeVkHash(api, gameMoveCircuit.bytecode);
   const dummyVkHash = await computeVkHash(api, dummyMoveCircuit.bytecode);
 
-  console.log(`  hand_vk_hash: ${handVkHash}`);
-  console.log(`  move_vk_hash: ${moveVkHash}`);
+  if (PERMISSIVE_VKS) {
+    console.log('');
+    console.log('!'.repeat(72));
+    console.log('!!  --permissive-vks: registering DUMMY VK hashes for hand and move');
+    console.log('!!  proofs. This deployment accepts constraint-free proofs and has');
+    console.log('!!  NO GAMEPLAY SOUNDNESS. Playtest fast mode only - NEVER production.');
+    console.log('!'.repeat(72));
+    console.log('');
+    const dummyHandCircuit = loadCircuitArtifact('dummy_hand');
+    handVkHash = await computeVkHash(api, dummyHandCircuit.bytecode);
+    moveVkHash = dummyVkHash;
+  }
+
+  console.log(`  hand_vk_hash: ${handVkHash}${PERMISSIVE_VKS ? ' (PERMISSIVE: dummy_hand)' : ''}`);
+  console.log(`  move_vk_hash: ${moveVkHash}${PERMISSIVE_VKS ? ' (PERMISSIVE: dummy_move)' : ''}`);
   console.log(`  dummy_vk_hash: ${dummyVkHash}`);
 
   await api.destroy();

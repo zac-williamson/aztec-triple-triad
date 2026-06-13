@@ -6,30 +6,17 @@
 import { AZTEC_CONFIG } from './config';
 import { getNftArtifact } from './noteImporter';
 
-async function getSponsoredFee(wallet: any) {
-  const [{ getContractInstanceFromInstantiationParams }, { SponsoredFPCContractArtifact }, { SPONSORED_FPC_SALT }, { SponsoredFeePaymentMethod }, { Fr }] = await Promise.all([
-    import('@aztec/stdlib/contract'),
-    import('@aztec/noir-contracts.js/SponsoredFPC'),
-    import('@aztec/constants'),
-    import('@aztec/aztec.js/fee'),
-    import('@aztec/aztec.js/fields'),
-  ]);
-  const sponsoredFPC = await getContractInstanceFromInstantiationParams(SponsoredFPCContractArtifact, {
-    salt: new Fr(SPONSORED_FPC_SALT),
-  });
-  // Register the SponsoredFPC contract with PXE so fee-paying txs don't fail
-  try {
-    await wallet.registerContract(sponsoredFPC, SponsoredFPCContractArtifact);
-  } catch { /* already registered */ }
-  return new SponsoredFeePaymentMethod(sponsoredFPC.address);
-}
+// Fees: every game tx is paid natively in Fee Juice by the sending account
+// (funded during onboarding — bridge claim on devnet, manual bridge on
+// testnet). Senders simply omit the `fee` option; the wallet defaults to
+// the sender paying from its own Fee Juice balance. SponsoredFPC is BANNED
+// (MASTER_PLAN ground rules).
 
 export const contractCache: {
   wallet: unknown | null;
   gameContract: any;
   nftContract: any;
   tokenContract: any;
-  fee: any;
   Fr: any;
   AztecAddress: any;
   Contract: any;
@@ -39,7 +26,6 @@ export const contractCache: {
   gameContract: null,
   nftContract: null,
   tokenContract: null,
-  fee: null,
   Fr: null,
   AztecAddress: null,
   Contract: null,
@@ -53,7 +39,6 @@ export async function ensureContracts(wallet: unknown) {
     contractCache.gameContract = null;
     contractCache.nftContract = null;
     contractCache.tokenContract = null;
-    contractCache.fee = null;
   }
 
   if (!contractCache.Fr) {
@@ -98,11 +83,7 @@ export async function ensureContracts(wallet: unknown) {
     }
   }
 
-  if (!contractCache.fee) {
-    contractCache.fee = await getSponsoredFee(wallet);
-  }
-
-  return { gameContract: contractCache.gameContract, nftContract: contractCache.nftContract, tokenContract: contractCache.tokenContract, fee: contractCache.fee, Fr, AztecAddress };
+  return { gameContract: contractCache.gameContract, nftContract: contractCache.nftContract, tokenContract: contractCache.tokenContract, Fr, AztecAddress };
 }
 
 /** Pre-warm contract cache so first game operation is fast. */

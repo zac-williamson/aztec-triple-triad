@@ -32,7 +32,7 @@ pub unconstrained fn setup_full() -> (TestEnvironment, AztecAddress, AztecAddres
 
     // Deploy ArenaToken
     let token_init = ArenaToken::interface().constructor(minter);
-    let token_address = env.deploy("ArenaToken").with_public_initializer(minter, token_init);
+    let token_address = env.deploy("@arena_token/ArenaToken").with_public_initializer(minter, token_init);
 
     // Wire cross-references
     env.call_public(minter, TripleTriadNFT::at(nft_address).set_token_contract(token_address));
