@@ -42,24 +42,36 @@ concept→`file:line` index. Read it before touching contracts or circuits.
 `TUTORIAL_SCRIPT.md` is the demo walkthrough script. `FUTURE_IMPROVEMENTS.md`
 is the wishlist.
 
-## Versions — one matched set, never mixed
+## Versions — matched sets, never bumped piecemeal
 
-| What | Pin |
-|------|-----|
-| Aztec CLI / sandbox install | `4.2.0-nightly.20260323` |
-| npm `@aztec/*` packages | `4.2.0-aztecnr-rc.2` |
-| aztec-nr git tags in `Nargo.toml` | `v4.2.0-aztecnr-rc.2` |
-| Node.js | >= 22 |
+**The repo is mid-upgrade (A2 in progress).** The Noir layer moved to 4.3.1
+(work item A1); the TypeScript layer stays on the 4.2.0 release set until A2
+lands. Each layer is a matched set — bump it atomically or not at all.
 
-The two version strings name the same release: the nightly is the CLI/sandbox
-installer tag, the rc is what its npm packages and aztec-nr libraries are
-published as. Treat them as one set — never bump one without the others, never
-mix versions across packages. Lane 1 is moving everything to **4.3.1 stable**;
-until that lands, this set stands.
+| Layer | What | Pin |
+|-------|------|-----|
+| Noir (4.3.1) | Aztec CLI / sandbox / TXE — pinned per-checkout by `.aztecrc` | `4.3.1` |
+| | aztec-nr git tags in every `Nargo.toml` (contracts + circuits) | `v4.3.1` |
+| | nargo (ships inside the CLI toolchain) | `1.0.0-beta.21` |
+| | poseidon git tag (circuits) | `v0.3.0` |
+| TypeScript (until A2) | npm `@aztec/*` packages | `4.2.0-aztecnr-rc.2` |
+| Both | Node.js | >= 22 |
+
+The 4.2.0 set's two strings — installer tag `4.2.0-nightly.20260323`, package
+tag `4.2.0-aztecnr-rc.2` — name the same release (the CLI self-reports the rc
+tag; confirmed during A1). A2 moves the npm side to 4.3.1 and collapses this
+table back to one row set.
 
 ```bash
-bash -i <(curl -s https://install.aztec.network) 4.2.0-nightly.20260323
+aztec-up use 4.3.1     # switch an existing install; or install fresh:
+bash -i <(curl -s https://install.aztec.network) 4.3.1
 ```
+
+The committed `.aztecrc` pins the toolchain for this checkout. One 4.2-era
+footgun while both toolchains coexist: the old CLI wrapper reads `.aztecrc`
+only from `$PWD`, not ancestor directories — run contract/circuit commands
+with `current` actually on 4.3.1 (details in `docs/plan/LANE_1_CHAIN.md`
+ASSUMPTIONS).
 
 ## Build, run, test
 
@@ -78,9 +90,11 @@ cd packages/contracts && aztec compile && aztec codegen target/ -o target/codege
 # standalone circuits — these DO use nargo
 cd circuits && nargo compile
 
-# contract tests need a running TXE (port arbitrary; test-all.sh uses 8082)
-TXE_PORT=8081 txe &
+# contract tests need a running TXE (4.3.1 invocation — the bare `txe` binary is gone)
+aztec start --txe --port 8081 &
 cd packages/contracts && nargo test --oracle-resolver http://127.0.0.1:8081
+# in TXE tests, cross-package deploys must use env.deploy("@package/Name") —
+# bare names crash the TXE process (4.3.1 upstream bug, see LANE_1_CHAIN.md)
 
 npm test                              # TS unit tests, all workspaces
 npm run test:all                      # full suite: Redis + TXE + every package
@@ -93,8 +107,9 @@ cd packages/frontend && npm run dev:devnet    # or dev:testnet
 From `docs/plan/MASTER_PLAN.md`; repeated here because every one of these was
 learned the hard way.
 
-1. **Versions**: the pin set above, everywhere, until Lane 1 lands 4.3.1. Never
-   mix Aztec versions across packages.
+1. **Versions**: the layer sets above. Noir layer is on 4.3.1; the npm side
+   stays on the 4.2.0 set until A2 lands. Never mix versions within a layer,
+   never bump a layer piecemeal.
 2. **Contracts compile with `aztec compile`**, not `nargo compile` (misses AVM
    transpilation + VK generation). Standalone circuits use `nargo compile`.
 3. **Contract tests run against TXE** (see command above).
