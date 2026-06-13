@@ -694,3 +694,20 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - Pending this turn: EC2 faucet env for Item I (TREASURY_L1_KEY + FAUCET_ENABLED + uncomment
   ReadWritePaths + restart); smoke test after the Vercel build + contract-class update land.
   Onboarding degrades to manual FundingPrompt until the faucet is enabled (graceful).
+
+## 06-13 — GO-LIVE: www.aztec-arena.com is LIVE (frontend + backend + faucet)
+- FRONTEND: Vercel production deploy READY; www.aztec-arena.com → HTTP 200; COOP/COEP headers present
+  (WASM prover OK); round-2 build, correct testnet addresses + wss://ws.aztec-arena.com.
+- BACKEND: wss://ws.aztec-arena.com live; Item I faucet ENABLED (POST /faucet routed; HTTP 400 on bad
+  body, no bridge). Wiring: scp'd the treasury key as a BARE 66-byte key to the box (600), compiled
+  scripts/lib/feeJuiceBridge.ts → scripts/lib/dist (FEE_JUICE_BRIDGE_PATH), env FAUCET_ENABLED +
+  AZTEC_NODE_URL + FAUCET_L1_RPC_URL (publicnode Sepolia), uncommented ReadWritePaths. Two gotchas
+  hit+fixed: FEE_JUICE_BRIDGE_PATH needs compiled JS; the key file was a labeled record (extracted
+  the bare key, piped over ssh — never on a command line).
+- CONTRACT UPDATE (lane-1): STILL IN PROGRESS (~11min) — register round-2 class + update_to + ≥600s
+  delay. REQUIRED for settlement (deployed contract is still pre-C2); until it lands a live game would
+  fail at settlement. lane-1 will report.
+- MULTI-GAME PLAYTEST (lane-8): running (pack→15 cards, 5 consecutive games, per-game validation).
+- Follow-ups: add the bridge-compile step to update-backend.sh (DEPLOY.md §2g flags it); public/
+  artifact hygiene (lane-6); FAUCET_L1_RPC_URL is a public Sepolia node (swappable). NOTE: every
+  testnet push auto-redeploys the frontend (productionBranch=testnet).
