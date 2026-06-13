@@ -115,6 +115,11 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   guard test. Lane-2 dispatched onto A2 (npm 4.3.1 verified to exist;
   SponsoredFPC removal in atomic scope incl. deploy-contracts.ts cross-touch).
 
+- 19:5x — **lane-7 post-A1 doc pass MERGED**: two-layer mid-upgrade version
+  table, 86 anchors re-verified. FOUND: test-all.sh silently skipping contract
+  tests post-A1 (existence guard masks deleted binary path) → routed into
+  lane-6's live E3b scope. Lane-7 parked (E2.5 ← A3).
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -165,5 +170,5 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
 | lane-6-assets-infra | F1+F2+E3a merged | E3b (woken) | F3 ← A3+domain |
-| lane-7-docs | E2 complete | CLAUDE.md §Versions update (woken) | E2.5 ← A3 |
+| lane-7-docs | all items merged | parked | E2.5 ← A3 |
 | playtest | — | Harness Phase 1 | |
