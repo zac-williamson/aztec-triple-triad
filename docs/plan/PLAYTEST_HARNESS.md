@@ -275,3 +275,28 @@ both packages typecheck on the 4.3.1 SDK, CLI/artifacts are 4.3.1.
     not a harness artifact — the harness drove valid clicks. Fix belongs to
     Lane 2 (snapshot keying in the deferred-move path). Acceptance run BLOCKED
     on this until it lands.
+
+### Acceptance attempt 4 (after all 3 fixes merged) — finding 18
+
+18. **GATE-BLOCKING — deferred-move fix was incomplete; the LIVE move-proof
+    path still loses P2's pre-move board (Lane 2 `useGamePlay.ts`).** With the
+    three fixes merged (deploy fee headroom ✓, deferred-move replay ✓,
+    loser-token import ✓), the deploy succeeded and the game played to a
+    correct 7–3 game-over (the on-screen board matched the rules mirror at all
+    9 states). But settlement still never started: **P1 generated all 5 of its
+    move proofs cleanly; P2 generated 0 of 4 — every one failed `Circuit
+    execution failed: Card already placed on board`** (1 on the deferred path,
+    3 on the live path), so P2 submitted 0 move proofs (backend relay confirms),
+    the winner never reached 9/9, `canSettle` stayed false, and `waitCanSettle`
+    timed out. Root cause: move proofs must be built against the board BEFORE
+    the move, but the live path reads `boardBefore = ws.gameState.board`
+    (`useGamePlay.ts:352`) inside an async handler; for the joiner (P2) that
+    value has already advanced to include the just-placed card by proof-gen
+    time (it races the WS GAME_STATE broadcast). The on-screen board is correct
+    (cross-check passes) — only the async proof-gen reads stale-forward state.
+    Lane-2 fixed this for the DEFERRED path (capture full pre-move state into
+    `pendingMovesRef`); the SAME fix must apply to the LIVE path — capture the
+    pre-move board at click time and pass it, never re-read `ws.gameState.board`
+    after an `await`. P1/P2 asymmetry (P1 proofs prompt, P2 lags) is why it's
+    joiner-only. Real fast-play bug, not a harness artifact. BLOCKED on the
+    live-path capture fix landing in Lane 2.
