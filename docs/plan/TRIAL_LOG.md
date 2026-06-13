@@ -555,3 +555,19 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   cold CPU: parallel build-out done, now in the serial integration tail; C2–C10 was downstream of
   the move-format change (now landed). Open Zac calls surfaced: greenlight D2? parallelize C2–C10
   (pull a 2nd lane to scaffold)? Confirmed all 8 agents alive (lane-2 + playtest took dispatches).
+
+## 06-13 — Item I spike DONE (lane-2 ITEM_I_ONBOARDING.md); go/no-go SURFACED to Zac
+- The real gap: on testnet a new browser user has no L1 wallet / Sepolia ETH, and Fee Juice is
+  non-transferable on L2, so a HOSTED faucet must pay the L1 bridge gas. Everything downstream
+  (deploy+mint+import in one tx via FeeJuicePaymentMethodWithClaim) already exists+tested — the
+  ONLY missing piece is obtaining a consumable FeeJuiceClaim for the new L2 address in-app.
+- Two backings: Option B (project backend faucet wrapping the proven bridgeFeeJuice with the
+  treasury L1 key + abuse limits, ~1d FE + 0.5d Lane-4) vs Option C (a hosted faucet API IF it's
+  CORS-open and returns a consumable claim — unverified; Zac dislikes Nethermind's).
+- Orchestrator context added: the Sepolia treasury ALREADY EXISTS + is funded (~0.4 ETH,
+  0xDA74…DEAa2) and bridgeFeeJuice is used by deploy-testnet → Option B is ~90% built. Recommend B.
+  Security note: B puts TREASURY_L1_KEY on the EC2 backend (new exposure) — Zac's call.
+- BLOCKED ON ZAC (legitimate park, like D2/F1b): (1) Option B vs verify-C first; (2) is ~0.4 ETH
+  enough for demo onboarding volume or top up + what rate limits; (3) priority — before launch or
+  fast-follow (non-gating for F3). lane-2 parked (was 100% context). Did NOT start integration
+  (treasury-key exposure + Zac's money + launch scope are all his).
