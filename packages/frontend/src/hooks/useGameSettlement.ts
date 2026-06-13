@@ -352,23 +352,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
         const toFrHex = (hex: string) => hexToFr(Fr, hex);
 
         // Sort move proofs into chain
-        const { computeBoardStateHash } = await import('../aztec/proofWorker');
-        const emptyBoard = Array(18).fill('0');
-        const canonicalInitial = await computeBoardStateHash(emptyBoard, [CARDS_PER_HAND, CARDS_PER_HAND], 1);
-
-        const byStart = new Map<string, typeof capturedMoveProofs[0]>();
-        for (const p of capturedMoveProofs) {
-          byStart.set(p.startStateHash, p);
-        }
-
-        const sorted: typeof capturedMoveProofs = [];
-        let nextHash = canonicalInitial;
-        for (let i = 0; i < TOTAL_MOVES; i++) {
-          const p = byStart.get(nextHash);
-          if (!p) throw new Error(`Proof chain broken at step ${i}`);
-          sorted.push(p);
-          nextHash = p.endStateHash;
-        }
+        const sorted = sortProofChain(capturedMoveProofs, TOTAL_MOVES, await computeCanonicalInitialHash());
 
         const mp: InstanceType<typeof Fr>[][] = [];
         const mi: InstanceType<typeof Fr>[][] = [];
@@ -384,12 +368,6 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
 
         const senderAddr = AztecAddress.fromString(addr);
         const opponent = AztecAddress.fromString(capturedOpponentAddress);
-
-        const padTo5 = (ids: number[]): InstanceType<typeof Fr>[] => {
-          const padded = [...ids];
-          while (padded.length < CARDS_PER_HAND) padded.push(0);
-          return padded.slice(0, CARDS_PER_HAND).map(id => new Fr(BigInt(id)));
-        };
 
         const callerRandomness = capturedGameRandomness.map(v => toFrUtil(Fr, v));
         const opponentRandomness = capturedOpponentRandomness.map(v => toFrUtil(Fr, v));
@@ -413,8 +391,8 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
             mp[6], mi[6], mp[7], mi[7], mp[8], mi[8],
             opponent,
             new Fr(BigInt(selectedCardId)),
-            padTo5(capturedCardIds),
-            padTo5(capturedOpponentCardIds),
+            padToHand(Fr, capturedCardIds),
+            padToHand(Fr, capturedOpponentCardIds),
             callerRandomness,
             opponentRandomness,
           )
@@ -577,22 +555,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           }
 
           // Sort valid move proofs by chain order
-          const { computeBoardStateHash } = await import('../aztec/proofWorker');
-          const emptyBoard = Array(18).fill('0');
-          const CARDS_PER_HAND = 5;
-          const canonicalInitial = await computeBoardStateHash(emptyBoard, [CARDS_PER_HAND, CARDS_PER_HAND], 1);
-
-          const byStart = new Map<string, typeof validMoveProofs[0]>();
-          for (const p of validMoveProofs) byStart.set(p.startStateHash, p);
-
-          const sorted: typeof validMoveProofs = [];
-          let nextHash = canonicalInitial;
-          for (let i = 0; i < numValid; i++) {
-            const p = byStart.get(nextHash);
-            if (!p) throw new Error(`Proof chain broken at step ${i}`);
-            sorted.push(p);
-            nextHash = p.endStateHash;
-          }
+          const sorted = sortProofChain(validMoveProofs, numValid, await computeCanonicalInitialHash());
 
           // Build all 9 proof+inputs arrays (sorted valid + dummy padding)
           const allProofs: InstanceType<typeof Fr>[][] = [];
@@ -671,11 +634,6 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           const senderAddr = AztecAddress.fromString(addr);
           const opponent = AztecAddress.fromString(capturedOpponentAddress);
           const callerRandomness = capturedGameRandomness!.map(v => toFrUtil(Fr, v));
-          const padTo5 = (ids: number[]): InstanceType<typeof Fr>[] => {
-            const padded = [...ids];
-            while (padded.length < 5) padded.push(0);
-            return padded.slice(0, 5).map(id => new Fr(BigInt(id)));
-          };
 
           // Determine which card to claim (first opponent card placed on board, if any)
           // For now claim the first opponent card if any moves were played by opponent
@@ -688,9 +646,9 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           const { receipt } = await contract.methods
             .settle_abandoned_game(
               toFrUtil(Fr, capturedOnChainGameId!),
-              padTo5(capturedCardIds),
+              padToHand(Fr, capturedCardIds),
               callerRandomness,
-              padTo5(capturedOpponentCardIds),
+              padToHand(Fr, capturedOpponentCardIds),
               new Fr(BigInt(claimedCardId)),
               opponent,
             )
@@ -771,4 +729,42 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     cancelAbandonedUi,
     resetForMenu,
   };
+}
+
+/** Pad a card-ID list to a full hand (CARDS_PER_HAND) of Fr field elements. */
+function padToHand<F>(Fr: new (v: bigint) => F, ids: number[]): F[] {
+  const padded = [...ids];
+  while (padded.length < CARDS_PER_HAND) padded.push(0);
+  return padded.slice(0, CARDS_PER_HAND).map(id => new Fr(BigInt(id)));
+}
+
+/**
+ * Order move proofs into the on-chain verification chain: proof i+1's start
+ * state hash must equal proof i's end state hash, starting from the
+ * canonical initial hash. Throws if any link is missing.
+ */
+function sortProofChain<P extends { startStateHash: string; endStateHash: string }>(
+  proofs: P[],
+  count: number,
+  initialHash: string,
+): P[] {
+  const byStart = new Map<string, P>();
+  for (const p of proofs) byStart.set(p.startStateHash, p);
+
+  const sorted: P[] = [];
+  let nextHash = initialHash;
+  for (let i = 0; i < count; i++) {
+    const p = byStart.get(nextHash);
+    if (!p) throw new Error(`Proof chain broken at step ${i}`);
+    sorted.push(p);
+    nextHash = p.endStateHash;
+  }
+  return sorted;
+}
+
+/** Hash of the canonical initial game state: empty board, full hands, player 1 to move. */
+async function computeCanonicalInitialHash(): Promise<string> {
+  const { computeBoardStateHash } = await import('../aztec/proofWorker');
+  const emptyBoard = Array(18).fill('0');
+  return computeBoardStateHash(emptyBoard, [CARDS_PER_HAND, CARDS_PER_HAND], 1);
 }
