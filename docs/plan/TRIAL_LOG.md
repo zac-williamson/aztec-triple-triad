@@ -317,6 +317,29 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   When new addresses land → notify lane-2 (.env build), lane-6 (Vercel env/F3);
   playtest acceptance uses a LOCAL deploy so unaffected.
 
+- 06-13 (~08:00) — **ROOT-CAUSED the 4 loop stalls** (Zac: stop band-aiding).
+  Cause: the loop ran in /loop DYNAMIC mode = ScheduleWakeup, a SINGLE pending
+  self-wakeup that must be re-armed every turn AND is cancelled by user
+  messages; paired with a Monitor that hard-expires at 1h and is silent during
+  long BUSY ops. Survival required both to hold — every user interjection or
+  >1h operation broke the chain. CronList confirmed ZERO cron jobs were ever
+  set. NOT a model issue (broke under Fable too) — wrong tool.
+  FIX: CronCreate recurring job **6595c0f7** (`4,14,24,34,44,54 * * * *`, every
+  10min, off-minute) — fires INDEPENDENTLY, no re-arming, immune to user msgs +
+  monitor death, 7-day expiry. Monitor v7 (b6n308n3b) kept only as a fast-path
+  accelerator; cron is the guarantee. Stopped using ScheduleWakeup for the loop.
+- **C MERGED** (`1d8c949`): loser-token fix + all 3 contracts updatable
+  (admin-guarded update_to/set_update_delay, ≥600s delay) + testnet redeploy.
+  NEW addresses: NFT 0x03c4a439… Game 0x2d8675fc… Token 0x0ed08cbb… (in
+  .env.testnet/README). Last forced churn.
+- **playtest attempt-3 caught 2 real bugs** (migration core otherwise sound):
+  (1) deploy-contracts.ts missed the fee-headroom mirror → lane-1 (in progress);
+  (2) useGamePlay deferred move-proof "Card already placed" (board-snapshot
+  keying off under 4.3.1 timing → winner never gets 9/9 → no settlement; real
+  fast-play bug) → lane-2 (in progress). playtest holds; re-runs after both.
+- New addresses → lane-2 picks up via .env.testnet (its bug-2 dispatch);
+  lane-6 for F3/Vercel (parked, F3 gated on domain); lane-4 n/a (no addresses).
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
