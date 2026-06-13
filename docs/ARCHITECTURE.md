@@ -5,9 +5,9 @@ per game. This document covers the **contract and protocol layer**: the Noir
 contracts, the standalone proof circuits, and the note lifecycle that moves cards
 between players. Every claim carries a `file:line` anchor into the source.
 
-> **Scope note:** frontend architecture (hooks, proof workers, relay protocol) is
-> documented after the `useGame` decomposition lands (revival work item B); see
-> [§12](#12-frontend-layer). The contract/protocol layer below is stable.
+> **Scope note:** [§12](#12-frontend-layer) documents the frontend against the
+> post-decomposition hook structure (revival work item B). Sections 1–11 cover
+> the contract/protocol layer.
 
 ## 1. Design at a glance
 
@@ -258,8 +258,9 @@ mint (onboarding/pack) ──► private note ──► commit_five_nfts_* POPS 
   recognizes their tags, decrypts the payload, and calls the unconstrained
   utility `import_note` (`:1024-1070`), which runs `attempt_note_discovery` +
   `validate_and_store_enqueued_notes_and_events` against the real tx data —
-  a `.simulate()` call, no transaction. The frontend driver for this lives in
-  `packages/frontend/src/aztec/noteImporter.ts` (anchors after work item B).
+  a `.simulate()` call, no transaction. The frontend driver is
+  `importNotesFromTx` (`packages/frontend/src/aztec/noteImporter.ts:93-159`;
+  see §12.6).
 - **Inspection**: `get_nfts_for_user` pages through the private set
   (`:1074-1087`); `get_note_nonce` reads the counter (`:1091-1100`).
 
@@ -379,8 +380,198 @@ game-agnostic.
 
 ## 12. Frontend layer
 
-*Pending. Written after revival work item B (the `useGame` decomposition)
-merges, so file:line anchors land on the post-refactor layout. Until then, the
-entry points are `packages/frontend/src/aztec/connectToAztec.ts` (wallet,
-two-phase onboarding) and `packages/frontend/src/aztec/noteImporter.ts`
-(post-settlement note import).*
+How a browser drives all of the above. Anchors target the post-decomposition
+layout (revival work item B). All paths in this section are under
+`packages/frontend/src/`.
+
+### 12.1 Layering: React hooks over module-level infrastructure
+
+The Aztec machinery deliberately lives **outside React**: `txManager`
+(`aztec/txManager.ts:1-13`) and the contract cache (`aztec/contracts.ts:28-49`)
+are module-level singletons, so in-flight transactions and PXE state survive
+component unmounts and screen navigation. React hooks subscribe to them
+(`useSyncExternalStore` snapshots, `aztec/txManager.ts:91-97`) and translate
+them into render state. One provider (`aztec/AztecContext.tsx:11`) exposes the
+wallet layer to every hook via `useAztecContext` (`:33`).
+
+The game logic itself is a facade plus three hooks, composed once
+(`hooks/useGame.ts:93-118`) and consumed only through the facade:
+
+```
+useGame (hooks/useGame.ts:100)         facade: screens, matchmaking, persistence
+ ├─ useGameSession                     on-chain lifecycle (create/join pipeline)
+ ├─ useGamePlay                        proof orchestration (hand + 9 moves)
+ └─ useGameSettlement                  process_game + abandoned-game flows
+       consumes session/play ONLY through identity-stable accessor functions
+       (SettlementSessionDeps/SettlementPlayDeps, hooks/useGameSettlement.ts:20-39)
+```
+
+Two design rules carry the whole layer (stated in the architecture comment at
+`hooks/useGame.ts:62-91`): values the UI renders are React state; values read
+by async closures are refs; and **cross-hook access goes only through
+identity-stable functions** (`getPhase`, `getSettlementInfo`, `getMoveProofs`,
+`waitFor*`) — never raw refs — so callbacks stay memoized while always reading
+current values. Where an effect must read live WebSocket state without
+re-firing on every message, the hook mirrors that state into render-updated
+refs (`hooks/useGameSession.ts:126-138`).
+
+### 12.2 The on-chain pipeline (useGameSession)
+
+The lifecycle is an explicit state machine: `OnChainPhase`
+(`hooks/useGameSession.ts:15-24`) with a legal-transition table enforced by
+`transitionPhase` (`:26-36,140-156`). One consolidated effect drives the
+pipeline (`:417-545`): player 1 runs `create_game` (`:426-469`), player 2 runs
+a read-only prepare step (`:472-511`) and then `join_game` once P1's tx is
+confirmed (`:514-540`) — each step wrapped in `txManager.runTx` with
+`postEffects` that share data with the opponent and advance the phase.
+
+`createGameOnChain` (`:202-299`) shows the simulate-then-send shape: four
+**serial** `.simulate()` calls (`get_note_nonce` → `preview_game_data` →
+`get_game_status` → `compute_blinding_factor`, `:215-231`) recover the
+in-circuit-derived `game_id`, randomness, and blinding factor *before* the tx,
+including a stale-nonce guard (`:233-235`); then `create_game` is sent
+(`:263-265`). The preview values are shared with the opponent over the relay
+the moment React state updates — a deliberate effect *outside* the PXE
+execution context (`:359-375`).
+
+Settlement's inputs accumulate in `settlementInfoRef`
+(`SettlementInfo`, `:43-50`): seeded by pipeline postEffects (`:453-461`),
+merged synchronously when `OPPONENT_AZTEC_INFO`/`GAME_OVER` arrive (a raw
+message listener, not an effect — `:381-407`), and backfilled on demand from
+the ws-mirror refs for any field a race left empty (`:173-194`). It is
+deliberately **not** cleared on navigation (`:557-563` explains the spurious
+`create_game` race that motivates this).
+
+### 12.3 Proof orchestration (useGamePlay)
+
+The hand proof auto-generates the moment its preconditions are met
+(`hooks/useGamePlay.ts:246-278`): a 5-card hand, the session's blinding
+factor, and the **opponent's 6 randomness values** received over the relay —
+§4's randomness exchange, consumed here. Commitment and state hashes are
+recomputed client-side to match the circuits exactly
+(`aztec/proofWorker.ts:146-159,161-178,185-192` — poseidon2/pedersen via the
+shared bb.js API).
+
+Placement is optimistic: `handlePlaceCard` (`:357-407`) sends the move to the
+relay immediately (`:374`), applies the rules locally via the game-logic
+engine, and then either proves the move now (both hand proofs ready, `:387-394`)
+or queues it (`:396-402`). Queued moves replay later against board snapshots
+recorded per move number (`gameStateHistoryRef`, `:209-225`, drained at
+`:289-345`) — proofs are deferred, never skipped. Both players accumulate all
+nine move proofs (own + opponent's via relay, deduped by state-hash pair,
+`:127-135`), so **either** player holds a full transcript at game end
+(`canSettle`, `:91`).
+
+Proof generation itself (`aztec/proofWorker.ts`) is `Noir.execute` (witness) +
+`UltraHonkBackend.generateProof` per circuit, with backends cached per circuit
+(`:16-27`) over one Barretenberg instance (`aztec/proofBackend.ts`). Circuit
+artifacts are fetched from `/circuits/*.json` (`aztec/circuitLoader.ts:19,30,42`
+— the compiled outputs `npm run copy-circuits` publishes). Note: despite the
+filename, this runs on the **main thread** — there is no Web Worker, so proving
+blocks the tab. The cost mostly overlaps the opponent's thinking time by
+construction: the move is relayed before proving starts
+(`hooks/useGamePlay.ts:374` vs `:387-394`).
+
+### 12.4 Settlement (useGameSettlement)
+
+`handleSettle` (`hooks/useGameSettlement.ts:228-465`) is one `txManager.runTx`
+whose `execute` is a wait-ladder: wait for the on-chain phase to reach
+`active` (`:259-268`), for both hand proofs (`:270-281`), for the settlement
+info (`:283-285`), for all nine move proofs (`:291-292`), then backfill any
+race-emptied fields (`:294-298`). Only then does it prove: load both circuits,
+derive the two VKs in-browser, order the move proofs into the hash chain
+(`sortProofChain`, `:746-763`, seeded from the canonical initial hash
+`:765-770`), and call `process_game` with all 31 arguments (`:382-399`).
+
+`postEffects` (`:406-451`) then mirrors the contract's settlement math in
+TypeScript: the winner's 6 note randomness pairs and the loser's 4 (same
+duplicate-aware removal as `triple_triad_game/src/main.nr:683-697`), relays
+the loser's plaintext note data over the WebSocket (`:439`), imports the
+winner's own notes (§12.6), and releases the phase machine.
+
+The abandoned-game flow (`:468-689`) auto-triggers when the opponent
+disconnects mid-game with moves on the table (`:691-699`). The claimant
+generates the **dummy padding proofs in-browser** — `Noir.execute` over the
+zero-constraint circuit, one per missing move (`:539-555`) — sends
+`claim_abandoned_game` (`:587-603`), counts down the dispute window in the UI
+(65 s for 5 blocks, `:611-618`), then sends `settle_abandoned_game`
+(`:620-679`).
+
+The loser's side is event-driven: `OPPONENT_SETTLING` parks a synthetic
+txManager entry so the navigation guard holds (`:179-216`), and `NOTE_DATA`
+delivers the plaintext notes for import (`:145-172`), including detecting
+which card was taken (`:151-154`).
+
+### 12.5 PXE serialization (txManager)
+
+Ground rule #6 — all PXE operations serial per wallet — is enforced
+structurally, not by convention: every simulate/prove/send funnels through one
+queue that processes a single item at a time (`aztec/txManager.ts:200-221`).
+Two policies matter:
+
+- **Priority within a game, FIFO across games** (`:170-198`): lifecycle txs
+  (`deploy_account` 0, `create_game`/`join_game` 1) jump ahead of settlement
+  (3–4) *only* among items of the same game (`TX_PRIORITY`, `:22-30`) —
+  preventing the deadlock where a queued settlement waits forever on a
+  `join_game` stuck behind it.
+- **`execute` and `postEffects` run as one queue item** (`:244-258`), so a
+  queued settlement can never start between `create_game`'s tx and the
+  postEffect that records its result.
+
+### 12.6 Note import and persistence
+
+After settlement, each player must import their re-minted notes (§7;
+ground rule #9). `importNotesFromTx` (`aztec/noteImporter.ts:93-159`) fetches
+the `TxEffect` (with retries — the tx may have just mined, `:48-59`), pads the
+note-hash list to the fixed 64-slot circuit input (`:129-133`), and calls the
+NFT contract's `import_note` utility once per note via `.simulate()`
+(`:138-155`). The settlement hook persists each note's `(tokenId, randomness,
+txHash, noteHashes, firstNullifier)` to localStorage *before* importing
+(`hooks/useGameSettlement.ts:103-142`) — enough to replay the import into a
+fresh PXE after the browser's IndexedDB is wiped.
+
+ArenaToken rewards need no import (they use protocol-level
+`ONCHAIN_CONSTRAINED` delivery) but do need the PXE to sync the settlement
+block, hence the deliberate balance-refresh polling (`:159-167,442-445`).
+
+### 12.7 The relay (useWebSocket) and wallet layer
+
+The WebSocket hook (`hooks/useWebSocket.ts:9-54` is the full surface) carries
+four traffic families: matchmaking, game moves, **proof exchange**
+(`submitHandProof`/`submitMoveProof` and their opponent-side mirrors), and
+**settlement coordination** (`shareAztecInfo` for address+randomness,
+`notifyTxConfirmed` for the create/join handshake, `notifySettleStarted`, and
+`relayNoteData` for the loser's plaintext notes). Sessions survive reconnects:
+a stored session token is replayed via `RESUME` (`:99-106`) with exponential
+backoff (`:108-121`), and `connected` only turns true on
+`SESSION_ESTABLISHED`. For async code that cannot wait on React's render
+cycle, `addMessageListener` (`:50-53`) delivers messages synchronously in the
+`onmessage` tick — the bridge that keeps `settlementInfoRef` current
+(§12.2).
+
+The wallet layer is the two-phase onboarding documented at
+`aztec/connectToAztec.ts:1-11` — prepare (derive keys, show address) → user
+funds it → `deployAndRegister` (deploy account, register contracts, mint
+starter cards), driven by `hooks/useAztec.ts` and wrapped in
+`InstrumentedWallet`, an `EmbeddedWallet` subclass that emits per-phase timing
+events for the tx-progress UI (`aztec/instrumentedWallet.ts:1-8`). Field
+decoding throughout uses the prefix-checking helpers
+(`toFr`/`safeToField`, `aztec/fieldUtils.ts:23`,
+`aztec/proofWorker.ts:93-107`) — ground rule #8, because `.simulate()`
+results stringify as decimal.
+
+> **Known divergence (work item I):** game transactions currently pay fees via
+> `SponsoredFeePaymentMethod` built in `aztec/contracts.ts:9-26` — the method
+> the ground rules ban. The Fee Juice onboarding path already exists
+> (`FeeJuicePaymentMethodWithClaim`, `aztec/connectToAztec.ts`); migrating the
+> in-game fee path to it is revival work item I. Do not copy the SponsoredFPC
+> pattern into new code.
+
+### 12.8 Ground rules → frontend code
+
+| Ground rule | Where it's enforced |
+|-------------|---------------------|
+| #6 serial PXE ops | the txManager queue (`aztec/txManager.ts:200-221`) — nothing touches PXE outside it |
+| #8 decimal `.simulate()` results | `toFr` (`aztec/fieldUtils.ts:23`), `safeToField` (`aztec/proofWorker.ts:97-107`) |
+| #9 `import_note` after manual mints | `importNotesFromTx` (`aztec/noteImporter.ts:93-159`) + localStorage replay (§12.6) |
+| #10 in-circuit `game_id`/randomness | frontend only *previews* them via `.simulate()` (`hooks/useGameSession.ts:215-231`), never supplies them to a tx |
