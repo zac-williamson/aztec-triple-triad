@@ -5,10 +5,16 @@ export interface CardRanks {
   left: number;
 }
 
+/** Pack-pool tier. Bands are positional: ids 1-10 common, 11-176 uncommon,
+ * 177-226 rare, 227-246 epic, 247-256 legendary (CARDS_PER_POOL in
+ * triple_triad_nft/src/main.nr). */
+export type Rarity = 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+
 export interface Card {
   id: number;
   name: string;
   ranks: CardRanks;
+  rarity?: Rarity;
   element?: string;
   imageUrl?: string;
 }

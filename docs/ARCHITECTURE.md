@@ -346,10 +346,13 @@ its anchor.
 
 ## 11. Extending it
 
-**Add or rebalance a card.** Ranks live in three places that must agree:
+**Add or rebalance a card.** Ranks live in four places that must agree:
 `scripts/card-database-256.json` (generator source of truth),
-`circuits/card_data/src/lib.nr` (what proofs enforce), and
-`packages/frontend/src/cards.ts:17` (what players see). The contract's pool
+`circuits/card_data/src/lib.nr` (what proofs enforce),
+`packages/frontend/src/cards.ts:17` (what players see), and
+`packages/game-logic/src/cards.ts` (what the engine and backend simulate and
+validate — regenerate with `npm run generate:cards` in `packages/game-logic`;
+its tests pin the file against the JSON). The contract's pool
 constants (`CARDS_PER_POOL`, `triple_triad_nft/src/main.nr:8`) and the
 `prove_hand` range check (1–256, `circuits/prove_hand/src/main.nr:31-40`) bound
 the id space — growing past 256 touches both. If the UI database disagrees with
