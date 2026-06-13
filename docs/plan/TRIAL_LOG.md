@@ -170,6 +170,15 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   When I unblocks: model it on aztec-kit apps/bridge + packages/common bridging
   helpers (gregojuice).
 
+- 21:1x — **lane-6 E3b + test-all.sh fix + run-log purge MERGED** (`ef533cd`):
+  noir/TXE CI job (cached toolchain/CRS/VK, `aztec start --txe` + `aztec-nargo
+  test --test-threads 1` serial, 30m timeout) — closes TXE execution for lane-1's
+  QA-F1/soundness tests in CI; test-all.sh silent-skip → loud `exit 1` + curl
+  liveness (no log-grep/sleep); **two TXE flakes root-caused not masked**
+  (retracted a self-inflicted misread); purged 3 committed run-logs (~10k lines)
+  + gitignored *.txt; copy-circuits dummy_hand fix. 2 clean full-suite runs.
+  Lane-6 PARKED (F3 Vercel ← A3+domain; F1b ← end-of-cycle + Zac).
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -220,6 +229,6 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
-| lane-6-assets-infra | F1+F2+E3a merged | E3b (woken) | F3 ← A3+domain |
+| lane-6-assets-infra | F1/F2/E3a/E3b merged (ef533cd) | parked | F3 ← A3+domain; F1b ← end-of-cycle |
 | lane-7-docs | all items merged | parked | E2.5 ← A3 |
 | playtest | — | Harness Phase 1 | |
