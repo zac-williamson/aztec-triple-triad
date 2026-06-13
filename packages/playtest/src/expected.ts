@@ -3,13 +3,6 @@
  * with @axolotl-arena/game-logic. After every placement the UI board (both
  * browsers) is compared against this, so a rules divergence between frontend,
  * TS engine, and (at settlement) the circuits is pinned to the exact move.
- *
- * NOTE: the harness runs Playwright with tsx registered (`npm test` sets
- * NODE_OPTIONS="--import tsx") because game-logic's dist is ESM inside a
- * package that declares no "type" — plain require() (Playwright's CJS
- * transform) cannot load it. Same runtime the backend/deploy scripts use.
- * Real fix is `"type": "module"` in game-logic's package.json (lane 3,
- * flagged in the lane brief).
  */
 import {
   createGame, placeCard, getCardsByIds,
