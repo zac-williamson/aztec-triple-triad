@@ -57,6 +57,7 @@ ALLOWED_ORIGINS=${FRONTEND_ORIGIN}
 ENV
 sudo chmod 600 /etc/triad-backend.env
 sudo cp deploy/triad-backend.service /etc/systemd/system/triad-backend.service
+sudo sed -i "s|__REPO_DIR__|${REPO_DIR}|g" /etc/systemd/system/triad-backend.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now triad-backend
 sleep 2
