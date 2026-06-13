@@ -519,3 +519,20 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   leaky/incomplete-change criterion the gate exists for.)
 - Cross-lane: lane-2 frontend prover follow-up still pending (LANE_2_FRONTEND.md); dispatch after
   lane-1 re-passes the gate, then playtest attempt 6.
+
+## 06-13 — lane-1 C2 contract fix re-reviewed + MERGED (7b35e3b); lane-2 frontend follow-up dispatched
+- lane-1 fixed the contract gap excellently: found a SECOND anchor I'd missed (claim_abandoned_game
+  had the same inline 21-field hash as process_game) and, instead of patching both, extracted a
+  shared compute_initial_state_hash() (23-field) both call — removing the duplication that let the
+  bug hide. Added a contract regression test (initial_state.nr: anchor == 23-field empty-board hash
+  AND != the pre-fix 21-field hash). aztec compile ran (artifact regenerated).
+- Gate: PASS all six (criterion 5 exemplary — fix removed the duplication). MERGED to testnet 7b35e3b.
+- Dispatched lane-2 the frontend-prover follow-up (LANE_2_FRONTEND.md 5 steps: placed-slot bitmask
+  through computeBoardStateHash 21→23, generateGameMoveProof, the caller's per-game mask chaining,
+  useGameSettlement initial hash 0,0, mirror tests). lane-2 working now.
+- GO-LIVE CONSEQUENCE: the C2 fix changed triple_triad_game, so the DEPLOYED testnet contract
+  (0x2d86…) is now stale (21-field anchors) and would reject move-1 start_state. Before F3 go-live it
+  needs an address-preserving update to the new class (contracts are updatable — admin update_to).
+  NOT needed for the playtest (it deploys fresh contracts to a LOCAL sandbox). Noted in GO_LIVE.md.
+- Sequence: lane-2 done → gate-review + merge → playtest attempt 6 (local sandbox) → if green, F3
+  go-live incl. the testnet contract update. Monitor b6n308n3b (broad) + cron a13b5367.

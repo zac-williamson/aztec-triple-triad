@@ -4,16 +4,21 @@ Validated 2026-06-13. This is the exact sequence to take the 4.3.1 build live.
 Everything here has been recon'd against the real accounts/box; only the two
 gated actions remain.
 
-## Preconditions (BOTH must be true before any step below)
+## Preconditions
 
-1. **Playtest attempt-5 acceptance is GREEN** (lane/8-playtest STATUS: done — A1+A2
-   gate passed on 4.3.1). Tracked by monitor + cron sweep.
-2. **DNS: `ws.aztec-arena.com` A-record → `13.42.161.225`** (currently still
-   `16.60.85.104`, the dead April box). **← Zac's one action.** Verify with:
-   `dig +short ws.aztec-arena.com` → must return `13.42.161.225`.
+1. **Playtest acceptance is GREEN** (lane/8-playtest STATUS: done — full A1+A2 gate on
+   4.3.1). As of 06-13 this is **attempt 6+**, after the C2 replay fix (BUG_C2_REPLAY.md).
+2. ✅ **DONE — DNS + TLS.** `ws.aztec-arena.com → 13.42.161.225` (Vercel-managed, updated
+   via token) and certbot issued the cert. Backend live at `wss://ws.aztec-arena.com`
+   (verified). Step 1 below is already complete.
+3. **Testnet contract update (NEW).** The C2 fix changed `triple_triad_game`, so the deployed
+   instance (`0x2d86…`) is stale and must be updated to the new class (address-preserving,
+   admin `update_to` — contracts are updatable) before the frontend goes live, or settlement
+   reverts. Only the game contract changed this round (NFT + token unchanged). Confirm the exact
+   update invocation against the deploy script at go-live time; verify the exact mechanism then.
 
-Until BOTH hold, do not deploy the frontend — an interim deploy points the app at
-a `wss://` endpoint with no cert and/or unvalidated game code.
+Until the frontend is validated AND the contract is updated, do not publish — an interim
+deploy would point the app at an unvalidated build / stale contract.
 
 ## Current state (already done)
 
