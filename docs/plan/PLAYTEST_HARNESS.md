@@ -214,3 +214,33 @@ Chromium needs `--use-angle=metal` locally / SwiftShader-GL in CI
     the full 120s window in run 7. Diagnostic 6-min ceiling added to determine
     slow-vs-never; if never, the loser's reward is undiscoverable in-session —
     exactly the class of bug the harness exists to catch.
+
+## 4.3.1 acceptance gate (A1+A2 migration) — findings
+
+Ran after merging the 4.3.1 `testnet` (A1 contracts + A2 SDK + funder). The
+merge auto-resolved (my testkit touches are additive to lane-2's refactors),
+both packages typecheck on the 4.3.1 SDK, CLI/artifacts are 4.3.1.
+
+14. **Vite cold-optimize reload (fixed in-lane).** First boot after the SDK
+    bump leaves a cold `.vite` cache; the dev server optimizes the
+    dynamically-imported `@aztec` deps in the background while serving, the
+    test's first page load races it, and Vite force-reloads mid-onboarding —
+    restarting wallet deploy+mint in a loop that never finishes the 420s
+    budget (0 "cards minted"). Not a migration bug — pure tooling race.
+    Fixed: the orchestrator runs `vite optimize` to completion before serving
+    (`stack.ts` bootFrontend), so the server starts with a warm, complete
+    cache and never mid-load reloads.
+15. **GATE-BLOCKING — no fee headroom anywhere (lanes 1 + 2).** On 4.3.1 the
+    sandbox L2 base fee (`gasFees.feePerL2Gas`) rises as the deploy's own tx
+    volume fills blocks, but every tx-sending path sets `maxFeesPerGas` from a
+    no-headroom estimate, so a later tx is rejected once the base crosses it:
+    `maxFeesPerGas.feePerL2Gas=21600000 < gasFees.feePerL2Gas=25900000`
+    (`-32702`). INTERMITTENT and timing-dependent (deploy: 2 pass / 1 fail on
+    identical config). No fee-bump idiom exists in any script or in
+    `instrumentedWallet.ts` — so deploy (Lane 1 `deploy-contracts.ts`),
+    onboarding, AND settlement (Lane 2 `instrumentedWallet.ts` gas estimation)
+    all share the gap. Fix: set `maxFeesPerGas` with headroom — query
+    `node.getCurrentBaseFees()` and multiply (≥2–3×), or pad the estimation's
+    `maxFeesPerGas` component. The harness cannot mask this with a retry
+    (quality bar) and cannot edit those lanes' files; the 4.3.1 acceptance run
+    is BLOCKED on this fix landing in lanes 1 + 2.
