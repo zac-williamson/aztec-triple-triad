@@ -162,6 +162,14 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   suspension). Its embedded-wallet initializerless/immutables_hash account is the
   subject of a separate ACVM-sim error Zac is chasing (not a trial item).
 
+- 21:0x — **lane-2 D1b MERGED** (`e502768`; 290/290 + tsc verified): practice
+  mode (usePractice + PracticeScreen) vs chooseBotMove, reusing GameScreen3D,
+  menu entry, GameHUD practiceMode suppression; seeded-reproducible; no chain/
+  backend. **Lane-2 has now completed every queued item** (B, A2, C/QA-F3/dedupe,
+  D1b); only item I (faucet onboarding) remains, gated on A3. Lane-2 PARKED.
+  When I unblocks: model it on aztec-kit apps/bridge + packages/common bridging
+  helpers (gregojuice).
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -208,7 +216,7 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
 | lane-1-chain | A1+A1.5+QA-F1 merged (29ecb92) | parked | A3 ← Zac funding + lane-8 acceptance |
-| lane-2-frontend | A2 + cleanup merged (a5c1a98) | D1b (practice UI) | last queued item |
+| lane-2-frontend | all queued merged (e502768) | parked | I (faucet onboarding) ← A3 |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
