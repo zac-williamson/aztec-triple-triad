@@ -212,6 +212,21 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   I + D2). Lane-1 PARKED (A3 ← treasury Sepolia ETH + lane-8 acceptance).
   Lane-6 un-parked for the one-line `npm run test:scripts` CI wiring.
 
+- 22:1x — **playtest Phase 1 COMPLETE** (not yet merged): three-layer settlement
+  campaign passes repeatably on the 4.2 sandbox (2 fresh-stack runs); full
+  packages/playtest harness (stack orchestrator, player driver, chain client,
+  expected-state, full-game.spec) + frontend/src/testkit (SceneBridge projection
+  registry, gated behind VITE_TESTKIT). **HARNESS CAUGHT A REAL BUG**: loser's
+  +20 token reward note never imported at settlement — tracked as a test.fail()
+  regression sentinel (flips red when fixed), attributed to lanes 1/2. The exact
+  winner/loser-state validation Zac wanted. REBASE SUSPENSION LIFTED.
+  → lane-8: bring 4.3.1 into branch + RE-RUN campaign = A1/A2 real-proof
+    acceptance gate (validates the whole upgrade before A3 hits real testnet).
+    Conflict surface: ~9 frontend component files also refactored by lane-2.
+  → lane-2: sign off testkit touchpoints + FIX loser-token note import
+    (useGameSettlement — relay/import the loser's token note like the cards;
+    main.nr:703-706 mints to both). Fix flips the sentinel green.
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -259,10 +274,10 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
 | lane-1-chain | funder merged (b36f101) | parked | A3 ← Zac funds 0xDA74…EAa2 + lane-8 acceptance |
-| lane-2-frontend | all queued merged (e502768) | parked | I (faucet onboarding) ← A3 |
+| lane-2-frontend | all queued merged | testkit signoff + loser-token fix | I ← A3 |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
 | lane-6-assets-infra | all merged + CI wiring | parked | F3 ← A3+domain; F1b ← end-of-cycle |
 | lane-7-docs | all items merged | parked | E2.5 ← A3 |
-| playtest | — | Harness Phase 1 | |
+| playtest | Phase 1 done (4.2); not merged | 4.3.1 acceptance re-run | = A1/A2 acceptance gate |
