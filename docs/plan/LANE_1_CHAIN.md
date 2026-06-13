@@ -356,3 +356,39 @@ compiled JSON into `frontend/public/contracts/`, and answering proof-shape quest
     testnet txs occasionally drop at the mempool; the deploy script's env-var
     resume (NFT_ADDRESS/TOKEN_ADDRESS/GAME_ADDRESS + --skip-account) covers a
     mid-deploy drop.
+
+### C2 replay P0 — per-player placed-slot mask (2026-06-13)
+
+32. **Chose a 5th fix over the ticket's recommended (a′).** BUG_C2_REPLAY's
+    owner-blind board scan (my A1 commit 47912b8) false-rejected P2 because
+    `STARTER_CARD_IDS=[1..5]` are shared. Ticket offered (a) current-owner
+    [UNSOUND capture trap], (a′) original-owner [sound, but adds `originalOwner`
+    to board encoding → ripples the hash + TS mirror], (b) unique token_ids
+    [heavy], (c) move check to aggregation. Shipped instead a **per-player
+    placed-hand-slot bitmask** (`p1_placed`/`p2_placed`) chained through the
+    state hash: assert the mover's slot bit is unset, then set it. Rationale:
+    sound (enforces the real "each committed card once" invariant directly),
+    capture-immune (masks track placement not ownership → the (a) trap is
+    structurally impossible), duplicate-deck-immune (per player), and **lowest
+    blast radius** — board encoding stays `(id,owner)` and public inputs stay 6
+    (masks fold into the existing start/end hashes), so `process_game`/recursive
+    verification is untouched. Cost: 2 new private inputs to `game_move` + 2 hash
+    preimage fields (21→23). Slot is well-defined because `prove_hand` enforces
+    distinct hand ids.
+33. **Failing-first proven empirically, not just by construction.** Added
+    `test_duplicate_deck_p2_plays_shared_id` + `_captured_collision` (identical
+    decks `[1..5]`; P2 plays a shared id, incl. after a capture flips that id
+    onto P2's side). Temporarily re-inserted the old owner-blind scan → both
+    FAIL; removed it → both PASS (29 `game_move` tests green). The TS engine
+    (`game-logic`) was already correct (slot-addressed hands, position-addressed
+    board), so its 2 new mirror tests are regression guards, not a behavior
+    change — stated honestly, not dressed up as failing-first.
+34. **Cross-lane: Lane 2 MUST mirror the hash or all move proofs break.**
+    `proofWorker.ts` `computeBoardStateHash` (21→23 fields) + `generateGameMoveProof`
+    (track/chain masks, add 2 witness inputs) + `useGameSettlement.ts:781` initial
+    hash (`0,0`). Spec written into LANE_2_FRONTEND.md note 27 + BUG_C2_REPLAY.md
+    Resolution. The fix is NOT end-to-end until Lane 2 lands it. Scope held to
+    circuit + TS engine + tests per the dispatch; did not touch frontend (Lane 2).
+35. **ARCHITECTURE.md updated same commit** (`:146`, `:155`): state-hash preimage
+    now 23 fields; replay-prevention prose rewritten from owner-blind scan to the
+    slot mask.
