@@ -649,3 +649,14 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   + prover (318a791), all consistent on 30-field original-owner.
 - Triggered playtest attempt 7 — the E2E confirmation. NOT calling C2 fixed until it shows the
   chain assembles + the full 2-player game completes. All lanes parked except playtest (attempt 7).
+
+## 06-13 — ATTEMPT 7 GREEN — C2 fix validated E2E; confirmation pass running
+- Playtest attempt 7: 4.3.1 A1+A2 acceptance gate GREEN END-TO-END (2 passed: full three-layer
+  settlement [FE+BE+chain] + loser-token sentinel). The C2 round-2 fix WORKS — the proof chain
+  assembles across the P1→P2 boundary and the full 2-player game completes on 4.3.1. The milestone.
+- Agent flagged an earlier intermittent fee race → running a CONFIRMATION pass before merging the
+  harness (rigor: not declaring done on a single possibly-flaky green — the discipline I owe). TUI
+  hiccup: a stalled paste in the playtest input wouldn't submit (Enter/Escape/C-u ignored); cleared
+  + resent fresh, confirmation rerun now running.
+- On green confirmation → merge the playtest harness (capstone: validates A1+A2 E2E). Then the only
+  remaining gates are F3 frontend go-live (Zac) + the address-preserving testnet contract update.
