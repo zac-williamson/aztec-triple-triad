@@ -120,6 +120,13 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   tests post-A1 (existence guard masks deleted binary path) → routed into
   lane-6's live E3b scope. Lane-7 parked (E2.5 ← A3).
 
+- 19:3x — **MODEL-ACCESS INTERRUPTION** (3rd infra interruption): account swap
+  revoked Fable 5; all 8 sessions were pinned to it. Lanes 1/2/6 (the active
+  ones) died mid-task with "claude-fable-5 may not exist"; 5 parked lanes
+  unaffected until next turn. Recovery: switched all 8 to Opus 4.8 via /model,
+  resumed 1/2/6. All WIP intact on disk (lane-1 3 files, lane-2 15 files mid-A2,
+  lane-6 4 files mid-E3b). Monitor re-armed (v4, adds model-error detection).
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
