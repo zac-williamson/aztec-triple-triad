@@ -127,6 +127,20 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   resumed 1/2/6. All WIP intact on disk (lane-1 3 files, lane-2 15 files mid-A2,
   lane-6 4 files mid-E3b). Monitor re-armed (v4, adds model-error detection).
 
+- 20:1x — **lane-2 A2 MERGED** (`a952d22`; CLAUDE.md version-table conflict
+  resolved to the now-true uniform 4.3.1). Atomic npm→4.3.1 across
+  root/frontend/integration; production SponsoredFPC removed; wallet internals
+  + deploy-contracts re-ported to FeeJuice; 271/271 + tsc verified in-worktree.
+  **Repo is now uniformly 4.3.1** → A2 dependency satisfied for D2 and A3.
+  GATE FOLLOW-UP bounced to lane-2 (before D1b): "zero SponsoredFPC references"
+  was inaccurate — still active in sandbox-gated @ts-nocheck integration tests
+  (e2e-aztec-settlement, e2e-full-game-flow, debugging/*); integration is in A2
+  scope. Runtime acceptance (live wallet sendTx path) still pending lane-8
+  real-proof rerun → **A3 gated on that, not just on A2**.
+- Monitor false-positive fixed: v4's `claude-fable-5` check matched stale
+  scrollback (fired a phantom MODEL-ERROR on lane-2 right after it finished A2);
+  v5 drops it (all sessions confirmed on Opus).
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -172,8 +186,8 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
 | lane-1-chain | A1+A1.5 merged | QA-F1 + nonce + aggregate twin | then A2 support |
-| lane-2-frontend | B + C bundle merged | A2 (SDK 4.3.1 + SponsoredFPC removal) | D1b after |
-| lane-3-game-ai | both items merged (1afb48e, 64f7e6d) | parked | D2 ← A2 + Zac decision |
+| lane-2-frontend | A2 merged a952d22 | SponsoredFPC integration-test cleanup → D1b | — |
+| lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
 | lane-5-qa | backlog + §1.7 merged | parked | acceptance duty when playtest Phase 1 lands |
 | lane-6-assets-infra | F1+F2+E3a merged | E3b (woken) | F3 ← A3+domain |
