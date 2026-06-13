@@ -219,17 +219,27 @@ export class PlayerDriver {
     );
   }
 
+  /** Reject if a promise outruns `ms` — a hung PXE read must fail loudly, not stall the run. */
+  private withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+    return Promise.race([
+      p,
+      new Promise<T>((_, reject) =>
+        setTimeout(() => reject(new Error(`${this.name}: ${label} did not return within ${ms / 1000}s`)), ms)),
+    ]);
+  }
+
   /** Private NFT reads from THIS tab's PXE (serialized via the app's queue). */
   async privateCards(): Promise<number[]> {
-    const cards = await this.page.evaluate(
-      () => window.__triadTest!.getPrivateCards(),
-      undefined,
-    );
+    const cards = await this.withTimeout(
+      this.page.evaluate(() => window.__triadTest!.getPrivateCards()),
+      TIMEOUTS.pxeRead, 'getPrivateCards');
     return [...cards].sort((a, b) => a - b);
   }
 
   async tokenBalance(): Promise<number> {
-    return this.page.evaluate(() => window.__triadTest!.getTokenBalance());
+    return this.withTimeout(
+      this.page.evaluate(() => window.__triadTest!.getTokenBalance()),
+      TIMEOUTS.pxeRead, 'getTokenBalance');
   }
 
   /**
