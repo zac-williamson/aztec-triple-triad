@@ -97,3 +97,10 @@ both anchors already call the shared helper. Regression test updated to pin 30 a
 
 **Lane 2 (prover) — REQUIRED, spec in LANE_2_FRONTEND.md note 28.** Revert the masks and mirror the
 30-field hash + original-owners; details there. Not end-to-end until Lane 2 lands it (same merge).
+
+**Lane 2 — DONE (2026-06-13), see LANE_2_FRONTEND.md note 31.** Masks reverted; prover mirrors the
+30-field hash + `original_owners_before/after` (derived from the shared board snapshot — no chaining,
+no relay). `useGamePlay` lost all mask state. `proofIntegration.test.ts` updated to the real 30-field
+circuit + a P1→P2 boundary chain-assembly assertion + a finding-19 duplicate-deck capture-collision
+positive test (a current-owner check would false-reject it). Full frontend suite green (311/311), tsc
+clean. Ready for gate-review + playtest attempt 7.

@@ -70,23 +70,24 @@ async function computeCardCommit(
 
 /**
  * Compute board state hash using Pedersen.
- * Matches circuit hash_board_state (C2 replay fix):
- *   pedersen_hash([board[18], scores[2], current_turn, p1_placed, p2_placed])
+ * Matches circuit hash_board_state (C2 round-2, original-owner replay guard):
+ *   pedersen_hash([board[18], scores[2], current_turn, original_owners[9]]) = 30 fields.
+ * original_owners[i] = who FIRST placed the card on cell i (0 if empty); it is
+ * publicly agreed and never changes on capture, so consecutive moves' hashes
+ * agree across peers (the private placed-slot masks of round 1 could not).
  */
 async function hashBoardState(
   board: bigint[],
   scores: [bigint, bigint],
   currentTurn: bigint,
-  p1Placed: bigint = 0n,
-  p2Placed: bigint = 0n,
+  originalOwners: bigint[] = [0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n],
 ): Promise<string> {
   const inputs = [
     ...board.map((v) => numToField(v)),
     numToField(scores[0]),
     numToField(scores[1]),
     numToField(currentTurn),
-    numToField(p1Placed),
-    numToField(p2Placed),
+    ...originalOwners.map((v) => numToField(v)),
   ];
   const result = await bb.pedersenHash({ inputs, hashIndex: 0 });
   return bufToHex(result.hash);
@@ -203,6 +204,13 @@ describe('proof generation integration', () => {
     const p2CardIds = [10n, 11n, 12n, 13n, 14n];
     const p2BlindingFactor = 222n;
 
+    /** Build the per-cell original-owner array (len 9) from [cellIdx, player] pairs. */
+    function owners(...placed: Array<[number, number]>): bigint[] {
+      const a = new Array(9).fill(0n) as bigint[];
+      for (const [cell, player] of placed) a[cell] = BigInt(player);
+      return a;
+    }
+
     it('executes first move (P1 places card 1 at 0,0 on empty board)', async () => {
       const cc1 = await computeCardCommit(p1CardIds, p1BlindingFactor);
       const cc2 = await computeCardCommit(p2CardIds, p2BlindingFactor);
@@ -215,9 +223,10 @@ describe('proof generation integration', () => {
       boardAfter[1] = 1n; // owner
       const scoresAfter: [bigint, bigint] = [5n, 5n];
 
-      // P1 places card 1 = committed slot 0 → bit 1. before (0,0), after (1,0).
-      const startHash = await hashBoardState(boardBefore, scoresBefore, 1n, 0n, 0n);
-      const endHash = await hashBoardState(boardAfter, scoresAfter, 2n, 1n, 0n);
+      // Empty board → no original owners; after the move, cell 0's original
+      // owner is P1.
+      const startHash = await hashBoardState(boardBefore, scoresBefore, 1n, owners());
+      const endHash = await hashBoardState(boardAfter, scoresAfter, 2n, owners([0, 1]));
 
       const inputs: Record<string, unknown> = {
         card_commit_1: cc1,
@@ -235,8 +244,8 @@ describe('proof generation integration', () => {
         scores_before: [toHex(scoresBefore[0]), toHex(scoresBefore[1])],
         scores_after: [toHex(scoresAfter[0]), toHex(scoresAfter[1])],
         current_turn_before: '0x1',
-        p1_placed_before: '0x0',
-        p2_placed_before: '0x0',
+        original_owners_before: owners().map((v) => toHex(v)),
+        original_owners_after: owners([0, 1]).map((v) => toHex(v)),
         player_card_ids: p1CardIds.map((id) => toHex(id)),
         blinding_factor: toHex(p1BlindingFactor),
       };
@@ -256,13 +265,12 @@ describe('proof generation integration', () => {
       const scoresBefore: [bigint, bigint] = [5n, 5n];
 
       const boardAfter = [...boardBefore];
-      boardAfter[8] = 10n; boardAfter[9] = 2n; // P2 card at (1,1)
+      boardAfter[8] = 10n; boardAfter[9] = 2n; // P2 card at (1,1) = cell 4
       const scoresAfter: [bigint, bigint] = [5n, 5n];
 
-      // After move 1: P1 placed slot 0 → p1=1. P2 places card 10 = slot 0 → bit 1.
-      // before (1,0), after (1,1).
-      const startHash = await hashBoardState(boardBefore, scoresBefore, 2n, 1n, 0n);
-      const endHash = await hashBoardState(boardAfter, scoresAfter, 1n, 1n, 1n);
+      // cell 0 original owner P1 (move 0); cell 4 becomes P2.
+      const startHash = await hashBoardState(boardBefore, scoresBefore, 2n, owners([0, 1]));
+      const endHash = await hashBoardState(boardAfter, scoresAfter, 1n, owners([0, 1], [4, 2]));
 
       const inputs: Record<string, unknown> = {
         card_commit_1: cc1,
@@ -280,8 +288,8 @@ describe('proof generation integration', () => {
         scores_before: [toHex(scoresBefore[0]), toHex(scoresBefore[1])],
         scores_after: [toHex(scoresAfter[0]), toHex(scoresAfter[1])],
         current_turn_before: '0x2',
-        p1_placed_before: toHex(1),
-        p2_placed_before: '0x0',
+        original_owners_before: owners([0, 1]).map((v) => toHex(v)),
+        original_owners_after: owners([0, 1], [4, 2]).map((v) => toHex(v)),
         player_card_ids: p2CardIds.map((id) => toHex(id)),
         blinding_factor: toHex(p2BlindingFactor),
       };
@@ -292,28 +300,28 @@ describe('proof generation integration', () => {
       expect(witness.length).toBeGreaterThan(0);
     }, 120000);
 
-    it('executes capture move (P1 Sunny captures P2 Peaches)', async () => {
+    it('executes capture move, leaving the captured card original owner unchanged', async () => {
       const cc1 = await computeCardCommit(p1CardIds, p1BlindingFactor);
       const cc2 = await computeCardCommit(p2CardIds, p2BlindingFactor);
 
-      // Board: P1 card 1 at (0,0), P2 card 10 at (0,1)
-      // P1 places card 4 (Sunny [6,1,1,2]) at (1,1)
-      // top=6 vs Peaches bottom=2 -> CAPTURE
+      // Board: P1 card 1 at (0,0)=cell0, P2 card 10 at (0,1)=cell1.
+      // P1 places card 4 (Sunny [6,1,1,2]) at (1,1)=cell4: top=6 vs Peaches
+      // bottom=2 → CAPTURE of cell1. cell1's OWNER flips to P1 but its ORIGINAL
+      // owner stays P2 (the property the replay guard relies on).
       const boardBefore = new Array(18).fill(0n) as bigint[];
-      boardBefore[0] = 1n; boardBefore[1] = 1n;   // (0,0) P1 card 1
-      boardBefore[2] = 10n; boardBefore[3] = 2n;  // (0,1) P2 card 10
+      boardBefore[0] = 1n; boardBefore[1] = 1n;   // cell0 P1 card 1
+      boardBefore[2] = 10n; boardBefore[3] = 2n;  // cell1 P2 card 10
       const scoresBefore: [bigint, bigint] = [5n, 5n];
 
       const boardAfter = new Array(18).fill(0n) as bigint[];
       boardAfter[0] = 1n; boardAfter[1] = 1n;     // unchanged
-      boardAfter[2] = 10n; boardAfter[3] = 1n;    // CAPTURED by P1
-      boardAfter[8] = 4n; boardAfter[9] = 1n;     // placed
+      boardAfter[2] = 10n; boardAfter[3] = 1n;    // CAPTURED by P1 (owner → 1)
+      boardAfter[8] = 4n; boardAfter[9] = 1n;     // placed at cell4
       const scoresAfter: [bigint, bigint] = [6n, 4n];
 
-      // Board reflects P1 card 1 (slot 0) + P2 card 10 (slot 0): before (1,1).
-      // P1 places card 4 = committed slot 3 → bit 8. after (9,1).
-      const startHash = await hashBoardState(boardBefore, scoresBefore, 1n, 1n, 1n);
-      const endHash = await hashBoardState(boardAfter, scoresAfter, 2n, 9n, 1n);
+      // cell0=P1, cell1=P2 (stays P2 after capture), cell4 becomes P1.
+      const startHash = await hashBoardState(boardBefore, scoresBefore, 1n, owners([0, 1], [1, 2]));
+      const endHash = await hashBoardState(boardAfter, scoresAfter, 2n, owners([0, 1], [1, 2], [4, 1]));
 
       const inputs: Record<string, unknown> = {
         card_commit_1: cc1,
@@ -331,8 +339,8 @@ describe('proof generation integration', () => {
         scores_before: [toHex(scoresBefore[0]), toHex(scoresBefore[1])],
         scores_after: [toHex(scoresAfter[0]), toHex(scoresAfter[1])],
         current_turn_before: '0x1',
-        p1_placed_before: toHex(1),
-        p2_placed_before: toHex(1),
+        original_owners_before: owners([0, 1], [1, 2]).map((v) => toHex(v)),
+        original_owners_after: owners([0, 1], [1, 2], [4, 1]).map((v) => toHex(v)),
         player_card_ids: p1CardIds.map((id) => toHex(id)),
         blinding_factor: toHex(p1BlindingFactor),
       };
@@ -343,6 +351,83 @@ describe('proof generation integration', () => {
       expect(witness.length).toBeGreaterThan(0);
     }, 120000);
 
+    it('accepts placing a card whose id collides with a captured opponent card (finding-19)', async () => {
+      // Duplicate-deck soundness guard: P2 placed its card 5, P1 captured it
+      // (cell1 now OWNED by P1 but original_owner stays 2). P1 legitimately
+      // places its OWN card 5 elsewhere. A *current*-owner replay check would
+      // FALSE-REJECT this; the original-owner check must accept it.
+      const cc1 = await computeCardCommit(p1CardIds, p1BlindingFactor);
+      const cc2 = await computeCardCommit(p2CardIds, p2BlindingFactor);
+
+      // Reachable filled=4 board (P1 c0, P2 c1, P1 c2 captures c1, P2 c8).
+      const boardBefore = new Array(18).fill(0n) as bigint[];
+      boardBefore[0] = 1n;  boardBefore[1] = 1n;   // cell0 P1 card1
+      boardBefore[2] = 5n;  boardBefore[3] = 1n;   // cell1 P2's card5, captured by P1
+      boardBefore[4] = 3n;  boardBefore[5] = 1n;   // cell2 P1 card3 (the capturer)
+      boardBefore[16] = 11n; boardBefore[17] = 2n; // cell8 P2 card11
+      const ooBefore = owners([0, 1], [1, 2], [2, 1], [8, 2]);
+      const scoresBefore: [bigint, bigint] = [6n, 4n];
+
+      // P1 places its own card 5 at cell4 (1,1). cell4's only occupied neighbor
+      // (cell1) is already P1's → no captures.
+      const boardAfter = [...boardBefore];
+      boardAfter[8] = 5n; boardAfter[9] = 1n; // cell4 P1 card5
+      const ooAfter = owners([0, 1], [1, 2], [2, 1], [4, 1], [8, 2]);
+      const scoresAfter: [bigint, bigint] = [6n, 4n];
+
+      const startHash = await hashBoardState(boardBefore, scoresBefore, 1n, ooBefore);
+      const endHash = await hashBoardState(boardAfter, scoresAfter, 2n, ooAfter);
+
+      const inputs: Record<string, unknown> = {
+        card_commit_1: cc1,
+        card_commit_2: cc2,
+        start_state_hash: startHash,
+        end_state_hash: endHash,
+        game_ended: '0x0',
+        winner_id: '0x0',
+        current_player: '0x1',
+        card_id: '0x5',
+        row: '0x1',
+        col: '0x1',
+        board_before: boardBefore.map((v) => toHex(v)),
+        board_after: boardAfter.map((v) => toHex(v)),
+        scores_before: [toHex(scoresBefore[0]), toHex(scoresBefore[1])],
+        scores_after: [toHex(scoresAfter[0]), toHex(scoresAfter[1])],
+        current_turn_before: '0x1',
+        original_owners_before: ooBefore.map((v) => toHex(v)),
+        original_owners_after: ooAfter.map((v) => toHex(v)),
+        player_card_ids: p1CardIds.map((id) => toHex(id)),
+        blinding_factor: toHex(p1BlindingFactor),
+      };
+
+      const noir = new Noir(gameMoveArtifact as never);
+      const { witness } = await noir.execute(inputs as never);
+      expect(witness).toBeDefined();
+      expect(witness.length).toBeGreaterThan(0);
+    }, 120000);
+
+    it('chains across the P1→P2 boundary with no private per-player state', async () => {
+      // The exact failure the round-1 chained masks caused: at the P1→P2
+      // boundary, P2's independently-derived start_state_hash must equal P1's
+      // end_state_hash. original_owners is publicly agreed — both peers derive
+      // it from the shared placements — so the hashes match. The private
+      // placed-slot masks could not (P2 only learned P1's mask via the lagging
+      // relay, so its start hash used a stale value → sortProofChain broke).
+      const board = new Array(18).fill(0n) as bigint[];
+      board[0] = 1n; board[1] = 1n; // P1 placed card 1 at (0,0) in move 0
+      const scores: [bigint, bigint] = [5n, 5n];
+
+      // P1 (the mover) ends move 0 on this state.
+      const p1EndHash = await hashBoardState(board, scores, 2n, owners([0, 1]));
+
+      // P2 receives the relayed board and reconstructs original owners purely
+      // from the public placement history (cell 0 was first placed by player 1)
+      // — no access to P1's hand or any private state.
+      const p2StartHash = await hashBoardState(board, scores, 2n, owners([0, 1]));
+
+      expect(p2StartHash).toBe(p1EndHash);
+    });
+
     it('rejects move with wrong player turn', async () => {
       const cc1 = await computeCardCommit(p1CardIds, p1BlindingFactor);
       const cc2 = await computeCardCommit(p2CardIds, p2BlindingFactor);
@@ -350,8 +435,8 @@ describe('proof generation integration', () => {
       const boardBefore = new Array(18).fill(0n) as bigint[];
       const boardAfter = new Array(18).fill(0n) as bigint[];
       boardAfter[0] = 10n; boardAfter[1] = 2n;
-      const startHash = await hashBoardState(boardBefore, [5n, 5n], 1n); // turn=P1
-      const endHash = await hashBoardState(boardAfter, [5n, 5n], 1n);
+      const startHash = await hashBoardState(boardBefore, [5n, 5n], 1n, owners()); // turn=P1
+      const endHash = await hashBoardState(boardAfter, [5n, 5n], 1n, owners([0, 2]));
 
       const inputs: Record<string, unknown> = {
         card_commit_1: cc1,
@@ -369,8 +454,8 @@ describe('proof generation integration', () => {
         scores_before: ['0x5', '0x5'],
         scores_after: ['0x5', '0x5'],
         current_turn_before: '0x1', // It's P1's turn
-        p1_placed_before: '0x0',
-        p2_placed_before: '0x0',
+        original_owners_before: owners().map((v) => toHex(v)),
+        original_owners_after: owners([0, 2]).map((v) => toHex(v)),
         player_card_ids: p2CardIds.map((id) => toHex(id)),
         blinding_factor: toHex(p2BlindingFactor),
       };
@@ -388,8 +473,8 @@ describe('proof generation integration', () => {
       const boardAfter = [...boardBefore];
       boardAfter[0] = 2n; boardAfter[1] = 1n; // overwrite attempt
 
-      const startHash = await hashBoardState(boardBefore, [5n, 5n], 1n);
-      const endHash = await hashBoardState(boardAfter, [5n, 5n], 2n);
+      const startHash = await hashBoardState(boardBefore, [5n, 5n], 1n, owners([0, 1]));
+      const endHash = await hashBoardState(boardAfter, [5n, 5n], 2n, owners([0, 1]));
 
       const inputs: Record<string, unknown> = {
         card_commit_1: cc1,
@@ -407,8 +492,8 @@ describe('proof generation integration', () => {
         scores_before: ['0x5', '0x5'],
         scores_after: ['0x5', '0x5'],
         current_turn_before: '0x1',
-        p1_placed_before: '0x0',
-        p2_placed_before: '0x0',
+        original_owners_before: owners([0, 1]).map((v) => toHex(v)),
+        original_owners_after: owners([0, 1]).map((v) => toHex(v)),
         player_card_ids: p1CardIds.map((id) => toHex(id)),
         blinding_factor: toHex(p1BlindingFactor),
       };
@@ -417,19 +502,21 @@ describe('proof generation integration', () => {
       await expect(noir.execute(inputs as never)).rejects.toThrow();
     }, 120000);
 
-    it('rejects replaying the same committed hand slot (C2 replay fix)', async () => {
-      // P1 already placed committed slot 0 (card 1); now tries to place it
-      // again. The board cell is fresh, but the slot bit is set in p1_placed.
+    it('rejects replaying a card this player already placed (C2 original-owner check)', async () => {
+      // P1's card 1 is on the board with original_owner P1; P1 tries to place
+      // card 1 AGAIN at a fresh cell. Mirrors the circuit's
+      // test_card_replay_rejected. Rejected by §4b: a cell holds card_id 1 whose
+      // original owner is the mover.
       const cc1 = await computeCardCommit(p1CardIds, p1BlindingFactor);
       const cc2 = await computeCardCommit(p2CardIds, p2BlindingFactor);
 
       const boardBefore = new Array(18).fill(0n) as bigint[];
-      boardBefore[0] = 1n; boardBefore[1] = 1n; // card 1 already on board (slot 0)
+      boardBefore[0] = 1n; boardBefore[1] = 1n; // card 1 already on board, placed by P1
       const boardAfter = [...boardBefore];
       boardAfter[8] = 1n; boardAfter[9] = 1n;   // attempt to place card 1 again at (1,1)
 
-      const startHash = await hashBoardState(boardBefore, [5n, 5n], 1n, 1n, 0n);
-      const endHash = await hashBoardState(boardAfter, [5n, 5n], 2n, 1n, 0n);
+      const startHash = await hashBoardState(boardBefore, [5n, 5n], 1n, owners([0, 1]));
+      const endHash = await hashBoardState(boardAfter, [5n, 5n], 2n, owners([0, 1], [4, 1]));
 
       const inputs: Record<string, unknown> = {
         card_commit_1: cc1,
@@ -447,8 +534,8 @@ describe('proof generation integration', () => {
         scores_before: ['0x5', '0x5'],
         scores_after: ['0x5', '0x5'],
         current_turn_before: '0x1',
-        p1_placed_before: toHex(1), // slot 0 already placed
-        p2_placed_before: '0x0',
+        original_owners_before: owners([0, 1]).map((v) => toHex(v)),
+        original_owners_after: owners([0, 1], [4, 1]).map((v) => toHex(v)),
         player_card_ids: p1CardIds.map((id) => toHex(id)),
         blinding_factor: toHex(p1BlindingFactor),
       };
