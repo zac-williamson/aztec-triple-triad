@@ -298,6 +298,14 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   TUI note: long pasted dispatches can fail to submit (collapse to "paste again
   to expand"); use SHORT send-keys messages.
 
+- 06-13 — **Zac directive: testnet redeploy AUTHORIZED, but NO address churn**
+  ("fix the code"). Updated autonomous rules: testnet redeploy now ALLOWED for
+  lane-1 IF it proves addresses are byte-identical locally first (Aztec contract
+  class-update/upgrade for changed contracts + pinned deterministic salts for
+  unchanged ones). If no-churn is infeasible in 4.3.1, lane-1 STOPS + reports —
+  must not churn. Still RESERVED for Zac: F3 go-live, F1b force-push, git push,
+  D2 scope. Directive queued to lane-1 (mid ArenaToken fix).
+
 ## Pending handoffs (deliver at each lane's next idle)
 
 - **ALL lanes**: `git rebase testnet` (≥ `ade31c7`) — sane CLAUDE.md, LICENSE,
@@ -344,7 +352,7 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 
 | Lane | Last STATUS | Current item | Notes |
 |------|-------------|--------------|-------|
-| lane-1-chain | A3 + fee merged | ArenaToken loser-token fix (codebase only) | no testnet redeploy w/o Zac |
+| lane-1-chain | A3 + fee merged | ArenaToken fix + ADDRESS-PRESERVING testnet redeploy | no-churn or STOP |
 | lane-2-frontend | fee fix merged (7875d08) | parked | I (unblocked, not gating) + loser-token wiring ← lane-1 |
 | lane-3-game-ai | merged (1afb48e, 64f7e6d) | parked | D2 ← Zac decision (A2 ✓) |
 | lane-4-backend | G + QA-F3 merged (bc50650, e08d840) | parked | D2-hook + F3 gated |
