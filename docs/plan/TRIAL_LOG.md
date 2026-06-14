@@ -1010,3 +1010,24 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   onboarding is now reliable + the 5-game campaign passes repeatably). This is the LAST piece — the
   campaign logic + all harness/env blockers are resolved; only repeatable-pass confirmation remains.
 - Status: PRIMARY GOAL (5-game no-carryover) achieved + verified; repeatable acceptance in flight.
+
+## 06-14 — 2× acceptance both FAILED (real intermittent issues); lane-8 stalled ~11h (machine sleep) → recovered
+- The 2× repeatable-acceptance both failed (verified via `multigame-accept-2.log` etc., NOT STATUS):
+  - Run #1: onboarding stall — alice timed out at 420s with NO connection reset (keepalive fixed the
+    reset; this is a DIFFERENT residual stall).
+  - Run #2: onboarded clean + ran 4 CONSECUTIVE GAMES (all settle OK, economy consistent) → game 5
+    `awaiting_settlement → idle`, PHASE TIMEOUT 1500s, no reset. Intermittent (GREEN did 5/5). This is
+    the real "multiple games" class, isolated to a late-game settlement hang.
+- lane-8 mis-diagnosed it as "memory pressure from 32 lingering processes" — VERIFIED FALSE: only ~4
+  lingering chrome-headless-shell (its 32 counted the user's Google Chrome + Steam), memory 82% free.
+  (3rd lane-8 mis-attribution — removed-poll, then memory; verify its claims against artifacts always.)
+- REAL items (routed back to lane-8 via docs/plan/REPEATABLE_ACCEPTANCE.md): (1) harness cleanup gap —
+  isolated-Chromium PROCESSES leak (port-based teardown misses them); fix global-teardown to kill by
+  pid/process-group. (2) onboarding 420s stall. (3) game-5 settlement hang. No mask.
+- lane-8 STALL: hit a transient API ECONNRESET ~06:22, went idle at 543.8k tokens; the machine then
+  slept overnight (watchdog events jumped 07:45→16:57 — local processes pause during sleep), so it
+  wasn't recovered until ~16:58. RECOVERED: /clear (fresh context) + the recovery brief above; lane-8
+  working again (merged testnet, fixing cleanup gap + root-causing the 2 hangs + re-running).
+- LIMITATION (Zac "always working"): within an awake session the v4 watchdog (45s) + cron (10min) keep
+  lane-8 monitored/recovered; but the playtest runs locally, so machine sleep pauses the work AND all
+  local monitoring until wake. No local monitor can run while the machine sleeps.
