@@ -17,8 +17,12 @@ export default async function globalTeardown(): Promise<void> {
 
   if (!existsSync(STACK_INFO_PATH)) return;
   const info = readStackInfo();
-  if (info.mode === 'run') {
-    // Reverse boot order: frontend, backend, then the sandbox tree.
+  // 'run' booted the whole local stack; 'testnet' booted only the local vite
+  // (chain + ws relay are remote and live — never touched). Both own local
+  // processes we must kill. 'attached'/'standalone' are owned elsewhere.
+  if (info.mode === 'run' || info.mode === 'testnet') {
+    // Reverse boot order: frontend, backend, then the sandbox tree. In testnet
+    // mode only 'frontend' is set; the rest are undefined and skipped.
     for (const name of ['frontend', 'backend', 'sandbox'] as const) {
       const pid = info.pids[name];
       if (pid) await killProcessGroup(pid, name);

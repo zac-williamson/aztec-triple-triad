@@ -21,7 +21,7 @@
  * derived from the live rules mirror, not hardcoded, so a rules change fails
  * the cross-check, not the harness.
  */
-import { test, expect, type Browser } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import type { Player } from '@axolotl-arena/game-logic';
 import { PlayerDriver } from '../src/player.js';
 import { ExpectedGame } from '../src/expected.js';
@@ -32,12 +32,14 @@ const STARTER_CARDS = [1, 2, 3, 4, 5];
 const STARTER_TOKENS = 100;
 const GAME_REWARD = 20;
 
-async function newDriver(browser: Browser, name: string, logsDir: string): Promise<PlayerDriver> {
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  const driver = new PlayerDriver(name, page);
-  await driver.boot(logsDir);
-  return driver;
+/**
+ * One ISOLATED Chromium per player (own GPU process), the proven model from the
+ * multi-game campaign — also registers the browser with the leak reaper. Under
+ * long testnet proving the old shared-context model risked WebGL context loss
+ * (two contexts sharing one GPU process, starved while the CPU is pinned).
+ */
+async function newDriver(name: string, logsDir: string): Promise<PlayerDriver> {
+  return PlayerDriver.launch(name, logsDir);
 }
 
 /** Carried from the settlement test to the token-reward test (serial). */
@@ -52,11 +54,11 @@ test.describe.serial('ladder campaign', () => {
   let settled: SettledGame | null = null;
 
   test.afterAll(async () => {
-    await settled?.alice.page.context().close().catch(() => {});
-    await settled?.bob.page.context().close().catch(() => {});
+    await settled?.alice.dispose();
+    await settled?.bob.dispose();
   });
 
-  test('full click-driven game settles correctly across three layers', async ({ browser }) => {
+  test('full click-driven game settles correctly across three layers', async () => {
     const stack = readStackInfo();
     if (!stack.addresses) throw new Error('stack.json has no contract addresses — setup incomplete');
 
@@ -65,9 +67,9 @@ test.describe.serial('ladder campaign', () => {
     // account (fundDevnet.ts), so two concurrent onboardings race on the same
     // ERC20 allowance (approve/deposit interleave → ERC20InsufficientAllowance,
     // run 8). Finding reported to lane 2; the campaign onboards sequentially.
-    const alice = await newDriver(browser, 'alice', stack.logsDir);
+    const alice = await newDriver('alice', stack.logsDir);
     const alicePhase = await alice.waitConnected();
-    const bob = await newDriver(browser, 'bob', stack.logsDir);
+    const bob = await newDriver('bob', stack.logsDir);
     const bobPhase = await bob.waitConnected();
     expect(alicePhase.accountAddress).not.toBeNull();
     expect(bobPhase.accountAddress).not.toBeNull();

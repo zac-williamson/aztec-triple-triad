@@ -8,7 +8,7 @@ import { resolve } from 'path';
 import { buildSync } from 'esbuild';
 import { Stack, killRegisteredBrowsers } from './src/stack.js';
 import {
-  REUSE_STACK, ROOT, ARTIFACTS_DIR, STACK_INFO_PATH, GAME_LOGIC_BUNDLE_PATH,
+  REUSE_STACK, TESTNET, ROOT, ARTIFACTS_DIR, STACK_INFO_PATH, GAME_LOGIC_BUNDLE_PATH,
   PXE_URL, BACKEND_URL, FRONTEND_URL,
   readContractAddresses, type StackInfo,
 } from './src/env.js';
@@ -75,5 +75,5 @@ export default async function globalSetup(): Promise<void> {
     return;
   }
 
-  await new Stack('run', STACK_INFO_PATH).bootAll();
+  await new Stack(TESTNET ? 'testnet' : 'run', STACK_INFO_PATH).bootAll();
 }
