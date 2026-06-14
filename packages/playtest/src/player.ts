@@ -268,9 +268,11 @@ export class PlayerDriver {
       await this.page.getByTestId(testId).click();
     } catch (err) {
       const snap = await this.phase().catch(() => null);
-      throw new Error(
-        `${this.name}: click '${testId}' did not land (screen=${snap?.screen ?? '?'}, ` +
-        `aztec=${snap?.aztecStatus ?? '?'}): ${(err as Error).message.split('\n')[0]}`);
+      const ctx = snap
+        ? `screen=${snap.screen} aztec=${snap.aztecStatus} ws.connected=${snap.ws.connected} ` +
+          `matchmaking=${snap.ws.matchmakingStatus} cards=${snap.ownedCardIds.length}`
+        : 'phase unavailable (page unresponsive)';
+      throw new Error(`${this.name}: click '${testId}' did not land [${ctx}]: ${(err as Error).message.split('\n')[0]}`);
     }
   }
 
