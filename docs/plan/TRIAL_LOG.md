@@ -1088,3 +1088,20 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - Options offered to Zac (awaiting decision): (1) manual two-wallet smoke test on the live site; (2) point
   the playtest harness at the live testnet (automated but slow + costs Fee Juice + serial PXE). Not started
   autonomously (outward-facing + real funds).
+
+## 06-14 — F3 live-testnet verification KICKED OFF (the real remaining gap)
+- Audited MASTER_PLAN catalog vs repo: lanes complete on assigned items (A1/A2/A3/B/C/D1a/D1b/E1/E2/E3a/
+  F1/F2/G/H+/I done+merged); D2 (house bot) + F1b (history slim) deliberately deferred (optional / Zac's);
+  the one substantive gap = F3 live-site gameplay (local playtest GREEN ≠ live verified; backend games:0).
+- Pointing the harness at the LIVE testnet (Zac authorized Fee Juice spend). Key: can't drive
+  www.aztec-arena.com directly (testkit dead-code-eliminated in the prod bundle) → run a LOCAL vite with
+  VITE_TESTKIT=1 pointed at testnet (PXE rpc.testnet + deployed addresses + wss://ws.aztec-arena.com).
+- VERIFIED .env.testnet addresses == live Vercel PRODUCTION env (GAME 0x2179, NFT 0x0a19, TOKEN 0x2a6b,
+  PXE rpc.testnet) — so the harness tests the REAL live contracts. (prod ≠ preview/dev addrs; prod matches.)
+- Fee Juice clarified (Zac asked): L2 fees are Fee Juice = BRIDGED from L1 Sepolia ETH; the faucet reads
+  the treasury L1 key (Zac's funded Sepolia acct) + signs the bridge → players claim at deploy
+  (createTreasuryFaucet.ts). So the treasury IS the funder; no separate cost. 2-player smoke = 2 claims,
+  under the DailyRateLimiter; fallback = direct treasury-key bridge in the Node harness (key Node-side only).
+- lane-8: building PLAYTEST_TESTNET mode (no local sandbox; testnet-scaled timeouts onboarding 30m/settle
+  40m; isolated browsers; keepalive+liveness+reaper), then ONE full game on testnet FIRST (verify settle
+  txHash + chain.gameStatus==settled + taken card), then multi-game on green. Watchdog bod19dtpz.
