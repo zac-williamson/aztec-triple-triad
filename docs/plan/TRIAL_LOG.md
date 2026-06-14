@@ -841,3 +841,19 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   sits un-submitted in the input. ALWAYS verify a dispatch landed (message in transcript + input
   empty + agent BUSY), then re-send Enter if staged. Caught lane-2 (A–D, 15min stalled) + lane-8
   (mask directive, never received) this way; Zac flagged the lane-8 one.
+
+## 06-13 — lane-8 de-masking VERIFIED + unblocked (was blocked on already-merged Stage 1)
+- lane-8 STATUS: blocked — harness built, de-masked, pack-discovery validated (15 cards both players),
+  blocked on "lane-2's serial-PXE-queue fix" — which is Stage 1 `4a66565`, ALREADY MERGED. lane-8 just
+  hadn't rebased.
+- VERIFIED de-masking against code (not trusted from STATUS), commit `7f520fa`:
+  - `expectEventually` now has NO catch — `last = await read()` lets a thrown read propagate as fatal;
+    polls only for value-not-yet-equal. The retry-on-throw is gone.
+  - `tokenBalanceApp` removed (grep-clean); queued `tokenBalance()` used everywhere. Remaining catches
+    are all legit (waitPhase enrich-rethrow, teardown close, stop-at-first-failure rethrow).
+- Unblocked: told lane-8 Stage 1 (`4a66565`) + ckpt1 (`9d888d4`) are merged → rebase onto testnet +
+  re-run the C-multi campaign (real proofs) → should clear the IDB race and reach the consecutive
+  games. It is now working (rebase + re-run).
+- TUI LESSON: Claude Code shows CONTEXTUAL PLACEHOLDER text in an empty input (e.g. "ping me when
+  lane-2's queue fix lands") that is NOT real content — it never submits/concatenates and no
+  edit key clears it; typing a char replaces it. Don't mistake a placeholder for stuck staged input.
