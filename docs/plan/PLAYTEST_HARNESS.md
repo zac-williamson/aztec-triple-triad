@@ -495,16 +495,24 @@ reset work holds across games. WebGL `created` climbs +1/game (StrictMode churn)
 but `live` stays 0–1 → no context leak. The multi-game carryover bug class did
 NOT manifest on the merged 4.3.1 stack.
 
-26. **Onboarding HTTP/2 transport flake (intermittent ~1/4; lane-2 resilience
-    gap).** In `run-…T08-50-15`, bob's onboarding hit
-    `net::ERR_HTTP2_PROTOCOL_ERROR` / `Failed to fetch` ~3 min into his deploy+mint
-    proving — the node was healthy (no crash/error in sandbox.log; alice onboarded
-    fine just before). A transient HTTP/2 drop during the long CPU-blocked proving.
-    The real gap: `useAztec` went to a TERMINAL `status='error'` with NO retry, so
-    onboarding dead-ended → 420 s timeout. A transient transport blip should not
-    kill onboarding — `useAztec` should retry/reconnect (lane-2). Did not recur on
-    the next run (onboarded clean → GREEN above). The harness does NOT add a retry
-    (no-masking); reported for a real fix.
+26. **Onboarding connection-reset = a lane-2 REGRESSION from the merge (~50%
+    failure; BLOCKS repeatability).** The node connection dies ~3 min into the
+    deploy+mint proving — `net::ERR_HTTP2_PROTOCOL_ERROR` (iter9, bob) or
+    `net::ERR_CONNECTION_RESET` (iter11, alice), both → `Failed to fetch` →
+    `useAztec` `status='error'` with NO retry → 420 s `waitConnected` timeout. The
+    node is healthy (sandbox.log errors are teardown-only `ECONNREFUSED :8545`).
+    Mechanism: ClientIVC deploy proving blocks the main thread ~3 min, the idle
+    HTTP connection to the node is reset, and the post-proving send hits a dead
+    socket. **Correlation = regression**: onboarding was reliable PRE-merge
+    (Phase-1/4.3.1 + iter6/7) but ~50% POST-merge (iter8 ✓, iter9 ✗, iter10 ✓
+    GREEN, iter11 ✗). The merged lane-2 `useAztec` change refactored the deploy
+    (`deployAndRegister(prepared, ops, …)`) and **removed a `15× connect poll`**
+    that plausibly kept the connection warm during onboarding. NOT the harness:
+    alice fails FIRST, before bob's isolated process even launches. Route to
+    lane-2: keep the node connection warm across the deploy-proving block (or
+    survive idle) AND retry/reconnect on a transient drop instead of dead-ending.
+    The harness adds NO retry (no-masking). C-multi logic is GREEN (iter10, real +
+    verified); repeatability is blocked on this fix.
 
 ## Carryover hypothesis matrix (C-multi prep — root-cause the FIRST failure instantly)
 
