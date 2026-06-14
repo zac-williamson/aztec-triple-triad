@@ -513,6 +513,15 @@ NOT manifest on the merged 4.3.1 stack.
     survive idle) AND retry/reconnect on a transient drop instead of dead-ending.
     The harness adds NO retry (no-masking). C-multi logic is GREEN (iter10, real +
     verified); repeatability is blocked on this fix.
+    **CORROBORATED — it's the merge, not my isolated-process model.** Ran
+    `full-game.spec` (shared-browser, two contexts in ONE process — the OLD model,
+    which onboarded reliably PRE-merge) on the merged code 3×: clean, clean,
+    **FLAKE** (run 3 alice `ERR_CONNECTION_RESET` 58 s into deploy) = 1/3 ≈ 33%,
+    matching C-multi's ~29%. So the flake hits BOTH the shared-browser and
+    isolated-process models at the same rate → not the isolated-process change,
+    the merge. The reset time is VARIABLE (58 s … 180 s) → a transient connection
+    drop at any point in onboarding, not a fixed idle timeout — so the fix is
+    reconnect/retry resilience in `useAztec`, not just a longer keep-alive.
 
 ## Carryover hypothesis matrix (C-multi prep — root-cause the FIRST failure instantly)
 
