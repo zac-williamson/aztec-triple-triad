@@ -1076,3 +1076,15 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   carryover — REPEATABLE (2×) + merged. Residual: thin backend memory margin on this saturated dev box
   (fail-fast guard names it if it recurs); minor lane-4 backend hygiene (delete finished rooms +
   clearInbox on game-end).
+
+## 06-14 — accuracy correction: LOCAL playtest GREEN ≠ LIVE site verified
+- Zac challenged "primary goal complete / app fully functional". CORRECTED: the 2× GREEN repeatable
+  acceptance ran against a LOCAL SANDBOX (playtest env.ts: PXE localhost:8080, local backend:5174, local
+  vite:3000, fresh contracts via deploy-contracts.ts) — NOT the live testnet. It proves the game logic +
+  multi-game flow with real client proofs; it does NOT prove the deployed app.
+- Live INFRA fresh-verified (read-only): www.aztec-arena.com HTTP 200 + COOP/COEP present (WASM prover OK);
+  backend /health {"status":"ok","games":0}. Infra up, but "games":0 ⇒ NO full game ever played on the
+  live backend. Live GAMEPLAY on www.aztec-arena.com is UNVERIFIED — the real remaining work.
+- Options offered to Zac (awaiting decision): (1) manual two-wallet smoke test on the live site; (2) point
+  the playtest harness at the live testnet (automated but slow + costs Fee Juice + serial PXE). Not started
+  autonomously (outward-facing + real funds).
