@@ -1182,3 +1182,26 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - META: the "Playwright timeout" guess above was itself unverified - the real cause was the VPN layer, found
   by checking the machine's network interfaces (utun6 -> NordVPN). Same lesson one level down: check the
   actual network path; don't guess the abort layer.
+
+## 06-14 — testnet smoke: 2nd bug = faucet response SHAPE mismatch (backend wraps, frontend reads flat)
+- VPN OFF cleared the ~60s drop (Zac disabled NordVPN). Re-run held the faucet POST the full ~3min (no drop)
+  but onboarding still ended at needs-funding. NOT a timeout - the fetch returned 200 + a JSON body.
+- ROOT CAUSE (real product bug; verified on both sides): backend server.ts:110 responds
+  { claim: result.claim, reused } (claim fields NESTED under `claim`); frontend requestFeeJuiceClaim.ts:57-59
+  reads claimAmount/claimSecret/messageLeafIndex at TOP LEVEL -> hasClaimFields false -> throws "Faucet
+  returned an incomplete claim" (line 59) -> app falls back to manual -> headless onboarding fails. The box
+  curl's "reused":true field only exists in the wrapper, so the deployed backend sends the wrapped shape.
+  lane-8 reached the identical conclusion independently from the same code.
+- WHY local missed it: the sandbox funds via a different (non-HTTP-faucet) path; the faucet HTTP shape is first
+  exercised on testnet. So in-app faucet funding has NEVER worked on testnet (any real user hits this throw).
+- FIX (directed; frontend = lower risk): requestFeeJuiceClaim reads the wrapped shape (data = raw.claim), the
+  REAL contract. Wrapped is canonical - NO dual-tolerance (no ?? raw). Update the stale flat-shape unit tests
+  to the real { claim, reused } body + add one that FAILS without the fix (that test gap hid the bug). The
+  harness runs local vite so it picks up the change; the live relay is NOT touched. lane-8 applying in its
+  worktree (lane-2 idle, no conflict; crossover noted, gate-merge after). Then re-run one full game.
+- LATER (gated, surface to Zac): Vercel frontend prod redeploy to fix in-app funding on the LIVE site for real
+  users. Live relay unchanged.
+- Treasury: one fresh bridge spent this run (0x16e2 pending, unconsumed) - Fee Juice minted free, ~tiny L1 gas.
+- PROGRESS: the testnet funding path is now down to ONE clear code fix; VPN drop + address-validity (both
+  earlier red herrings) are resolved. Two real issues found by pointing the harness at testnet, exactly as the
+  brief predicted ("may surface real testnet-only issues the local sandbox hid").
