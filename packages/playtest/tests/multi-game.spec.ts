@@ -26,7 +26,9 @@ const PACK_COST = 100;
 const PACK_SIZE = 10;
 const GAME_REWARD = 20;
 const HAND = 5;
-const GAMES = 5;
+// Default 5 per the campaign; lower via MULTIGAME_GAMES while iterating the
+// harness in real-proof mode (each game is minutes — fast mode isn't wired).
+const GAMES = Number(process.env.MULTIGAME_GAMES ?? 5);
 
 /** Multiset of card ids (collections can hold duplicate type-ids after wins). */
 function countMap(ids: number[]): Map<number, number> {

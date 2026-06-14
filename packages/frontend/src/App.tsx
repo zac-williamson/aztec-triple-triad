@@ -15,6 +15,7 @@ import { FundingProgress } from './components/FundingProgress';
 import { TxNotificationCenter } from './components/TxNotificationCenter';
 import { GameScreen3D as GameScreen } from './components3d/GameScreen3D';
 import { useTestkitBridge } from './testkit';
+import { TESTKIT_ENABLED } from './testkit/enabled';
 import './App.css';
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
@@ -54,8 +55,14 @@ function AppInner() {
     return <PracticeScreen onExit={() => setPracticeScreen(false)} />;
   }
 
-  const showMenuScene = game.screen === 'main-menu' || game.screen === 'card-selector'
-    || game.screen === 'finding-opponent' || game.screen === 'card-packs' || game.screen === 'pack-opening';
+  // The decorative menu 3D scene renders continuously on every menu screen.
+  // Under the playtest harness (two headless tabs across a long multi-game
+  // session) its WebGL context churn + render load degrades the page (context
+  // loss, crawling PXE reads). The harness clicks DOM on menu screens and only
+  // needs the game's 3D scene for projection, so suppress it in testkit mode.
+  // Prod (no VITE_TESTKIT) is unaffected — TESTKIT_ENABLED is statically false.
+  const showMenuScene = !TESTKIT_ENABLED && (game.screen === 'main-menu' || game.screen === 'card-selector'
+    || game.screen === 'finding-opponent' || game.screen === 'card-packs' || game.screen === 'pack-opening');
 
   return (
     <div className="app">
