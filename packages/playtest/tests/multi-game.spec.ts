@@ -13,7 +13,7 @@
  * the C1 ladder. Winner is derived from the live rules mirror (not hardcoded);
  * who queues first (→ P1) alternates each game to vary the win/loss paths.
  */
-import { test, expect, type Browser } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import type { Player } from '@axolotl-arena/game-logic';
 import { PlayerDriver } from '../src/player.js';
 import { ExpectedGame } from '../src/expected.js';
@@ -45,29 +45,34 @@ function pickHand(owned: number[]): number[] {
   return distinct.slice(0, HAND);
 }
 
-async function newDriver(browser: Browser, name: string, logsDir: string): Promise<PlayerDriver> {
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  const driver = new PlayerDriver(name, page);
-  await driver.boot(logsDir);
-  return driver;
-}
-
 /**
- * Hard wall-clock guard around a campaign phase. A stuck run (e.g. an
- * IndexedDB-conflict page hang) FAILS FAST with the phase name instead of
- * zombie-hanging until the 60-min Playwright test timeout.
+ * Hard wall-clock guard around a campaign phase. A stuck run FAILS FAST instead
+ * of zombie-hanging until the 60-min Playwright test timeout. Races against:
+ *  - a wall-clock budget (the proof physics ceiling for a healthy run), AND
+ *  - each driver's `dead` signal, so a crashed/wedged page (watchdog-detected
+ *    in ~2 min) fails long before that budget elapses.
  */
-async function withDeadline<T>(label: string, ms: number, fn: () => Promise<T>): Promise<T> {
+async function withDeadline<T>(
+  label: string, ms: number, drivers: PlayerDriver[], fn: () => Promise<T>,
+): Promise<T> {
   let timer: NodeJS.Timeout;
   const guard = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`PHASE TIMEOUT: "${label}" did not finish within ${ms / 1000}s — likely a hang`)), ms);
   });
   try {
-    return await Promise.race([fn(), guard]);
+    return await Promise.race([fn(), guard, ...drivers.map(d => d.dead)]);
   } finally {
     clearTimeout(timer!);
   }
+}
+
+/** Log both tabs' live WebGL context counts — leak (climbs) vs crash (flat). */
+async function logWebgl(label: string, drivers: PlayerDriver[]): Promise<void> {
+  const parts = await Promise.all(drivers.map(async d => {
+    const s = await d.webglStats();
+    return s ? `${d.name} live=${s.live} created=${s.created} lost=${s.lost}` : `${d.name} (unreadable)`;
+  }));
+  console.log(`[webgl@${label}] ${parts.join(' | ')}`);
 }
 
 const DEADLINES = { pack: 900_000, game: 1_500_000 }; // 15 min / pack phase, 25 min / game
@@ -96,20 +101,21 @@ test.describe.serial('multi-game with packs', () => {
         `bob cards ${r.bobCards} tokens ${r.bobTokens} | claimed #${r.claimed} | settle ${r.settleOk ? 'OK' : 'FAIL'}`;
       console.log('\n=== C-multi per-game results ===\n' + rows.map(fmt).join('\n') + '\n');
     }
-    await alice?.page.context().close().catch(() => {});
-    await bob?.page.context().close().catch(() => {});
+    await alice?.dispose();
+    await bob?.dispose();
   });
 
-  test('open packs then play five consecutive games', async ({ browser }) => {
+  test('open packs then play five consecutive games', async () => {
     const stack = readStackInfo();
     if (!stack.addresses) throw new Error('stack.json has no contract addresses — setup incomplete');
     const addresses = stack.addresses;
     const chain = await ChainClient.connect(addresses);
 
-    // ── Onboard two isolated contexts (serial — shared anvil funding key) ──
-    alice = await newDriver(browser, 'alice', stack.logsDir);
+    // ── Onboard two ISOLATED browser PROCESSES (one Chromium per player so the
+    //    two tabs don't share a GPU process; serial — shared anvil funding key) ──
+    alice = await PlayerDriver.launch('alice', stack.logsDir);
     await alice.waitConnected();
-    bob = await newDriver(browser, 'bob', stack.logsDir);
+    bob = await PlayerDriver.launch('bob', stack.logsDir);
     await bob.waitConnected();
     for (const d of [alice, bob]) {
       expect(await d.privateCards(), `${d.name} starter cards`).toEqual(STARTER_CARDS);
@@ -117,7 +123,7 @@ test.describe.serial('multi-game with packs', () => {
     }
 
     // ── Pack open (both) → 15 cards each, 0 tokens; assert discoverability ──
-    await withDeadline('open packs (both)', DEADLINES.pack, async () => {
+    await withDeadline('open packs (both)', DEADLINES.pack, [alice, bob], async () => {
       for (const d of [alice, bob]) {
         const newIds = await d.openPack();
         expect(newIds.length, `${d.name} pack gives ${PACK_SIZE} cards`).toBe(PACK_SIZE);
@@ -133,13 +139,16 @@ test.describe.serial('multi-game with packs', () => {
       }
     });
 
+    await logWebgl('after-packs', [alice, bob]);
+
     // ── FIVE consecutive games in one session ─────────────────────────────
     for (let g = 1; g <= GAMES; g++) {
       // Alternate who queues first → who is P1 (varies win/loss paths).
       const first = g % 2 === 1 ? alice : bob;
       const second = first === alice ? bob : alice;
-      await withDeadline(`game ${g}`, DEADLINES.game, () =>
+      await withDeadline(`game ${g}`, DEADLINES.game, [alice, bob], () =>
         playOneGame(g, first, second, chain, addresses, rows));
+      await logWebgl(`after-game-${g}`, [alice, bob]);
     }
 
     // All five green.

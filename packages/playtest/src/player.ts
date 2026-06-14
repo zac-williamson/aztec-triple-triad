@@ -3,11 +3,12 @@
  * via selectors, the 3D board via real pointer events at testkit-projected
  * coordinates, and waits on app state (never wall-clock sleeps).
  */
-import type { Page } from '@playwright/test';
+import type { Page, Browser } from '@playwright/test';
 import { createWriteStream, type WriteStream } from 'fs';
 import { resolve } from 'path';
 import type { PhaseSnapshot, ClickTarget } from '../../frontend/src/testkit/contract.js';
 import { FRONTEND_URL } from './env.js';
+import { launchIsolatedBrowser } from './browser.js';
 
 declare global {
   interface Window {
@@ -16,6 +17,49 @@ declare global {
 }
 
 const POLL_MS = 250;
+
+/** Live-context snapshot the in-page WebGL probe maintains. */
+export interface WebglStats {
+  created: number;   // total WebGL contexts ever created in this tab
+  lost: number;      // total contextlost events
+  restored: number;  // total contextrestored events
+  live: number;      // created − lost + restored (best-effort live count)
+  lostSinceEpoch: number; // Date.now() of the current unrestored loss, or 0 if none
+}
+
+/**
+ * Injected before any app JS. Patches getContext to COUNT WebGL contexts and
+ * timestamp losses, so the harness can (a) prove whether a freeze is a
+ * context-count leak (live climbs) vs a GPU-process crash (live low, loss
+ * sudden), and (b) fail fast when a context stays lost. Pure observation — it
+ * does not change rendering. Written as plain JS (no TS) because Playwright
+ * serializes it via .toString() into the page.
+ */
+function installWebglProbe(): void {
+  const stats = { created: 0, lost: 0, restored: 0, live: 0, lostSinceEpoch: 0 };
+  (window as unknown as { __webglStats: typeof stats }).__webglStats = stats;
+  const proto = HTMLCanvasElement.prototype as unknown as {
+    getContext: (type: string, ...rest: unknown[]) => unknown;
+  };
+  const orig = proto.getContext;
+  proto.getContext = function (this: HTMLCanvasElement, type: string, ...rest: unknown[]) {
+    const ctx = orig.call(this, type, ...rest);
+    if (ctx && typeof type === 'string' && type.indexOf('webgl') !== -1) {
+      stats.created++; stats.live++;
+      console.log('[webgl] CREATED #' + stats.created + ' live=' + stats.live);
+      this.addEventListener('webglcontextlost', function () {
+        stats.lost++; stats.live = Math.max(0, stats.live - 1);
+        if (!stats.lostSinceEpoch) stats.lostSinceEpoch = Date.now();
+        console.log('[webgl] LOST total=' + stats.lost + ' live=' + stats.live);
+      });
+      this.addEventListener('webglcontextrestored', function () {
+        stats.restored++; stats.live++; stats.lostSinceEpoch = 0;
+        console.log('[webgl] RESTORED total=' + stats.restored + ' live=' + stats.live);
+      });
+    }
+    return ctx;
+  };
+}
 
 export const TIMEOUTS = {
   install: 120_000,      // first boot after an SDK bump cold-optimizes the @aztec deps in-browser
@@ -36,7 +80,31 @@ export const TIMEOUTS = {
 export class PlayerDriver {
   private consoleLog: WriteStream | null = null;
 
-  constructor(readonly name: string, readonly page: Page) {}
+  /**
+   * Rejects the instant the page is declared dead (renderer crash, or a WebGL
+   * context lost-and-not-restored past the grace window). Long waits race
+   * against it so a dead page fails in ~2 min instead of stalling the full
+   * 25-min proof budget. `.catch` keeps it from ever being an unhandled
+   * rejection if nothing happens to be racing it at reject time.
+   */
+  readonly dead: Promise<never>;
+  private rejectDead!: (err: Error) => void;
+  private deadReason: string | null = null;
+  private watchdogTimer: NodeJS.Timeout | null = null;
+
+  constructor(readonly name: string, readonly page: Page, readonly browser?: Browser) {
+    this.dead = new Promise<never>((_, reject) => { this.rejectDead = reject; });
+    this.dead.catch(() => {});
+  }
+
+  /** Launch an ISOLATED Chromium process for this player and boot it. */
+  static async launch(name: string, logsDir: string): Promise<PlayerDriver> {
+    const { browser, context } = await launchIsolatedBrowser();
+    const page = await context.newPage();
+    const driver = new PlayerDriver(name, page, browser);
+    await driver.boot(logsDir);
+    return driver;
+  }
 
   /** Navigate, capture console/page errors to the artifacts dir, skip the tutorial. */
   async boot(logsDir: string): Promise<void> {
@@ -45,13 +113,85 @@ export class PlayerDriver {
       this.consoleLog!.write(`[${new Date().toISOString()}] [${msg.type()}] ${msg.text()}\n`));
     this.page.on('pageerror', err =>
       this.consoleLog!.write(`[${new Date().toISOString()}] [pageerror] ${err.stack ?? err.message}\n`));
+    // A renderer crash is an immediate, unambiguous death — fail the run now,
+    // don't wait out any budget.
+    this.page.on('crash', () => this.declareDead('renderer process crashed (page.on("crash"))'));
 
+    // Count WebGL contexts before app JS runs, so leak-vs-crash is observable.
+    await this.page.addInitScript(installWebglProbe);
     await this.page.goto(FRONTEND_URL);
     await this.page.waitForFunction(() => !!window.__triadTest, undefined, {
       timeout: TIMEOUTS.install, polling: POLL_MS,
     });
     // First visit shows the tutorial prompt once the funding gate clears.
     await this.page.getByTestId('tutorial-skip').click({ timeout: TIMEOUTS.wsConnect });
+    this.startWatchdog();
+  }
+
+  /** Read the in-page WebGL context counters (bounded; null if unreadable). */
+  async webglStats(): Promise<WebglStats | null> {
+    return this.withTimeout(
+      this.page.evaluate(() => (window as unknown as { __webglStats?: WebglStats }).__webglStats ?? null),
+      TIMEOUTS.evaluate, 'webglStats',
+    ).catch(() => null);
+  }
+
+  /**
+   * Liveness watchdog. Every 15s it pings the page (bounded) and inspects the
+   * WebGL probe. Declares the page dead — failing fast — when either:
+   *  - the ping is unanswerable for ~4 consecutive cycles (~60s) → wedged page;
+   *  - a WebGL context has been lost and NOT restored for >120s → the GPU
+   *    process crash we diagnosed (the page may still limp, so the ping alone
+   *    would not catch it). Healthy context losses restore in <1s, and legit
+   *    proving never loses a context, so neither path false-positives.
+   */
+  private startWatchdog(): void {
+    const PING_EVERY = 15_000, PING_TIMEOUT = 20_000, MAX_PING_FAILS = 4, WEBGL_GRACE_MS = 120_000;
+    let pingFails = 0;
+    const tick = async (): Promise<void> => {
+      if (this.deadReason) return;
+      try {
+        const s = await this.withTimeout(
+          this.page.evaluate(() => (window as unknown as { __webglStats?: WebglStats }).__webglStats ?? null),
+          PING_TIMEOUT, 'liveness ping');
+        pingFails = 0; // page answered
+        if (s && s.lostSinceEpoch > 0) {
+          const lostFor = Date.now() - s.lostSinceEpoch;
+          if (lostFor > WEBGL_GRACE_MS) {
+            this.declareDead(`WebGL context lost & not restored for ${Math.round(lostFor / 1000)}s ` +
+              `(live=${s.live}, totalLost=${s.lost}) — GPU-process crash, page is wedged`);
+            return;
+          }
+        }
+      } catch {
+        pingFails++;
+        if (pingFails >= MAX_PING_FAILS) {
+          this.declareDead(`unresponsive — ${pingFails} consecutive liveness pings failed ` +
+            `(~${Math.round((pingFails * PING_EVERY) / 1000)}s, page event loop is blocked)`);
+          return;
+        }
+      }
+      this.watchdogTimer = setTimeout(() => { void tick(); }, PING_EVERY);
+    };
+    this.watchdogTimer = setTimeout(() => { void tick(); }, PING_EVERY);
+  }
+
+  private declareDead(reason: string): void {
+    if (this.deadReason) return;
+    this.deadReason = reason;
+    this.stopWatchdog();
+    this.rejectDead(new Error(`${this.name}: PAGE DEAD — ${reason}`));
+  }
+
+  private stopWatchdog(): void {
+    if (this.watchdogTimer) { clearTimeout(this.watchdogTimer); this.watchdogTimer = null; }
+  }
+
+  /** Stop the watchdog and close the owned browser process. Safe to call twice. */
+  async dispose(): Promise<void> {
+    this.stopWatchdog();
+    await this.page.context().close().catch(() => {});
+    await this.browser?.close().catch(() => {});
   }
 
   async phase(): Promise<PhaseSnapshot> {
@@ -76,19 +216,24 @@ export class PlayerDriver {
     args?: A,
   ): Promise<PhaseSnapshot> {
     try {
-      await this.page.waitForFunction(
-        (input: { src: string; args: unknown }) => {
-          const t = window.__triadTest;
-          if (!t) return false;
-          const p = t.phase();
-          if (!p) return false;
-          // eslint-disable-next-line no-new-func
-          return (new Function('p', 'args', `return (${input.src})(p, args)`))(p, input.args);
-        },
-        { src: predicate.toString(), args: args as unknown },
-        { timeout, polling: POLL_MS },
-      );
+      await Promise.race([
+        this.page.waitForFunction(
+          (input: { src: string; args: unknown }) => {
+            const t = window.__triadTest;
+            if (!t) return false;
+            const p = t.phase();
+            if (!p) return false;
+            // eslint-disable-next-line no-new-func
+            return (new Function('p', 'args', `return (${input.src})(p, args)`))(p, input.args);
+          },
+          { src: predicate.toString(), args: args as unknown },
+          { timeout, polling: POLL_MS },
+        ),
+        this.dead, // watchdog declared the page dead → abandon the wait now
+      ]);
     } catch (err) {
+      // A dead page is the root failure; surface it plainly, not as a "timed out".
+      if (this.deadReason) throw err;
       const snapshot = await this.phase().catch(() => null);
       throw new Error(
         `${this.name}: timed out waiting for "${label}" after ${timeout / 1000}s\n` +
