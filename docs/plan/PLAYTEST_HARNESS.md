@@ -455,3 +455,28 @@ att.8 5.9m) → A1+A2 upgrade validated repeatably; harness ready to merge.
     settlement and hide the bug); fix dispatched to lane-2 (toast must not intercept
     game-button clicks; pack notification must clear on completion). Harness blocked
     on that fix, then rebase + re-run to reach the carryover games.
+
+## Carryover hypothesis matrix (C-multi prep — root-cause the FIRST failure instantly)
+
+The campaign plays 5 games in ONE session with NO stack reset, so anything from
+game *i* that is not reset can leak into game *i+1*. Seven candidates, each with
+the reset path it implicates and the per-game signal that uniquely fingerprints
+it — so the first failure points straight at the owning lane. The harness already
+covers most; three gaps got a crisp deterministic check added (no masks, no
+retries — they only make a real bug fail *louder/sooner*, never hide one).
+
+| # | Carryover | Owner / reset path | Distinguishing per-game signal | Status |
+|---|-----------|--------------------|--------------------------------|--------|
+| 1 | Leftover move/hand proofs | lane-2 `useGamePlay` reset (`collectedMoveProofs`, `myHandProof`, `opponentHandProof`) | `chain.canSettle=true` at game start (full leftover) | **covered** (canSettle check). Partial leftover (proofs present but < 11 so canSettle stays false → corrupt transcript at settle) is NOT visible: the snapshot exposes no proof *count*. Open — recommend lane-2 expose `collectedMoveProofs.length` in the testkit snapshot; not added (would be a speculative cross-lane contract change). |
+| 2 | Leftover settlement state | lane-2 `useGameSettlement.resetForMenu` | `settleTxStatus≠idle` / `opponentSettled` / `takenCardId≠null` / `onChainError` at start | **covered** |
+| 3 | Backend room not released | lane-4 `GameManager.releasePlayersFromGame` | players split into two rooms (`gameId` mismatch) **OR** both re-join game *i*'s stale room (`wsGameId == prev`) | mismatch covered; **stale-reuse was a GAP → added** (`seen.wsGameIds`) |
+| 4 | playerNumber carryover | lane-4 matchmaking assignment | `byNumber.size≠2` (both got the same number) | **covered** |
+| 5 | Card note recycle / nullifier reuse / PXE discovery lag | contract re-mints unwagered hand cards at settle; PXE must rescan | pre-game count/multiset wrong; hand proof fails; mid-game commit ≠ `pre−5` | **covered** (count + exact multiset + mid-game `−HAND`) |
+| 6 | `game_id` / `randomness` reuse | contract (lane-1) — both derived IN-CIRCUIT | `onChainGameId == prev game's` (settled into the same on-chain slot) | **GAP → added** (`seen.onChainGameIds`) |
+| 7 | Frontend session/board not reset | lane-2 `useGameSession`/`useGame` (`returnToMenu`→`handleBackToMenu`) | board NOT empty at game start (stale `gameState`/board) | only caught indirectly (a later `waitBoardCount(1)` would *time out* with a confusing message) → **GAP → added** crisp board-empty check |
+
+Diagnostics added to `playOneGame` for gaps 3/6/7 (all deterministic asserts in
+the existing no-carryover region, labelled with the owning lane):
+- gap 3: `wsGameId` must be unseen across games (else: re-joined a prior room — lane-4).
+- gap 7: every board cell empty right after `waitInGame` (else: stale `gameState` — lane-2).
+- gap 6: `onChainGameId` must be unseen across games (else: `game_id`/randomness reuse — lane-1/contract).

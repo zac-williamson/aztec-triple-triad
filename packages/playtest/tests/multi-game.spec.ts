@@ -92,6 +92,10 @@ test.describe.serial('multi-game with packs', () => {
   let alice: PlayerDriver;
   let bob: PlayerDriver;
   const rows: GameRow[] = [];
+  // Cross-game identity sets: a fresh game must mint a NEW ws room id and a NEW
+  // on-chain game id. Re-seeing one fingerprints a specific carryover (see the
+  // hypothesis matrix in docs/plan/PLAYTEST_HARNESS.md).
+  const seen = { wsGameIds: new Set<string>(), onChainGameIds: new Set<string>() };
 
   test.afterAll(async () => {
     // Print the per-game table regardless of pass/fail.
@@ -147,7 +151,7 @@ test.describe.serial('multi-game with packs', () => {
       const first = g % 2 === 1 ? alice : bob;
       const second = first === alice ? bob : alice;
       await withDeadline(`game ${g}`, DEADLINES.game, [alice, bob], () =>
-        playOneGame(g, first, second, chain, addresses, rows));
+        playOneGame(g, first, second, chain, addresses, rows, seen));
       await logWebgl(`after-game-${g}`, [alice, bob]);
     }
 
@@ -169,6 +173,7 @@ async function playOneGame(
   chain: ChainClient,
   addresses: ContractAddresses,
   rows: GameRow[],
+  seen: { wsGameIds: Set<string>; onChainGameIds: Set<string> },
 ): Promise<void> {
   const alice = first.name === 'alice' ? first : second;
   const bob = first.name === 'alice' ? second : first;
@@ -196,6 +201,12 @@ async function playOneGame(
       `mapping not released after game ${gameNum - 1} (lane-4 GameManager.releasePlayersFromGame)`);
   }
   const wsGameId = firstGame.ws.gameId!;
+  // Gap 3 (matrix): a fresh game must mint a NEW ws room id. Re-seeing one ==
+  // both players re-joined game (i-1)'s stale room (backend never released them).
+  if (seen.wsGameIds.has(wsGameId)) throw where('backend',
+    `ws room id ${wsGameId} reused from an earlier game — players re-joined a stale room ` +
+    `(lane-4 GameManager.releasePlayersFromGame did not release on finish)`);
+  seen.wsGameIds.add(wsGameId);
 
   // ── NO-CARRYOVER: a fresh game must start clean ───────────────────────
   for (const [d, ph] of [[first, firstGame], [second, secondGame]] as const) {
@@ -209,6 +220,13 @@ async function playOneGame(
     if (c.opponentSettled || c.takenCardId !== null) throw where('no-carryover',
       `${d.name} opponentSettled/takenCardId leaked from game ${gameNum - 1} (lane-2 settlement reset)`);
     if (c.onChainError) throw where('no-carryover', `${d.name} onChainError leaked: ${c.onChainError}`);
+    // Gap 7 (matrix): the board must be EMPTY at the start of a fresh game.
+    // A stale board == useGameSession/useGame did not clear gameState on
+    // returnToMenu — caught here crisply instead of as a later board-count timeout.
+    const occupied = ph.game?.board.flat().filter(cell => cell.cardId !== null).length ?? 0;
+    if (occupied !== 0) throw where('no-carryover',
+      `${d.name} board has ${occupied} cards at game start (expected empty) — stale gameState ` +
+      `from game ${gameNum - 1} (lane-2 useGameSession/useGame reset on returnToMenu)`);
   }
 
   const byNumber = new Map<number, PlayerDriver>([
@@ -252,6 +270,14 @@ async function playOneGame(
   const onChainGameId = (await winnerD.phase()).chain.onChainGameId
     ?? (await loserD.phase()).chain.onChainGameId;
   if (!onChainGameId) throw where('chain', 'no on-chain game id known to either client');
+  // Gap 6 (matrix): game_id + randomness are derived IN-CIRCUIT, so each game
+  // must yield a NEW on-chain id. A repeat == the derivation reused per-session
+  // state and game i settled into game (i-1)'s slot (a false-positive risk for
+  // the "settled on-chain" check below — assert uniqueness BEFORE trusting it).
+  if (seen.onChainGameIds.has(onChainGameId)) throw where('chain',
+    `on-chain game_id ${onChainGameId} reused from an earlier game — in-circuit ` +
+    `game_id/randomness derivation is not fresh per game (contract / lane-1)`);
+  seen.onChainGameIds.add(onChainGameId);
 
   // Claim the loser's highest-id board card.
   const loserBoardIds = mirror.state.board.flat()
