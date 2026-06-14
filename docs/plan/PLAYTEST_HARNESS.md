@@ -406,3 +406,31 @@ Second consecutive fresh-stack green on 4.3.1 (`2 passed`, 5.9m), run to rule ou
 the earlier intermittent deploy fee-headroom race — it did NOT recur (deploy: 0
 `-32702`, clean settle on-chain + loser +20). Two consecutive green (att.7 6.3m,
 att.8 5.9m) → A1+A2 upgrade validated repeatably; harness ready to merge.
+
+## C-multi campaign (pack-open + 5 consecutive games) — harness findings
+
+21. **WebGL Context Lost mid-campaign = shared GPU process, not an app leak
+    (HARNESS fix).** The long pack+multi-game session repeatedly froze right
+    after packs with `THREE.WebGLRenderer: Context Lost` then a dead page.
+    Root-caused by instrumenting (not guessing): across two frozen runs both
+    tabs lost their context 16 ms and 56 ms apart, then froze together —
+    simultaneity is the signature of ONE shared GPU process dying, not
+    independent per-tab R3F dispose leaks (those desync). Both players ran as
+    `browser.newContext()` in ONE Chromium process → ONE GPU process; sustained
+    ClientIVC proving starves it until the context drops, killing both tabs.
+    Fix: one isolated Chromium PROCESS per player (`src/browser.ts`
+    `launchIsolatedBrowser` + `PlayerDriver.launch`) so GPU budgets are
+    per-player; plus a WebGL context probe (`installWebglProbe`, addInitScript)
+    logged per phase to confirm live-count stays low. Single-game (full-game.spec)
+    never hit this — its proving load is short enough that the shared GPU process
+    survives; only the multi-game duration exposed it. See docs/plan/BUG_WEBGL_HANG.md.
+22. **Hang guards must fail-fast on a wedged page, not at the proof budget.** The
+    `withDeadline` (15/25 min) and per-read `withTimeout` (180 s) guards DID fire
+    (Node timers, page-independent) but only at the happy-path budget; a page
+    that lost its WebGL context then *limped* (slow `ensureContracts` retries, no
+    real progress) was only caught after 25 min. Added a per-driver liveness
+    watchdog (`startWatchdog`): `page.on('crash')` immediate, WebGL
+    lost-unrestored >120 s, or ~60 s of dead pings → rejects a `driver.dead`
+    promise that `withDeadline` and `waitPhase` race against. A dead page now
+    fails in ~2 min. No false positives: healthy context losses restore in <1 s
+    and legit proving never loses a context.
