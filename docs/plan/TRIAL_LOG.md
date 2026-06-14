@@ -922,3 +922,21 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   clean run reaches the games (txCount>0). lane-8 processing it (was mid iter6).
 - Net: the multi-game carryover bug class is STILL not reached; harness/env blocker count now includes
   a non-WebGL post-pack freeze + guards that don't catch a frozen page.
+
+## 06-14 — lane-8 monitoring tightened; post-pack wedge root-caused to a REAL toast bug (→ lane-2)
+- Zac: "ensure lane 8 is ALWAYS working" — it had stalled BLOCKED at an AskUserQuestion with only the
+  10-min cron watching. Cron IS active (`fa2c1ddf`, every 10m, session-only) but too loose. Fix: armed a
+  persistent 45s Monitor (`bog71lujl`) that alerts when lane-8 stops generating with no run OR a run
+  zombies (playwright alive + browser logs frozen >3min), rate-limited 4min. It fired correctly on arming.
+  So lane-8 can't silently stall now; cron stays as backstop.
+- lane-8 PROGRESS (both fixes proven): GPU-isolation eliminated WebGL loss; the new watchdog CAUGHT the
+  post-pack wedge in 13min with a precise reason (`txnc-root intercepts pointer events`) — fail-fast,
+  requirement (a) MET in a real run. Then root-caused the wedge: NOT WebGL — a real FRONTEND bug. The
+  `TxNotificationCenter` toast (z-index 1400, bottom-anchored, pack-tx notification stuck in 'Preparing')
+  overlaps + intercepts the CardSelector Play!/hand-confirm button (z-index ~15).
+- Decision (Zac no-masking bar): REJECTED lane-8's option-1 "click Hide-notifications" workaround (a mask;
+  also re-blocks at settlement). Routed the REAL fix to lane-2: toasts must not intercept game-button
+  clicks (pointer-events) + the pack-tx notification must clear on completion (not stick in 'Preparing'),
+  each with a revert-failing test. lane-2 working it; lane-8 committed its proven fixes + is doing GENUINE
+  prep while blocked (sharp carryover-hypothesis: 7 candidates × reset paths × distinguishing signal) so
+  the first carryover failure root-causes instantly. Re-runs the moment the toast fix merges.
