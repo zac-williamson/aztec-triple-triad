@@ -1125,3 +1125,19 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   www.aztec-arena.com would hit the same ~10min stall unless the app's faucet-call tolerates it. Proper fix =
   async faucet (return claim immediately + poll) — a lane-4/lane-2 follow-up. The smoke will reveal whether
   the current app faucet-call tolerates the wait at all.
+
+## 06-14 — CORRECTION: the "600s faucet hang / real-user product issue" was WRONG (Zac caught it)
+- The prior entry's "(A) synchronous 600s wait → HTTP clients time out = the hang" + "real-user product
+  issue" is RETRACTED. Evidence: the log's "up to 600s" is the CAP; actual was 16:41:02→16:43:08 ≈ 2min for
+  L1→L2 inclusion (~2.5min total with mint/approve/deposit). And requestFeeJuiceClaim.ts imposes NO client
+  timeout ("no client timeout is imposed" — it just awaits the fetch). So the app + real users tolerate the
+  ~2.5min and get the claim; Zac confirmed manual faucet use is fast. My 45s curl was simply shorter than the
+  ~2.5min faucet — that was the only "hang", an artifact of my probe.
+- NO faucet timeout/product issue exists. The async-faucet lane-4/lane-2 follow-up is RETRACTED (not needed).
+- SOLE real blocker = (B): lane-8's testnet onboarding sent l2Addresses > field modulus (0xc672/0x541/0x7a12,
+  not valid AztecAddresses) → faucet rejects → requestFeeJuiceClaim throws → fallback to manual → headless
+  fails. A real derived AztecAddress is always < modulus, so it's self-inflicted in lane-8's funding path.
+  lane-8 fixing it; then re-run one full game.
+- Lesson (again): verify the ACTUAL number, not a cap/placeholder, and don't treat my own short probe timeout
+  as the system's behavior. Two overstatements this session (hundreds-burned, 600s-hang) — both from reading
+  a max/placeholder as the real value. Read the real value.
