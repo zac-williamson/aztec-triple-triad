@@ -1224,3 +1224,20 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - NEXT (gated on Zac): gate-review + merge 6899855 to testnet (= Vercel prod auto-deploy) so
   www.aztec-arena.com itself gets the fix, THEN a manual click-through smoke on the live site (the harness
   can't drive the hook-free prod page). Until that redeploy, the LIVE SITE still serves the old buggy frontend.
+
+## 06-14 — DEPLOYED to prod. Live site catches up 99 commits; testnet branch un-stuck.
+- Discovery: origin/testnet (Vercel prod source) was stuck at b0db021 (06-13 19:08) - 99 commits / ~27h
+  behind local. Pushes had been silently FAILING: 3 large playtest .artifacts blobs (157MB report + 57MB
+  trace.zip + 11MB) were committed into the backlog (before .artifacts was gitignored at ff51153); GitHub
+  hard-rejects >100MB. So every "merged to testnet" since 06-13 never reached prod - the live site was missing
+  the toast-click fix, keepalive, reaper, repeatable-acceptance, AND the faucet fix.
+- Fix: filter-branch --index-filter stripped packages/playtest/.artifacts from the unpushed range
+  (origin/testnet..HEAD) ONLY - b0db021 untouched, so a clean FAST-FORWARD (not a force-push). Verified no
+  >10MB blobs remain + faucet fix intact, then pushed: b0db021..05516e5 testnet -> testnet. Vercel auto-builds.
+- Now live (after the Vercel build): the harness-proven HEAD incl. the faucet wrapped-claim fix. Contract
+  addresses come from Vercel env (unchanged) - no address churn.
+- NEXT: Zac manual smoke on www.aztec-arena.com (fund -> play a game) - the automated harness can't drive the
+  hook-free prod page, so the human smoke is the final proof. After it confirms, release lane-8 for the lane-7
+  live-URL doc + optional multi-game.
+- PROCESS: future pushes are clean (.artifacts gitignored + stripped). Keep local testnet == origin/testnet
+  going forward (push after merges) so prod never silently drifts 99 commits behind again.
