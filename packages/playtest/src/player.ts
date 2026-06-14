@@ -28,8 +28,9 @@ export const TIMEOUTS = {
   canSettle: 1_200_000,     // all 9 move proofs + 2 hand proofs (real proving)
   settleTx: 1_800_000,      // process_game: 11 recursive verifications, client-proved
   packTx: 600_000,          // purchase_card_pack: tx proving + 10-note import
-  pxeRead: 180_000,
-  eventually: 120_000,      // private-state eventual consistency after settle
+  pxeRead: 45_000,          // one read attempt; the app's unqueued get_balance poll can stall it → retry
+  evaluate: 30_000,         // a bare page.evaluate (phase snapshot) must not hang the run
+  eventually: 300_000,      // private-state eventual consistency + read retries past the app's PXE poll
 };
 
 export class PlayerDriver {
@@ -54,7 +55,11 @@ export class PlayerDriver {
   }
 
   async phase(): Promise<PhaseSnapshot> {
-    const snapshot = await this.page.evaluate(() => window.__triadTest!.phase());
+    // Even the synchronous snapshot is a page.evaluate; if the page's JS event
+    // loop is blocked (e.g. an IndexedDB conflict from the app's unqueued
+    // get_balance poll racing a PXE read) the evaluate never returns. Bound it.
+    const snapshot = await this.withTimeout(
+      this.page.evaluate(() => window.__triadTest!.phase()), TIMEOUTS.evaluate, 'phase()');
     if (!snapshot) throw new Error(`${this.name}: testkit bridge has not published yet`);
     return snapshot;
   }
@@ -236,6 +241,7 @@ export class PlayerDriver {
     return [...cards].sort((a, b) => a - b);
   }
 
+  /** Token balance via THIS tab's PXE (a fresh get_balance simulate, queued). */
   async tokenBalance(): Promise<number> {
     return this.withTimeout(
       this.page.evaluate(() => window.__triadTest!.getTokenBalance()),
@@ -243,9 +249,21 @@ export class PlayerDriver {
   }
 
   /**
+   * Token balance as the APP already tracks it (phase snapshot, no extra PXE
+   * read). Preferred for assertions: it's the owner's-PXE view the user sees,
+   * and it does NOT add a read that races the app's own unqueued get_balance
+   * poll (the IndexedDB-conflict hang source).
+   */
+  async tokenBalanceApp(): Promise<number> {
+    return (await this.phase()).tokenBalance;
+  }
+
+  /**
    * Poll an async read until it equals `expected` — for private state that is
    * eventually consistent by design (PXE discovers notes by block scanning).
-   * Fails with both values if the deadline passes.
+   * A read that throws (e.g. a PXE read transiently stalled behind the app's
+   * unqueued get_balance poll) is treated as "not yet" and retried, not fatal —
+   * the per-phase deadline in the campaign is the hard hang backstop.
    */
   async expectEventually<T>(
     label: string,
@@ -254,10 +272,14 @@ export class PlayerDriver {
     timeout = TIMEOUTS.eventually,
   ): Promise<void> {
     const deadline = Date.now() + timeout;
-    let last: T | undefined;
+    let last: T | string | undefined;
     while (Date.now() < deadline) {
-      last = await read();
-      if (JSON.stringify(last) === JSON.stringify(expected)) return;
+      try {
+        last = await read();
+        if (JSON.stringify(last) === JSON.stringify(expected)) return;
+      } catch (err) {
+        last = `<read error: ${(err as Error).message}>`;
+      }
       await this.page.waitForTimeout(2000);
     }
     throw new Error(

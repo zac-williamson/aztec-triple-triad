@@ -53,6 +53,25 @@ async function newDriver(browser: Browser, name: string, logsDir: string): Promi
   return driver;
 }
 
+/**
+ * Hard wall-clock guard around a campaign phase. A stuck run (e.g. an
+ * IndexedDB-conflict page hang) FAILS FAST with the phase name instead of
+ * zombie-hanging until the 60-min Playwright test timeout.
+ */
+async function withDeadline<T>(label: string, ms: number, fn: () => Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const guard = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`PHASE TIMEOUT: "${label}" did not finish within ${ms / 1000}s — likely a hang`)), ms);
+  });
+  try {
+    return await Promise.race([fn(), guard]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
+const DEADLINES = { pack: 900_000, game: 1_500_000 }; // 15 min / pack phase, 25 min / game
+
 interface GameRow {
   game: number;
   winner: string;
@@ -84,7 +103,8 @@ test.describe.serial('multi-game with packs', () => {
   test('open packs then play five consecutive games', async ({ browser }) => {
     const stack = readStackInfo();
     if (!stack.addresses) throw new Error('stack.json has no contract addresses — setup incomplete');
-    const chain = await ChainClient.connect(stack.addresses);
+    const addresses = stack.addresses;
+    const chain = await ChainClient.connect(addresses);
 
     // ── Onboard two isolated contexts (serial — shared anvil funding key) ──
     alice = await newDriver(browser, 'alice', stack.logsDir);
@@ -93,30 +113,33 @@ test.describe.serial('multi-game with packs', () => {
     await bob.waitConnected();
     for (const d of [alice, bob]) {
       expect(await d.privateCards(), `${d.name} starter cards`).toEqual(STARTER_CARDS);
-      expect(await d.tokenBalance(), `${d.name} starter tokens`).toBe(STARTER_TOKENS);
+      expect(await d.tokenBalanceApp(), `${d.name} starter tokens`).toBe(STARTER_TOKENS);
     }
 
     // ── Pack open (both) → 15 cards each, 0 tokens; assert discoverability ──
-    for (const d of [alice, bob]) {
-      const newIds = await d.openPack();
-      expect(newIds.length, `${d.name} pack gives ${PACK_SIZE} cards`).toBe(PACK_SIZE);
-      // Chain layer: the 10 new notes are actually discoverable (import_note),
-      // not just minted — PXE must report 15 spendable cards.
-      await d.expectEventually(`${d.name} chain card count = 15 after pack`,
-        async () => (await d.privateCards()).length, STARTER_CARDS.length + PACK_SIZE);
-      // Frontend layer: the menu collection reflects 15.
-      expect((await d.phase()).ownedCardIds.length, `${d.name} UI collection = 15`).toBe(15);
-      // Token economy: starter 100 − pack 100 = 0.
-      await d.expectEventually(`${d.name} tokens after pack = 0`,
-        () => d.tokenBalance(), STARTER_TOKENS - PACK_COST);
-    }
+    await withDeadline('open packs (both)', DEADLINES.pack, async () => {
+      for (const d of [alice, bob]) {
+        const newIds = await d.openPack();
+        expect(newIds.length, `${d.name} pack gives ${PACK_SIZE} cards`).toBe(PACK_SIZE);
+        // Chain layer: the 10 new notes are actually discoverable (import_note),
+        // not just minted — PXE must report 15 spendable cards.
+        await d.expectEventually(`${d.name} chain card count = 15 after pack`,
+          async () => (await d.privateCards()).length, STARTER_CARDS.length + PACK_SIZE);
+        // Frontend layer: the menu collection reflects 15.
+        expect((await d.phase()).ownedCardIds.length, `${d.name} UI collection = 15`).toBe(15);
+        // Token economy (app's PXE view — no racing read): starter 100 − pack 100 = 0.
+        await d.expectEventually(`${d.name} tokens after pack = 0`,
+          () => d.tokenBalanceApp(), STARTER_TOKENS - PACK_COST);
+      }
+    });
 
     // ── FIVE consecutive games in one session ─────────────────────────────
     for (let g = 1; g <= GAMES; g++) {
       // Alternate who queues first → who is P1 (varies win/loss paths).
       const first = g % 2 === 1 ? alice : bob;
       const second = first === alice ? bob : alice;
-      await playOneGame(g, first, second, chain, stack.addresses, rows);
+      await withDeadline(`game ${g}`, DEADLINES.game, () =>
+        playOneGame(g, first, second, chain, addresses, rows));
     }
 
     // All five green.
@@ -147,8 +170,8 @@ async function playOneGame(
   // ── Pre-game ledger (counts are stable: prior game's asserts waited) ──
   const aliceBeforeCards = await alice.privateCards();
   const bobBeforeCards = await bob.privateCards();
-  const aliceBeforeTokens = await alice.tokenBalance();
-  const bobBeforeTokens = await bob.tokenBalance();
+  const aliceBeforeTokens = await alice.tokenBalanceApp();
+  const bobBeforeTokens = await bob.tokenBalanceApp();
 
   const firstHand = pickHand((first === alice ? aliceBeforeCards : bobBeforeCards));
   const secondHand = pickHand((second === alice ? aliceBeforeCards : bobBeforeCards));
@@ -265,9 +288,9 @@ async function playOneGame(
 
   // ── Layer 2 (token economy): both +20 this game ───────────────────────
   await winnerD.expectEventually(`${winnerD.name} tokens +20`,
-    () => winnerD.tokenBalance(), (winnerD === alice ? aliceBeforeTokens : bobBeforeTokens) + GAME_REWARD);
+    () => winnerD.tokenBalanceApp(), (winnerD === alice ? aliceBeforeTokens : bobBeforeTokens) + GAME_REWARD);
   await loserD.expectEventually(`${loserD.name} tokens +20`,
-    () => loserD.tokenBalance(), (loserD === alice ? aliceBeforeTokens : bobBeforeTokens) + GAME_REWARD);
+    () => loserD.tokenBalanceApp(), (loserD === alice ? aliceBeforeTokens : bobBeforeTokens) + GAME_REWARD);
 
   // ── Public chain: settled + on-chain players == the two accounts ───────
   expect(await chain.gameStatus(onChainGameId), `game ${gameNum} settled on-chain`).toBe(GAME_STATUS.settled);
@@ -295,8 +318,8 @@ async function playOneGame(
 
   const aliceAfterCards = await alice.privateCards();
   const bobAfterCards = await bob.privateCards();
-  const aliceAfterTokens = await alice.tokenBalance();
-  const bobAfterTokens = await bob.tokenBalance();
+  const aliceAfterTokens = await alice.tokenBalanceApp();
+  const bobAfterTokens = await bob.tokenBalanceApp();
   rows.push(buildRow(gameNum, winnerD.name, aliceBeforeCards, bobBeforeCards,
     aliceAfterCards, bobAfterCards, aliceBeforeTokens, bobBeforeTokens,
     aliceAfterTokens, bobAfterTokens, claimed, true));
