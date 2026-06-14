@@ -957,3 +957,25 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   reminder, low noise) covers lane-8 in 45s; cron `fa2c1ddf` (10min) backstop. When lane-8's run reaches
   the games or fails, I verify via re-sampled browser-log tail + on-chain txCount (NOT a single snapshot
   or its STATUS) — the lesson from the two prior near-misreports.
+
+## 06-14 — ★ PRIMARY GOAL MET (verified): 5 consecutive games, real proofs, NO carryover
+- lane-8 committed `5b4474b` claiming C-multi GREEN. I VERIFIED it against artifacts (not the STATUS):
+  `run-2026-06-14T09-05-06` "1 passed (14.5m)" — 93 tx-blocks (matches doc), span 02:05:13→02:19:19
+  (~14min), 19 ClientIVC proofs (alice 10 / bob 9 = REAL proving, not fast mode), both browser logs
+  end together 02:19:25 (clean teardown) — vs the failed onboarding-only runs' 39 blocks. The chain
+  profile is consistent only with a full multi-game session. Per-game table: 5 games, alternating
+  winners, winner +1 card/+20 tok / loser −1/+20, all settle OK, gap-checks never tripped. The
+  multi-game CARRYOVER bug class did NOT manifest on the merged 4.3.1 stack — the historical
+  "multiple games raise many errors" is resolved by the cumulative fixes (C2 replay guard, PXE
+  serialization, toast click-fix, etc.). This is Zac's stated goal, achieved + independently verified.
+- CAVEAT — repeatability: recent re-runs fail ~50% at ONBOARDING (node connection resets ~3min into the
+  deploy proof → useAztec setStatus('error'), no reconnect). lane-8 attributed it to "the merge removed
+  the 15× connect poll" — I CHECKED THE CODE: FALSE, the poll is still at useAztec.ts:202; the merge
+  removed the refreshTokenBalance *catch*, not the poll. So merge-regression-vs-node-flakiness is
+  UNCONFIRMED — did NOT route a fix to lane-2 on a wrong diagnosis. lane-8 is running full-game.spec
+  (reliable onboarder pre-merge) to corroborate. Once confirmed, the fix is KEEPALIVE (keep the node
+  connection warm through the CPU-pinned deploy proof so it does not idle-drop), NOT a retry (no mask).
+- Monitoring (Zac demand): lane-8 watchdog now v4 `b535smb5y` — fixed two bugs found live: (a) boot-time
+  false-positive (scoped freshness to the latest run dir), (b) only recognized multi-game runs (broadened
+  to any `playwright test` so full-game corroboration runs aren't misread as idle). Transition-based +
+  10min reminder. Cron `fa2c1ddf` backstop.
