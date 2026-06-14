@@ -940,3 +940,20 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   each with a revert-failing test. lane-2 working it; lane-8 committed its proven fixes + is doing GENUINE
   prep while blocked (sharp carryover-hypothesis: 7 candidates × reset paths × distinguishing signal) so
   the first carryover failure root-causes instantly. Re-runs the moment the toast fix merges.
+
+## 06-14 — toast fix MERGED (lane-8 UNBLOCKED + re-running with full harness fixes)
+- lane-2 fixed both TxNotificationCenter bugs, committed `bf76707` → testnet `8a13340`. Gate-reviewed +
+  VERIFIED myself (not trusted): Bug 1 (the hang) — the toast card was `pointer-events:auto` over the
+  Play!/settlement buttons; fix makes the card pass-through (`none`), only its own controls capture.
+  Bug 2 — completed pack tx no longer shows persistent "Preparing" (the tx DID complete; only the chip
+  label persisted; relabeled Client:/Mining:). 2 revert-failing tests pin both (CSS pointer-events
+  policy parse + completed-tx render asserting "Complete"/no "Preparing"). Ran it: tsc clean, 37 files /
+  330 tests green. Real fixes, no mask.
+- lane-8 UNBLOCKED: rebasing onto testnet + re-running the C-multi campaign with real proofs. ALL harness
+  blockers now fixed: GPU-isolation (no WebGL crash), fail-fast watchdog (proven vs frozen page + caught
+  the toast hang in 13min), and now the toast no longer intercepts clicks. So the post-pack→matchmaking
+  →games path should finally be clear → the carryover tests are finally reachable.
+- Monitoring (Zac demand "lane-8 ALWAYS working"): v2 watchdog `b8br0e8e0` (transition-based + 10min
+  reminder, low noise) covers lane-8 in 45s; cron `fa2c1ddf` (10min) backstop. When lane-8's run reaches
+  the games or fails, I verify via re-sampled browser-log tail + on-chain txCount (NOT a single snapshot
+  or its STATUS) — the lesson from the two prior near-misreports.
