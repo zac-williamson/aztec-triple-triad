@@ -995,3 +995,39 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   impossible (a real external network condition, not a code mask) — keepalive FIRST. lane-2 working it.
 - lane-8: C-multi GREEN stands verified; correctly blocked on the lane-2 onboarding fix; will re-run
   C-multi for REPEATABLE acceptance the moment it lands. Monitored by v4 watchdog.
+
+## 06-14 — keepalive fix MERGED; lane-8 re-running for REPEATABLE acceptance (last piece)
+- lane-2 `8193eb6` → testnet `309a9e9`. Gate-reviewed + VERIFIED: root cause = the node HTTP/2 connection
+  idle-drops during the 1-3min CPU-pinned `proveTx` (no node requests), so the next send fails with
+  ERR_CONNECTION_RESET (~30% onboarding + settlement). Fix = `nodeKeepalive.ts` `startNodeKeepalive`:
+  `getBlockNumber` ping every 15s (under the ~58s idle-drop) keeps the connection warm through proving,
+  wired into `sendTx` so it covers BOTH onboarding deploy+mint AND process_game settlement. CONFIRMED it
+  is a pure KEEPALIVE (prevention), NOT a retry/reconnect — per Zac's no-mask bar; the best-effort ping
+  swallow is a heartbeat, not the tx (tx errors still surface). Real tests (cadence<58s, best-effort,
+  wiring guard), tsc clean, 335 tests green (ran the full suite). It also took my diagnosis correction
+  (explicitly "NOT the post-connect poll").
+- lane-8 UNBLOCKED: rebasing + re-running C-multi for REPEATABLE acceptance (run ~2× clean to prove
+  onboarding is now reliable + the 5-game campaign passes repeatably). This is the LAST piece — the
+  campaign logic + all harness/env blockers are resolved; only repeatable-pass confirmation remains.
+- Status: PRIMARY GOAL (5-game no-carryover) achieved + verified; repeatable acceptance in flight.
+
+## 06-14 — 2× acceptance both FAILED (real intermittent issues); lane-8 stalled ~11h (machine sleep) → recovered
+- The 2× repeatable-acceptance both failed (verified via `multigame-accept-2.log` etc., NOT STATUS):
+  - Run #1: onboarding stall — alice timed out at 420s with NO connection reset (keepalive fixed the
+    reset; this is a DIFFERENT residual stall).
+  - Run #2: onboarded clean + ran 4 CONSECUTIVE GAMES (all settle OK, economy consistent) → game 5
+    `awaiting_settlement → idle`, PHASE TIMEOUT 1500s, no reset. Intermittent (GREEN did 5/5). This is
+    the real "multiple games" class, isolated to a late-game settlement hang.
+- lane-8 mis-diagnosed it as "memory pressure from 32 lingering processes" — VERIFIED FALSE: only ~4
+  lingering chrome-headless-shell (its 32 counted the user's Google Chrome + Steam), memory 82% free.
+  (3rd lane-8 mis-attribution — removed-poll, then memory; verify its claims against artifacts always.)
+- REAL items (routed back to lane-8 via docs/plan/REPEATABLE_ACCEPTANCE.md): (1) harness cleanup gap —
+  isolated-Chromium PROCESSES leak (port-based teardown misses them); fix global-teardown to kill by
+  pid/process-group. (2) onboarding 420s stall. (3) game-5 settlement hang. No mask.
+- lane-8 STALL: hit a transient API ECONNRESET ~06:22, went idle at 543.8k tokens; the machine then
+  slept overnight (watchdog events jumped 07:45→16:57 — local processes pause during sleep), so it
+  wasn't recovered until ~16:58. RECOVERED: /clear (fresh context) + the recovery brief above; lane-8
+  working again (merged testnet, fixing cleanup gap + root-causing the 2 hangs + re-running).
+- LIMITATION (Zac "always working"): within an awake session the v4 watchdog (45s) + cron (10min) keep
+  lane-8 monitored/recovered; but the playtest runs locally, so machine sleep pauses the work AND all
+  local monitoring until wake. No local monitor can run while the machine sleeps.
