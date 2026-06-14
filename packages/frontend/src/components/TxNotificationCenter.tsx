@@ -66,7 +66,11 @@ function PhaseTimelineBar({ phases }: { phases: LivePhaseTiming[] }) {
 
   if (phases.length === 0 || totalDuration === 0) return null;
 
-  const preparingDuration = totalDuration - miningDuration;
+  // Client-side work (simulate + prove + send) vs on-chain Mining. This summary
+  // only renders once a completed Mining phase exists — i.e. the tx is DONE — so
+  // it must read as a finished breakdown, not the present-continuous "Preparing"
+  // (which made a completed pack notification look stuck mid-prep forever).
+  const clientDuration = totalDuration - miningDuration;
   const hasMining = miningDuration > 0;
   const hasLive = !!livePhase;
 
@@ -76,7 +80,7 @@ function PhaseTimelineBar({ phases }: { phases: LivePhaseTiming[] }) {
       <div className="txnc-chips">
         {hasMining ? (
           <>
-            <span className="txnc-chip txnc-chip--preparing">Preparing: {formatDuration(preparingDuration)}</span>
+            <span className="txnc-chip txnc-chip--client">Client: {formatDuration(clientDuration)}</span>
             <span className="txnc-chip txnc-chip--mining">Mining: {formatDuration(miningDuration)}</span>
             <span className="txnc-chip">Total: {formatDuration(totalDuration)}</span>
           </>
