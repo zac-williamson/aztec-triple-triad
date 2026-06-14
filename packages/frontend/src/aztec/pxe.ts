@@ -16,14 +16,36 @@
  */
 import txManager from './txManager';
 import type { TxType, TxPhase } from './txManager';
+import { toFr, toHexString } from './fieldUtils';
+import { gasSettingsWithHeadroom, type BaseFeeNode } from './feeSettings';
+import type { NoteToImport, TxEffectData } from './noteImporter';
 
 type Schedule = <T>(fn: () => Promise<T>) => Promise<T>;
+
+/** Per-send fee/timeout context. `node` supplies the live L2 base fee for the
+ *  shared headroom policy; the contract itself never leaves this module. */
+export interface SendOpts {
+  node: unknown;
+  timeoutMs: number;
+}
 
 // The wallet the contracts are bound to. Set on connect, cleared on disconnect.
 // Owned here so no caller needs (or can capture) the raw wallet for PXE work.
 let currentWallet: unknown = null;
 export function setPxeWallet(wallet: unknown): void {
   currentWallet = wallet;
+}
+
+/**
+ * Pre-warm the contract cache for the bound wallet so the first game op is fast.
+ * Re-exposed here so callers never import the raw-contract module directly.
+ * No-op until a wallet is bound (warmup during account bootstrap would race the
+ * deploy's own inline contract creation on IndexedDB).
+ */
+export async function warmupPxe(): Promise<void> {
+  if (!currentWallet) return;
+  const { warmupContracts } = await import('./contracts');
+  warmupContracts(currentWallet);
 }
 
 /** Resolve the (privately cached) contract instances for the current wallet. */
@@ -37,9 +59,17 @@ async function resolveContracts() {
   return ensureContracts(currentWallet);
 }
 
+/** Build the padded (length-64) note-hash array import_note expects. */
+function padNoteHashes(Fr: any, noteHashes: string[]): any[] {
+  const padded = new Array(64).fill(new Fr(0n));
+  for (let i = 0; i < noteHashes.length && i < 64; i++) padded[i] = toFr(Fr, noteHashes[i]);
+  return padded;
+}
+
 /**
  * Named PXE operations. ONE implementation each; `schedule` picks enqueue vs
- * inline. Add new reads/sends here as callers migrate off raw contracts.
+ * inline. Callers pass and receive plain values (hex strings, numbers, bigints,
+ * pre-built Fr arg arrays) — never a contract instance.
  */
 function makeOps(schedule: Schedule) {
   return {
@@ -52,7 +82,233 @@ function makeOps(schedule: Schedule) {
         const { result } = await tokenContract.methods.get_balance(addr).simulate({ from: addr });
         return BigInt(result.toString());
       }),
+
+    /**
+     * P1 create-game preview: derive the next game's id, per-game randomness,
+     * blinding factor, and current on-chain status from the note nonce.
+     */
+    previewCreateGame: (
+      owner: string,
+    ): Promise<{ gameId: string; randomness: string[]; blindingFactor: string; status: number }> =>
+      schedule(async () => {
+        const { gameContract, nftContract, Fr, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromString(owner);
+        const { result: nonceResult } = await nftContract.methods.get_note_nonce(addr).simulate({ from: addr });
+        const nonceFr = toFr(Fr, nonceResult);
+        const { result: preview }: any = await nftContract.methods.preview_game_data(nonceFr).simulate({ from: addr });
+        const gameId = String(preview[0]);
+        const randomness = Array.from({ length: 6 }, (_, i) => toHexString(preview[i + 1]));
+        const gameIdFr = toFr(Fr, gameId);
+        const { result: status } = await gameContract.methods.get_game_status(gameIdFr).simulate({ from: addr });
+        const { result: blinding } = await nftContract.methods.compute_blinding_factor(gameIdFr).simulate({ from: addr });
+        return { gameId: toHexString(gameId), randomness, blindingFactor: toHexString(blinding), status: Number(status) };
+      }),
+
+    /** P2 join-game preview: per-game randomness + blinding factor for `gameId`. */
+    previewJoinGame: (
+      owner: string,
+      gameId: string,
+    ): Promise<{ randomness: string[]; blindingFactor: string }> =>
+      schedule(async () => {
+        const { nftContract, Fr, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromString(owner);
+        const gameIdFr = toFr(Fr, gameId);
+        const { result: nonceResult } = await nftContract.methods.get_note_nonce(addr).simulate({ from: addr });
+        const { result: blinding } = await nftContract.methods.compute_blinding_factor(gameIdFr).simulate({ from: addr });
+        const nonceFr = toFr(Fr, nonceResult);
+        const { result: preview }: any = await nftContract.methods.preview_game_data(nonceFr).simulate({ from: addr });
+        const randomness = Array.from({ length: 6 }, (_, i) => toHexString(preview[i + 1]));
+        return { randomness, blindingFactor: toHexString(blinding) };
+      }),
+
+    /** All non-zero card IDs the PXE holds for `owner` (paged get_nfts_for_user). */
+    readPrivateCards: (owner: string): Promise<number[]> =>
+      schedule(async () => {
+        const { nftContract, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromString(owner);
+        const ids: number[] = [];
+        let pageIndex = 0;
+        let hasMore = true;
+        while (hasMore) {
+          const { result }: any = await nftContract.methods.get_nfts_for_user(addr, pageIndex).simulate({ from: addr });
+          const page = result[0] ?? [];
+          hasMore = result[1] === true;
+          for (const val of page) {
+            const id = Number(BigInt(val));
+            if (id !== 0) ids.push(id);
+          }
+          pageIndex++;
+        }
+        return ids;
+      }),
+
+    /** Card-pack preview: the IDs a purchase would mint + the note nonce that
+     *  derives their randomness (captured BEFORE the purchase advances it). */
+    previewCardPack: (owner: string, count: number): Promise<{ cardIds: number[]; nonce: string }> =>
+      schedule(async () => {
+        const { nftContract, Fr, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromString(owner);
+        const { result: nonceResult } = await nftContract.methods.get_note_nonce(addr).simulate({ from: addr });
+        const { result: preview }: any = await nftContract.methods.preview_card_ids(nonceResult).simulate({ from: addr });
+        const cardIds = Array.from({ length: count }, (_, i) => Number(preview[i]));
+        return { cardIds, nonce: toFr(Fr, nonceResult).toString() };
+      }),
+
+    /** Recipient-derivable note randomness (hex) for `count` notes at `nonce`. */
+    computeNoteRandomness: (owner: string, nonce: string, count: number): Promise<string[]> =>
+      schedule(async () => {
+        const { nftContract, Fr, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromString(owner);
+        const nonceFr = toFr(Fr, nonce);
+        const { result }: any = await nftContract.methods.compute_note_randomness(nonceFr, count).simulate({ from: addr });
+        return Array.from({ length: count }, (_, i) => toFr(Fr, result[i]).toString());
+      }),
+
+    /** Build the get_cards_for_new_player execution payload (account-bootstrap
+     *  combined deploy+mint). Encodes only — no simulate/send. */
+    buildMintStarterCardsRequest: (): Promise<any> =>
+      schedule(async () => {
+        const { nftContract } = await resolveContracts();
+        return nftContract.methods.get_cards_for_new_player().request();
+      }),
+
+    // ── Sends → txHash ────────────────────────────────────────────
+    sendCreateGame: (owner: string, ids: number[], opts: SendOpts): Promise<string> =>
+      schedule(async () => {
+        const { gameContract, Fr, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromString(owner);
+        const { receipt } = await gameContract.methods
+          .create_game(ids.map((id) => new Fr(BigInt(id))))
+          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs } });
+        return requireTxHash(receipt, 'create_game');
+      }),
+
+    sendJoinGame: (owner: string, gameId: string, ids: number[], opts: SendOpts): Promise<string> =>
+      schedule(async () => {
+        const { gameContract, Fr, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromString(owner);
+        const { receipt } = await gameContract.methods
+          .join_game(toFr(Fr, gameId), ids.map((id) => new Fr(BigInt(id))))
+          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs } });
+        return requireTxHash(receipt, 'join_game');
+      }),
+
+    sendPurchaseCardPack: (owner: string, opts: SendOpts): Promise<string> =>
+      schedule(async () => {
+        const { nftContract, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromString(owner);
+        const { receipt } = await nftContract.methods
+          .purchase_card_pack()
+          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs } });
+        return requireTxHash(receipt, 'purchase_card_pack');
+      }),
+
+    sendMintStarterCards: (owner: string, opts: SendOpts): Promise<string> =>
+      schedule(async () => {
+        const { nftContract, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromString(owner);
+        const { receipt } = await nftContract.methods
+          .get_cards_for_new_player()
+          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs } });
+        return requireTxHash(receipt, 'get_cards_for_new_player');
+      }),
+
+    /**
+     * Settlement / abandoned-game sends. The caller builds the ordered Fr/address
+     * argument array (it owns the proof transcript + VK fields and needs Fr for
+     * that anyway); the contract is resolved and invoked here so it never escapes.
+     */
+    sendProcessGame: (owner: string, args: unknown[], opts: SendOpts): Promise<string> =>
+      schedule(() => sendGameMethod('process_game', owner, args, opts)),
+    sendClaimAbandonedGame: (owner: string, args: unknown[], opts: SendOpts): Promise<string> =>
+      schedule(() => sendGameMethod('claim_abandoned_game', owner, args, opts)),
+    sendSettleAbandonedGame: (owner: string, args: unknown[], opts: SendOpts): Promise<string> =>
+      schedule(() => sendGameMethod('settle_abandoned_game', owner, args, opts)),
+
+    // ── Note imports (create_and_push notes the PXE can't auto-discover) ──
+    /**
+     * Inject NFT card notes into `owner`'s PXE via import_note. Per-note failures
+     * are tolerated (idempotent re-import of an already-held note). `txEffect`
+     * (a node read) is fetched by the caller and passed in, so this op is pure PXE.
+     */
+    importCardNotes: (
+      owner: string,
+      txHash: string,
+      notes: NoteToImport[],
+      label: string,
+      txEffect: TxEffectData,
+    ): Promise<number[]> =>
+      schedule(async () => {
+        const { nftContract, Fr, AztecAddress } = await resolveContracts();
+        const myAddr = AztecAddress.fromString(owner);
+        const { noteHashes, firstNullifier } = txEffect;
+        const paddedHashes = padNoteHashes(Fr, noteHashes);
+        const txHashFr = toFr(Fr, txHash);
+        const firstNullFr = toFr(Fr, firstNullifier);
+        console.log(`[pxe] ${label}: importing ${notes.length} notes (${noteHashes.length} hashes)`);
+        for (const note of notes) {
+          try {
+            await nftContract.methods
+              .import_note(myAddr, new Fr(BigInt(note.tokenId)), toFr(Fr, note.randomness), txHashFr, paddedHashes, noteHashes.length, firstNullFr, myAddr)
+              .simulate({ from: myAddr });
+          } catch (e) {
+            console.warn(`[pxe] ${label}: import_note failed for tokenId=${note.tokenId}: ${e}`);
+          }
+        }
+        return notes.map((n) => n.tokenId);
+      }),
+
+    /**
+     * Inject the settlement +reward ArenaToken balance note into `owner`'s PXE.
+     * The note randomness is derived in-contract from the recipient's own per-game
+     * randomness; recompute it (compute_reward_randomness) then import_note.
+     */
+    importTokenRewardNote: (
+      owner: string,
+      txHash: string,
+      amount: number,
+      playerRandomness: string[],
+      txEffect: TxEffectData,
+    ): Promise<boolean> =>
+      schedule(async () => {
+        const { tokenContract, Fr, AztecAddress } = await resolveContracts();
+        if (!tokenContract) {
+          console.warn('[pxe] token reward: no token contract configured');
+          return false;
+        }
+        const myAddr = AztecAddress.fromString(owner);
+        const { result: rewardRandomness } = await tokenContract.methods
+          .compute_reward_randomness(playerRandomness.map((r) => toFr(Fr, r)))
+          .simulate({ from: myAddr });
+        const { noteHashes, firstNullifier } = txEffect;
+        const paddedHashes = padNoteHashes(Fr, noteHashes);
+        try {
+          await tokenContract.methods
+            .import_note(myAddr, BigInt(amount), toFr(Fr, rewardRandomness), toFr(Fr, txHash), paddedHashes, noteHashes.length, toFr(Fr, firstNullifier), myAddr)
+            .simulate({ from: myAddr });
+          console.log(`[pxe] token reward: imported +${amount} note from ${txHash}`);
+          return true;
+        } catch (e) {
+          console.warn('[pxe] token reward: import_note failed:', e);
+          return false;
+        }
+      }),
   };
+}
+
+/** Shared impl for the game-contract proof sends (process/claim/settle). */
+async function sendGameMethod(method: string, owner: string, args: unknown[], opts: SendOpts): Promise<string> {
+  const { gameContract, AztecAddress } = await resolveContracts();
+  const addr = AztecAddress.fromString(owner);
+  const { receipt } = await gameContract.methods[method](...args)
+    .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs } });
+  return requireTxHash(receipt, method);
+}
+
+function requireTxHash(receipt: any, label: string): string {
+  const txHash = receipt?.txHash?.toString();
+  if (!txHash) throw new Error(`${label} tx returned no txHash`);
+  return txHash;
 }
 
 export type PxeOps = ReturnType<typeof makeOps>;
@@ -64,19 +320,27 @@ export const pxe: PxeOps = makeOps((fn) => txManager.enqueuePxe(fn));
 const inlinePxe: PxeOps = makeOps((fn) => fn());
 
 /**
- * Run a tracked transaction whose body uses the INLINE facade, so its reads and
- * its send execute as ONE atomic queue item (preserving settlement priority and
- * postEffects ordering). Use this instead of `txManager.runTx` for any tx body
- * that touches the PXE — the body never receives a raw contract.
+ * Run a tracked transaction whose `execute` (and `postEffects`) use the INLINE
+ * facade, so the reads and the send execute as ONE atomic queue item (preserving
+ * settlement priority and postEffects ordering). Use this instead of
+ * `txManager.runTx` for any tx that touches the PXE — `execute`/`postEffects`
+ * receive the inline `ops`, never a raw contract.
+ *
+ * Same config shape as `txManager.runTx`, plus the `ops` argument: migrating a
+ * call is a rename + threading `ops` into `execute`/`postEffects`.
  */
-export function runPxeTx<T>(
-  opts: {
-    type: TxType;
-    label: string;
-    gameId?: string;
-    postEffects?: (result: T) => Promise<void>;
-  },
-  body: (ops: PxeOps, setPhase: (phase: TxPhase) => void) => Promise<T>,
-): Promise<T> {
-  return txManager.runTx({ ...opts, execute: (setPhase) => body(inlinePxe, setPhase) });
+export function runPxeTx<T>(opts: {
+  type: TxType;
+  label: string;
+  gameId?: string;
+  execute: (ops: PxeOps, setPhase: (phase: TxPhase) => void) => Promise<T>;
+  postEffects?: (result: T, ops: PxeOps) => Promise<void>;
+}): Promise<T> {
+  return txManager.runTx({
+    type: opts.type,
+    label: opts.label,
+    gameId: opts.gameId,
+    execute: (setPhase) => opts.execute(inlinePxe, setPhase),
+    postEffects: opts.postEffects ? (result: T) => opts.postEffects!(result, inlinePxe) : undefined,
+  });
 }

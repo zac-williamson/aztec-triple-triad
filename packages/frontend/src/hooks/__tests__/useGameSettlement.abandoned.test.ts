@@ -15,11 +15,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 
 const hoisted = vi.hoisted(() => ({
-  importNotesFromTxMock: vi.fn().mockResolvedValue([1, 2]),
+  importCardNotesMock: vi.fn().mockResolvedValue([1, 2]),
   fetchTxEffectDataMock: vi.fn().mockResolvedValue({ noteHashes: ['0xA'], firstNullifier: '0xN' }),
   addCardsMock: vi.fn(),
-  claimSendMock: vi.fn().mockResolvedValue({ receipt: { txHash: { toString: () => '0xCLAIM_TX' } } }),
-  settleSendMock: vi.fn().mockResolvedValue({ receipt: { txHash: { toString: () => '0xSETTLE_TX' } } }),
+  // The claim/settle sends now go through named pxe ops (which return a txHash
+  // string), not a raw contract.methods.*.send(...).
+  sendClaimMock: vi.fn().mockResolvedValue('0xCLAIM_TX'),
+  sendSettleMock: vi.fn().mockResolvedValue('0xSETTLE_TX'),
 }));
 
 vi.mock('../../aztec/AztecContext', () => ({
@@ -44,7 +46,6 @@ vi.mock('../../aztec/AztecContext', () => ({
 }));
 
 vi.mock('../../aztec/noteImporter', () => ({
-  importNotesFromTx: hoisted.importNotesFromTxMock,
   fetchTxEffectData: hoisted.fetchTxEffectDataMock,
 }));
 
@@ -52,30 +53,32 @@ vi.mock('../../aztec/cardStore', () => ({
   addCards: hoisted.addCardsMock,
 }));
 
-vi.mock('../../aztec/contracts', () => {
-  class FakeFr {
-    constructor(public v: unknown) {}
-    toString() { return String(this.v); }
-    static fromHexString(s: string) { return new FakeFr(s); }
-  }
-  const gameContract = {
-    methods: {
-      claim_abandoned_game: vi.fn(() => ({ send: hoisted.claimSendMock })),
-      settle_abandoned_game: vi.fn(() => ({ send: hoisted.settleSendMock })),
-    },
+// The claim/settle flow runs through the PXE door: runPxeTx executes the body
+// (proof build) inline with the inline `ops`, whose send + import are spies.
+vi.mock('../../aztec/pxe', () => {
+  const ops = {
+    sendClaimAbandonedGame: hoisted.sendClaimMock,
+    sendSettleAbandonedGame: hoisted.sendSettleMock,
+    importCardNotes: hoisted.importCardNotesMock,
   };
   return {
-    ensureContracts: vi.fn().mockResolvedValue({
-      gameContract,
-      fee: {},
-      Fr: FakeFr,
-      AztecAddress: { fromString: (s: string) => s },
-    }),
-    contractCache: { gameContract },
-    warmupContracts: vi.fn(),
-    waitForWarmup: vi.fn(),
+    pxe: ops,
+    runPxeTx: async (opts: any) => {
+      const result = await opts.execute(ops, () => {});
+      if (opts.postEffects) await opts.postEffects(result, ops);
+      return result;
+    },
   };
 });
+
+// loadSdk() in useGameSettlement lazy-imports these directly (value types only;
+// the contract instances stay inside pxe.ts).
+vi.mock('@aztec/aztec.js/fields', () => ({
+  Fr: class { constructor(public v: unknown) {} toString() { return String(this.v); } },
+}));
+vi.mock('@aztec/aztec.js/addresses', () => ({
+  AztecAddress: { fromString: (s: string) => s },
+}));
 
 vi.mock('../../aztec/circuitLoader', () => ({
   loadProveHandCircuit: vi.fn().mockResolvedValue({ bytecode: 'AA==' }),
@@ -200,27 +203,27 @@ describe('abandoned settlement relay notifications (QA-F3)', () => {
       await vi.advanceTimersByTimeAsync(80_000);
     });
 
-    // Claim and settle both went out
-    expect(hoisted.claimSendMock).toHaveBeenCalled();
-    expect(hoisted.settleSendMock).toHaveBeenCalled();
+    // Claim and settle both went out (through the named pxe send ops)
+    expect(hoisted.sendClaimMock).toHaveBeenCalled();
+    expect(hoisted.sendSettleMock).toHaveBeenCalled();
 
     // SETTLE_STARTED parity: ws gameId + first opponent card (opponent played ≥1 card)
     expect(ws.notifySettleStarted).toHaveBeenCalledWith('ws-game-1', 7);
     // ...sent when the settle BEGINS — before the settle tx send
     const settleStartedOrder = (ws.notifySettleStarted as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
-    const settleSendOrder = hoisted.settleSendMock.mock.invocationCallOrder[0];
+    const settleSendOrder = hoisted.sendSettleMock.mock.invocationCallOrder[0];
     expect(settleStartedOrder).toBeLessThan(settleSendOrder);
 
     // ABANDONED_GAME_SETTLED: ws gameId, sent only after the tx mined + notes imported
     expect(ws.notifyAbandonedGameSettled).toHaveBeenCalledWith('ws-game-1');
     const settledOrder = (ws.notifyAbandonedGameSettled as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
-    const importOrder = hoisted.importNotesFromTxMock.mock.invocationCallOrder[0];
+    const importOrder = hoisted.importCardNotesMock.mock.invocationCallOrder[0];
     expect(settledOrder).toBeGreaterThan(settleSendOrder);
     expect(settledOrder).toBeGreaterThan(importOrder);
   });
 
   it('does not send ABANDONED_GAME_SETTLED when the claim tx fails', async () => {
-    hoisted.claimSendMock.mockRejectedValueOnce(new Error('claim reverted'));
+    hoisted.sendClaimMock.mockRejectedValueOnce(new Error('claim reverted'));
     const ws = makeWs();
     renderHook(() => useGameSettlement({ ws, cardIds: [1, 2, 3, 4, 5], session, play }));
 
@@ -228,7 +231,7 @@ describe('abandoned settlement relay notifications (QA-F3)', () => {
       await vi.advanceTimersByTimeAsync(80_000);
     });
 
-    expect(hoisted.settleSendMock).not.toHaveBeenCalled();
+    expect(hoisted.sendSettleMock).not.toHaveBeenCalled();
     expect(ws.notifyAbandonedGameSettled).not.toHaveBeenCalled();
   });
 });

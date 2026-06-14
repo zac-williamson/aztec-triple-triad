@@ -1,6 +1,12 @@
 /**
  * Contract infrastructure — module-level cache and helpers for interacting
- * with Aztec contracts. Extracted from useGameSession to decouple from React.
+ * with Aztec contracts.
+ *
+ * PRIVATE to the PXE door: this module is imported ONLY by `pxe.ts` (the serial
+ * queue) and the Lane-8 `testkit/api.ts` reader (which enqueues). `contractCache`
+ * is deliberately NOT exported — handing out a raw contract instance lets a
+ * caller `.simulate()/.send()` it outside the queue, the leak the single-door
+ * refactor closes. Callers get values through `pxe.ts` named ops, never contracts.
  */
 
 import { AZTEC_CONFIG } from './config';
@@ -12,7 +18,7 @@ import { getNftArtifact } from './noteImporter';
 // the sender paying from its own Fee Juice balance. SponsoredFPC is BANNED
 // (MASTER_PLAN ground rules).
 
-export const contractCache: {
+const contractCache: {
   wallet: unknown | null;
   gameContract: any;
   nftContract: any;

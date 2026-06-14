@@ -1,74 +1,33 @@
+/**
+ * useCardPacks orchestrates the pack purchase through the PXE door (`pxe.ts`):
+ * preview → purchase send → note-randomness → import, all inside one runPxeTx
+ * queue item. This pins the ORCHESTRATION (the hook calls the right ops with the
+ * right args); the ops' own contract-call shape + fee headroom are pinned in
+ * pxe.test.ts.
+ */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 
-// --- Mock all heavy dependencies ---
-
-const mockNftContract = {
-  methods: {
-    get_note_nonce: vi.fn(),
-    preview_card_ids: vi.fn(),
-    purchase_card_pack: vi.fn(),
-    compute_note_randomness: vi.fn(),
-  },
-};
-
-const mockRunTx = vi.fn();
-
-vi.mock('../../aztec/txManager', () => ({
-  default: { runTx: (...args: any[]) => mockRunTx(...args) },
-}));
-
-vi.mock('../../aztec/noteImporter', () => ({
-  importNotesFromTx: vi.fn().mockResolvedValue(undefined),
-  fetchTxEffectData: vi.fn().mockResolvedValue({
-    noteHashes: ['0xnh1'],
-    firstNullifier: '0xnull1',
-  }),
-  getNftArtifact: vi.fn().mockResolvedValue({}),
-}));
-
-vi.mock('../../aztec/cardStore', () => ({
-  addCards: vi.fn(),
-}));
-
-vi.mock('../../aztec/fieldUtils', () => ({
-  toFr: (_Fr: any, v: any) => ({ toString: () => v.toString() }),
-}));
-
-vi.mock('../../aztec/gameConstants', () => ({
-  AZTEC_TX_TIMEOUT: 300,
-  CARDS_PER_PACK: 10,
-}));
-
-vi.mock('../../aztec/config', () => ({
-  AZTEC_CONFIG: { nftContractAddress: '0xNFT' },
-}));
-
-// Fee headroom helper is unit-tested separately; stub it to a sentinel so the
-// pack send can be asserted without a real node base-fee lookup.
-vi.mock('../../aztec/feeSettings', () => ({
-  gasSettingsWithHeadroom: vi.fn(async () => ({ maxFeesPerGas: 'HEADROOM_MAX' })),
-}));
-
-// Mock Aztec SDK lazy imports
-vi.mock('@aztec/aztec.js/addresses', () => ({
-  AztecAddress: { fromString: (s: string) => s },
-}));
-vi.mock('@aztec/aztec.js/fields', () => {
-  class MockFr {
-    constructor(public value: any) {}
-    toString() { return this.value.toString(); }
-  }
-  return { Fr: MockFr };
+const hoisted = vi.hoisted(() => {
+  const previewCardPack = vi.fn();
+  const sendPurchaseCardPack = vi.fn();
+  const computeNoteRandomness = vi.fn();
+  const importCardNotes = vi.fn();
+  return {
+    ops: { previewCardPack, sendPurchaseCardPack, computeNoteRandomness, importCardNotes },
+    previewCardPack, sendPurchaseCardPack, computeNoteRandomness, importCardNotes,
+    runPxeTx: vi.fn(),
+    fetchTxEffectData: vi.fn(),
+    addCards: vi.fn(),
+  };
 });
-vi.mock('@aztec/aztec.js/contracts', () => ({
-  Contract: {
-    at: vi.fn().mockResolvedValue(mockNftContract),
-  },
-}));
+
+vi.mock('../../aztec/pxe', () => ({ runPxeTx: hoisted.runPxeTx }));
+vi.mock('../../aztec/noteImporter', () => ({ fetchTxEffectData: hoisted.fetchTxEffectData }));
+vi.mock('../../aztec/cardStore', () => ({ addCards: hoisted.addCards }));
+vi.mock('../../aztec/gameConstants', () => ({ AZTEC_TX_TIMEOUT: 300, CARDS_PER_PACK: 10 }));
 
 import { useCardPacks, type LocationInfo } from '../useCardPacks';
-import { addCards } from '../../aztec/cardStore';
 
 const RIVER: LocationInfo = { id: 1, name: 'River', description: 'test', cooldownHours: 4 };
 
@@ -76,6 +35,12 @@ describe('useCardPacks', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    // Default: runPxeTx runs the body inline with the op spies (the inline facade).
+    hoisted.runPxeTx.mockImplementation(async (opts: any) => {
+      const result = await opts.execute(hoisted.ops, () => {});
+      if (opts.postEffects) await opts.postEffects(result, hoisted.ops);
+      return result;
+    });
   });
 
   it('starts in idle state', () => {
@@ -94,28 +59,14 @@ describe('useCardPacks', () => {
     ).rejects.toThrow('Wallet not connected');
   });
 
-  it('hunt runs the full preview → purchase → import flow', async () => {
+  it('hunt runs the full preview → purchase → import flow via pxe ops', async () => {
     const previewCardIds = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 
-    // Mock nft contract methods
-    mockNftContract.methods.get_note_nonce.mockReturnValue({
-      simulate: vi.fn().mockResolvedValue({ result: 42 }),
-    });
-    mockNftContract.methods.preview_card_ids.mockReturnValue({
-      simulate: vi.fn().mockResolvedValue({ result: previewCardIds }),
-    });
-    const purchaseSend = vi.fn().mockResolvedValue({ receipt: { txHash: { toString: () => '0xTX_HASH' } } });
-    mockNftContract.methods.purchase_card_pack.mockReturnValue({ send: purchaseSend });
-    mockNftContract.methods.compute_note_randomness.mockReturnValue({
-      simulate: vi.fn().mockResolvedValue({
-        result: previewCardIds.map((_, i) => ({ toString: () => `0xrand${i}` })),
-      }),
-    });
-
-    // Make txManager.runTx execute the callback directly
-    mockRunTx.mockImplementation(async (opts: any) => {
-      return opts.execute(() => {});
-    });
+    hoisted.previewCardPack.mockResolvedValue({ cardIds: previewCardIds, nonce: '0xNONCE' });
+    hoisted.sendPurchaseCardPack.mockResolvedValue('0xTX_HASH');
+    hoisted.computeNoteRandomness.mockResolvedValue(previewCardIds.map((_, i) => `0xrand${i}`));
+    hoisted.importCardNotes.mockResolvedValue(previewCardIds);
+    hoisted.fetchTxEffectData.mockResolvedValue({ noteHashes: ['0xnh1'], firstNullifier: '0xnull1' });
 
     const mockWallet = {};
     const mockNodeClient = {};
@@ -130,25 +81,30 @@ describe('useCardPacks', () => {
     expect(huntResult.txHash).toBe('0xTX_HASH');
     expect(result.current.txStatus).toBe('done');
 
-    // SponsoredFPC is banned: the purchase pays natively in Fee Juice (no
-    // paymentMethod), but carries base-fee headroom via fee.gasSettings.
-    expect(purchaseSend).toHaveBeenCalledTimes(1);
-    const sendArg = purchaseSend.mock.calls[0][0];
-    expect(sendArg).toMatchObject({ from: '0xACCOUNT' });
-    expect(sendArg.fee).toEqual({ gasSettings: { maxFeesPerGas: 'HEADROOM_MAX' } });
-    expect(sendArg.fee).not.toHaveProperty('paymentMethod');
+    // The purchase goes through the named send op (not a raw contract). The fee
+    // headroom the op applies is asserted in pxe.test.ts.
+    expect(hoisted.sendPurchaseCardPack).toHaveBeenCalledWith('0xACCOUNT', { node: mockNodeClient, timeoutMs: 300 });
+    // Note-randomness derived from the pre-purchase nonce.
+    expect(hoisted.computeNoteRandomness).toHaveBeenCalledWith('0xACCOUNT', '0xNONCE', 10);
 
-    // Verify cards were persisted
-    expect(addCards).toHaveBeenCalledWith(
+    // Cards persisted to localStorage with the tx-effect aux data...
+    expect(hoisted.addCards).toHaveBeenCalledWith(
       '0xACCOUNT',
       expect.arrayContaining([
-        expect.objectContaining({ cardId: 10, txHash: '0xTX_HASH' }),
+        expect.objectContaining({ cardId: 10, randomness: '0xrand0', txHash: '0xTX_HASH', noteHashes: ['0xnh1'], firstNullifier: '0xnull1' }),
       ]),
+    );
+    // ...and imported into the PXE via the named op.
+    expect(hoisted.importCardNotes).toHaveBeenCalledWith(
+      '0xACCOUNT', '0xTX_HASH',
+      expect.arrayContaining([{ tokenId: 10, randomness: '0xrand0' }]),
+      'Card pack',
+      { noteHashes: ['0xnh1'], firstNullifier: '0xnull1' },
     );
   });
 
   it('hunt sets error state on failure', async () => {
-    mockRunTx.mockRejectedValue(new Error('Transaction reverted'));
+    hoisted.runPxeTx.mockRejectedValue(new Error('Transaction reverted'));
 
     const { result } = renderHook(() => useCardPacks({}, {}, '0xACCOUNT'));
 
@@ -167,7 +123,7 @@ describe('useCardPacks', () => {
   });
 
   it('hunt clears activeLocation after completion', async () => {
-    mockRunTx.mockResolvedValue({ cardIds: [1], txHash: null });
+    hoisted.runPxeTx.mockResolvedValue({ cardIds: [1], txHash: '0xT' });
 
     const { result } = renderHook(() => useCardPacks({}, null, '0xACCOUNT'));
 

@@ -50,9 +50,10 @@ describe('useAztec testnet faucet branch', () => {
     await act(async () => { await result.current.connect(); });
 
     expect(h.requestFeeJuiceClaim).toHaveBeenCalledWith('https://faucet.example.com', '0xACC');
-    // The claim is consumed by the combined deploy+mint tx.
+    // The claim is consumed by the combined deploy+mint tx. deployAndRegister now
+    // takes (prepared, ops, options) — the options (with the claim) are the 3rd arg.
     expect(h.deployAndRegister).toHaveBeenCalledTimes(1);
-    expect(h.deployAndRegister.mock.calls[0][1]).toMatchObject({ feeJuiceClaim: CLAIM });
+    expect(h.deployAndRegister.mock.calls[0][2]).toMatchObject({ feeJuiceClaim: CLAIM });
     expect(result.current.status).toBe('connected');
     expect(result.current.ownedCardIds).toEqual([1, 2, 3, 4, 5]);
   });

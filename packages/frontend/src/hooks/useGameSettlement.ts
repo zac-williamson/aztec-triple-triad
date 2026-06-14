@@ -2,15 +2,24 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import type { UseWebSocketReturn } from './useWebSocket';
 import type { OnChainPhase, SettlementInfo } from './useGameSession';
 import { useAztecContext } from '../aztec/AztecContext';
-import { importNotesFromTx, fetchTxEffectData, importTokenRewardNote } from '../aztec/noteImporter';
+import { fetchTxEffectData } from '../aztec/noteImporter';
 import { addCards, type StoredCard } from '../aztec/cardStore';
 import txManager from '../aztec/txManager';
-import { ensureContracts, contractCache } from '../aztec/contracts';
+import { runPxeTx, pxe, type PxeOps } from '../aztec/pxe';
 import { toFr as toFrUtil, toHexString, bytesToFrArray, base64ToFrArray, hexToFr } from '../aztec/fieldUtils';
 import { AZTEC_TX_TIMEOUT, AZTEC_SETTLE_TX_TIMEOUT, CARDS_PER_HAND, TOTAL_MOVES, MOVE_PROOF_WAIT_TIMEOUT, HAND_PROOF_WAIT_TIMEOUT, GAME_TOKEN_REWARD } from '../aztec/gameConstants';
 import { requireWallet, requireAccountAddress } from '../aztec/walletGuards';
-import { gasSettingsWithHeadroom, type BaseFeeNode } from '../aztec/feeSettings';
 import type { HandProofData, MoveProofData, PlaintextNoteData } from '../types';
+
+/** Lazy-load the field/address SDK classes for building proof-tx arguments.
+ *  (The contract instances stay inside pxe.ts; only these value types cross.) */
+async function loadSdk(): Promise<{ Fr: any; AztecAddress: any }> {
+  const [{ Fr }, { AztecAddress }] = await Promise.all([
+    import('@aztec/aztec.js/fields'),
+    import('@aztec/aztec.js/addresses'),
+  ]);
+  return { Fr, AztecAddress };
+}
 
 export type TxStatus = 'idle' | 'preparing' | 'proving' | 'sending' | 'confirmed' | 'error';
 
@@ -102,45 +111,44 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
   // Mirrors the pattern in useCardPacks.ts (pack purchases) so settlement,
   // loser note-relay, and abandoned-game recovery all persist consistently.
   const importNotes = useCallback(async (
+    facade: PxeOps,
     txHashStr: string,
     notes: { tokenId: number; randomness: string }[],
     label: string,
   ) => {
-    if (!aztec.wallet || !aztec.accountAddress || !aztec.nodeClient) return;
+    if (!aztec.accountAddress || !aztec.nodeClient) return;
     const accountAddress = aztec.accountAddress;
     try {
-      // Fetch TxEffect first so we can persist before (and reuse during) import.
+      // TxEffect is a NODE read (note hashes + first nullifier) — not a PXE op.
+      // The actual import_note PXE calls run through `facade` (the serial queue
+      // when called standalone, inline when inside a runPxeTx body).
       const txEffectData = await fetchTxEffectData(aztec.nodeClient, txHashStr);
-
-      if (txEffectData) {
-        const storedCards: StoredCard[] = notes.map((n) => ({
-          cardId: n.tokenId,
-          randomness: n.randomness,
-          txHash: txHashStr,
-          noteHashes: txEffectData.noteHashes,
-          firstNullifier: txEffectData.firstNullifier,
-        }));
-        try {
-          addCards(accountAddress, storedCards);
-        } catch (persistErr) {
-          console.error(`[useGameSettlement] ${label}: failed to persist cards to localStorage (continuing with PXE import):`, persistErr);
-        }
-      } else {
-        console.warn(`[useGameSettlement] ${label}: TxEffect unavailable — cards will import to PXE but won't survive a refresh`);
+      if (!txEffectData) {
+        console.warn(`[useGameSettlement] ${label}: TxEffect unavailable — skipping import (would not survive a refresh)`);
+        return;
       }
 
-      const importedIds = await importNotesFromTx(
-        aztec.wallet, aztec.nodeClient, accountAddress,
-        txHashStr, notes, label,
-        txEffectData ?? undefined,
-      );
+      const storedCards: StoredCard[] = notes.map((n) => ({
+        cardId: n.tokenId,
+        randomness: n.randomness,
+        txHash: txHashStr,
+        noteHashes: txEffectData.noteHashes,
+        firstNullifier: txEffectData.firstNullifier,
+      }));
+      try {
+        addCards(accountAddress, storedCards);
+      } catch (persistErr) {
+        console.error(`[useGameSettlement] ${label}: failed to persist cards to localStorage (continuing with PXE import):`, persistErr);
+      }
+
+      const importedIds = await facade.importCardNotes(accountAddress, txHashStr, notes, label, txEffectData);
       if (importedIds.length > 0) {
         aztec.updateOwnedCards(prev => [...prev, ...importedIds]);
       }
     } catch (err) {
       console.error(`[useGameSettlement] ${label}: Failed to import notes:`, err);
     }
-  }, [aztec.wallet, aztec.accountAddress, aztec.nodeClient, aztec.updateOwnedCards]);
+  }, [aztec.accountAddress, aztec.nodeClient, aztec.updateOwnedCards]);
 
   // Import notes received from opponent via WebSocket
   useEffect(() => {
@@ -156,18 +164,23 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     setOpponentSettled(true);
 
     (async () => {
-      await importNotes(txHash, notes, 'Loser import');
+      // Standalone (not inside a tx queue item) — enqueue via `pxe.*`.
+      await importNotes(pxe, txHash, notes, 'Loser import');
 
       // Settlement mints +20 ArenaToken to the loser via mint_reward — a
       // create_and_push note the loser's passive block scan never discovers.
       // Import it explicitly (like the cards): its randomness is derived from
       // the loser's OWN per-game randomness, so recompute + import_note.
       const myRandomness = session.getSettlementInfo()?.gameRandomness;
-      if (aztec.wallet && aztec.nodeClient && myRandomness && myRandomness.length === 6) {
-        await importTokenRewardNote(
-          aztec.wallet, aztec.nodeClient, aztec.accountAddress!,
-          txHash, GAME_TOKEN_REWARD, myRandomness,
-        ).catch((e) => console.warn('[useGameSettlement] loser token reward import failed:', e));
+      if (aztec.nodeClient && aztec.accountAddress && myRandomness && myRandomness.length === 6) {
+        const tokenEffect = await fetchTxEffectData(aztec.nodeClient, txHash);
+        if (tokenEffect) {
+          await pxe.importTokenRewardNote(
+            aztec.accountAddress, txHash, GAME_TOKEN_REWARD, myRandomness, tokenEffect,
+          ).catch((e: unknown) => console.warn('[useGameSettlement] loser token reward import failed:', e));
+        } else {
+          console.warn('[useGameSettlement] loser token reward: TxEffect unavailable, skipping import');
+        }
       } else {
         console.warn('[useGameSettlement] loser token reward: missing randomness/node, skipping import');
       }
@@ -243,7 +256,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     // persists across navigation.
     const capturedGameId = ws.gameId;
     const capturedPlayerNumber = ws.playerNumber;
-    const w = requireWallet(aztec.wallet);
+    requireWallet(aztec.wallet);
     const addr = requireAccountAddress(aztec.accountAddress);
     const capturedImportNotes = importNotes;
     const capturedRelayNoteData = (txHash: string, notes: PlaintextNoteData[]) =>
@@ -258,12 +271,12 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     setSettleError(null);
     setSettleTxHash(null);
 
-    txManager.runTx({
+    runPxeTx({
       type: 'settle_game',
       label: 'Settling game...',
       gameId: capturedGameId,
 
-      execute: async (setPhase) => {
+      execute: async (ops, setPhase) => {
         // ── Wait for both players to be on-chain (phase: active) ──────
         if (session.getPhase() !== 'active') {
           console.log('[useGameSettlement] Game not yet active on-chain (phase:', session.getPhase(), ') — waiting...');
@@ -293,7 +306,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
         if (!sInfo) throw new Error('Settlement info not available (pipeline incomplete)');
 
         // Both players are on-chain (guaranteed by active phase wait above).
-        const { Fr, AztecAddress } = await ensureContracts(w);
+        const { Fr, AztecAddress } = await loadSdk();
         const liveOnChainGameId = sInfo.onChainGameId;
 
         // ── Wait for all move proofs ───────────────────────────────────
@@ -371,10 +384,6 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
 
         setPhase('sending');
 
-        const contract = contractCache.gameContract;
-        if (!contract) throw new Error('Game contract not initialized');
-
-        const senderAddr = AztecAddress.fromString(addr);
         const opponent = AztecAddress.fromString(capturedOpponentAddress);
 
         const callerRandomness = capturedGameRandomness.map(v => toFrUtil(Fr, v));
@@ -387,31 +396,29 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
         const hp2ProofData = toFrArr(handProof2.proof);
         const hp2InputData = handProof2.publicInputs.map(toFrHex);
 
-        const { receipt } = await contract.methods
-          .process_game(
-            toFrUtil(Fr, liveOnChainGameId),
-            handVkFields,
-            moveVkFields,
-            hp1ProofData, hp1InputData,
-            hp2ProofData, hp2InputData,
-            mp[0], mi[0], mp[1], mi[1], mp[2], mi[2],
-            mp[3], mi[3], mp[4], mi[4], mp[5], mi[5],
-            mp[6], mi[6], mp[7], mi[7], mp[8], mi[8],
-            opponent,
-            new Fr(BigInt(selectedCardId)),
-            padToHand(Fr, capturedCardIds),
-            padToHand(Fr, capturedOpponentCardIds),
-            callerRandomness,
-            opponentRandomness,
-          )
-          .send({ from: senderAddr, fee: { gasSettings: await gasSettingsWithHeadroom(aztec.nodeClient as BaseFeeNode) }, wait: { timeout: AZTEC_SETTLE_TX_TIMEOUT } });
-
-        const hash = receipt?.txHash?.toString();
-        if (!hash) throw new Error('Settlement tx returned no txHash');
+        // Ordered process_game arguments — the caller owns the proof transcript
+        // + VK fields; the contract is resolved and invoked inside pxe.ts.
+        const processArgs = [
+          toFrUtil(Fr, liveOnChainGameId),
+          handVkFields,
+          moveVkFields,
+          hp1ProofData, hp1InputData,
+          hp2ProofData, hp2InputData,
+          mp[0], mi[0], mp[1], mi[1], mp[2], mi[2],
+          mp[3], mi[3], mp[4], mi[4], mp[5], mi[5],
+          mp[6], mi[6], mp[7], mi[7], mp[8], mi[8],
+          opponent,
+          new Fr(BigInt(selectedCardId)),
+          padToHand(Fr, capturedCardIds),
+          padToHand(Fr, capturedOpponentCardIds),
+          callerRandomness,
+          opponentRandomness,
+        ];
+        const hash = await ops.sendProcessGame(addr, processArgs, { node: aztec.nodeClient, timeoutMs: AZTEC_SETTLE_TX_TIMEOUT });
         return { hash, callerRandomness, opponentRandomness, capturedCardIds, capturedOpponentCardIds };
       },
 
-      postEffects: async (result) => {
+      postEffects: async (result, ops) => {
         const { hash, callerRandomness, opponentRandomness, capturedCardIds, capturedOpponentCardIds } = result;
         setSettleTxHash(hash);
         setSettleTxStatus('confirmed');
@@ -445,7 +452,8 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
         }
 
         capturedRelayNoteData(hash, opponentNotes);
-        await capturedImportNotes(hash, callerNotes, 'Winner import');
+        // Winner import runs INLINE inside this tx's queue item (ops facade).
+        await capturedImportNotes(ops, hash, callerNotes, 'Winner import');
 
         // Refresh token balance (settlement mints 20 Arena Tokens to winner).
         // Small delay to ensure PXE has synced the block with the token notes.
@@ -479,7 +487,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     session.transitionPhase('settling');
     setIsClaimingAbandoned(true);
 
-    const w = requireWallet(aztec.wallet);
+    requireWallet(aztec.wallet);
     const addr = requireAccountAddress(aztec.accountAddress);
     // Backfill from latest ws state (same init race as handleSettle)
     const sInfo = session.backfillSettlementInfoFromWs();
@@ -510,17 +518,16 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
 
     try {
       // Step 1: claim_abandoned_game
-      await txManager.runTx<string>({
+      await runPxeTx<string>({
         type: 'claim_abandoned_game',
         label: 'Claiming abandoned game...',
         gameId: ws.gameId ?? undefined,
-        execute: async (setPhase) => {
+        execute: async (ops, setPhase) => {
           setPhase('proving');
 
           const { loadProveHandCircuit, loadGameMoveCircuit, loadDummyMoveCircuit } = await import('../aztec/circuitLoader');
           const { UltraHonkBackend } = await import('@aztec/bb.js');
           const { getBarretenberg } = await import('../aztec/proofBackend');
-          const { ensureContracts } = await import('../aztec/contracts');
 
           const [handArtifact, moveArtifact, dummyArtifact] = await Promise.all([
             loadProveHandCircuit(),
@@ -539,7 +546,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
             dummyBackend.getVerificationKey(),
           ]);
 
-          const { Fr, AztecAddress } = await ensureContracts(w);
+          const { Fr } = await loadSdk();
 
           const toFrArr = (b64: string) => base64ToFrArray(Fr, b64);
           const toFrHex = (hex: string) => hexToFr(Fr, hex);
@@ -587,30 +594,22 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
 
           setPhase('sending');
 
-          const contract = contractCache.gameContract;
-          if (!contract) throw new Error('Game contract not initialized');
-
-          const senderAddr = AztecAddress.fromString(addr);
-
-          const { receipt } = await contract.methods
-            .claim_abandoned_game(
-              toFrUtil(Fr, capturedOnChainGameId),
-              new Fr(BigInt(numValid)),
-              capturedPlayerNumber === 1,
-              bytesToFrArray(Fr, handVk),
-              bytesToFrArray(Fr, moveVk),
-              bytesToFrArray(Fr, dummyVk),
-              toFrArr(handProof1.proof), handProof1.publicInputs.map(toFrHex),
-              toFrArr(handProof2.proof), handProof2.publicInputs.map(toFrHex),
-              allProofs[0], allInputs[0], allProofs[1], allInputs[1],
-              allProofs[2], allInputs[2], allProofs[3], allInputs[3],
-              allProofs[4], allInputs[4], allProofs[5], allInputs[5],
-              allProofs[6], allInputs[6], allProofs[7], allInputs[7],
-              allProofs[8], allInputs[8],
-            )
-            .send({ from: senderAddr, fee: { gasSettings: await gasSettingsWithHeadroom(aztec.nodeClient as BaseFeeNode) }, wait: { timeout: AZTEC_TX_TIMEOUT } });
-
-          return receipt?.txHash?.toString() ?? '';
+          const claimArgs = [
+            toFrUtil(Fr, capturedOnChainGameId),
+            new Fr(BigInt(numValid)),
+            capturedPlayerNumber === 1,
+            bytesToFrArray(Fr, handVk),
+            bytesToFrArray(Fr, moveVk),
+            bytesToFrArray(Fr, dummyVk),
+            toFrArr(handProof1.proof), handProof1.publicInputs.map(toFrHex),
+            toFrArr(handProof2.proof), handProof2.publicInputs.map(toFrHex),
+            allProofs[0], allInputs[0], allProofs[1], allInputs[1],
+            allProofs[2], allInputs[2], allProofs[3], allInputs[3],
+            allProofs[4], allInputs[4], allProofs[5], allInputs[5],
+            allProofs[6], allInputs[6], allProofs[7], allInputs[7],
+            allProofs[8], allInputs[8],
+          ];
+          return ops.sendClaimAbandonedGame(addr, claimArgs, { node: aztec.nodeClient, timeoutMs: AZTEC_TX_TIMEOUT });
         },
       });
 
@@ -639,48 +638,38 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
       if (capturedWsGameId) ws.notifySettleStarted(capturedWsGameId, claimedCardId);
 
       // Step 3: settle_abandoned_game
-      await txManager.runTx<{ hash: string; callerRandomness: any[] }>({
+      await runPxeTx<{ hash: string; callerRandomness: any[] }>({
         type: 'settle_abandoned_game',
         label: 'Settling abandoned game...',
         gameId: ws.gameId ?? undefined,
-        execute: async (setPhase) => {
+        execute: async (ops, setPhase) => {
           setPhase('sending');
 
-          const { ensureContracts } = await import('../aztec/contracts');
-          const { Fr, AztecAddress } = await ensureContracts(w);
-
-          const contract = contractCache.gameContract;
-          if (!contract) throw new Error('Game contract not initialized');
-
-          const senderAddr = AztecAddress.fromString(addr);
+          const { Fr, AztecAddress } = await loadSdk();
           const opponent = AztecAddress.fromString(capturedOpponentAddress);
           const callerRandomness = capturedGameRandomness!.map(v => toFrUtil(Fr, v));
 
-          const { receipt } = await contract.methods
-            .settle_abandoned_game(
-              toFrUtil(Fr, capturedOnChainGameId!),
-              padToHand(Fr, capturedCardIds),
-              callerRandomness,
-              padToHand(Fr, capturedOpponentCardIds),
-              new Fr(BigInt(claimedCardId)),
-              opponent,
-            )
-            .send({ from: senderAddr, fee: { gasSettings: await gasSettingsWithHeadroom(aztec.nodeClient as BaseFeeNode) }, wait: { timeout: AZTEC_TX_TIMEOUT } });
-
-          const hash = receipt?.txHash?.toString();
-          if (!hash) throw new Error('Settlement tx returned no txHash');
+          const settleArgs = [
+            toFrUtil(Fr, capturedOnChainGameId!),
+            padToHand(Fr, capturedCardIds),
+            callerRandomness,
+            padToHand(Fr, capturedOpponentCardIds),
+            new Fr(BigInt(claimedCardId)),
+            opponent,
+          ];
+          const hash = await ops.sendSettleAbandonedGame(addr, settleArgs, { node: aztec.nodeClient, timeoutMs: AZTEC_TX_TIMEOUT });
           return { hash, callerRandomness };
         },
-        postEffects: async (result) => {
+        postEffects: async (result, ops) => {
           const { hash, callerRandomness } = result;
           console.log('[useGameSettlement] Abandoned game settled, txHash:', hash);
 
-          // Import caller's returned cards
+          // Import caller's returned cards (inline within this tx's queue item)
           const callerNotes: PlaintextNoteData[] = [];
           for (let i = 0; i < capturedCardIds.length && i < 5; i++) {
             callerNotes.push({ tokenId: capturedCardIds[i], randomness: toHexString(callerRandomness[i]) });
           }
-          await importNotes(hash, callerNotes, 'Abandoned game recovery');
+          await importNotes(ops, hash, callerNotes, 'Abandoned game recovery');
 
           // QA-F3: report the MINED settlement to the relay — the server
           // releases both players' room bindings on receipt and replies with

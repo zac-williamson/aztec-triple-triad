@@ -61,10 +61,11 @@ describe('pxe — serial-queue door', () => {
   it('runPxeTx runs ops INLINE within the tx item (no re-enqueue)', async () => {
     h.runTx.mockImplementation(async ({ execute }: { execute: (sp: unknown) => unknown }) => execute(vi.fn()));
 
-    const balance = await runPxeTx(
-      { type: 'create_game', label: 'test' },
-      (ops) => ops.readTokenBalance('0xACC'),
-    );
+    const balance = await runPxeTx({
+      type: 'create_game',
+      label: 'test',
+      execute: (ops) => ops.readTokenBalance('0xACC'),
+    });
 
     expect(h.runTx).toHaveBeenCalledTimes(1);
     expect(h.enqueuePxe).not.toHaveBeenCalled(); // inline — would deadlock if it re-enqueued
