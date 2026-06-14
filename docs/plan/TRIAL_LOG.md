@@ -901,3 +901,24 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   - 2-game confirmation run now in flight with the watchdog as safety net. When it concludes I will
     verify via browser-log mtime + on-chain txCount (NOT the STATUS) whether it finally clears packs
     and reaches the consecutive games — the carryover bug class is still the unreached goal.
+
+## 06-13 — RE-VERIFICATION: confirmation run HUNG again; post-pack hang is NOT WebGL; guards STILL miss it
+- Zac asked me to validate lane-8 was genuinely working / not stale outputs. I nearly mis-called it:
+  first artifact sample LOOKED fresh (browser logs written 14s prior), but RE-SAMPLING 3.7 min later
+  showed content frozen at the SAME line (23:16:35) — mtime 23:16, unchanged across a 5-min span,
+  playwright process still alive + sandbox txCount:0 = a zombie. LESSON (reinforced): one "fresh"
+  sample is not enough — re-sample to confirm the tail is ADVANCING, not just recently-written.
+- Corrected diagnosis (verified via artifacts):
+  - lane-8's WebGL fix WORKED for WebGL: 0 `Context Lost`; probe `[webgl@after-packs] live=0 created=0
+    lost=0` both players. Isolated-process + Canvas-off eliminated the GPU crash. KEEP.
+  - BUT the post-pack hang PERSISTS with ZERO WebGL contexts → the real pack→matchmaking freeze was
+    NEVER (only) WebGL. Page dies right after pack-import + a burst of `ensureContracts(cached=true)`.
+  - The watchdog + withTimeout STILL did not fire (frozen ~5 min). Likely: a frozen-page
+    `page.evaluate` neither returns nor rejects, so a guard that AWAITS one (watchdog ping) hangs too.
+    Needs a Node-side timer that fires regardless of page state, proven against a frozen page.
+- Action: killed the zombie (ports free), appended an ORCHESTRATOR RE-VERIFICATION section to
+  BUG_WEBGL_HANG.md, redirected lane-8: root-cause the NON-WebGL post-pack freeze + fix the guards
+  (Node-timer, proven vs a frozen page); don't declare fixed until a frozen page fails-fast AND a
+  clean run reaches the games (txCount>0). lane-8 processing it (was mid iter6).
+- Net: the multi-game carryover bug class is STILL not reached; harness/env blocker count now includes
+  a non-WebGL post-pack freeze + guards that don't catch a frozen page.
