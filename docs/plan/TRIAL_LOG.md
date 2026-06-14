@@ -785,3 +785,34 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   via MULTIGAME_GAMES), MenuScene page-degradation fixed (gated off under VITE_TESTKIT), 2-game
   confirmation run in flight. Its STATUS = `working` (in progress) → per the new discipline, LEAVE IT
   ALONE to complete and surface the real carryover bugs (7 candidates). Hours-per-run is accepted.
+
+## 06-13 — Zac heuristics audit of the playtest harness → flake-mask + leaky queue (VERIFIED, dispatched)
+- Zac: "validate the playtest agent is not violating my heuristics (no fallbacks/workarounds around
+  flaky code; no leaky abstractions)." Audited the committed harness against ground truth.
+- VIOLATION (clear): `expectEventually` (playtest player.ts:268-289) catches a THROWN read, labels it
+  "not yet", and keeps polling — the banned "expect failure and thrash until it works" pattern. Used
+  all over multi-game.spec (126,131,279-293). Zac confirmed forcefully: must WORK UNCONDITIONALLY.
+- ROOT CAUSE (verified, not the harness): frontend `useAztec.ts:183` `refreshTokenBalance` calls
+  `get_balance().simulate()` DIRECTLY — NOT via `txManager.enqueuePxe` — and L198-220 fires it in a
+  15× timer poll on every connect. Unqueued read races the serial queue → IDB `TransactionInactiveError`
+  (breaks ground rule #6). testkit reads, by contrast, ARE queued (testkit/api.ts:98,122). That throw
+  is what the harness was masking.
+- DEEPER LEAK (Zac's escalation): the serial queue is BYPASSABLE — `contracts.ts:15-33` exports
+  `contractCache` with the raw game/nft/token contract instances (+wallet), so any module can
+  `.simulate()/.send()` off-queue. The invariant "all PXE serial" is convention-only = leaky abstraction.
+- Secondary: leaky two-balance-method (`tokenBalance()` footgun "races the poll" vs preferred
+  `tokenBalanceApp()`; footgun still live in full-game.spec L78/175/220). Borderline: MenuScene
+  testkit-gate (defensible test-env adaptation; prod statically unaffected; but hides WebGL churn).
+- SOUND (not rot): `withDeadline`/`withTimeout` are correct fail-fast (setTimeout→reject); spec stops
+  at first failing game with per-lane attribution; real 15-card packs (no disjoint-deck sidestep);
+  `waitPhase` catches ONLY to enrich-and-rethrow.
+- ACTION (dispatched + confirmed via direct pane capture):
+  - Wrote `docs/plan/PXE_QUEUE_ENFORCEMENT.md`; routed **lane-2** → Stage 1: enqueue refreshTokenBalance
+    (stop the bleeding); Stage 2: make the queue the ONLY door — private contracts, export only queued
+    named ops, ESLint guard banning `.simulate(`/`.send(` outside the PXE module, migrate all callers,
+    remove now-dead race-era error swallowing. lane-2 WORKING.
+  - **lane-8** → rip out `expectEventually`'s retry-on-throw (a thrown read = FATAL; poll only for
+    value-not-yet-equal), kill the balance-method leak + migrate full-game.spec, rebase after lane-2.
+    Directive queued (lane busy building spec).
+  - Recommended enforcement = encapsulation (private contracts + named queued ops) + ESLint guard;
+    Proxy auto-enqueue offered as exfiltration-proof option if wanted.
