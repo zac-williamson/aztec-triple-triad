@@ -30,6 +30,13 @@ export default defineConfig({
   ],
   server: {
     port: 3000,
+    // Under the playtest harness (VITE_TESTKIT) disable HMR. Heavy client-side
+    // proving blocks the page's main thread long enough for the HMR websocket
+    // to miss its ping; the vite client then declares "server connection lost"
+    // and RELOADS the page mid-session, after which the PXE re-init hangs on
+    // interrupted IndexedDB state (the multi-game zombie-hang). The harness
+    // never live-edits, so HMR is pure liability. Prod/dev are unaffected.
+    hmr: process.env.VITE_TESTKIT === '1' ? false : undefined,
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       // 'require-corp' enables SharedArrayBuffer in all browsers including Safari.
