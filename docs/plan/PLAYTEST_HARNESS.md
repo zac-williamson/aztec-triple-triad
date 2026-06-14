@@ -505,12 +505,15 @@ NOT manifest on the merged 4.3.1 stack.
     HTTP connection to the node is reset, and the post-proving send hits a dead
     socket. **Correlation = regression**: onboarding was reliable PRE-merge
     (Phase-1/4.3.1 + iter6/7) but ~50% POST-merge (iter8 ✓, iter9 ✗, iter10 ✓
-    GREEN, iter11 ✗). The merged lane-2 `useAztec` change refactored the deploy
-    (`deployAndRegister(prepared, ops, …)`) and **removed a `15× connect poll`**
-    that plausibly kept the connection warm during onboarding. NOT the harness:
-    alice fails FIRST, before bob's isolated process even launches. Route to
-    lane-2: keep the node connection warm across the deploy-proving block (or
-    survive idle) AND retry/reconnect on a transient drop instead of dead-ending.
+    GREEN, iter11 ✗). NOT the harness: alice fails FIRST, before bob's isolated
+    process even launches. **Cause (corrected by Zac):** there is NO keepalive on
+    the node connection during the multi-minute client-side deploy+mint proof, so
+    a transient drop during that window kills it and `useAztec` dead-ends with no
+    reconnect. (My earlier "removed `15× connect poll`" attribution was WRONG — that
+    poll still exists at `useAztec.ts:202` and runs POST-connect for token-sync, so
+    it is irrelevant to onboarding.) Route to lane-2: keepalive on the node
+    connection across the deploy-proof block AND reconnect on a transient drop
+    instead of dead-ending.
     The harness adds NO retry (no-masking). C-multi logic is GREEN (iter10, real +
     verified); repeatability is blocked on this fix.
     **CORROBORATED — it's the merge, not my isolated-process model.** Ran
@@ -521,7 +524,8 @@ NOT manifest on the merged 4.3.1 stack.
     isolated-process models at the same rate → not the isolated-process change,
     the merge. The reset time is VARIABLE (58 s … 180 s) → a transient connection
     drop at any point in onboarding, not a fixed idle timeout — so the fix is
-    reconnect/retry resilience in `useAztec`, not just a longer keep-alive.
+    keepalive on the node connection during the deploy-proof + reconnect on drop
+    (lane-2 owns this; "keepalive-first, no mask" per Zac).
 
 ## Carryover hypothesis matrix (C-multi prep — root-cause the FIRST failure instantly)
 
