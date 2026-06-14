@@ -877,3 +877,27 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   25-min dead-page stall (page.evaluate on a context-lost page slips withTimeout/withDeadline). No masking.
 - The real multi-game carryover bug class is STILL not reached — every blocker so far has been
   harness/environment (vite optimize, fee headroom, MenuScene, IDB race, now WebGL context loss).
+
+## 06-13 — PXE Stage 2 COMPLETE (ckpt3 merged); lane-8 WebGL root-cause verified
+- ckpt3 `dc4d8d1` → testnet `893f341`. Stage 2 DONE: serial PXE queue is the only door AND
+  CI-enforced. Gate-reviewed + VERIFIED myself: ran `pxe.sourceGuard.test.ts` (greps prod sources,
+  signal `.methods.`/`.simulate(`/`contractCache`, exempts pxe.ts+testkit+contracts.ts, asserts
+  >20 files scanned) — clean tree 3/3; then PLANTED a `.methods.`+`contractCache` violation → both
+  rules failed with file:line; removed → 3/3 again. Dead-catch removal grep-confirmed (no
+  `refreshTokenBalance().catch` / "Failed to fetch token balance" left). tsc clean, 326 tests green
+  (full suite run). Proxy skipped (decision C). Zac's "PXE cannot be accessed except via the queue"
+  is fully delivered + regression-proofed. lane-2 acked → standing by.
+- lane-8 WebGL hang RESOLVED (verified against code, not just BUG_WEBGL_HANG.md RESOLUTION):
+  - Root cause (Problem 1): instrumented — both tabs lost WebGL context 16-56ms apart then froze
+    together = ONE shared GPU process crashing under sustained ClientIVC proving, NOT a per-tab R3F
+    leak. So it is two-tab GPU exhaustion (HARNESS), nothing to file vs lane-2/6. Fix verified in
+    code: `src/browser.ts launchIsolatedBrowser` + `player.ts` launches one isolated Chromium
+    PROCESS per player, `installWebglProbe` (addInitScript, per-phase live-context count),
+    MenuScene-off + pack-Canvas-off → ≤1 live context/process.
+  - Root cause (Problem 2): guards only fired at the 25-min proof-budget ceiling (a wedged page
+    limps). Fix verified: `startWatchdog` + `page.on('crash')→declareDead` + a `driver.dead` promise
+    raced by withDeadline/waitPhase → ~2-min fail-fast on crash / context-lost-120s / dead pings.
+    This is fail-fast, NOT a mask.
+  - 2-game confirmation run now in flight with the watchdog as safety net. When it concludes I will
+    verify via browser-log mtime + on-chain txCount (NOT the STATUS) whether it finally clears packs
+    and reaches the consecutive games — the carryover bug class is still the unreached goal.
