@@ -185,7 +185,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
         console.warn('[useGameSettlement] loser token reward: missing randomness/node, skipping import');
       }
 
-      await aztec.refreshTokenBalance().catch(() => {});
+      await aztec.refreshTokenBalance();
     })();
 
     // Settlement complete on loser side — release the game lifecycle
@@ -224,7 +224,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
         // before querying token balance (token notes use ONCHAIN_CONSTRAINED
         // delivery which requires PXE block sync to discover).
         await new Promise(r => setTimeout(r, 5000));
-        aztec.refreshTokenBalance().catch(() => {});
+        aztec.refreshTokenBalance();
       },
     });
 
@@ -458,7 +458,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
         // Refresh token balance (settlement mints 20 Arena Tokens to winner).
         // Small delay to ensure PXE has synced the block with the token notes.
         await new Promise(r => setTimeout(r, 3000));
-        aztec.refreshTokenBalance().catch(() => {});
+        aztec.refreshTokenBalance();
 
         // Game's on-chain lifecycle is complete — mark idle so the pipeline
         // effect won't re-trigger a spurious create_game on navigation.
@@ -678,7 +678,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           if (capturedWsGameId) ws.notifyAbandonedGameSettled(capturedWsGameId);
 
           // Refresh token balance (abandoned game settlement may mint tokens)
-          aztec.refreshTokenBalance().catch(() => {});
+          aztec.refreshTokenBalance();
 
           session.transitionPhase('idle');
           setIsClaimingAbandoned(false);

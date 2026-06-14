@@ -178,18 +178,13 @@ export function useAztec(): UseAztecReturn {
 
   const refreshTokenBalance = useCallback(async () => {
     if (!walletRef.current || !accountAddress || !AZTEC_CONFIG.tokenContractAddress) return;
-    try {
-      // Serialized through the PXE queue inside pxe.readTokenBalance (ground
-      // rule #6), which also waits for contract warmup. This read fires on a
-      // 15× connect poll and after every settlement; an UNqueued simulate races
-      // queued ops → IndexedDB TransactionInactiveError (the flake the playtest
-      // harness was masking).
-      const balance = Number(await pxe.readTokenBalance(accountAddress));
-      tokenBalanceRef.current = balance;
-      setTokenBalance(balance);
-    } catch (e) {
-      console.warn('[useAztec] Failed to fetch token balance:', e);
-    }
+    // Serialized through the PXE queue inside pxe.readTokenBalance (ground rule
+    // #6), which also waits for contract warmup. The read no longer races queued
+    // ops, so it no longer throws IndexedDB TransactionInactiveError — the
+    // race-era catch→warn that swallowed it is gone, and real errors surface.
+    const balance = Number(await pxe.readTokenBalance(accountAddress));
+    tokenBalanceRef.current = balance;
+    setTokenBalance(balance);
   }, [accountAddress]);
 
   // Auto-fetch token balance when connected.
