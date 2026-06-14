@@ -11,11 +11,12 @@ gated actions remain.
 2. ✅ **DONE — DNS + TLS.** `ws.aztec-arena.com → 13.42.161.225` (Vercel-managed, updated
    via token) and certbot issued the cert. Backend live at `wss://ws.aztec-arena.com`
    (verified). Step 1 below is already complete.
-3. **Testnet contract update (NEW).** The C2 fix changed `triple_triad_game`, so the deployed
-   instance (`0x2d86…`) is stale and must be updated to the new class (address-preserving,
-   admin `update_to` — contracts are updatable) before the frontend goes live, or settlement
-   reverts. Only the game contract changed this round (NFT + token unchanged). Confirm the exact
-   update invocation against the deploy script at go-live time; verify the exact mechanism then.
+3. **Testnet contract deploy (FRESH REDEPLOY model — see UPDATE_MODEL.md).** Updates are a complete
+   fresh `deploy-testnet.ts` of all 3 contracts (immediate, new addresses) — NOT the Aztec upgrade
+   pattern (that path is clamped to a 24h delay on this rollup; the `update_to`/`set_update_delay`
+   slop is being removed). Fresh deploy is all-3-together (NFT stores the game addr as
+   PublicImmutable). `deploy-testnet.ts` writes the new addresses to `packages/frontend/.env.testnet`;
+   then update the Vercel prod env to those **new** addresses + redeploy.
 
 Until the frontend is validated AND the contract is updated, do not publish — an interim
 deploy would point the app at an unvalidated build / stale contract.

@@ -440,3 +440,58 @@ compiled JSON into `frontend/public/contracts/`, and answering proof-shape quest
     21-field (pre-C2) and 23-field (mask-era) preimages. Lane 2 must revert its
     note-28 mask code and mirror original-owners (LANE_2_FRONTEND.md note 30); not
     end-to-end until that lands in the same merge.
+
+### Go-live: address-preserving testnet class update (2026-06-13)
+
+41. **Updated the live game contract to the round-2 class WITHOUT address churn**
+    via `scripts/update-game-class-testnet.ts` (admin = deployer). Flow: compute
+    the new class id from the artifact, `publishContractClass` (register the new
+    class on-chain), then the instance's admin-only `update_to(new_class_id)`.
+    - Instance (UNCHANGED): `0x2d8675fc746e38ff6606cae2836c0cd0fa1693b12edb56396f83a530109b75f4`
+      — so `.env.testnet` + README addresses do NOT change.
+    - New (round-2) class id: `0x1e841b1e5554e2b647d3cf92b27354fff0ea947d49c7b7a63a9aff67cf13f690`.
+    - Old (pre-C2 owner-blind) class: `0x236405f73a97cc46d12399783b508719184a9fff108d8f10e8c553e047335e3f`.
+    - Txs (both mined/checkpointed): publish `0x24b5bafb…` (block 114432),
+      `update_to` `0x15fe07cf…` (block 114433).
+42. **The instance update delay is 86400s (24h), NOT 600s.** `set_update_delay(600)`
+    in `deploy-testnet.ts` is below the protocol-enforced minimum, so the registry
+    applied 86400s. From the `ContractInstanceUpdatedEvent.timestampOfChange`, the
+    class flips at **unix 1781477988 = 2026-06-14T22:59:48Z** (~24h after update_to).
+    Until then `currentContractClassId` stays the old class (verified). Re-run
+    `scripts/verify-game-update-testnet.ts` after that time to confirm the flip
+    (single getContract query, no polling). **Implication for go-live: playtest
+    attempt 7 against testnet can't exercise the fix until ~24h out** — local
+    sandbox is unaffected. To shorten future class swaps, raise the deploy's
+    `set_update_delay` understanding (the floor here is 24h on this rollup).
+43. **To CALL `update_to` on the live instance you must register it with the
+    DEPLOYED (old) artifact** — the PXE validates the artifact against the
+    instance's current class. The script loads it from `DEPLOYED_ARTIFACT`
+    (default `/tmp/ttg_deployed.json`); regenerate with
+    `git show 321f73c:packages/contracts/target/triple_triad_game-TripleTriadGame.json`.
+    `update_to` is identical across both classes, so calling via the old artifact
+    is correct. Pitfall avoided: `.send({…wait})` already resolves to the receipt —
+    do not chain `.wait()`.
+
+### Update model REVERSED: fresh redeploy, not the upgrade pattern (2026-06-13)
+
+44. **Zac reversed "make updatable" (notes 30, 41–43 are SUPERSEDED).** The Aztec
+    contract-class upgrade path carries an enforced 24h delay on this rollup (note
+    42) — unacceptable for active dev. New standing model (docs/plan/UPDATE_MODEL.md):
+    a code update = **fresh redeploy of all 3 contracts** (new addresses, immediate),
+    `deploy-testnet.ts` wires the cross-refs + writes `.env` and `.env.testnet`.
+    - Stripped `update_to` / `set_update_delay` / `ContractInstanceRegistry` (import,
+      `use`, and the `contract_instance_registry` Nargo.toml dep) from ALL 3
+      contracts; kept everything else incl. the C2 round-2 original-owner fix.
+      Removed the 3 arena_token upgradeability tests; removed the `set_update_delay`
+      activation block from `deploy-testnet.ts`; deleted the update/verify scripts.
+      `admin` storage is kept (constructor signature stable) but now unused (warning).
+    - `aztec compile` clean; TXE: game 9/9, token 11/11 (was 14, −3 removed), nft 17/17.
+    - **Fresh-deployed all 3 to testnet (immediate, address churn — the old
+      `0x2d86…` game and its scheduled 24h update are abandoned). NEW addresses:**
+      - NFT:   `0x0a191688e1f460ed720f6e7eabeca5b4933c675054871421be58db185f617cf9`
+      - Game:  `0x21793d5ec7ee711a92ba0401990f5cfca79b17798f760e9dfc2b928233537cb3`
+      - Token: `0x2a6bfcc292b4b1c7ec5d90c84ce00c4653df241f60a33461c65968ace63a3879`
+      - Deployer (reused): `0x2ddf3c4fdbb8a954343f3bc3c8cd455b2b66256eedbd1a8164c2033a1ac5026e`
+    - Written to `.env.testnet` + README; frontend `public/contracts/` artifacts
+      refreshed by the deploy. Lanes 2/4/6 must repoint to the new addresses; Zac
+      updates Vercel env + redeploys. The C2 fix is now LIVE immediately (no 24h wait).

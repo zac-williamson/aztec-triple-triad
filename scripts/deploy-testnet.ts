@@ -372,16 +372,9 @@ async function main() {
   await tokenContract.methods.set_game_contract(gameContract.address).send(await sendAs(deployerAddress));
   console.log('Done.');
 
-  // 4b. Activate upgradeability: set a 600s (= MINIMUM_UPDATE_DELAY) update delay
-  //     on each instance, as the admin/minter (the deployer). The contracts are
-  //     updatable via their update_to entrypoint; this configures the timelock
-  //     and exercises the ContractInstanceRegistry path live. Serial per wallet.
-  //     So future code fixes are address-preserving class updates, not redeploys.
-  console.log('\nActivating upgradeability (set_update_delay = 600s, serial)...');
-  await nftContract.methods.set_update_delay(600).send(await sendAs(deployerAddress));
-  await gameContract.methods.set_update_delay(600).send(await sendAs(deployerAddress));
-  await tokenContract.methods.set_update_delay(600).send(await sendAs(deployerAddress));
-  console.log('Upgradeability activated.');
+  // Contracts are NOT updatable: a "code update" is a fresh redeploy (new
+  // addresses, immediate), not the Aztec contract-class upgrade pattern (which
+  // carries an enforced 24h delay on this rollup). See docs/plan/UPDATE_MODEL.md.
 
   // 5. Write .env
   const wsPort = process.env.WS_PORT || '5174';
@@ -394,9 +387,14 @@ VITE_AZTEC_ENABLED=true
 VITE_WS_URL=ws://localhost:${wsPort}
 `;
 
-  const envPath = resolve(ROOT_DIR, 'packages/frontend/.env');
-  writeFileSync(envPath, envContent);
-  console.log(`\nAddresses written to ${envPath}`);
+  // Write both .env (local dev default) and .env.testnet (the committed testnet
+  // config the frontend / Vercel build reads) so a fresh redeploy is immediately
+  // live without a manual copy (UPDATE_MODEL.md: fresh deploy is the update path).
+  for (const rel of ['packages/frontend/.env', 'packages/frontend/.env.testnet']) {
+    const p = resolve(ROOT_DIR, rel);
+    writeFileSync(p, envContent);
+    console.log(`\nAddresses written to ${p}`);
+  }
 
   console.log('\n=== Deployment Complete ===');
   console.log(`NFT:   ${nftContract.address}`);

@@ -56,8 +56,8 @@ export class PlayerDriver {
 
   async phase(): Promise<PhaseSnapshot> {
     // Even the synchronous snapshot is a page.evaluate; if the page's JS event
-    // loop is blocked (e.g. an IndexedDB conflict from the app's unqueued
-    // get_balance poll racing a PXE read) the evaluate never returns. Bound it.
+    // loop is blocked, the evaluate never returns. Bound it so a stall fails
+    // fast rather than zombie-hanging.
     const snapshot = await this.withTimeout(
       this.page.evaluate(() => window.__triadTest!.phase()), TIMEOUTS.evaluate, 'phase()');
     if (!snapshot) throw new Error(`${this.name}: testkit bridge has not published yet`);

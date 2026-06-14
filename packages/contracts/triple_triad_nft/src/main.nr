@@ -112,10 +112,9 @@ pub contract TripleTriadNFT {
         protocol::{
             address::AztecAddress,
             constants::{
-                CONTRACT_INSTANCE_REGISTRY_CONTRACT_ADDRESS, DOM_SEP__NOTE_HASH,
+                DOM_SEP__NOTE_HASH,
                 DOM_SEP__NOTE_NULLIFIER, MAX_NOTE_HASHES_PER_TX,
             },
-            contract_class_id::ContractClassId,
             hash::{compute_siloed_nullifier, poseidon2_hash, poseidon2_hash_with_separator},
             traits::{Hash, Packable, ToField},
         },
@@ -123,7 +122,6 @@ pub contract TripleTriadNFT {
         utils::comparison::Comparator,
     };
     use compressed_string::FieldCompressedString;
-    use contract_instance_registry::ContractInstanceRegistry;
     use field_note::FieldNote;
     use uint_note::UintNote;
 
@@ -202,29 +200,8 @@ pub contract TripleTriadNFT {
         self.storage.token_contract.initialize(token_address);
     }
 
-    // --- Upgradeability (minter only) ---
-    // Makes this instance updatable so future code fixes are applied as an
-    // address-preserving contract-class update (no redeploy / address churn).
-
-    /// Schedule an update of this instance to a new contract class. Minter only.
-    #[external("private")]
-    fn update_to(new_class_id: ContractClassId) {
-        assert(self.msg_sender() == self.storage.minter.read(), "Only minter can update");
-        self.enqueue(
-            ContractInstanceRegistry::at(CONTRACT_INSTANCE_REGISTRY_CONTRACT_ADDRESS)
-                .update(new_class_id),
-        );
-    }
-
-    /// Set this instance's update delay (>= MINIMUM_UPDATE_DELAY = 600s). Minter only.
-    #[external("private")]
-    fn set_update_delay(new_delay: u64) {
-        assert(self.msg_sender() == self.storage.minter.read(), "Only minter can set update delay");
-        self.enqueue(
-            ContractInstanceRegistry::at(CONTRACT_INSTANCE_REGISTRY_CONTRACT_ADDRESS)
-                .set_update_delay(new_delay),
-        );
-    }
+    // Updates are applied by FRESH REDEPLOY (new addresses), not the Aztec
+    // contract-class upgrade pattern. See docs/plan/UPDATE_MODEL.md.
 
     // --- Symmetric Encryption (from mpclib::common::crypto) ---
 

@@ -639,3 +639,205 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - NOT declaring C2 fixed until playtest attempt 7 confirms E2E chain assembly (gating my "done" on
   E2E evidence, not review). After lane-2 merges → trigger attempt 7. testnet is temporarily
   inconsistent (circuit 30-field, prover still 23-mask) until lane-2 lands — harmless (not run so).
+
+## 06-13 — C2 round-2 prover MERGED (318a791); fix COMPLETE across all 3; attempt 7 running
+- lane-2 prover revert (d8c787a) gate-PASSED + MERGED (318a791). Verified IN CODE the cross-peer
+  property (the analog of what I missed): encodeOriginalOwners derives original_owners purely from
+  the PUBLIC board (originalOwner → 1/2/0, circuit cell-order) → identical across peers → P1 end ==
+  P2 start → chain assembles. computeBoardStateHash 30-field, masks gone; mask-chaining +
+  placedMasks test removed; mirror tests updated. C2 round-2 COMPLETE: circuit (419f23e) + contract
+  + prover (318a791), all consistent on 30-field original-owner.
+- Triggered playtest attempt 7 — the E2E confirmation. NOT calling C2 fixed until it shows the
+  chain assembles + the full 2-player game completes. All lanes parked except playtest (attempt 7).
+
+## 06-13 — ATTEMPT 7 GREEN — C2 fix validated E2E; confirmation pass running
+- Playtest attempt 7: 4.3.1 A1+A2 acceptance gate GREEN END-TO-END (2 passed: full three-layer
+  settlement [FE+BE+chain] + loser-token sentinel). The C2 round-2 fix WORKS — the proof chain
+  assembles across the P1→P2 boundary and the full 2-player game completes on 4.3.1. The milestone.
+- Agent flagged an earlier intermittent fee race → running a CONFIRMATION pass before merging the
+  harness (rigor: not declaring done on a single possibly-flaky green — the discipline I owe). TUI
+  hiccup: a stalled paste in the playtest input wouldn't submit (Enter/Escape/C-u ignored); cleared
+  + resent fresh, confirmation rerun now running.
+- On green confirmation → merge the playtest harness (capstone: validates A1+A2 E2E). Then the only
+  remaining gates are F3 frontend go-live (Zac) + the address-preserving testnet contract update.
+
+## 06-13 — Playtest harness MERGED to testnet (squash, 3a9b625) — CAPSTONE; .artifacts blob root-caused
+- First merge attempt (--no-ff, cb58e5b, LOCAL-only) hung the push: it dragged in 225MB of
+  .artifacts test blobs from lane/8's INTERMEDIATE commits (incl. a 157MB zip GitHub hard-rejects
+  >100MB). ROOT-CAUSED, not band-aided: origin was still clean at 5129e49 (no force-push needed);
+  lane/8's FINAL tree has 0 .artifacts (gitignored at tip); the blobs lived only in old commits.
+  Fix: reset local to origin → re-merge --squash (final clean tree only, drops blob history) →
+  verified no .artifacts/large blobs staged (biggest 555KB package-lock) → pushed clean → 3a9b625,
+  origin synced 0/0.
+- CAPSTONE COMPLETE: the full A1+A2 4.3.1 upgrade AND its autonomous E2E acceptance harness are on
+  testnet. Game validated GREEN end-to-end x2 (attempts 7+8). testkit production-gated (verified
+  install.ts dynamic-import behind static-false VITE_TESTKIT → tree-shaken in prod).
+- Follow-up (low priority, lane-6, NOT go-live-blocking): committed public/ build artifacts can lag
+  target/ — Vercel build runs copy-contracts so prod refreshes; gitignore the build outputs to tidy.
+- REMAINING GATES (all Zac): F3 frontend go-live publish; address-preserving testnet contract update
+  (C2 changed triple_triad_game); Item I ship-with-launch vs fast-follow.
+
+## 06-13 — GO-LIVE (Zac: "do all of this and go-live") + comprehensive multi-game playtest
+- Zac greenlit full go-live (incl. frontend publish + Item I) — "not a big deal, just a demo game".
+- Three tracks in parallel:
+  - lane-1: ADDRESS-PRESERVING testnet update of triple_triad_game (0x2d86…) to the round-2 class
+    via update_to (deployed contract is still pre-C2 owner-blind → broken for 2 fresh players).
+    Verified update_to/set_update_delay exist; no dedicated script, so lane-1 (built the mechanism)
+    executes. ≥600s update delay.
+  - lane-8: NEW priority campaign (docs/plan/CAMPAIGN_MULTIGAME.md) — both players open a pack
+    (→15 cards), play FIVE consecutive games in ONE session, validate card-state + tokens + frontend
+    + NO carryover after each. Targets Zac's known multi-game bug class (single works, multiple break).
+  - me: Vercel go-live. Vercel project is git-connected, productionBranch=testnet → every push
+    auto-deploys www.aztec-arena.com. Set 6 production env vars (HTTP 201 each): PXE testnet,
+    new contract addresses (unchanged — address-preserving), VITE_WS_URL=wss://ws.aztec-arena.com,
+    AZTEC_ENABLED. This push rebuilds prod with the correct env (prior builds used stale April vars).
+- Pending this turn: EC2 faucet env for Item I (TREASURY_L1_KEY + FAUCET_ENABLED + uncomment
+  ReadWritePaths + restart); smoke test after the Vercel build + contract-class update land.
+  Onboarding degrades to manual FundingPrompt until the faucet is enabled (graceful).
+
+## 06-13 — GO-LIVE: www.aztec-arena.com is LIVE (frontend + backend + faucet)
+- FRONTEND: Vercel production deploy READY; www.aztec-arena.com → HTTP 200; COOP/COEP headers present
+  (WASM prover OK); round-2 build, correct testnet addresses + wss://ws.aztec-arena.com.
+- BACKEND: wss://ws.aztec-arena.com live; Item I faucet ENABLED (POST /faucet routed; HTTP 400 on bad
+  body, no bridge). Wiring: scp'd the treasury key as a BARE 66-byte key to the box (600), compiled
+  scripts/lib/feeJuiceBridge.ts → scripts/lib/dist (FEE_JUICE_BRIDGE_PATH), env FAUCET_ENABLED +
+  AZTEC_NODE_URL + FAUCET_L1_RPC_URL (publicnode Sepolia), uncommented ReadWritePaths. Two gotchas
+  hit+fixed: FEE_JUICE_BRIDGE_PATH needs compiled JS; the key file was a labeled record (extracted
+  the bare key, piped over ssh — never on a command line).
+- CONTRACT UPDATE (lane-1): STILL IN PROGRESS (~11min) — register round-2 class + update_to + ≥600s
+  delay. REQUIRED for settlement (deployed contract is still pre-C2); until it lands a live game would
+  fail at settlement. lane-1 will report.
+- MULTI-GAME PLAYTEST (lane-8): running (pack→15 cards, 5 consecutive games, per-game validation).
+- Follow-ups: add the bridge-compile step to update-backend.sh (DEPLOY.md §2g flags it); public/
+  artifact hygiene (lane-6); FAUCET_L1_RPC_URL is a public Sepolia node (swappable). NOTE: every
+  testnet push auto-redeploys the frontend (productionBranch=testnet).
+
+## 06-13 — CONTRACT UPDATE mined, but rollup enforces 24h delay (not 600s) — testnet game broken ~24h
+- lane-1 update MINED: round-2 class published (block 114432) + update_to (block 114433), address
+  0x2d86…75f4 PRESERVED. lane-1 took the efficiency feedback (trimmed verify to single-shot, no
+  polling). Tooling merged 1f4da52 (update-game-class-testnet.ts + verify-game-update-testnet.ts).
+- CRITICAL: the rollup enforces an 86400s (24h) MINIMUM update delay; deploy-testnet.ts's
+  set_update_delay(600) was clamped to 24h. Class flips 2026-06-14T22:59:48Z (~24h); NOT flipped
+  yet (current still old 0x2364…). ⇒ On the LIVE testnet site a full game CANNOT settle until the
+  flip — frontend now emits round-2 (30-field original-owner) proofs but the deployed contract is
+  still pre-C2 → settlement mismatch. Self-heals at T. LOCAL sandbox unaffected (fresh round-2
+  deploy) → the multi-game playtest (lane-8) still validates the fix.
+- DECISION SURFACED TO ZAC (churn vs wait): (A) wait ~24h — address-preserving, zero work, game
+  works at T; (B) fresh-deploy the round-2 game contract NOW — new game address → update
+  VITE_GAME_CONTRACT_ADDRESS + Vercel redeploy; works immediately, one-time address change.
+  Recommend A unless the demo must work in the next 24h.
+- Minor follow-up: add a Vercel ignore-build-step so docs-only testnet pushes stop auto-redeploying.
+
+## 06-13 — DIRECTIVE: FRESH-REDEPLOY update model; rip out the updatable/upgrade pattern (Zac)
+- Zac reversed the earlier "make contracts updatable" decision. During active dev, an update = a
+  COMPLETE fresh redeployment, applied IMMEDIATELY. NO update_to / set_update_delay /
+  ContractInstanceRegistry — on this rollup that path is clamped to a 24h delay (the slop that
+  blocked go-live). VALIDATED: fresh deploy is immediate; the 3 contracts are interdependent
+  (triple_triad_nft stores the game addr as PublicImmutable → authorizes the game) so fresh =
+  all-3-together via deploy-testnet.ts (wires cross-refs + writes frontend .env). Address churn is
+  the (automated) cost — fine for active dev.
+- Routed to lane-1 (docs/plan/UPDATE_MODEL.md): strip the upgrade pattern from ALL 3 contracts
+  (keep the C2 round-2 fix), aztec compile, fresh-deploy all 3 to testnet (new addresses), delete
+  update-game-class-testnet.ts + verify-game-update-testnet.ts. Then me: Vercel env → 3 new
+  addresses + redeploy → live game works IMMEDIATELY (supersedes the 24h-delay update 1f4da52).
+- STANDING MODEL: code fix → aztec compile → deploy-testnet.ts → new .env → frontend redeploy.
+  Immediate, every time.
+
+## 06-13 — FRESH-REDEPLOY LIVE: new contracts merged (7248d2c); lane-8 multi-game broke (the bug class)
+- Resumed after Zac's connection drop (finished the interrupted merge). lane-1 fresh redeploy MERGED
+  to testnet 7248d2c: upgrade pattern stripped from triple_triad_game + triple_triad_nft (registry
+  dep removed), C2 fix kept, all 3 fresh-deployed — NFT 0x0a191688…f617cf9, Game 0x21793d5e…33537cb3,
+  Token 0x2a6bfcc2…e63a3879; slop scripts deleted. Vercel prod env set to the 3 new addresses; push
+  triggered the redeploy (BUILDING sha 7248d2c). ⇒ C2 fix LIVE IMMEDIATELY at new addresses, NO 24h
+  wait. Old 0x2d86 + its pending 24h update abandoned.
+- No hardcoded old addresses anywhere (grep clean) → lanes 2/4/6 need NO repoint (env-driven).
+  Cleared lane-1's stale repoint note.
+- lane-8 MULTI-GAME (Zac priority): first run HUNG on headless WebGL context-exhaustion (5 games × 2
+  browsers); SwiftShader software render FIXED the hang → the run went 1.8h and got DEEP into the
+  games before failing. lane-8 diagnosing which game # broke + the carryover cause. Nudged: report
+  the failure point + iterate the fix in FAST mode (dummy VK), not 1.8h real-proof runs; confirm with
+  one real-proof run. This is the multi-game bug class Zac flagged — being surfaced now.
+
+## 06-13 — CORRECTION (validated vs lane-8 artifacts): multi-game run blocked at PACKS, not games
+- My prior entry propagated unverified claims; accurate state from lane-8's artifacts:
+  - The 1.8h run NEVER reached game 1. It validated the packs (both players 15 cards / 0 tokens —
+    pack note-discovery + token burn work) then HUNG before matchmaking (0 games, 0 settlements).
+  - Cause = HARNESS page-degradation, NOT a multi-game app bug: the decorative MenuScene renders
+    continuously → THREE.WebGLRenderer Context Lost → PXE reads crawl to ~46s → hang. lane-8 FIXED
+    it by gating MenuScene off under VITE_TESTKIT (committed), back on metal GL.
+  - SwiftShader did NOT fix it (my earlier claim was WRONG — it worsened CPU contention vs proving).
+  - Fast mode for gameplay is UNWIRED in the frontend (VERIFIED: loadDummyMoveCircuit is used only
+    for settlement padding at useGameSettlement.ts:520; gameplay always proves real). My "use fast
+    mode" nudge was based on a wrong assumption.
+- ACTION: routed lane-2 to wire VITE_FAST_PROOFS (gameplay → dummy_hand/dummy_move when set; gated,
+  default OFF) so the harness runs multi-game in MINUTES not hours. dummy circuits + permissive-vks
+  deploy exist (lane-1). lane-8's 2-game confirmation run (MenuScene off, metal) is ACTIVE (15 procs)
+  — verifying the harness now reaches the games, then it hunts the real carryover bugs (7 candidates
+  from its reset analysis). The actual multi-game carryover bug class is STILL NOT REACHED.
+- Process note: sweep.sh can grab a stale STATUS line — capture panes directly for critical status.
+
+## 06-13 — FAST MODE ABANDONED (Zac: REAL proofs only). lane-8 is doing the PROPER playtest.
+- Zac directive: NO fast mode — the playtest MUST use real proofs (proper proving is the point).
+  My "wire VITE_FAST_PROOFS" routing was wrong twice over (also pushed it before verifying). Interrupted
+  lane-2 mid-implementation and told it to DISCARD/revert all fastProofs + dummy-gameplay edits (never
+  committed/merged). Real proofs are the standing requirement; do NOT reintroduce a fast-proof path.
+- lane-8 is already correct: iterating the multi-game campaign in REAL-PROOF mode (reduced game count
+  via MULTIGAME_GAMES), MenuScene page-degradation fixed (gated off under VITE_TESTKIT), 2-game
+  confirmation run in flight. Its STATUS = `working` (in progress) → per the new discipline, LEAVE IT
+  ALONE to complete and surface the real carryover bugs (7 candidates). Hours-per-run is accepted.
+
+## 06-13 — Zac heuristics audit of the playtest harness → flake-mask + leaky queue (VERIFIED, dispatched)
+- Zac: "validate the playtest agent is not violating my heuristics (no fallbacks/workarounds around
+  flaky code; no leaky abstractions)." Audited the committed harness against ground truth.
+- VIOLATION (clear): `expectEventually` (playtest player.ts:268-289) catches a THROWN read, labels it
+  "not yet", and keeps polling — the banned "expect failure and thrash until it works" pattern. Used
+  all over multi-game.spec (126,131,279-293). Zac confirmed forcefully: must WORK UNCONDITIONALLY.
+- ROOT CAUSE (verified, not the harness): frontend `useAztec.ts:183` `refreshTokenBalance` calls
+  `get_balance().simulate()` DIRECTLY — NOT via `txManager.enqueuePxe` — and L198-220 fires it in a
+  15× timer poll on every connect. Unqueued read races the serial queue → IDB `TransactionInactiveError`
+  (breaks ground rule #6). testkit reads, by contrast, ARE queued (testkit/api.ts:98,122). That throw
+  is what the harness was masking.
+- DEEPER LEAK (Zac's escalation): the serial queue is BYPASSABLE — `contracts.ts:15-33` exports
+  `contractCache` with the raw game/nft/token contract instances (+wallet), so any module can
+  `.simulate()/.send()` off-queue. The invariant "all PXE serial" is convention-only = leaky abstraction.
+- Secondary: leaky two-balance-method (`tokenBalance()` footgun "races the poll" vs preferred
+  `tokenBalanceApp()`; footgun still live in full-game.spec L78/175/220). Borderline: MenuScene
+  testkit-gate (defensible test-env adaptation; prod statically unaffected; but hides WebGL churn).
+- SOUND (not rot): `withDeadline`/`withTimeout` are correct fail-fast (setTimeout→reject); spec stops
+  at first failing game with per-lane attribution; real 15-card packs (no disjoint-deck sidestep);
+  `waitPhase` catches ONLY to enrich-and-rethrow.
+- ACTION (dispatched + confirmed via direct pane capture):
+  - Wrote `docs/plan/PXE_QUEUE_ENFORCEMENT.md`; routed **lane-2** → Stage 1: enqueue refreshTokenBalance
+    (stop the bleeding); Stage 2: make the queue the ONLY door — private contracts, export only queued
+    named ops, ESLint guard banning `.simulate(`/`.send(` outside the PXE module, migrate all callers,
+    remove now-dead race-era error swallowing. lane-2 WORKING.
+  - **lane-8** → rip out `expectEventually`'s retry-on-throw (a thrown read = FATAL; poll only for
+    value-not-yet-equal), kill the balance-method leak + migrate full-game.spec, rebase after lane-2.
+    Directive queued (lane busy building spec).
+  - Recommended enforcement = encapsulation (private contracts + named queued ops) + ESLint guard;
+    Proxy auto-enqueue offered as exfiltration-proof option if wanted.
+
+## 06-13 — PXE fix progress: Stage 1 + Stage 2 ckpt1 MERGED; ckpt2 dispatched (fresh context)
+- Zac escalation: a serial queue you CAN bypass is itself the leak — answered "yes, make it
+  structurally impossible": encapsulation (private contracts + named queued ops) + source-guard.
+- lane-2 A–D decisions (mine, within directive): (A) inline-facade YES — `runPxeTx` body gets an
+  inline facade so create/join/settle stay ONE atomic queue item (preserves settlement-priority +
+  postEffects; restructuring atomicity = the risky path, rejected). (B) vitest source-guard, not
+  ESLint (repo has no ESLint; lighter, exempts ws.send via `.methods…send(`). (C) skip Proxy now
+  (encapsulation+guard already make it the only door for app code; later-addable, non-breaking).
+  (D) 3 reviewable checkpoints, tsc+tests green at each.
+- MERGED to testnet (each gate-reviewed vs 6 criteria + invariant tests RUN, not trusted):
+  - Stage 1 `4a66565`: refreshTokenBalance → enqueuePxe (the one timer-driven unqueued read). Test 2/2.
+  - Stage 2 ckpt1 `9d888d4`: new `aztec/pxe.ts` single-door facade (private wallet, one impl per op,
+    enqueue vs inline scheduler, `runPxeTx`); useAztec migrated. pxe.test.ts pins the invariant
+    (stub-drop queue → simulate unreachable; runPxeTx inline w/o re-enqueue). Tests 6/6 green.
+- ckpt2 dispatched to lane-2 with a FRESH CONTEXT (its request — big 5-file tx-orchestration migration):
+  migrate useGameSession/useGameSettlement/useCardPacks/connectToAztec/noteImporter → pxe ops, then
+  make contractCache PRIVATE. ckpt3 = source-guard + dead-code removal.
+- lane-8: confirmed editing player.ts to strip the retry-mask framing (pxeRead/eventually comments
+  now "fails fatally, never masked" / "eventual consistency only"). Verify on conclusion it removed
+  the `expectEventually` catch (not "mitigated").
+- PROCESS (binding, learned 3×): the TUI does NOT auto-submit a message typed while busy/long — it
+  sits un-submitted in the input. ALWAYS verify a dispatch landed (message in transcript + input
+  empty + agent BUSY), then re-send Enter if staged. Caught lane-2 (A–D, 15min stalled) + lane-8
+  (mask directive, never received) this way; Zac flagged the lane-8 one.

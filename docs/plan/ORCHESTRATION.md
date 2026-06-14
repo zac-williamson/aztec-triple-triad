@@ -84,6 +84,19 @@ Self-paced wakeups, default every 15–20 min (tighter when a handoff is imminen
 3. Fire handoffs (table below).
 4. Keep a running trial log in `docs/plan/TRIAL_LOG.md` (orchestrator-only file).
 
+**STATUS accuracy (binding — added 06-13 after a lane-8 misreport):**
+- Only `done`/`blocked`/`question` is a CONCLUSION. A `working` STATUS, a BUSY pane
+  ("esc to interrupt"), or any streaming reasoning is IN PROGRESS — never report its
+  content as a finding or act on it (nudge/merge). Wait for the lane to settle.
+- Never quote an agent's mid-thought as a result. Hedges ("so… / let me check / likely /
+  it got…") mark a hypothesis the agent is about to test, not a verdict.
+- Before reporting OR acting on a lane's technical claim, verify it against ground truth
+  (grep/read the code or the run artifact) — especially a claim that drives a nudge/merge.
+- For any status you will report or act on, capture the pane directly (sweep.sh is triage
+  and can show a stale/provisional line — it now flags `PROVISIONAL!`) and read the full
+  latest STATUS line, not a grep fragment.
+- Don't compound: re-verify each turn; never carry a prior unverified claim forward.
+
 **Handoff table** (event → notify):
 - E1 merged (lane 7) → ALL lanes: rebase now (sane CLAUDE.md).
 - A1 green (lane 1) → lane 2 (start A2), lane 6 (E3b).

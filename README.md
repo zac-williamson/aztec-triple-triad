@@ -150,9 +150,9 @@ The testnet contracts are deployed on Aztec 4.3.1 and configured in `packages/fr
 
 ```
 VITE_AZTEC_PXE_URL=https://rpc.testnet.aztec-labs.com
-VITE_NFT_CONTRACT_ADDRESS=0x03c4a439df5a6b44a645037050b9de4af201f4327240c09b2c0a77fba5d59a9c
-VITE_GAME_CONTRACT_ADDRESS=0x2d8675fc746e38ff6606cae2836c0cd0fa1693b12edb56396f83a530109b75f4
-VITE_TOKEN_CONTRACT_ADDRESS=0x0ed08cbbb2eac1213186c99787736e0ee768dfa9ffa9dfc1a4b9c1d741e870fb
+VITE_NFT_CONTRACT_ADDRESS=0x0a191688e1f460ed720f6e7eabeca5b4933c675054871421be58db185f617cf9
+VITE_GAME_CONTRACT_ADDRESS=0x21793d5ec7ee711a92ba0401990f5cfca79b17798f760e9dfc2b928233537cb3
+VITE_TOKEN_CONTRACT_ADDRESS=0x2a6bfcc292b4b1c7ec5d90c84ce00c4653df241f60a33461c65968ace63a3879
 ```
 
 All three contracts are **updatable** (admin-guarded): each exposes an `update_to(new_class_id)` function that swaps the contract class while preserving the address, gated to the deployer (`minter` for the NFT, `admin` for the game and token contracts) and subject to an on-chain update delay. Future bug fixes ship as address-preserving class updates — these addresses are stable, so deployments no longer churn `.env.testnet`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the contract details.

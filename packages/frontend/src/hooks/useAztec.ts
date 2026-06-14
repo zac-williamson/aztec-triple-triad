@@ -3,6 +3,7 @@ import { AZTEC_CONFIG } from '../aztec/AztecContext';
 import { prepareConnection, deployAndRegister, type PreparedConnection } from '../aztec/connectToAztec';
 import type { FeeJuiceClaim } from '../aztec/fundDevnet';
 import txManager from '../aztec/txManager';
+import { pxe, setPxeWallet } from '../aztec/pxe';
 type ConnectionStatus =
   | 'disconnected'
   | 'connecting'
@@ -76,6 +77,7 @@ export function useAztec(): UseAztecReturn {
           },
         });
         walletRef.current = result.wallet;
+        setPxeWallet(result.wallet); // bind the PXE module's contracts to this wallet
         nodeClientRef.current = result.node;
         setOwnedCardIds(result.ownedCardIds);
         setStatus('connected');
@@ -144,6 +146,7 @@ export function useAztec(): UseAztecReturn {
         },
       });
       walletRef.current = result.wallet;
+      setPxeWallet(result.wallet); // bind the PXE module's contracts to this wallet
       nodeClientRef.current = result.node;
       setAccountAddress(result.accountAddress);
       setOwnedCardIds(result.ownedCardIds);
@@ -157,6 +160,7 @@ export function useAztec(): UseAztecReturn {
 
   const disconnect = useCallback(() => {
     walletRef.current = null;
+    setPxeWallet(null);
     nodeClientRef.current = null;
     preparedRef.current = null;
     setStatus('disconnected');
@@ -172,16 +176,12 @@ export function useAztec(): UseAztecReturn {
   const refreshTokenBalance = useCallback(async () => {
     if (!walletRef.current || !accountAddress || !AZTEC_CONFIG.tokenContractAddress) return;
     try {
-      // Wait for warmup to finish so we reuse the cached Contract.at() instances
-      // rather than creating new ones that race on IDB (Safari IDB is strict).
-      const { waitForWarmup, contractCache } = await import('../aztec/contracts');
-      await waitForWarmup();
-      const tokenContract = contractCache.tokenContract;
-      const AztecAddress = contractCache.AztecAddress;
-      if (!tokenContract || !AztecAddress) return;
-      const ownerAddr = AztecAddress.fromString(accountAddress);
-      const { result } = await tokenContract.methods.get_balance(ownerAddr).simulate({ from: ownerAddr });
-      const balance = Number(BigInt(result.toString()));
+      // Serialized through the PXE queue inside pxe.readTokenBalance (ground
+      // rule #6), which also waits for contract warmup. This read fires on a
+      // 15× connect poll and after every settlement; an UNqueued simulate races
+      // queued ops → IndexedDB TransactionInactiveError (the flake the playtest
+      // harness was masking).
+      const balance = Number(await pxe.readTokenBalance(accountAddress));
       tokenBalanceRef.current = balance;
       setTokenBalance(balance);
     } catch (e) {
