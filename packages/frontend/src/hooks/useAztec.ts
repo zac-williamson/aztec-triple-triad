@@ -180,7 +180,13 @@ export function useAztec(): UseAztecReturn {
       const AztecAddress = contractCache.AztecAddress;
       if (!tokenContract || !AztecAddress) return;
       const ownerAddr = AztecAddress.fromString(accountAddress);
-      const { result } = await tokenContract.methods.get_balance(ownerAddr).simulate({ from: ownerAddr });
+      // Serialize through the PXE queue (ground rule #6). This read fires on a
+      // 15× connect poll and after every settlement; an UNqueued simulate races
+      // queued ops → IndexedDB TransactionInactiveError (the flake the playtest
+      // harness was masking). The queue is the only safe door to the PXE.
+      const { result } = await txManager.enqueuePxe<{ result: { toString(): string } }>(
+        () => tokenContract.methods.get_balance(ownerAddr).simulate({ from: ownerAddr }),
+      );
       const balance = Number(BigInt(result.toString()));
       tokenBalanceRef.current = balance;
       setTokenBalance(balance);
