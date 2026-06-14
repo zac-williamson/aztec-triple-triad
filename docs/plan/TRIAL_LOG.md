@@ -857,3 +857,23 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - TUI LESSON: Claude Code shows CONTEXTUAL PLACEHOLDER text in an empty input (e.g. "ping me when
   lane-2's queue fix lands") that is NOT real content — it never submits/concatenates and no
   edit key clears it; typing a char replaces it. Don't mistake a placeholder for stuck staged input.
+
+## 06-13 — PXE Stage 2 ckpt2 MERGED (leak closed); campaign re-run HUNG on WebGL (killed + redirected)
+- ckpt2 `99bfe20` → testnet `2cf9ad0`. Gate-reviewed + VERIFIED (not trusted): contractCache is now
+  `const` (private), grep shows no app-code `.simulate(/.send(` outside pxe.ts (only doc comments,
+  bootstrap `deployMethod.send`, and already-queued testkit), dead `deriveBlindingFactor.ts` leak-vector
+  deleted, tsc clean + 323 tests green (ran the full suite myself). The serial queue is now the only door
+  to the PXE. ckpt3 (vitest source-guard + dead-catch cleanup; Proxy skipped) dispatched to lane-2.
+- lane-8's full 5-game re-run (post-rebase onto the merged fix) HUNG — and I nearly misreported it
+  "alive": process-tree up + 32% CPU node + fresh sandbox.log looked alive, but those are just the
+  sandbox idling EMPTY blocks. DECISIVE artifacts: both `run-*/browser-{alice,bob}.log` froze at 22:10
+  right after pack-open with `THREE.WebGLRenderer: Context Lost` then 25min silence; every sandbox block
+  `txCount:0` — never reached one game move. LESSON: for a playtest run, browser-log mtime + on-chain
+  txCount are the real progress signals; process-existence/CPU/sandbox-freshness are NOT.
+- Action: killed the zombie stack (verified all ports free), wrote `docs/plan/BUG_WEBGL_HANG.md`, and
+  redirected lane-8 (after its auto-compaction at 100% ctx): (1) root-cause the RECURRING WebGL Context
+  Lost — leak (R3F renderer not disposed on scene switch → real APP bug for lane-2/6) vs two-tab GPU
+  exhaustion (→ separate browser process per player); (2) FIX the hang-guards that did NOT fail-fast a
+  25-min dead-page stall (page.evaluate on a context-lost page slips withTimeout/withDeadline). No masking.
+- The real multi-game carryover bug class is STILL not reached — every blocker so far has been
+  harness/environment (vite optimize, fee headroom, MenuScene, IDB race, now WebGL context loss).
