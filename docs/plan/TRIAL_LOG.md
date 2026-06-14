@@ -1141,3 +1141,21 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - Lesson (again): verify the ACTUAL number, not a cap/placeholder, and don't treat my own short probe timeout
   as the system's behavior. Two overstatements this session (hundreds-burned, 600s-hang) — both from reading
   a max/placeholder as the real value. Read the real value.
+
+## 06-14 — faucet DEFINITIVE (nginx access log): client-side ~50s abort, NOT proxy/backend
+- Pulled the box's nginx access log (the ground truth I should have read first):
+    18:58:03  POST /faucet  200 441  curl          -> faucet WORKS (curl that WAITED got the claim)
+    18:59:40  POST /faucet  499      Chrome:3000   -> CLIENT CLOSED the fetch at ~50s
+    18:59:41  POST /faucet  409      Chrome:3000   -> immediate retry hit the rate-limiter
+  Config: nginx proxy_read_timeout = 3600s; backend log: bridge ~2.5min then returns 200.
+- Conclusion: proxy fine (3600s), backend faucet WORKS (200+claim when the client waits), treasury fine. The
+  "~60s timeout" is CLIENT-SIDE — the harness browser aborts the faucet fetch at ~50s (499).
+  requestFeeJuiceClaim's fetch has NO timeout, so the abort is in the caller (almost certainly a Playwright
+  action/onboarding timeout in the harness; likely NOT the app — a real user's no-timeout fetch would wait,
+  so probably not a product bug; lane-8 to confirm).
+- FIX (lane-8): let the first faucet POST wait the full ~2.5min (raise/remove the harness onboarding action
+  timeout — the curl proved it works). Do NOT re-POST (409s; the pending bridge counts vs the rate limiter;
+  no poll endpoint). (B) valid addresses already fixed.
+- META: 3 faucet mis-reads this session — hundreds-burned (cap≠nonce), 600s (cap≠~2.5min actual),
+  app-waits-fine (read requestFeeJuiceClaim's no-timeout but not the caller / the 499). ENFORCED lesson: pull
+  the box's ACTUAL access/error log before theorizing about live-infra behavior.
