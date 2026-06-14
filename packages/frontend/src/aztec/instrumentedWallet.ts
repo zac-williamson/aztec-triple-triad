@@ -39,6 +39,7 @@ import {
 import { GasSettings } from '@aztec/stdlib/gas';
 
 import { txProgress, type PhaseTiming, type TxProgressEvent } from './txProgress';
+import { startNodeKeepalive } from './nodeKeepalive';
 
 export class InstrumentedWallet extends EmbeddedWalletBase {
   static override create<T extends EmbeddedWalletBase = InstrumentedWallet>(
@@ -170,17 +171,29 @@ export class InstrumentedWallet extends EmbeddedWalletBase {
       });
 
       // ── Prove ────────────────────────────────────────────────────────
+      // The proof is CPU-pinned for 1–3 min and sends NO node requests, so the
+      // node's HTTP/2 connection would idle-drop (net::ERR_CONNECTION_RESET on
+      // the send below, ~30% of deploys). Keep it warm with a periodic
+      // lightweight read for the whole proving window — prevention, not a retry.
+      // (`await proveTx` yields the main thread to bb.js workers, so the
+      // keepalive timer still fires.)
       emit('proving');
       const provingStart = Date.now();
-      const txRequest = await self.createTxExecutionRequestFromPayloadAndFee(
-        executionPayload,
-        opts.from,
-        prodFeeOptions,
-      );
-      const provenTx = await self.pxe.proveTx(txRequest, {
-        scopes: self.scopesFrom(opts.from, opts.additionalScopes),
-        senderForTags: self.senderForTagsFrom(opts.from, (opts as { sendMessagesAs?: unknown }).sendMessagesAs),
-      });
+      const stopKeepalive = startNodeKeepalive(self.aztecNode);
+      let provenTx: any;
+      try {
+        const txRequest = await self.createTxExecutionRequestFromPayloadAndFee(
+          executionPayload,
+          opts.from,
+          prodFeeOptions,
+        );
+        provenTx = await self.pxe.proveTx(txRequest, {
+          scopes: self.scopesFrom(opts.from, opts.additionalScopes),
+          senderForTags: self.senderForTagsFrom(opts.from, (opts as { sendMessagesAs?: unknown }).sendMessagesAs),
+        });
+      } finally {
+        stopKeepalive();
+      }
       const provingDuration = Date.now() - provingStart;
 
       const provingStats = provenTx.stats;
