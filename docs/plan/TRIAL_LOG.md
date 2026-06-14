@@ -816,3 +816,28 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
     Directive queued (lane busy building spec).
   - Recommended enforcement = encapsulation (private contracts + named queued ops) + ESLint guard;
     Proxy auto-enqueue offered as exfiltration-proof option if wanted.
+
+## 06-13 — PXE fix progress: Stage 1 + Stage 2 ckpt1 MERGED; ckpt2 dispatched (fresh context)
+- Zac escalation: a serial queue you CAN bypass is itself the leak — answered "yes, make it
+  structurally impossible": encapsulation (private contracts + named queued ops) + source-guard.
+- lane-2 A–D decisions (mine, within directive): (A) inline-facade YES — `runPxeTx` body gets an
+  inline facade so create/join/settle stay ONE atomic queue item (preserves settlement-priority +
+  postEffects; restructuring atomicity = the risky path, rejected). (B) vitest source-guard, not
+  ESLint (repo has no ESLint; lighter, exempts ws.send via `.methods…send(`). (C) skip Proxy now
+  (encapsulation+guard already make it the only door for app code; later-addable, non-breaking).
+  (D) 3 reviewable checkpoints, tsc+tests green at each.
+- MERGED to testnet (each gate-reviewed vs 6 criteria + invariant tests RUN, not trusted):
+  - Stage 1 `4a66565`: refreshTokenBalance → enqueuePxe (the one timer-driven unqueued read). Test 2/2.
+  - Stage 2 ckpt1 `9d888d4`: new `aztec/pxe.ts` single-door facade (private wallet, one impl per op,
+    enqueue vs inline scheduler, `runPxeTx`); useAztec migrated. pxe.test.ts pins the invariant
+    (stub-drop queue → simulate unreachable; runPxeTx inline w/o re-enqueue). Tests 6/6 green.
+- ckpt2 dispatched to lane-2 with a FRESH CONTEXT (its request — big 5-file tx-orchestration migration):
+  migrate useGameSession/useGameSettlement/useCardPacks/connectToAztec/noteImporter → pxe ops, then
+  make contractCache PRIVATE. ckpt3 = source-guard + dead-code removal.
+- lane-8: confirmed editing player.ts to strip the retry-mask framing (pxeRead/eventually comments
+  now "fails fatally, never masked" / "eventual consistency only"). Verify on conclusion it removed
+  the `expectEventually` catch (not "mitigated").
+- PROCESS (binding, learned 3×): the TUI does NOT auto-submit a message typed while busy/long — it
+  sits un-submitted in the input. ALWAYS verify a dispatch landed (message in transcript + input
+  empty + agent BUSY), then re-send Enter if staged. Caught lane-2 (A–D, 15min stalled) + lane-8
+  (mask directive, never received) this way; Zac flagged the lane-8 one.
