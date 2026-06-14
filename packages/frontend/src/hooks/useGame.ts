@@ -237,8 +237,9 @@ export function useGame(wsUrl: string): UseGameReturn {
       }
       return null;
     });
-    // Refresh token balance after purchase (tokens were burned)
-    aztec.refreshTokenBalance().catch(() => {});
+    // Refresh token balance after purchase (tokens were burned). Fire-and-forget;
+    // serialized reads no longer throw from IDB, so a real failure surfaces.
+    aztec.refreshTokenBalance();
     setScreen('card-packs');
   }, [aztec]);
 

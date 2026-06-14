@@ -14,11 +14,21 @@
   pointer-events: none;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 }
-.txnc-root > * {
+/* The toast CARD is visual-only — clicks pass straight through to the game
+   beneath it (the bottom-anchored stack at z-index 1400 used to sit over the
+   CardSelector "Play!" / settlement-card buttons and swallow their clicks).
+   Only the toast's interactive controls (header buttons, hover-tooltip timeline
+   segments) and the collapse button capture pointer events. Do NOT restore a
+   blanket `.txnc-root > * { pointer-events: auto }` — that re-arms the whole
+   card and re-blocks game clicks (pinned by TxNotificationCenter.test.tsx). */
+.txnc-collapse-btn,
+.txnc-btn,
+.txnc-bar__seg {
   pointer-events: auto;
 }
 
 .txnc-toast {
+  pointer-events: none;
   width: 340px;
   overflow: hidden;
   border: 1px solid rgba(212, 255, 40, 0.3);
@@ -145,7 +155,7 @@
   background: rgba(255, 255, 255, 0.08);
   color: #e8eaed;
 }
-.txnc-chip--preparing { background: #1565c0; color: #fff; }
+.txnc-chip--client { background: #1565c0; color: #fff; }
 .txnc-chip--mining { background: #4caf50; color: #fff; }
 
 .txnc-bar {

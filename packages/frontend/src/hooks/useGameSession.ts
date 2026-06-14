@@ -3,13 +3,10 @@ import type { UseWebSocketReturn } from './useWebSocket';
 import type { PersistedGameState } from './useGameStorage';
 import { useAztecContext } from '../aztec/AztecContext';
 import { removeCards } from '../aztec/cardStore';
-import txManager from '../aztec/txManager';
-import { ensureContracts, warmupContracts, waitForWarmup } from '../aztec/contracts';
+import { runPxeTx, warmupPxe, type PxeOps } from '../aztec/pxe';
 import { AZTEC_CONFIG } from '../aztec/config';
-import { toFr as toFrUtil, toHexString } from '../aztec/fieldUtils';
 import { AZTEC_TX_TIMEOUT } from '../aztec/gameConstants';
 import { requireWallet, requireAccountAddress } from '../aztec/walletGuards';
-import { gasSettingsWithHeadroom, type BaseFeeNode } from '../aztec/feeSettings';
 import type { Screen } from '../types';
 
 // --- On-chain lifecycle phase ---
@@ -200,76 +197,26 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
 
   // --- Contract actions (inline, not cross-hook) ---
 
-  const createGameOnChain = useCallback(async (ids: number[]): Promise<{ gameId: string; randomness: string[]; blindingFactor: string; txHash: string }> => {
-    const w = requireWallet(aztec.wallet);
+  const createGameOnChain = useCallback(async (ops: PxeOps, ids: number[]): Promise<{ gameId: string; randomness: string[]; blindingFactor: string; txHash: string }> => {
+    requireWallet(aztec.wallet);
     const addr = requireAccountAddress(aztec.accountAddress);
 
-    // Wait for warmup to complete before touching PXE — warmup runs
-    // outside the txManager queue and its registerContract/Contract.at
-    // calls race with ours on IDB if we don't wait.
-    await waitForWarmup();
-    const { gameContract, nftContract, Fr, AztecAddress } = await ensureContracts(w);
-    const senderAddr = AztecAddress.fromString(addr);
-
     console.log('[useGameSession] Starting create_game pipeline...');
-    console.log(`[PXE-TRACE] ${Date.now()} nftContract.get_note_nonce(${senderAddr}).simulate()`);
-    const { result: nonceResult } = await nftContract.methods.get_note_nonce(senderAddr).simulate({ from: senderAddr });
-    const nonceFr = toFrUtil(Fr, nonceResult);
-    console.log(`[PXE-TRACE] ${Date.now()} get_note_nonce COMPLETE result=${nonceFr.toString()}`);
-
-    console.log(`[PXE-TRACE] ${Date.now()} nftContract.preview_game_data(${nonceFr}).simulate()`);
-    const { result: previewResult }: any = await nftContract.methods.preview_game_data(nonceFr).simulate({ from: senderAddr });
-    const gameId = String(previewResult[0]);
-    const randomnessHex = Array.from({ length: 6 }, (_, i) => toHexString(previewResult[i + 1]));
-    const gameIdFr = toFrUtil(Fr, gameId);
-    console.log(`[PXE-TRACE] ${Date.now()} preview_game_data COMPLETE gameId=${toHexString(gameId).slice(0, 20)}...`);
-
-    console.log(`[PXE-TRACE] ${Date.now()} gameContract.get_game_status(${toHexString(gameId).slice(0, 20)}...).simulate()`);
-    const { result: statusResult } = await gameContract.methods.get_game_status(gameIdFr).simulate({ from: senderAddr });
-    console.log(`[PXE-TRACE] ${Date.now()} get_game_status COMPLETE result=${statusResult}`);
-
-    console.log(`[PXE-TRACE] ${Date.now()} nftContract.compute_blinding_factor(${toHexString(gameId).slice(0, 20)}...).simulate()`);
-    const { result: blindingResult } = await nftContract.methods.compute_blinding_factor(gameIdFr).simulate({ from: senderAddr });
-    console.log(`[PXE-TRACE] ${Date.now()} compute_blinding_factor COMPLETE`);
-    if (Number(statusResult) !== 0) {
-      throw new Error(`Game ID already exists with status ${Number(statusResult)}, nonce may be stale`);
-    }
-    const blindingHex = toHexString(blindingResult);
-    const gameIdHex = toHexString(gameId);
-
-    setOnChainGameId(gameIdHex);
-    setGameRandomness(randomnessHex);
-    setBlindingFactor(blindingHex);
-
-    console.log('game id hex = ', gameIdHex);
-    console.log('game randomness = ', randomnessHex);
-    console.log('game blinding factors = ', blindingHex);
-    console.log('chosen game ids = ', ids);
-    console.log('[useGameSession] Game preview ready, ID:', gameIdHex, '— sending create_game tx...');
-
-    // Diagnostic: check what notes the PXE thinks are available
-    try {
-      console.log(`[PXE-TRACE] ${Date.now()} nftContract.get_nfts_for_user(${senderAddr}, 0).simulate() [diagnostic]`);
-      const { result: pxeCards } = await nftContract.methods.get_nfts_for_user(senderAddr, 0).simulate({ from: senderAddr });
-      console.log(`[PXE-TRACE] ${Date.now()} get_nfts_for_user COMPLETE [diagnostic]`);
-      // simulate() returns tuple as nested array: [fieldArray, hasMore]
-      const page = pxeCards[0] ?? pxeCards;
-      const cardList = Array.isArray(page) ? page.map((c: any) => Number(c)) : page;
-      console.log('[useGameSession] PXE private cards before create_game:', cardList);
-    } catch (e) {
-      console.warn('[useGameSession] Could not query PXE private cards:', e);
+    const { gameId, randomness, blindingFactor, status } = await ops.previewCreateGame(addr);
+    if (status !== 0) {
+      throw new Error(`Game ID already exists with status ${status}, nonce may be stale`);
     }
 
-    console.log(`[PXE-TRACE] ${Date.now()} gameContract.create_game([${ids.join(',')}]).send(from=${senderAddr})`);
-    const { receipt } = await gameContract.methods
-      .create_game(ids.map((id: number) => new Fr(BigInt(id))))
-      .send({ from: senderAddr, fee: { gasSettings: await gasSettingsWithHeadroom(aztec.nodeClient as BaseFeeNode) }, wait: { timeout: AZTEC_TX_TIMEOUT } });
-    const txHash = receipt?.txHash?.toString();
-    if (!txHash) throw new Error('create_game tx returned no txHash');
-    console.log(`[PXE-TRACE] ${Date.now()} create_game().send COMPLETE txHash=${txHash}`);
+    setOnChainGameId(gameId);
+    setGameRandomness(randomness);
+    setBlindingFactor(blindingFactor);
+    console.log('[useGameSession] Game preview ready, ID:', gameId, '— sending create_game tx...');
+
+    const txHash = await ops.sendCreateGame(addr, ids, { node: aztec.nodeClient, timeoutMs: AZTEC_TX_TIMEOUT });
+    console.log('[useGameSession] create_game tx mined, txHash:', txHash);
 
     // DIAGNOSTIC: dump TxEffect nullifiers from create_game so we can compare
-    // with PXE's stored siloedNullifiers
+    // with PXE's stored siloedNullifiers. Node read — not a PXE op.
     try {
       const nodeClient = aztec.nodeClient as any;
       if (nodeClient) {
@@ -279,14 +226,8 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
         if (txResult?.data) {
           const nullifiers = txResult.data.nullifiers ?? [];
           console.log(`[useGameSession] create_game TxEffect: ${nullifiers.length} nullifiers, block=${txResult.l2BlockNumber}`);
-          nullifiers.forEach((n: any, i: number) => {
-            console.log(`[useGameSession] create_game nullifier[${i}]: ${n.toString()}`);
-          });
           const noteHashes = txResult.data.noteHashes ?? [];
           console.log(`[useGameSession] create_game TxEffect: ${noteHashes.length} noteHashes`);
-          noteHashes.forEach((h: any, i: number) => {
-            console.log(`[useGameSession] create_game noteHash[${i}]: ${h.toString()}`);
-          });
         }
       }
     } catch (diagErr) {
@@ -296,65 +237,43 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
     // Remove committed cards from localStorage after confirmed tx
     if (addr) removeCards(addr, ids);
 
-    return { gameId: gameIdHex, randomness: randomnessHex, blindingFactor: blindingHex, txHash };
-  }, [aztec.wallet, aztec.accountAddress]);
+    return { gameId, randomness, blindingFactor, txHash };
+  }, [aztec.wallet, aztec.accountAddress, aztec.nodeClient]);
 
-  const prepareJoinGame = useCallback(async (chainGameId: string, ids: number[]): Promise<{ randomness: string[]; blindingFactor: string }> => {
-    const w = requireWallet(aztec.wallet);
+  const prepareJoinGame = useCallback(async (ops: PxeOps, chainGameId: string): Promise<{ randomness: string[]; blindingFactor: string }> => {
+    requireWallet(aztec.wallet);
     const addr = requireAccountAddress(aztec.accountAddress);
 
     console.log('[useGameSession] Preparing join_game preview...');
-    const { nftContract, Fr, AztecAddress } = await ensureContracts(w);
-    const senderAddr = AztecAddress.fromString(addr);
-    const chainGameIdFr = toFrUtil(Fr, chainGameId);
-
-    // PXE does not support concurrent simulate() calls (see docs/history/IDB_TRANSACTION_ERROR_REPORT.md)
-    const { result: nonceResult } = await nftContract.methods.get_note_nonce(senderAddr).simulate({ from: senderAddr });
-    const { result: blindingResult } = await nftContract.methods.compute_blinding_factor(chainGameIdFr).simulate({ from: senderAddr });
-    const nonceFr = toFrUtil(Fr, nonceResult);
-    const blindingHex = toHexString(blindingResult);
-
-    const { result: previewResult }: any = await nftContract.methods.preview_game_data(nonceFr).simulate({ from: senderAddr });
-    const randomnessHex = Array.from({ length: 6 }, (_, i) => toHexString(previewResult[i + 1]));
+    const { randomness, blindingFactor } = await ops.previewJoinGame(addr, chainGameId);
 
     setOnChainGameId(chainGameId);
-    setGameRandomness(randomnessHex);
-    setBlindingFactor(blindingHex);
+    setGameRandomness(randomness);
+    setBlindingFactor(blindingFactor);
     console.log('[useGameSession] Join preview ready (no tx sent yet)');
 
-    return { randomness: randomnessHex, blindingFactor: blindingHex };
+    return { randomness, blindingFactor };
   }, [aztec.wallet, aztec.accountAddress]);
 
-  const sendJoinGameTx = useCallback(async (chainGameId: string, ids: number[]): Promise<string> => {
-    const w = requireWallet(aztec.wallet);
+  const sendJoinGameTx = useCallback(async (ops: PxeOps, chainGameId: string, ids: number[]): Promise<string> => {
+    requireWallet(aztec.wallet);
     const addr = requireAccountAddress(aztec.accountAddress);
 
     console.log('[useGameSession] Sending join_game tx...');
-    const { gameContract, Fr, AztecAddress } = await ensureContracts(w);
-    const senderAddr = AztecAddress.fromString(addr);
-    const chainGameIdFr = toFrUtil(Fr, chainGameId);
-
-    const { receipt } = await gameContract.methods
-      .join_game(chainGameIdFr, ids.map((id: number) => new Fr(BigInt(id))))
-      .send({ from: senderAddr, fee: { gasSettings: await gasSettingsWithHeadroom(aztec.nodeClient as BaseFeeNode) }, wait: { timeout: AZTEC_TX_TIMEOUT } });
-    const txHash = receipt?.txHash?.toString();
-    if (!txHash) throw new Error('join_game tx returned no txHash');
+    const txHash = await ops.sendJoinGame(addr, chainGameId, ids, { node: aztec.nodeClient, timeoutMs: AZTEC_TX_TIMEOUT });
     console.log('[useGameSession] join_game tx mined, txHash:', txHash);
 
     // Remove committed cards from localStorage after confirmed tx
     if (addr) removeCards(addr, ids);
 
     return txHash;
-  }, [aztec.wallet, aztec.accountAddress]);
+  }, [aztec.wallet, aztec.accountAddress, aztec.nodeClient]);
 
   // --- Effects ---
 
-  // Pre-warm contract cache
+  // Pre-warm contract cache via the PXE door (no raw-contract import here).
   useEffect(() => {
-    if (aztec.wallet) {
-      console.log(`[PXE-TRACE] ${Date.now()} warmupContracts(wallet) [fire-and-forget]`);
-      warmupContracts(aztec.wallet);
-    }
+    if (aztec.wallet) warmupPxe();
   }, [aztec.wallet]);
 
   // Share preview data with opponent as soon as state is set (before tx mines).
@@ -432,14 +351,13 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
       const capturedShareInfo = ws.shareAztecInfo;
       const capturedNotifyTx = ws.notifyTxConfirmed;
 
-      txManager.runTx({
+      runPxeTx({
         type: 'create_game',
         label: 'Creating game...',
         gameId: capturedGameId,
-        execute: async (setPhase) => {
+        execute: async (ops, setPhase) => {
           setPhase('simulating');
-          const result = await createGameOnChain(capturedCardIds);
-          return result;
+          return createGameOnChain(ops, capturedCardIds);
         },
         postEffects: async (result) => {
           capturedShareInfo(capturedGameId, capturedAddr, result.gameId, result.randomness);
@@ -478,14 +396,13 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
       const capturedCardIds = [...cardIds];
       const capturedShareInfo = ws.shareAztecInfo;
 
-      txManager.runTx({
+      runPxeTx({
         type: 'join_game',
         label: 'Preparing to join...',
         gameId: capturedGameId,
-        execute: async (setPhase) => {
+        execute: async (ops, setPhase) => {
           setPhase('simulating');
-          const result = await prepareJoinGame(capturedChainGameId, capturedCardIds);
-          return result;
+          return prepareJoinGame(ops, capturedChainGameId);
         },
         postEffects: async (result) => {
           capturedShareInfo(capturedGameId, capturedAddr, capturedChainGameId, result.randomness);
@@ -519,14 +436,13 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
       const capturedCardIds = [...cardIds];
       const capturedNotifyTx = ws.notifyTxConfirmed;
 
-      txManager.runTx({
+      runPxeTx({
         type: 'join_game',
         label: 'Joining game...',
         gameId: capturedGameId,
-        execute: async (setPhase) => {
+        execute: async (ops, setPhase) => {
           setPhase('sending');
-          const txHash = await sendJoinGameTx(capturedChainGameId, capturedCardIds);
-          return txHash;
+          return sendJoinGameTx(ops, capturedChainGameId, capturedCardIds);
         },
         postEffects: async (txHash) => {
           capturedNotifyTx(capturedGameId, 'join_game', txHash);

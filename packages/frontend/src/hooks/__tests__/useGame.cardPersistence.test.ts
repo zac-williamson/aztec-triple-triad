@@ -16,7 +16,8 @@ const hoisted = vi.hoisted(() => ({
   mockWs: {} as Record<string, any>,
   wsMessageListeners: new Set<(msg: any) => void>(),
   refreshTokenBalanceMock: vi.fn().mockResolvedValue(undefined),
-  importNotesFromTxMock: vi.fn().mockResolvedValue([101, 102]),
+  importCardNotesMock: vi.fn().mockResolvedValue([101, 102]),
+  importTokenRewardNoteMock: vi.fn().mockResolvedValue(true),
   fetchTxEffectDataMock: vi.fn().mockResolvedValue({
     noteHashes: ['0xA1', '0xA2'],
     firstNullifier: '0xN1',
@@ -25,7 +26,7 @@ const hoisted = vi.hoisted(() => ({
   removeCardsMock: vi.fn(),
 }));
 const {
-  mockWs, refreshTokenBalanceMock, importNotesFromTxMock,
+  mockWs, refreshTokenBalanceMock, importCardNotesMock,
   fetchTxEffectDataMock, addCardsMock, removeCardsMock,
 } = hoisted;
 let wsMessageListeners = hoisted.wsMessageListeners;
@@ -82,10 +83,20 @@ vi.mock('../../aztec/config', () => ({
   },
 }));
 
+// Note imports go through the PXE door (`pxe.importCardNotes` /
+// `pxe.importTokenRewardNote`). fetchTxEffectData (a node read) stays in
+// noteImporter. warmupPxe/runPxeTx are inert here (no game pipeline starts).
+vi.mock('../../aztec/pxe', () => ({
+  pxe: {
+    importCardNotes: hoisted.importCardNotesMock,
+    importTokenRewardNote: hoisted.importTokenRewardNoteMock,
+  },
+  runPxeTx: vi.fn(),
+  warmupPxe: vi.fn(),
+}));
+
 vi.mock('../../aztec/noteImporter', () => ({
-  importNotesFromTx: hoisted.importNotesFromTxMock,
   fetchTxEffectData: hoisted.fetchTxEffectDataMock,
-  importTokenRewardNote: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('../../aztec/cardStore', () => ({
@@ -95,13 +106,6 @@ vi.mock('../../aztec/cardStore', () => ({
 
 vi.mock('../../aztec/txManager', () => ({
   default: { runTx: vi.fn(), currentTx: null, cancel: vi.fn() },
-}));
-
-vi.mock('../../aztec/contracts', () => ({
-  ensureContracts: vi.fn(),
-  contractCache: {},
-  warmupContracts: vi.fn(),
-  waitForWarmup: vi.fn(),
 }));
 
 vi.mock('../../aztec/gameConstants', () => ({
@@ -165,7 +169,7 @@ describe('loser import persists new cards to localStorage', () => {
     resetWs();
     addCardsMock.mockClear();
     removeCardsMock.mockClear();
-    importNotesFromTxMock.mockClear();
+    importCardNotesMock.mockClear();
     fetchTxEffectDataMock.mockClear();
     refreshTokenBalanceMock.mockClear();
   });
@@ -214,14 +218,14 @@ describe('loser import persists new cards to localStorage', () => {
       },
     ]);
 
-    // importNotesFromTx still gets called (PXE import happens too)
-    expect(importNotesFromTxMock).toHaveBeenCalled();
+    // PXE import happens too, through the serial-queue door (pxe.importCardNotes)
+    expect(importCardNotesMock).toHaveBeenCalled();
 
     // Loser-side token-balance refresh fires after settlement
     expect(refreshTokenBalanceMock).toHaveBeenCalled();
   });
 
-  it('does not crash when TxEffect fetch returns null (falls back to PXE-only import)', async () => {
+  it('does not crash when TxEffect fetch returns null (skips import — no note hashes)', async () => {
     fetchTxEffectDataMock.mockResolvedValueOnce(null);
 
     const { rerender } = renderHook(({ data }) => {
@@ -240,10 +244,10 @@ describe('loser import persists new cards to localStorage', () => {
       await new Promise(r => setTimeout(r, 0));
     });
 
-    // No persist if TxEffect unavailable
+    // No persist AND no PXE import if TxEffect unavailable — import_note needs
+    // the note hashes from the tx effect, so without it there's nothing to import.
     expect(addCardsMock).not.toHaveBeenCalled();
-    // PXE import still attempts
-    expect(importNotesFromTxMock).toHaveBeenCalled();
+    expect(importCardNotesMock).not.toHaveBeenCalled();
   });
 
   it('persistence error does not prevent PXE import', async () => {
@@ -268,6 +272,6 @@ describe('loser import persists new cards to localStorage', () => {
     });
 
     expect(addCardsMock).toHaveBeenCalled();
-    expect(importNotesFromTxMock).toHaveBeenCalled();
+    expect(importCardNotesMock).toHaveBeenCalled();
   });
 });

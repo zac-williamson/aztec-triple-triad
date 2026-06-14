@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 
 const hoisted = vi.hoisted(() => ({
-  importNotesFromTxMock: vi.fn().mockResolvedValue([1, 2, 3, 4, 5]),
+  importCardNotesMock: vi.fn().mockResolvedValue([1, 2, 3, 4, 5]),
   fetchTxEffectDataMock: vi.fn().mockResolvedValue({ noteHashes: ['0xA1'], firstNullifier: '0xN1' }),
   importTokenRewardNoteMock: vi.fn().mockResolvedValue(true),
   addCardsMock: vi.fn(),
@@ -31,17 +31,18 @@ vi.mock('../../aztec/AztecContext', () => ({
   }),
 }));
 
-vi.mock('../../aztec/noteImporter', () => ({
-  importNotesFromTx: hoisted.importNotesFromTxMock,
-  fetchTxEffectData: hoisted.fetchTxEffectDataMock,
-  importTokenRewardNote: hoisted.importTokenRewardNoteMock,
+// The loser-side note imports run through the PXE door (enqueued via `pxe.*`,
+// not a raw contract). fetchTxEffectData is the only remaining noteImporter
+// export (a node read, not a PXE op).
+vi.mock('../../aztec/pxe', () => ({
+  pxe: {
+    importCardNotes: hoisted.importCardNotesMock,
+    importTokenRewardNote: hoisted.importTokenRewardNoteMock,
+  },
+  runPxeTx: vi.fn(),
 }));
-
+vi.mock('../../aztec/noteImporter', () => ({ fetchTxEffectData: hoisted.fetchTxEffectDataMock }));
 vi.mock('../../aztec/cardStore', () => ({ addCards: hoisted.addCardsMock }));
-vi.mock('../../aztec/txManager', () => ({ default: { runTx: vi.fn(), currentTx: null, cancel: vi.fn() } }));
-vi.mock('../../aztec/contracts', () => ({
-  ensureContracts: vi.fn(), contractCache: {}, warmupContracts: vi.fn(), waitForWarmup: vi.fn(),
-}));
 vi.mock('../../aztec/gameConstants', () => ({
   AZTEC_TX_TIMEOUT: 60000, AZTEC_SETTLE_TX_TIMEOUT: 600, CARDS_PER_HAND: 5, TOTAL_MOVES: 9,
   MOVE_PROOF_WAIT_TIMEOUT: 5000, HAND_PROOF_WAIT_TIMEOUT: 5000, GAME_TOKEN_REWARD: 20,
@@ -104,18 +105,18 @@ describe('loser token reward import', () => {
       await new Promise(r => setTimeout(r, 0));
     });
 
-    // Cards still imported (relayed NFT notes) ...
-    expect(hoisted.importNotesFromTxMock).toHaveBeenCalled();
+    // Cards still imported (relayed NFT notes) via the PXE door ...
+    expect(hoisted.importCardNotesMock).toHaveBeenCalled();
     // ... and the +20 token reward imported with the loser's OWN randomness.
+    // New op signature: (account, txHash, amount, playerRandomness, txEffect).
     expect(hoisted.importTokenRewardNoteMock).toHaveBeenCalledTimes(1);
-    const [wallet, node, account, txHash, amount, randomness] =
+    const [account, txHash, amount, randomness, txEffect] =
       hoisted.importTokenRewardNoteMock.mock.calls[0];
     expect(account).toBe('0xLOSER');
     expect(txHash).toBe('0xSETTLE');
     expect(amount).toBe(20);
     expect(randomness).toEqual(LOSER_RANDOMNESS);
-    expect(wallet).toBeTruthy();
-    expect(node).toBeTruthy();
+    expect(txEffect).toEqual({ noteHashes: ['0xA1'], firstNullifier: '0xN1' });
 
     expect(hoisted.refreshTokenBalanceMock).toHaveBeenCalled();
   });
@@ -133,7 +134,7 @@ describe('loser token reward import', () => {
       await new Promise(r => setTimeout(r, 0));
     });
 
-    expect(hoisted.importNotesFromTxMock).toHaveBeenCalled();
+    expect(hoisted.importCardNotesMock).toHaveBeenCalled();
     expect(hoisted.importTokenRewardNoteMock).not.toHaveBeenCalled();
   });
 });

@@ -841,3 +841,119 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   sits un-submitted in the input. ALWAYS verify a dispatch landed (message in transcript + input
   empty + agent BUSY), then re-send Enter if staged. Caught lane-2 (A–D, 15min stalled) + lane-8
   (mask directive, never received) this way; Zac flagged the lane-8 one.
+
+## 06-13 — lane-8 de-masking VERIFIED + unblocked (was blocked on already-merged Stage 1)
+- lane-8 STATUS: blocked — harness built, de-masked, pack-discovery validated (15 cards both players),
+  blocked on "lane-2's serial-PXE-queue fix" — which is Stage 1 `4a66565`, ALREADY MERGED. lane-8 just
+  hadn't rebased.
+- VERIFIED de-masking against code (not trusted from STATUS), commit `7f520fa`:
+  - `expectEventually` now has NO catch — `last = await read()` lets a thrown read propagate as fatal;
+    polls only for value-not-yet-equal. The retry-on-throw is gone.
+  - `tokenBalanceApp` removed (grep-clean); queued `tokenBalance()` used everywhere. Remaining catches
+    are all legit (waitPhase enrich-rethrow, teardown close, stop-at-first-failure rethrow).
+- Unblocked: told lane-8 Stage 1 (`4a66565`) + ckpt1 (`9d888d4`) are merged → rebase onto testnet +
+  re-run the C-multi campaign (real proofs) → should clear the IDB race and reach the consecutive
+  games. It is now working (rebase + re-run).
+- TUI LESSON: Claude Code shows CONTEXTUAL PLACEHOLDER text in an empty input (e.g. "ping me when
+  lane-2's queue fix lands") that is NOT real content — it never submits/concatenates and no
+  edit key clears it; typing a char replaces it. Don't mistake a placeholder for stuck staged input.
+
+## 06-13 — PXE Stage 2 ckpt2 MERGED (leak closed); campaign re-run HUNG on WebGL (killed + redirected)
+- ckpt2 `99bfe20` → testnet `2cf9ad0`. Gate-reviewed + VERIFIED (not trusted): contractCache is now
+  `const` (private), grep shows no app-code `.simulate(/.send(` outside pxe.ts (only doc comments,
+  bootstrap `deployMethod.send`, and already-queued testkit), dead `deriveBlindingFactor.ts` leak-vector
+  deleted, tsc clean + 323 tests green (ran the full suite myself). The serial queue is now the only door
+  to the PXE. ckpt3 (vitest source-guard + dead-catch cleanup; Proxy skipped) dispatched to lane-2.
+- lane-8's full 5-game re-run (post-rebase onto the merged fix) HUNG — and I nearly misreported it
+  "alive": process-tree up + 32% CPU node + fresh sandbox.log looked alive, but those are just the
+  sandbox idling EMPTY blocks. DECISIVE artifacts: both `run-*/browser-{alice,bob}.log` froze at 22:10
+  right after pack-open with `THREE.WebGLRenderer: Context Lost` then 25min silence; every sandbox block
+  `txCount:0` — never reached one game move. LESSON: for a playtest run, browser-log mtime + on-chain
+  txCount are the real progress signals; process-existence/CPU/sandbox-freshness are NOT.
+- Action: killed the zombie stack (verified all ports free), wrote `docs/plan/BUG_WEBGL_HANG.md`, and
+  redirected lane-8 (after its auto-compaction at 100% ctx): (1) root-cause the RECURRING WebGL Context
+  Lost — leak (R3F renderer not disposed on scene switch → real APP bug for lane-2/6) vs two-tab GPU
+  exhaustion (→ separate browser process per player); (2) FIX the hang-guards that did NOT fail-fast a
+  25-min dead-page stall (page.evaluate on a context-lost page slips withTimeout/withDeadline). No masking.
+- The real multi-game carryover bug class is STILL not reached — every blocker so far has been
+  harness/environment (vite optimize, fee headroom, MenuScene, IDB race, now WebGL context loss).
+
+## 06-13 — PXE Stage 2 COMPLETE (ckpt3 merged); lane-8 WebGL root-cause verified
+- ckpt3 `dc4d8d1` → testnet `893f341`. Stage 2 DONE: serial PXE queue is the only door AND
+  CI-enforced. Gate-reviewed + VERIFIED myself: ran `pxe.sourceGuard.test.ts` (greps prod sources,
+  signal `.methods.`/`.simulate(`/`contractCache`, exempts pxe.ts+testkit+contracts.ts, asserts
+  >20 files scanned) — clean tree 3/3; then PLANTED a `.methods.`+`contractCache` violation → both
+  rules failed with file:line; removed → 3/3 again. Dead-catch removal grep-confirmed (no
+  `refreshTokenBalance().catch` / "Failed to fetch token balance" left). tsc clean, 326 tests green
+  (full suite run). Proxy skipped (decision C). Zac's "PXE cannot be accessed except via the queue"
+  is fully delivered + regression-proofed. lane-2 acked → standing by.
+- lane-8 WebGL hang RESOLVED (verified against code, not just BUG_WEBGL_HANG.md RESOLUTION):
+  - Root cause (Problem 1): instrumented — both tabs lost WebGL context 16-56ms apart then froze
+    together = ONE shared GPU process crashing under sustained ClientIVC proving, NOT a per-tab R3F
+    leak. So it is two-tab GPU exhaustion (HARNESS), nothing to file vs lane-2/6. Fix verified in
+    code: `src/browser.ts launchIsolatedBrowser` + `player.ts` launches one isolated Chromium
+    PROCESS per player, `installWebglProbe` (addInitScript, per-phase live-context count),
+    MenuScene-off + pack-Canvas-off → ≤1 live context/process.
+  - Root cause (Problem 2): guards only fired at the 25-min proof-budget ceiling (a wedged page
+    limps). Fix verified: `startWatchdog` + `page.on('crash')→declareDead` + a `driver.dead` promise
+    raced by withDeadline/waitPhase → ~2-min fail-fast on crash / context-lost-120s / dead pings.
+    This is fail-fast, NOT a mask.
+  - 2-game confirmation run now in flight with the watchdog as safety net. When it concludes I will
+    verify via browser-log mtime + on-chain txCount (NOT the STATUS) whether it finally clears packs
+    and reaches the consecutive games — the carryover bug class is still the unreached goal.
+
+## 06-13 — RE-VERIFICATION: confirmation run HUNG again; post-pack hang is NOT WebGL; guards STILL miss it
+- Zac asked me to validate lane-8 was genuinely working / not stale outputs. I nearly mis-called it:
+  first artifact sample LOOKED fresh (browser logs written 14s prior), but RE-SAMPLING 3.7 min later
+  showed content frozen at the SAME line (23:16:35) — mtime 23:16, unchanged across a 5-min span,
+  playwright process still alive + sandbox txCount:0 = a zombie. LESSON (reinforced): one "fresh"
+  sample is not enough — re-sample to confirm the tail is ADVANCING, not just recently-written.
+- Corrected diagnosis (verified via artifacts):
+  - lane-8's WebGL fix WORKED for WebGL: 0 `Context Lost`; probe `[webgl@after-packs] live=0 created=0
+    lost=0` both players. Isolated-process + Canvas-off eliminated the GPU crash. KEEP.
+  - BUT the post-pack hang PERSISTS with ZERO WebGL contexts → the real pack→matchmaking freeze was
+    NEVER (only) WebGL. Page dies right after pack-import + a burst of `ensureContracts(cached=true)`.
+  - The watchdog + withTimeout STILL did not fire (frozen ~5 min). Likely: a frozen-page
+    `page.evaluate` neither returns nor rejects, so a guard that AWAITS one (watchdog ping) hangs too.
+    Needs a Node-side timer that fires regardless of page state, proven against a frozen page.
+- Action: killed the zombie (ports free), appended an ORCHESTRATOR RE-VERIFICATION section to
+  BUG_WEBGL_HANG.md, redirected lane-8: root-cause the NON-WebGL post-pack freeze + fix the guards
+  (Node-timer, proven vs a frozen page); don't declare fixed until a frozen page fails-fast AND a
+  clean run reaches the games (txCount>0). lane-8 processing it (was mid iter6).
+- Net: the multi-game carryover bug class is STILL not reached; harness/env blocker count now includes
+  a non-WebGL post-pack freeze + guards that don't catch a frozen page.
+
+## 06-14 — lane-8 monitoring tightened; post-pack wedge root-caused to a REAL toast bug (→ lane-2)
+- Zac: "ensure lane 8 is ALWAYS working" — it had stalled BLOCKED at an AskUserQuestion with only the
+  10-min cron watching. Cron IS active (`fa2c1ddf`, every 10m, session-only) but too loose. Fix: armed a
+  persistent 45s Monitor (`bog71lujl`) that alerts when lane-8 stops generating with no run OR a run
+  zombies (playwright alive + browser logs frozen >3min), rate-limited 4min. It fired correctly on arming.
+  So lane-8 can't silently stall now; cron stays as backstop.
+- lane-8 PROGRESS (both fixes proven): GPU-isolation eliminated WebGL loss; the new watchdog CAUGHT the
+  post-pack wedge in 13min with a precise reason (`txnc-root intercepts pointer events`) — fail-fast,
+  requirement (a) MET in a real run. Then root-caused the wedge: NOT WebGL — a real FRONTEND bug. The
+  `TxNotificationCenter` toast (z-index 1400, bottom-anchored, pack-tx notification stuck in 'Preparing')
+  overlaps + intercepts the CardSelector Play!/hand-confirm button (z-index ~15).
+- Decision (Zac no-masking bar): REJECTED lane-8's option-1 "click Hide-notifications" workaround (a mask;
+  also re-blocks at settlement). Routed the REAL fix to lane-2: toasts must not intercept game-button
+  clicks (pointer-events) + the pack-tx notification must clear on completion (not stick in 'Preparing'),
+  each with a revert-failing test. lane-2 working it; lane-8 committed its proven fixes + is doing GENUINE
+  prep while blocked (sharp carryover-hypothesis: 7 candidates × reset paths × distinguishing signal) so
+  the first carryover failure root-causes instantly. Re-runs the moment the toast fix merges.
+
+## 06-14 — toast fix MERGED (lane-8 UNBLOCKED + re-running with full harness fixes)
+- lane-2 fixed both TxNotificationCenter bugs, committed `bf76707` → testnet `8a13340`. Gate-reviewed +
+  VERIFIED myself (not trusted): Bug 1 (the hang) — the toast card was `pointer-events:auto` over the
+  Play!/settlement buttons; fix makes the card pass-through (`none`), only its own controls capture.
+  Bug 2 — completed pack tx no longer shows persistent "Preparing" (the tx DID complete; only the chip
+  label persisted; relabeled Client:/Mining:). 2 revert-failing tests pin both (CSS pointer-events
+  policy parse + completed-tx render asserting "Complete"/no "Preparing"). Ran it: tsc clean, 37 files /
+  330 tests green. Real fixes, no mask.
+- lane-8 UNBLOCKED: rebasing onto testnet + re-running the C-multi campaign with real proofs. ALL harness
+  blockers now fixed: GPU-isolation (no WebGL crash), fail-fast watchdog (proven vs frozen page + caught
+  the toast hang in 13min), and now the toast no longer intercepts clicks. So the post-pack→matchmaking
+  →games path should finally be clear → the carryover tests are finally reachable.
+- Monitoring (Zac demand "lane-8 ALWAYS working"): v2 watchdog `b8br0e8e0` (transition-based + 10min
+  reminder, low noise) covers lane-8 in 45s; cron `fa2c1ddf` (10min) backstop. When lane-8's run reaches
+  the games or fails, I verify via re-sampled browser-log tail + on-chain txCount (NOT a single snapshot
+  or its STATUS) — the lesson from the two prior near-misreports.

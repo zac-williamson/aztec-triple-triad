@@ -1,10 +1,8 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
-import { toFr as toFrUtil } from '../aztec/fieldUtils';
-import { importNotesFromTx, fetchTxEffectData, getNftArtifact } from '../aztec/noteImporter';
+import { useState, useCallback } from 'react';
+import { fetchTxEffectData } from '../aztec/noteImporter';
 import { addCards, type StoredCard } from '../aztec/cardStore';
-import txManager from '../aztec/txManager';
+import { runPxeTx } from '../aztec/pxe';
 import { AZTEC_TX_TIMEOUT, CARDS_PER_PACK } from '../aztec/gameConstants';
-import { gasSettingsWithHeadroom, type BaseFeeNode } from '../aztec/feeSettings';
 
 export interface LocationInfo {
   id: number;
@@ -42,31 +40,10 @@ export function useCardPacks(
   nodeClient: unknown | null,
   accountAddress: string | null,
 ): UseCardPacksReturn {
-  const [cooldowns, setCooldowns] = useState<Record<number, number>>({});
+  const [cooldowns] = useState<Record<number, number>>({});
   const [txStatus, setTxStatus] = useState<PackTxStatus>('idle');
   const [activeLocation, setActiveLocation] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const sdkCacheRef = useRef<any>(null);
-
-  const getSDK = useCallback(async () => {
-    if (sdkCacheRef.current) return sdkCacheRef.current;
-    const [{ AztecAddress }, { Fr }] = await Promise.all([
-      import('@aztec/aztec.js/addresses'),
-      import('@aztec/aztec.js/fields'),
-    ]);
-    sdkCacheRef.current = { AztecAddress, Fr };
-    return sdkCacheRef.current;
-  }, []);
-
-  const getNftContract = useCallback(async () => {
-    const { AztecAddress } = await getSDK();
-    const { Contract } = await import('@aztec/aztec.js/contracts');
-    const { AZTEC_CONFIG } = await import('../aztec/config');
-    if (!AZTEC_CONFIG.nftContractAddress) throw new Error('NFT contract not configured');
-    const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
-    const artifact = await getNftArtifact();
-    return Contract.at(nftAddr, artifact, wallet as never);
-  }, [wallet, getSDK]);
 
   // No cooldowns — card packs are purchased with Arena Tokens
   const refreshCooldowns = useCallback(async () => {}, []);
@@ -75,7 +52,6 @@ export function useCardPacks(
     if (!wallet || !accountAddress) throw new Error('Wallet not connected');
 
     // Capture values upfront
-    const capturedWallet = wallet;
     const capturedNodeClient = nodeClient;
     const capturedAccountAddress = accountAddress;
 
@@ -84,48 +60,29 @@ export function useCardPacks(
     setError(null);
 
     try {
-      const result = await txManager.runTx<{ cardIds: number[]; txHash: string | null }>({
+      // Reads + send + import run INLINE as one serial PXE queue item.
+      const result = await runPxeTx<HuntResult>({
         type: 'purchase_card_pack',
         label: `Hunting at ${location.name}...`,
-
-        execute: async (setPhase) => {
+        execute: async (ops, setPhase) => {
           setPhase('simulating');
-          const { AztecAddress, Fr } = await getSDK();
-          const nftContract = await getNftContract();
-          const addr = AztecAddress.fromString(capturedAccountAddress);
-
-          const { result: nonceValue } = await nftContract.methods
-            .get_note_nonce(addr)
-            .simulate({ from: addr });
-
-          const { result: previewResult } = await nftContract.methods
-            .preview_card_ids(nonceValue)
-            .simulate({ from: addr });
-          const cardIds: number[] = Array.from({ length: CARDS_PER_PACK }, (_, i) => Number(previewResult[i]));
+          // Capture the note nonce BEFORE the purchase advances it.
+          const { cardIds, nonce } = await ops.previewCardPack(capturedAccountAddress, CARDS_PER_PACK);
 
           setPhase('sending');
-          // Fee Juice paid natively by the sender; maxFeesPerGas carries base-fee
-          // headroom so the tx survives a base-fee climb during proving.
-          const { receipt } = await nftContract.methods.purchase_card_pack().send({
-            from: addr,
-            fee: { gasSettings: await gasSettingsWithHeadroom(capturedNodeClient as BaseFeeNode) },
-            wait: { timeout: AZTEC_TX_TIMEOUT },
+          // Fee Juice paid natively by the sender; the send op applies the shared
+          // base-fee headroom so the tx survives a base-fee climb during proving.
+          const txHash = await ops.sendPurchaseCardPack(capturedAccountAddress, {
+            node: capturedNodeClient,
+            timeoutMs: AZTEC_TX_TIMEOUT,
           });
 
-          const txHash = receipt?.txHash?.toString() ?? null;
-
-          // Import notes and persist to localStorage
-          if (txHash && capturedNodeClient) {
+          // Import the minted notes and persist them for re-import after a refresh.
+          if (capturedNodeClient) {
             try {
-              const { result: randomnessResult } = await nftContract.methods
-                .compute_note_randomness(nonceValue, CARDS_PER_PACK)
-                .simulate({ from: addr });
-              const notes = cardIds.map((id, i) => ({
-                tokenId: id,
-                randomness: toFrUtil(Fr, randomnessResult[i]).toString(),
-              }));
+              const randomness = await ops.computeNoteRandomness(capturedAccountAddress, nonce, CARDS_PER_PACK);
+              const notes = cardIds.map((id, i) => ({ tokenId: id, randomness: randomness[i] }));
 
-              // Fetch TxEffect data for localStorage persistence
               const txEffectData = await fetchTxEffectData(capturedNodeClient, txHash);
               if (txEffectData) {
                 const storedCards: StoredCard[] = notes.map((n) => ({
@@ -136,9 +93,8 @@ export function useCardPacks(
                   firstNullifier: txEffectData.firstNullifier,
                 }));
                 addCards(capturedAccountAddress, storedCards);
+                await ops.importCardNotes(capturedAccountAddress, txHash, notes, 'Card pack', txEffectData);
               }
-
-              await importNotesFromTx(capturedWallet, capturedNodeClient, capturedAccountAddress, txHash, notes, 'Card pack', txEffectData ?? undefined);
             } catch (importErr) {
               console.warn('[useCardPacks] Failed to import card notes:', importErr);
             }
@@ -158,7 +114,7 @@ export function useCardPacks(
     } finally {
       setActiveLocation(null);
     }
-  }, [wallet, nodeClient, accountAddress, getSDK, getNftContract]);
+  }, [wallet, nodeClient, accountAddress]);
 
   return {
     cooldowns,
