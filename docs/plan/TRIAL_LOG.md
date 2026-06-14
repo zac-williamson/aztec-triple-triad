@@ -1159,3 +1159,26 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - META: 3 faucet mis-reads this session — hundreds-burned (cap≠nonce), 600s (cap≠~2.5min actual),
   app-waits-fine (read requestFeeJuiceClaim's no-timeout but not the caller / the 499). ENFORCED lesson: pull
   the box's ACTUAL access/error log before theorizing about live-infra behavior.
+
+## 06-14 — faucet ROOT CAUSE = NordVPN idle-drop (NOT a Playwright timeout); re-POST IS rate-limiter-neutral
+- Two corrections to the entry above (both were unverified guesses; now evidenced):
+  (1) re-POST is rate-limiter-NEUTRAL. Read FaucetService.ts:40-72: a 409 (inFlight) returns at line 41 and a
+      reused pending claim at line 51 - BOTH before any limiter tryAcquire (line 55+). Only a brand-new bridge
+      spends an IP+global slot, and it rolls back on failure (69-70). The faucet is idempotent BY DESIGN
+      (docstring 9-24). So my "Do NOT re-POST" was wrong - retracted. lane-8 caught this from the source.
+  (2) The ~50-66s client abort is NordVPN, not a harness timeout. Confirmed NordVPN ACTIVE on this machine:
+      NordVPN.app + NordLynx Extension running; utun6 tunnel -> VPN server 154.16.157.52, flagged primary
+      interface. The harness Chromium egresses through utun6; NordLynx drops the idle TCP conn at ~60s during
+      the ~2.5min bridge -> the nginx 499. The box curl worked because it ran ON the box (never touched the
+      VPN). requestFeeJuiceClaim has no timeout and the harness never calls the faucet directly, so the abort
+      is the VPN layer, not code. lane-8's re-run failed again at needs-funding in ~66s = systematic, matches.
+- DECISION (Zac-only, surfaced): (c) run the harness off NordVPN [zero code; green live game immediately;
+  proves the deployed app works for a normal-network user] vs make the real app requestFeeJuiceClaim POLL the
+  idempotent faucet on connection-drop [works unconditionally incl VPN users; durable fix; lane-2 file; NOT a
+  mask - fast-fail on 400/already_funded/429/503 + hard onboarding deadline]. Do NOT build a harness-only
+  poll/mask (would hide a possible real-VPN-user defect). lane-8 parked blocked-on-Zac, ready to re-run.
+- Recommendation: (c) FIRST to land F3 smoke now; THEN app-poll as the real hardening if Zac wants VPN users
+  supported on the live site.
+- META: the "Playwright timeout" guess above was itself unverified - the real cause was the VPN layer, found
+  by checking the machine's network interfaces (utun6 -> NordVPN). Same lesson one level down: check the
+  actual network path; don't guess the abort layer.
