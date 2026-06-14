@@ -757,3 +757,21 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   games before failing. lane-8 diagnosing which game # broke + the carryover cause. Nudged: report
   the failure point + iterate the fix in FAST mode (dummy VK), not 1.8h real-proof runs; confirm with
   one real-proof run. This is the multi-game bug class Zac flagged — being surfaced now.
+
+## 06-13 — CORRECTION (validated vs lane-8 artifacts): multi-game run blocked at PACKS, not games
+- My prior entry propagated unverified claims; accurate state from lane-8's artifacts:
+  - The 1.8h run NEVER reached game 1. It validated the packs (both players 15 cards / 0 tokens —
+    pack note-discovery + token burn work) then HUNG before matchmaking (0 games, 0 settlements).
+  - Cause = HARNESS page-degradation, NOT a multi-game app bug: the decorative MenuScene renders
+    continuously → THREE.WebGLRenderer Context Lost → PXE reads crawl to ~46s → hang. lane-8 FIXED
+    it by gating MenuScene off under VITE_TESTKIT (committed), back on metal GL.
+  - SwiftShader did NOT fix it (my earlier claim was WRONG — it worsened CPU contention vs proving).
+  - Fast mode for gameplay is UNWIRED in the frontend (VERIFIED: loadDummyMoveCircuit is used only
+    for settlement padding at useGameSettlement.ts:520; gameplay always proves real). My "use fast
+    mode" nudge was based on a wrong assumption.
+- ACTION: routed lane-2 to wire VITE_FAST_PROOFS (gameplay → dummy_hand/dummy_move when set; gated,
+  default OFF) so the harness runs multi-game in MINUTES not hours. dummy circuits + permissive-vks
+  deploy exist (lane-1). lane-8's 2-game confirmation run (MenuScene off, metal) is ACTIVE (15 procs)
+  — verifying the harness now reaches the games, then it hunts the real carryover bugs (7 candidates
+  from its reset analysis). The actual multi-game carryover bug class is STILL NOT REACHED.
+- Process note: sweep.sh can grab a stale STATUS line — capture panes directly for critical status.
