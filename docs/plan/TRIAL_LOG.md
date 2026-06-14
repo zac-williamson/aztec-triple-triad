@@ -742,3 +742,18 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   addresses + redeploy → live game works IMMEDIATELY (supersedes the 24h-delay update 1f4da52).
 - STANDING MODEL: code fix → aztec compile → deploy-testnet.ts → new .env → frontend redeploy.
   Immediate, every time.
+
+## 06-13 — FRESH-REDEPLOY LIVE: new contracts merged (7248d2c); lane-8 multi-game broke (the bug class)
+- Resumed after Zac's connection drop (finished the interrupted merge). lane-1 fresh redeploy MERGED
+  to testnet 7248d2c: upgrade pattern stripped from triple_triad_game + triple_triad_nft (registry
+  dep removed), C2 fix kept, all 3 fresh-deployed — NFT 0x0a191688…f617cf9, Game 0x21793d5e…33537cb3,
+  Token 0x2a6bfcc2…e63a3879; slop scripts deleted. Vercel prod env set to the 3 new addresses; push
+  triggered the redeploy (BUILDING sha 7248d2c). ⇒ C2 fix LIVE IMMEDIATELY at new addresses, NO 24h
+  wait. Old 0x2d86 + its pending 24h update abandoned.
+- No hardcoded old addresses anywhere (grep clean) → lanes 2/4/6 need NO repoint (env-driven).
+  Cleared lane-1's stale repoint note.
+- lane-8 MULTI-GAME (Zac priority): first run HUNG on headless WebGL context-exhaustion (5 games × 2
+  browsers); SwiftShader software render FIXED the hang → the run went 1.8h and got DEEP into the
+  games before failing. lane-8 diagnosing which game # broke + the carryover cause. Nudged: report
+  the failure point + iterate the fix in FAST mode (dummy VK), not 1.8h real-proof runs; confirm with
+  one real-proof run. This is the multi-game bug class Zac flagged — being surfaced now.
