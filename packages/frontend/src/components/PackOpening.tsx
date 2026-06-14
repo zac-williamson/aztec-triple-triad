@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { getCardById } from '../cards';
 import { SparkBurst } from '../components3d/SparkBurst';
+import { TESTKIT_ENABLED } from '../testkit/enabled';
 import './PackOpening.css';
 
 type Phase = 'pack-idle' | 'pack-shudder' | 'explosion' | 'reveal' | 'dissolve';
@@ -77,16 +78,21 @@ export function PackOpening({ location, cardIds, onComplete }: PackOpeningProps)
     );
   }
 
-  // Explosion phase
+  // Explosion phase. The harness suppresses this extra WebGL <Canvas> — across a
+  // long multi-game headless session its context churn triggers a WebGL context
+  // loss that degrades the page (the multi-game post-pack hang). It's purely
+  // decorative and auto-advances to 'reveal'; prod is unaffected.
   if (phase === 'explosion') {
     return (
       <div className="pack-opening">
         <div className="pack-opening__explosion">
-          <Canvas camera={{ position: [0, 0, 2], fov: 60 }}>
-            <Suspense fallback={null}>
-              <ExplosionScene />
-            </Suspense>
-          </Canvas>
+          {!TESTKIT_ENABLED && (
+            <Canvas camera={{ position: [0, 0, 2], fov: 60 }}>
+              <Suspense fallback={null}>
+                <ExplosionScene />
+              </Suspense>
+            </Canvas>
+          )}
         </div>
       </div>
     );
