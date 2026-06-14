@@ -146,3 +146,39 @@ re-prove requirement (a): **GUARD PROOF PASSED** (read 3002 ms, click 2004 ms, w
 Requirement (b) (a clean run reaches the games) is the next step: with clicks bounded, the
 re-run will fail FAST at the wedged post-pack op WITH the screen state — which finally exposes the
 non-WebGL app cause (why `menu-play` won't land after packs), instead of zombie-hanging.
+
+---
+
+## NON-WEBGL ROOT CAUSE FOUND — a real FRONTEND bug the harness caught (req a MET)
+
+The bounded-click re-run (`run-2026-06-14T06-46-26`) did exactly its job: it **failed FAST in
+13 min** (not a zombie) at `hand-confirm` with a precise reason —
+`alice: click 'hand-confirm' did not land [screen=card-selector aztec=connected
+ws.connected=true matchmaking=idle cards=15]`. So `menu-play` + all 5 `card-select` clicks
+landed; the aria snapshot shows **`5/5 cards selected` and the "Play!" button present and
+enabled**. The trace's actionability log gives the cause verbatim:
+
+> `<span ...>Preparing: 1m 19.2s</span> from <div class="txnc-root">…</div> subtree intercepts
+> pointer events` — retried for the full 60 s, never yielded.
+
+**Root cause (FRONTEND, lane-2 — dispatched by Zac):**
+1. The **TxNotificationCenter toast** (`.txnc-root`, `position:fixed; bottom; right;
+   z-index:1400`, toast `pointer-events:auto`) overlaps and **intercepts clicks on the
+   CardSelector "Play!"/hand-confirm button** (`.card-selector__play-btn`, in a fixed bottom
+   panel at `z-index ~15`). 1400 ≫ 15 and both bottom-anchored → the toast sits on top.
+2. The **pack-purchase notification is stuck in "Preparing"** (1m19s and counting) long after the
+   pack mined (15 cards imported) — it never transitions to done/clears, so the overlay persists
+   and permanently blocks the button.
+
+Multi-game/pack-specific: Phase-1's full-game never opens a pack, so no lingering pack-tx toast —
+`hand-confirm` was always clickable there. This is **not WebGL and not the harness**; it is a real
+post-pack UX blocker (a user who opens a pack then hits "Play" is blocked the same way).
+
+**No masking (Zac's bar):** the harness does NOT dismiss the toast to get green (a "Hide
+notifications" workaround would re-block at settlement anyway and would hide a real bug). The fix
+belongs in lane-2: the toast must not intercept game-button clicks, and the pack-tx notification
+must clear on completion. The harness is **STATUS: blocked** on that fix; the moment it lands and
+is merged, rebase + re-run to reach the consecutive carryover games (req b).
+
+**Guards (req a) — MET, proven twice:** synthetically (`scripts/probe-frozen-guard.ts`:
+read/click/watchdog all fail fast) AND in this real run (fast, clear reason, no zombie).

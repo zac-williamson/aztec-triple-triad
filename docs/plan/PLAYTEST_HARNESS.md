@@ -434,3 +434,24 @@ att.8 5.9m) → A1+A2 upgrade validated repeatably; harness ready to merge.
     promise that `withDeadline` and `waitPhase` race against. A dead page now
     fails in ~2 min. No false positives: healthy context losses restore in <1 s
     and legit proving never loses a context.
+23. **The real "guards didn't fire" bug was UNBOUNDED CLICKS, not the watchdog.**
+    Playwright's default `actionTimeout` is **0 (unbounded)**, and `use.actionTimeout`
+    does NOT reach contexts we launch ourselves — so a bare `.click()` on a wedged
+    page hangs to the 60-min test timeout. Proven with `scripts/probe-frozen-guard.ts`
+    (while(true) on the page main thread): `Promise.race([evaluate, NodeTimer])` fires
+    at the timer (reads were fine), but an unbounded click HUNG past 6 s; a bounded
+    click rejects at the timeout. Fix: `context.setDefaultTimeout(60s)` +
+    `setDefaultNavigationTimeout(120s)` on every launched context (`src/browser.ts`) and
+    `actionTimeout`/`navigationTimeout` in the config. The proof now ASSERTS read+click+
+    watchdog all fail fast (exits non-zero otherwise) — run it to re-verify.
+24. **Post-pack wedge = a real lane-2 FRONTEND bug the harness caught (not WebGL,
+    not the harness).** With clicks bounded, the run failed fast at `hand-confirm`
+    with `5/5 cards selected` and the button enabled, but the **TxNotificationCenter
+    toast (`.txnc-root`, z-index 1400, `pointer-events:auto`) intercepts the
+    CardSelector "Play!" button (z-index ~15)**, and the **pack-tx notification is
+    stuck in "Preparing"** (never clears after the pack mines) so the overlay
+    persists. Multi-game/pack-specific (full-game never opens a pack). Per Zac's
+    no-masking bar the harness does NOT dismiss the toast (it would re-block at
+    settlement and hide the bug); fix dispatched to lane-2 (toast must not intercept
+    game-button clicks; pack notification must clear on completion). Harness blocked
+    on that fix, then rebase + re-run to reach the carryover games.
