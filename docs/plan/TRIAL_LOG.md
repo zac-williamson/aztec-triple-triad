@@ -1205,3 +1205,22 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - PROGRESS: the testnet funding path is now down to ONE clear code fix; VPN drop + address-validity (both
   earlier red herrings) are resolved. Two real issues found by pointing the harness at testnet, exactly as the
   brief predicted ("may surface real testnet-only issues the local sandbox hid").
+
+## 06-14 — F3 LIVE TESTNET SMOKE: GREEN. A full game settled end-to-end on live testnet.
+- After the wrapped-claim fix (6899855) + VPN off, the harness ran a full game on LIVE testnet: PASS
+  (1 passed, 11.0m), full-game.spec.ts (onboard 2 wallets -> create -> 9 moves -> settle; all 3 layers).
+- ON-CHAIN EVIDENCE (run-2026-06-14T19-47-46-708Z, real testnet txHashes):
+  - create_game mined: 0x1b8b5cbe03e30ad8b4025f28a9860e3c2d4ba58d2bf4bca03bc08132bd86d7af (19:56:01)
+  - join_game mined:   0x1e6d0fef3b764f9cf63315abe20dba20c2aa9784464f8e3c2f06982d7d55d8bc (19:57:13)
+  - SETTLED on-chain:  0x0e657b3f1ace237e73561e081050431e927c503c011c60e571010c9c270d68c0 (19:58:25)
+  - Phase active -> awaiting_settlement -> idle. The test's on-chain assertions (gameStatus==settled,
+    gamePlayers, taken card) all passed.
+- VERIFIED independently from artifacts (not lane-8's say-so): the playwright "1 passed" + the three txHashes
+  + the [useGameSettlement] "Game settled on-chain" log line.
+- Two real testnet-only bugs were found + fixed by pointing the harness at testnet: (1) NordVPN ~60s idle-drop
+  of the faucet POST (env; Zac disabled VPN); (2) faucet response SHAPE mismatch (backend wraps {claim,reused},
+  frontend read flat -> in-app funding never worked) -> fixed canonically (6899855) + red->green regression
+  test (4 red without the fix; flat body now explicitly rejected - one canonical contract, no fallback).
+- NEXT (gated on Zac): gate-review + merge 6899855 to testnet (= Vercel prod auto-deploy) so
+  www.aztec-arena.com itself gets the fix, THEN a manual click-through smoke on the live site (the harness
+  can't drive the hook-free prod page). Until that redeploy, the LIVE SITE still serves the old buggy frontend.
