@@ -28,9 +28,22 @@ export function chromiumLaunchArgs(): string[] {
 export const VIEWPORT = { width: 1440, height: 900 };
 
 /**
+ * Default per-action (click/fill/etc.) timeout. CRITICAL: Playwright's built-in
+ * default is 0 = UNBOUNDED, so a bare `.click()` on a wedged page hangs until the
+ * 60-min test timeout — this is exactly why the post-pack `menu-play.click()`
+ * zombie-hung past every guard (proven: scripts/probe-frozen-guard.ts Q4). A UI
+ * click is fast on a healthy page (heavy work is awaited separately via
+ * waitScreen/waitPhase), so 60s is generous; a wedged page now fails here, fast.
+ * The config's `use.actionTimeout` does NOT reach contexts we launch ourselves —
+ * it must be set on the context explicitly.
+ */
+export const DEFAULT_ACTION_TIMEOUT_MS = 60_000;
+/** Navigation gets more room than actions: the first goto can cold-optimize deps. */
+export const DEFAULT_NAV_TIMEOUT_MS = 120_000;
+
+/**
  * Launch one isolated Chromium process and open a context+page in it. Returns
- * the browser (caller must close it) and the page. Honours PLAYTEST_HEADED for
- * debugging.
+ * the browser (caller must close it) and the context. Honours PLAYTEST_HEADED.
  */
 export async function launchIsolatedBrowser(): Promise<{ browser: Browser; context: BrowserContext }> {
   const browser = await chromium.launch({
@@ -38,5 +51,8 @@ export async function launchIsolatedBrowser(): Promise<{ browser: Browser; conte
     args: chromiumLaunchArgs(),
   });
   const context = await browser.newContext({ viewport: VIEWPORT });
+  // Bound every action so no bare click/fill can hang unbounded on a wedged page.
+  context.setDefaultTimeout(DEFAULT_ACTION_TIMEOUT_MS);
+  context.setDefaultNavigationTimeout(DEFAULT_NAV_TIMEOUT_MS);
   return { browser, context };
 }

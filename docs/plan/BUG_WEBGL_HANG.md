@@ -84,3 +84,65 @@ losses restore in <1 s and legit proving never loses a context, so no false posi
 or (c) ~60 s of unanswerable liveness pings. It rejects a `driver.dead` promise that both
 `withDeadline` and the `waitPhase` primitive race against, so a dead page aborts in-flight
 waits instead of stalling the budget.
+
+---
+
+## ORCHESTRATOR RE-VERIFICATION (06-13) — confirmation run STILL hung; the post-pack hang is NOT WebGL, and the guards STILL didn't fire
+
+The 2-game confirmation run (`run-2026-06-14T06-08-32`) HUNG at the same post-pack stage; I
+killed it. Verified via artifacts (NOT the STATUS): both `browser-{alice,bob}.log` frozen at
+content 23:16:35 / mtime 23:16, unchanged across a 5-min re-sample; sandbox `txCount:0`;
+the playwright process still alive = zombie. (I nearly mis-read the first sample as "fresh" —
+it was 14 s after the freeze.)
+
+Two corrections to the RESOLUTION above:
+1. **The WebGL fix worked — for WebGL.** 0 `Context Lost` this run; the probe logged
+   `[webgl@after-packs] alice live=0 created=0 lost=0 | bob live=0 created=0 lost=0` — zero
+   contexts created/lost. Isolated-process + Canvas-off eliminated the GPU crash. KEEP them.
+2. **But the post-pack hang PERSISTS with zero WebGL involved** → the real pack→matchmaking
+   freeze was NEVER (only) WebGL. The page dies right after pack-import + a burst of
+   `ensureContracts called (cached=true)` (alice pack 23:16:11 → ensureContracts to 23:16:35 →
+   dead). Root-cause THIS non-WebGL freeze: what runs between "pack imported" and matchmaking
+   (post-pack `expectEventually(card=15/tokens=0)`, then `startMatchmaking`)? The repeated
+   `ensureContracts(cached=true)` right before the freeze is the lead.
+
+**The guards STILL did not fire (frozen ~5 min; watchdog target ~2 min, withTimeout 180 s).**
+Likely cause: a frozen-page `page.evaluate` neither returns nor rejects, so any guard that
+*awaits* one (the watchdog liveness ping; maybe the read path) hangs with it. FIX: every guard
+must be driven by a **Node-side timer that fires regardless of page state** — the watchdog ping
+must be `Promise.race([page.evaluate(ping), nodeTimeout])`, and there must be a hard per-step
+Node deadline that aborts even if no page call ever returns. **Prove the watchdog fires by
+testing it against a deliberately-frozen page** (don't assume).
+
+Do NOT declare the harness fixed until BOTH: (a) a deliberately-frozen page FAILS FAST via the
+guards, and (b) a clean run actually reaches the consecutive games (txCount>0, per-game table).
+
+---
+
+## ROUND-2 RESOLUTION (lane-8) — the guards' gap was UNBOUNDED CLICKS (proven, fixed)
+
+Did not guess — built a frozen-page probe (`scripts/probe-frozen-guard.ts`, while(true) on the
+page main thread) and measured each guard:
+- `Promise.race([page.evaluate, NodeTimer])` (the read guard, `withTimeout`) **fires** at the
+  timer (5001 ms) even though the frozen evaluate never returns. So reads were already covered.
+- A bare `locator.click()` (no `{timeout}`) **HUNG past 6 s with no self-timeout.** ROOT CAUSE:
+  **Playwright's default `actionTimeout` is 0 = UNBOUNDED**, and `use.actionTimeout` in the
+  config does NOT reach contexts we launch ourselves (`PlayerDriver.launch`). `startMatchmaking`
+  fires the post-pack `menu-play`/`card-select`/`hand-confirm` clicks with no timeout — so once
+  the 4 pre-game reads finished (their `ensureContracts` logs end exactly at the 23:16:35 freeze),
+  the very next op was an **unbounded `menu-play.click()`** that hangs until the 60-min test
+  timeout. That is why "the guards didn't fire": the hang was on a click no node-timer guarded.
+- A click WITH a timeout rejects at the timeout (5004 ms). Teardown does not hang (16/61 ms),
+  ruling out the zombie-teardown theory.
+
+**Fix:** `context.setDefaultTimeout(60s)` + `setDefaultNavigationTimeout(120s)` on every
+launched context (`src/browser.ts`), and `actionTimeout`/`navigationTimeout` in the config for
+fixture specs — so NO bare action can hang unbounded. `startMatchmaking` clicks now go through
+`clickTestId`, which on failure reports the player's `screen`+`aztecStatus` (so the wedge's
+cause is visible). The watchdog/read guards are kept. `probe-frozen-guard.ts` now ASSERTS all
+three guard classes (read, click, watchdog) fail fast and EXITS NON-ZERO otherwise — run it to
+re-prove requirement (a): **GUARD PROOF PASSED** (read 3002 ms, click 2004 ms, watchdog 3310 ms).
+
+Requirement (b) (a clean run reaches the games) is the next step: with clicks bounded, the
+re-run will fail FAST at the wedged post-pack op WITH the screen state — which finally exposes the
+non-WebGL app cause (why `menu-play` won't land after packs), instead of zombie-hanging.

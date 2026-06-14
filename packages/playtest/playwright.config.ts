@@ -1,5 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
-import { chromiumLaunchArgs } from './src/browser.js';
+import { chromiumLaunchArgs, DEFAULT_ACTION_TIMEOUT_MS, DEFAULT_NAV_TIMEOUT_MS } from './src/browser.js';
 
 /**
  * Playtest harness config. One worker — the campaign owns the whole stack
@@ -23,6 +23,12 @@ export default defineConfig({
   use: {
     ...devices['Desktop Chrome'],
     viewport: { width: 1440, height: 900 },
+    // Playwright's default actionTimeout is 0 (UNBOUNDED) — a bare click on a
+    // wedged page would hang until the 60-min test timeout. Bound it. (The
+    // campaign's own contexts set this via context.setDefaultTimeout in
+    // src/browser.ts, since `use` does not reach manually-launched contexts.)
+    actionTimeout: DEFAULT_ACTION_TIMEOUT_MS,
+    navigationTimeout: DEFAULT_NAV_TIMEOUT_MS,
     trace: 'retain-on-failure',
     video: 'retain-on-failure',
     screenshot: 'only-on-failure',

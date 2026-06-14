@@ -145,8 +145,13 @@ export class PlayerDriver {
    *    would not catch it). Healthy context losses restore in <1s, and legit
    *    proving never loses a context, so neither path false-positives.
    */
-  private startWatchdog(): void {
-    const PING_EVERY = 15_000, PING_TIMEOUT = 20_000, MAX_PING_FAILS = 4, WEBGL_GRACE_MS = 120_000;
+  startWatchdog(opts: {
+    pingEvery?: number; pingTimeout?: number; maxPingFails?: number; webglGraceMs?: number;
+  } = {}): void {
+    const PING_EVERY = opts.pingEvery ?? 15_000;
+    const PING_TIMEOUT = opts.pingTimeout ?? 20_000;
+    const MAX_PING_FAILS = opts.maxPingFails ?? 4;
+    const WEBGL_GRACE_MS = opts.webglGraceMs ?? 120_000;
     let pingFails = 0;
     const tick = async (): Promise<void> => {
       if (this.deadReason) return;
@@ -252,16 +257,33 @@ export class PlayerDriver {
     );
   }
 
+  /**
+   * Click a testid; on failure augment the error with the player's current
+   * screen. A wedged page now fails at the context's default action timeout
+   * (src/browser.ts) instead of hanging — and the screen tells us WHY a click
+   * couldn't land (e.g. the player wasn't on the screen we expected).
+   */
+  private async clickTestId(testId: string): Promise<void> {
+    try {
+      await this.page.getByTestId(testId).click();
+    } catch (err) {
+      const snap = await this.phase().catch(() => null);
+      throw new Error(
+        `${this.name}: click '${testId}' did not land (screen=${snap?.screen ?? '?'}, ` +
+        `aztec=${snap?.aztecStatus ?? '?'}): ${(err as Error).message.split('\n')[0]}`);
+    }
+  }
+
   /** Main menu → card selector → pick the 5 cards → queue for matchmaking. */
   async startMatchmaking(cardIds: number[]): Promise<void> {
-    await this.page.getByTestId('menu-play').click();
+    await this.clickTestId('menu-play');
     for (const id of [...new Set(cardIds)]) {
       const copies = cardIds.filter(c => c === id).length;
       for (let i = 0; i < copies; i++) {
-        await this.page.getByTestId(`card-select-${id}`).click();
+        await this.clickTestId(`card-select-${id}`);
       }
     }
-    await this.page.getByTestId('hand-confirm').click();
+    await this.clickTestId('hand-confirm');
   }
 
   async waitInGame(): Promise<PhaseSnapshot> {
