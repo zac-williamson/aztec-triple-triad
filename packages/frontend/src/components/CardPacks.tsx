@@ -29,7 +29,7 @@ export function CardPacks({ ownedCardIds, tokenBalance, onPackOpened, onBack }: 
 
   return (
     <div className="card-packs">
-      <button className="card-packs__back" onClick={onBack}>
+      <button className="card-packs__back" data-testid="packs-back" onClick={onBack}>
         &#8592; Back
       </button>
 
@@ -60,6 +60,7 @@ export function CardPacks({ ownedCardIds, tokenBalance, onPackOpened, onBack }: 
 
         <button
           className="card-packs__hunt-btn"
+          data-testid="purchase-pack"
           onClick={handlePurchase}
           disabled={!canAfford || isBusy}
           style={{ width: '100%', padding: '14px 20px', fontSize: 16 }}

@@ -406,3 +406,148 @@ Second consecutive fresh-stack green on 4.3.1 (`2 passed`, 5.9m), run to rule ou
 the earlier intermittent deploy fee-headroom race — it did NOT recur (deploy: 0
 `-32702`, clean settle on-chain + loser +20). Two consecutive green (att.7 6.3m,
 att.8 5.9m) → A1+A2 upgrade validated repeatably; harness ready to merge.
+
+## C-multi campaign (pack-open + 5 consecutive games) — harness findings
+
+21. **WebGL Context Lost mid-campaign = shared GPU process, not an app leak
+    (HARNESS fix).** The long pack+multi-game session repeatedly froze right
+    after packs with `THREE.WebGLRenderer: Context Lost` then a dead page.
+    Root-caused by instrumenting (not guessing): across two frozen runs both
+    tabs lost their context 16 ms and 56 ms apart, then froze together —
+    simultaneity is the signature of ONE shared GPU process dying, not
+    independent per-tab R3F dispose leaks (those desync). Both players ran as
+    `browser.newContext()` in ONE Chromium process → ONE GPU process; sustained
+    ClientIVC proving starves it until the context drops, killing both tabs.
+    Fix: one isolated Chromium PROCESS per player (`src/browser.ts`
+    `launchIsolatedBrowser` + `PlayerDriver.launch`) so GPU budgets are
+    per-player; plus a WebGL context probe (`installWebglProbe`, addInitScript)
+    logged per phase to confirm live-count stays low. Single-game (full-game.spec)
+    never hit this — its proving load is short enough that the shared GPU process
+    survives; only the multi-game duration exposed it. See docs/plan/BUG_WEBGL_HANG.md.
+22. **Hang guards must fail-fast on a wedged page, not at the proof budget.** The
+    `withDeadline` (15/25 min) and per-read `withTimeout` (180 s) guards DID fire
+    (Node timers, page-independent) but only at the happy-path budget. Added a
+    per-driver liveness watchdog (`startWatchdog`): `page.on('crash')` immediate,
+    or ~60 s of unanswerable pings → rejects a `driver.dead` promise that
+    `withDeadline` and `waitPhase` race against. A wedged page fails in ~1–2 min.
+    **CORRECTION (this claim was wrong):** the watchdog originally ALSO declared
+    death on a WebGL context "lost & not restored >120 s" — which **false-
+    positived and killed a healthy game mid-proof** (assumption 25). It now keys
+    ONLY on unresponsiveness; the WebGL probe is diagnostics-only.
+23. **The real "guards didn't fire" bug was UNBOUNDED CLICKS, not the watchdog.**
+    Playwright's default `actionTimeout` is **0 (unbounded)**, and `use.actionTimeout`
+    does NOT reach contexts we launch ourselves — so a bare `.click()` on a wedged
+    page hangs to the 60-min test timeout. Proven with `scripts/probe-frozen-guard.ts`
+    (while(true) on the page main thread): `Promise.race([evaluate, NodeTimer])` fires
+    at the timer (reads were fine), but an unbounded click HUNG past 6 s; a bounded
+    click rejects at the timeout. Fix: `context.setDefaultTimeout(60s)` +
+    `setDefaultNavigationTimeout(120s)` on every launched context (`src/browser.ts`) and
+    `actionTimeout`/`navigationTimeout` in the config. The proof now ASSERTS read+click+
+    watchdog all fail fast (exits non-zero otherwise) — run it to re-verify.
+24. **Post-pack wedge = a real lane-2 FRONTEND bug the harness caught (not WebGL,
+    not the harness).** With clicks bounded, the run failed fast at `hand-confirm`
+    with `5/5 cards selected` and the button enabled, but the **TxNotificationCenter
+    toast (`.txnc-root`, z-index 1400, `pointer-events:auto`) intercepts the
+    CardSelector "Play!" button (z-index ~15)**, and the **pack-tx notification is
+    stuck in "Preparing"** (never clears after the pack mines) so the overlay
+    persists. Multi-game/pack-specific (full-game never opens a pack). Per Zac's
+    no-masking bar the harness does NOT dismiss the toast (it would re-block at
+    settlement and hide the bug); fix dispatched to lane-2 (toast must not intercept
+    game-button clicks; pack notification must clear on completion). Harness blocked
+    on that fix, then rebase + re-run to reach the carryover games.
+25. **Watchdog WebGL-death path was a FALSE POSITIVE — killed a healthy game
+    (fixed).** After the lane-2 toast fix merged, the run finally cleared packs →
+    matchmaking → **into game 1** (the game's SwampScene `<Canvas>` mounted,
+    `live=1`, 8 move proofs generated). But the watchdog then declared `PAGE DEAD —
+    WebGL context lost & not restored for 129s` and killed a demonstrably healthy
+    game. Cause: React **`StrictMode`** (main.tsx) dev-double-mounts every R3F
+    `<Canvas>` (`CREATED #1 live=1`, `CREATED #2 live=2`, `LOST live=1` within
+    113 ms at mount) — the orphaned first mount's `webglcontextlost` fires while
+    the live canvas renders fine; the probe set `lostSinceEpoch` on ANY loss, so
+    the watchdog tripped 120 s later. Also fundamentally wrong for this harness:
+    testkit gates MenuScene off, so `live==0` is the NORMAL menu state. Fix:
+    the watchdog keys ONLY on unresponsiveness (`page.crash` + dead pings); the
+    WebGL probe is diagnostics-only. Real wedges are still caught (ping-fail, or
+    the bounded per-op timeouts). This is a correction to MY OWN guard, not a mask
+    — the game was provably progressing when wrongly killed.
+
+## C-multi RESULT — GREEN (5 consecutive games, real proofs)
+
+`run-2026-06-14T09-05-06` — **1 passed (14.5m)**. Two players open a pack each
+(→15 cards), then play FIVE consecutive games in ONE session (no stack reset),
+three-layer + no-carryover validated after each. Per-game table:
+
+| game | winner | alice cards | bob cards | alice tok | bob tok | claimed | settle |
+|------|--------|-------------|-----------|-----------|---------|---------|--------|
+| 1 | alice | 15→16 | 15→14 | 0→20 | 0→20 | #4 | OK |
+| 2 | bob | 16→15 | 14→15 | 20→40 | 20→40 | #4 | OK |
+| 3 | alice | 15→16 | 15→14 | 40→60 | 40→60 | #4 | OK |
+| 4 | bob | 16→15 | 14→15 | 60→80 | 60→80 | #4 | OK |
+| 5 | alice | 15→16 | 15→14 | 80→100 | 80→100 | #4 | OK |
+
+Verified genuine (not a single-snapshot misread): Playwright `1 passed`; 5
+settlement txs spread across the timeline (3 alice / 2 bob, matching winners);
+93 tx-blocks of real chain activity; ~13.5 min wall-clock of real proving; both
+browsers end together (clean teardown). Card/token economy internally
+consistent (winner +1 card / +20 tok, loser −1 / +20). **No carryover**: the
+gap-checks never tripped — the merged lane-2 `useGameSession`/`useGameSettlement`
+reset work holds across games. WebGL `created` climbs +1/game (StrictMode churn)
+but `live` stays 0–1 → no context leak. The multi-game carryover bug class did
+NOT manifest on the merged 4.3.1 stack.
+
+26. **Onboarding connection-reset = a lane-2 REGRESSION from the merge (~50%
+    failure; BLOCKS repeatability).** The node connection dies ~3 min into the
+    deploy+mint proving — `net::ERR_HTTP2_PROTOCOL_ERROR` (iter9, bob) or
+    `net::ERR_CONNECTION_RESET` (iter11, alice), both → `Failed to fetch` →
+    `useAztec` `status='error'` with NO retry → 420 s `waitConnected` timeout. The
+    node is healthy (sandbox.log errors are teardown-only `ECONNREFUSED :8545`).
+    Mechanism: ClientIVC deploy proving blocks the main thread ~3 min, the idle
+    HTTP connection to the node is reset, and the post-proving send hits a dead
+    socket. **Correlation = regression**: onboarding was reliable PRE-merge
+    (Phase-1/4.3.1 + iter6/7) but ~50% POST-merge (iter8 ✓, iter9 ✗, iter10 ✓
+    GREEN, iter11 ✗). NOT the harness: alice fails FIRST, before bob's isolated
+    process even launches. **Cause (corrected by Zac):** there is NO keepalive on
+    the node connection during the multi-minute client-side deploy+mint proof, so
+    a transient drop during that window kills it and `useAztec` dead-ends with no
+    reconnect. (My earlier "removed `15× connect poll`" attribution was WRONG — that
+    poll still exists at `useAztec.ts:202` and runs POST-connect for token-sync, so
+    it is irrelevant to onboarding.) Route to lane-2: keepalive on the node
+    connection across the deploy-proof block AND reconnect on a transient drop
+    instead of dead-ending.
+    The harness adds NO retry (no-masking). C-multi logic is GREEN (iter10, real +
+    verified); repeatability is blocked on this fix.
+    **CORROBORATED — it's the merge, not my isolated-process model.** Ran
+    `full-game.spec` (shared-browser, two contexts in ONE process — the OLD model,
+    which onboarded reliably PRE-merge) on the merged code 3×: clean, clean,
+    **FLAKE** (run 3 alice `ERR_CONNECTION_RESET` 58 s into deploy) = 1/3 ≈ 33%,
+    matching C-multi's ~29%. So the flake hits BOTH the shared-browser and
+    isolated-process models at the same rate → not the isolated-process change,
+    the merge. The reset time is VARIABLE (58 s … 180 s) → a transient connection
+    drop at any point in onboarding, not a fixed idle timeout — so the fix is
+    keepalive on the node connection during the deploy-proof + reconnect on drop
+    (lane-2 owns this; "keepalive-first, no mask" per Zac).
+
+## Carryover hypothesis matrix (C-multi prep — root-cause the FIRST failure instantly)
+
+The campaign plays 5 games in ONE session with NO stack reset, so anything from
+game *i* that is not reset can leak into game *i+1*. Seven candidates, each with
+the reset path it implicates and the per-game signal that uniquely fingerprints
+it — so the first failure points straight at the owning lane. The harness already
+covers most; three gaps got a crisp deterministic check added (no masks, no
+retries — they only make a real bug fail *louder/sooner*, never hide one).
+
+| # | Carryover | Owner / reset path | Distinguishing per-game signal | Status |
+|---|-----------|--------------------|--------------------------------|--------|
+| 1 | Leftover move/hand proofs | lane-2 `useGamePlay` reset (`collectedMoveProofs`, `myHandProof`, `opponentHandProof`) | `chain.canSettle=true` at game start (full leftover) | **covered** (canSettle check). Partial leftover (proofs present but < 11 so canSettle stays false → corrupt transcript at settle) is NOT visible: the snapshot exposes no proof *count*. Open — recommend lane-2 expose `collectedMoveProofs.length` in the testkit snapshot; not added (would be a speculative cross-lane contract change). |
+| 2 | Leftover settlement state | lane-2 `useGameSettlement.resetForMenu` | `settleTxStatus≠idle` / `opponentSettled` / `takenCardId≠null` / `onChainError` at start | **covered** |
+| 3 | Backend room not released | lane-4 `GameManager.releasePlayersFromGame` | players split into two rooms (`gameId` mismatch) **OR** both re-join game *i*'s stale room (`wsGameId == prev`) | mismatch covered; **stale-reuse was a GAP → added** (`seen.wsGameIds`) |
+| 4 | playerNumber carryover | lane-4 matchmaking assignment | `byNumber.size≠2` (both got the same number) | **covered** |
+| 5 | Card note recycle / nullifier reuse / PXE discovery lag | contract re-mints unwagered hand cards at settle; PXE must rescan | pre-game count/multiset wrong; hand proof fails; mid-game commit ≠ `pre−5` | **covered** (count + exact multiset + mid-game `−HAND`) |
+| 6 | `game_id` / `randomness` reuse | contract (lane-1) — both derived IN-CIRCUIT | `onChainGameId == prev game's` (settled into the same on-chain slot) | **GAP → added** (`seen.onChainGameIds`) |
+| 7 | Frontend session/board not reset | lane-2 `useGameSession`/`useGame` (`returnToMenu`→`handleBackToMenu`) | board NOT empty at game start (stale `gameState`/board) | only caught indirectly (a later `waitBoardCount(1)` would *time out* with a confusing message) → **GAP → added** crisp board-empty check |
+
+Diagnostics added to `playOneGame` for gaps 3/6/7 (all deterministic asserts in
+the existing no-carryover region, labelled with the owning lane):
+- gap 3: `wsGameId` must be unseen across games (else: re-joined a prior room — lane-4).
+- gap 7: every board cell empty right after `waitInGame` (else: stale `gameState` — lane-2).
+- gap 6: `onChainGameId` must be unseen across games (else: `game_id`/randomness reuse — lane-1/contract).

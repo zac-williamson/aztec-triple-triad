@@ -30,6 +30,15 @@ export const ARTIFACTS_DIR = resolve(PLAYTEST_DIR, '.artifacts');
 export const STACK_INFO_PATH = resolve(ARTIFACTS_DIR, 'stack.json');
 /** Registry for a long-lived stack from scripts/boot-stack.ts (stop-stack.ts kills it). */
 export const STANDALONE_INFO_PATH = resolve(ARTIFACTS_DIR, 'standalone-stack.json');
+/**
+ * Registry of per-player Chromium PIDs launched by the campaign. The campaign
+ * launches one detached Chromium per player (own process group) for GPU
+ * isolation; Playwright only kills those on a graceful worker exit
+ * (exit/SIGINT/SIGTERM hooks). If the worker is SIGKILLed, the detached
+ * browsers ORPHAN and leak across runs. We record their pids here so
+ * globalTeardown/stop-stack can kill the leaked process groups as a backstop.
+ */
+export const BROWSER_REGISTRY_PATH = resolve(ARTIFACTS_DIR, 'browser-pids.json');
 export const FRONTEND_ENV_PATH = resolve(ROOT, 'packages/frontend/.env');
 /** CJS bundle of game-logic's source, rebuilt by globalSetup (see expected.ts). */
 export const GAME_LOGIC_BUNDLE_PATH = resolve(ARTIFACTS_DIR, 'game-logic.bundle.cjs');
