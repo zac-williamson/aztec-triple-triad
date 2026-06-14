@@ -471,3 +471,27 @@ compiled JSON into `frontend/public/contracts/`, and answering proof-shape quest
     `update_to` is identical across both classes, so calling via the old artifact
     is correct. Pitfall avoided: `.send({…wait})` already resolves to the receipt —
     do not chain `.wait()`.
+
+### Update model REVERSED: fresh redeploy, not the upgrade pattern (2026-06-13)
+
+44. **Zac reversed "make updatable" (notes 30, 41–43 are SUPERSEDED).** The Aztec
+    contract-class upgrade path carries an enforced 24h delay on this rollup (note
+    42) — unacceptable for active dev. New standing model (docs/plan/UPDATE_MODEL.md):
+    a code update = **fresh redeploy of all 3 contracts** (new addresses, immediate),
+    `deploy-testnet.ts` wires the cross-refs + writes `.env` and `.env.testnet`.
+    - Stripped `update_to` / `set_update_delay` / `ContractInstanceRegistry` (import,
+      `use`, and the `contract_instance_registry` Nargo.toml dep) from ALL 3
+      contracts; kept everything else incl. the C2 round-2 original-owner fix.
+      Removed the 3 arena_token upgradeability tests; removed the `set_update_delay`
+      activation block from `deploy-testnet.ts`; deleted the update/verify scripts.
+      `admin` storage is kept (constructor signature stable) but now unused (warning).
+    - `aztec compile` clean; TXE: game 9/9, token 11/11 (was 14, −3 removed), nft 17/17.
+    - **Fresh-deployed all 3 to testnet (immediate, address churn — the old
+      `0x2d86…` game and its scheduled 24h update are abandoned). NEW addresses:**
+      - NFT:   `0x0a191688e1f460ed720f6e7eabeca5b4933c675054871421be58db185f617cf9`
+      - Game:  `0x21793d5ec7ee711a92ba0401990f5cfca79b17798f760e9dfc2b928233537cb3`
+      - Token: `0x2a6bfcc292b4b1c7ec5d90c84ce00c4653df241f60a33461c65968ace63a3879`
+      - Deployer (reused): `0x2ddf3c4fdbb8a954343f3bc3c8cd455b2b66256eedbd1a8164c2033a1ac5026e`
+    - Written to `.env.testnet` + README; frontend `public/contracts/` artifacts
+      refreshed by the deploy. Lanes 2/4/6 must repoint to the new addresses; Zac
+      updates Vercel env + redeploys. The C2 fix is now LIVE immediately (no 24h wait).

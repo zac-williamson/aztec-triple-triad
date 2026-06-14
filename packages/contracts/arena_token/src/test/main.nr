@@ -165,24 +165,4 @@ unconstrained fn mint_reward_rejects_unauthorized() {
     );
 }
 
-// --- Upgradeability ---
-
-#[test(should_fail_with = "Only admin can set update delay")]
-unconstrained fn set_update_delay_rejects_non_admin() {
-    let (mut env, contract_address, _admin, user, _nft, _game) = utils::setup_full();
-    env.call_private(user, ArenaToken::at(contract_address).set_update_delay(600));
-}
-
-#[test(should_fail_with = "Only admin can update")]
-unconstrained fn update_to_rejects_non_admin() {
-    let (mut env, contract_address, _admin, user, _nft, _game) = utils::setup_full();
-    let class_id = aztec::protocol::contract_class_id::ContractClassId::from_field(123);
-    env.call_private(user, ArenaToken::at(contract_address).update_to(class_id));
-}
-
-#[test]
-unconstrained fn admin_can_set_update_delay() {
-    let (mut env, contract_address, admin, _user, _nft, _game) = utils::setup_full();
-    // Exercises the ContractInstanceRegistry call path; 600 == MINIMUM_UPDATE_DELAY.
-    env.call_private(admin, ArenaToken::at(contract_address).set_update_delay(600));
-}
+// Upgradeability removed: updates are fresh redeploys (docs/plan/UPDATE_MODEL.md).
