@@ -979,3 +979,19 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   false-positive (scoped freshness to the latest run dir), (b) only recognized multi-game runs (broadened
   to any `playwright test` so full-game corroboration runs aren't misread as idle). Transition-based +
   10min reminder. Cron `fa2c1ddf` backstop.
+
+## 06-14 — onboarding regression CORROBORATED → keepalive fix routed to lane-2
+- lane-8 ran full-game.spec (reliable onboarder pre-merge) to corroborate: the onboarding connection reset
+  reproduces there too (~30%, variable 58-180s into the deploy proof). Verified in artifacts:
+  `net::ERR_CONNECTION_RESET` / `Failed to fetch` / `[useAztec] Connection failed` in the failing run;
+  `2 passed (9.5m/9.1m)` in the ~70% that onboard. So it's a real `useAztec` resilience gap, not the
+  harness — confirmed reproducible, worth fixing regardless of merge-vs-pre-existing.
+- ROOT CAUSE (corrected twice now): NOT the poll. The 15× poll is still at useAztec.ts:202 AND runs only
+  on `status==='connected'` (post-connect) — irrelevant to the onboarding-deploy connection. The real
+  cause: the node HTTP/2 connection goes IDLE during the 1-3min CPU-pinned deploy+mint ClientIVC proof and
+  the transport drops it; useAztec → setStatus('error') with no recovery → onboarding dead-ends.
+- Routed to lane-2 (PRIORITY): FIX = KEEPALIVE the node connection through the deploy proof (prevent the
+  idle-drop) — prevention over recovery, per Zac's no-mask bar. Reconnect only if prevention is truly
+  impossible (a real external network condition, not a code mask) — keepalive FIRST. lane-2 working it.
+- lane-8: C-multi GREEN stands verified; correctly blocked on the lane-2 onboarding fix; will re-run
+  C-multi for REPEATABLE acceptance the moment it lands. Monitored by v4 watchdog.
