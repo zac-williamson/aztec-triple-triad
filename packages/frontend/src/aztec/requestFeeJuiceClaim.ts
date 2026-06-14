@@ -14,15 +14,21 @@
 import type { FeeJuiceClaim } from './fundDevnet';
 
 /**
- * JSON the backend faucet returns from `POST {faucetUrl}/faucet`. Mirrors the
- * script-side `SerializedClaim` (scripts/lib/feeJuiceBridge.ts); we read only
- * the three fields the deploy-time claim consumes and ignore the rest
- * (claimSecretHash / messageHash / status / bridgedAt).
+ * Success body the backend faucet returns from `POST {faucetUrl}/faucet`:
+ * `{ claim: {...}, reused }` (backend server.ts wraps the serialized claim under
+ * `claim`). We unwrap `claim` and read only the three fields the deploy-time
+ * claim consumes, ignoring the rest (claimSecretHash / messageHash / status /
+ * bridgedAt) and the `reused` flag.
  */
 interface FaucetClaimResponse {
   claimAmount: string;
   claimSecret: string;
   messageLeafIndex: string | number;
+}
+
+interface FaucetResponseBody {
+  claim?: Partial<FaucetClaimResponse>;
+  reused?: boolean;
 }
 
 function hasClaimFields(d: Partial<FaucetClaimResponse>): d is FaucetClaimResponse {
@@ -54,7 +60,12 @@ export async function requestFeeJuiceClaim(
     throw new Error(`Faucet request failed (${resp.status}): ${detail || resp.statusText}`);
   }
 
-  const data = (await resp.json().catch(() => ({}))) as Partial<FaucetClaimResponse>;
+  // Canonical contract: the claim is WRAPPED under `claim`. A top-level read
+  // (the prior bug) finds nothing and silently fails onboarding with the
+  // misleading "incomplete claim", which is why in-app testnet funding never
+  // worked. No flat-shape fallback — wrapped is the contract.
+  const body = (await resp.json().catch(() => ({}))) as FaucetResponseBody;
+  const data = body.claim ?? {};
   if (!hasClaimFields(data)) {
     throw new Error('Faucet returned an incomplete claim');
   }

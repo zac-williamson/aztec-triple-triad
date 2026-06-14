@@ -7,7 +7,7 @@ import type { Page, Browser } from '@playwright/test';
 import { createWriteStream, type WriteStream } from 'fs';
 import { resolve } from 'path';
 import type { PhaseSnapshot, ClickTarget } from '../../frontend/src/testkit/contract.js';
-import { FRONTEND_URL } from './env.js';
+import { FRONTEND_URL, TESTNET } from './env.js';
 import { launchIsolatedBrowser } from './browser.js';
 import { registerBrowser, deregisterBrowser, playwrightChromiumLeaders } from './stack.js';
 
@@ -61,7 +61,26 @@ function installWebglProbe(): void {
   };
 }
 
-export const TIMEOUTS = {
+// Testnet has real ~36s slots + real proving + L1 bridge waits, so the chain-
+// bound phases need far more headroom than the instant-block local sandbox. The
+// per-phase withDeadline + backend-liveness guards still fail a true hang fast;
+// these only stop a HEALTHY-but-slow testnet op from tripping a local-tuned
+// timeout. Frontend-local waits (install/selection) are barely changed.
+export const TIMEOUTS = TESTNET ? {
+  install: 180_000,
+  wsConnect: 60_000,
+  onboarding: 1_800_000,    // faucet L1→L2 bridge + deploy+mint proof + real block inclusion (30 min)
+  match: 300_000,
+  selection: 15_000,
+  boardUpdate: 240_000,     // off-chain move proofs are real; machine under load
+  interactionIdle: 240_000,
+  canSettle: 1_800_000,     // all 9 move + 2 hand proofs, real proving (30 min)
+  settleTx: 2_400_000,      // process_game: 11 recursive verifs + on-chain inclusion/finality (40 min)
+  packTx: 1_200_000,        // purchase tx + 10-note import + block inclusion (20 min)
+  pxeRead: 300_000,         // testnet PXE reads sync across real blocks
+  evaluate: 60_000,
+  eventually: 420_000,      // private-note discovery by block scanning, ~36s slots (7 min)
+} : {
   install: 120_000,      // first boot after an SDK bump cold-optimizes the @aztec deps in-browser
   wsConnect: 30_000,
   onboarding: 420_000,      // L1 bridge wait + deploy+mint tx + note import
@@ -256,12 +275,35 @@ export class PlayerDriver {
     return this.phase();
   }
 
-  /** Onboarding end state: wallet connected and the 5 starter cards imported. */
+  /**
+   * Onboarding end state: wallet connected and the 5 starter cards imported.
+   * Polls so it can FAIL FAST on a terminal funding state the headless harness
+   * can't escape — `needs-funding` (the faucet returned no claim → the app would
+   * wait for a manual fund click) or `error` — instead of burning the full
+   * onboarding timeout. On testnet that names the Node-side treasury-bridge
+   * fallback. Still abandons on page death (watchdog) and on the hard timeout.
+   */
   async waitConnected(): Promise<PhaseSnapshot> {
-    return this.waitPhase(
-      'aztec connected with starter cards',
-      p => p.aztecStatus === 'connected' && p.ownedCardIds.length >= 5 && p.ws.connected,
-      TIMEOUTS.onboarding,
+    const deadline = Date.now() + TIMEOUTS.onboarding;
+    let last: PhaseSnapshot | null = null;
+    while (Date.now() < deadline) {
+      if (this.deadReason) throw new Error(`${this.name}: PAGE DEAD during onboarding — ${this.deadReason}`);
+      last = await this.phase().catch(() => null);
+      if (last) {
+        if (last.aztecStatus === 'needs-funding') {
+          throw new Error(`${this.name}: onboarding stuck at 'needs-funding' — the faucet returned no ` +
+            `Fee Juice claim. ${TESTNET ? 'Fall back to the Node-side treasury-key bridge (key Node-side only).' : 'Check the local devnet bridge.'}`);
+        }
+        if (last.aztecStatus === 'error') {
+          throw new Error(`${this.name}: onboarding status='error'\nlast phase: ${JSON.stringify(last, null, 2)}`);
+        }
+        if (last.aztecStatus === 'connected' && last.ownedCardIds.length >= 5 && last.ws.connected) return last;
+      }
+      await this.page.waitForTimeout(POLL_MS).catch(() => {});
+    }
+    throw new Error(
+      `${this.name}: timed out waiting for "aztec connected with starter cards" after ${TIMEOUTS.onboarding / 1000}s\n` +
+      `last phase: ${JSON.stringify(last, null, 2)}`,
     );
   }
 

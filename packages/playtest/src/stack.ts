@@ -14,7 +14,7 @@ import { resolve } from 'path';
 import net from 'net';
 import {
   ROOT, PXE_URL, NODE_PORT, ANVIL_PORT, BACKEND_PORT, FRONTEND_PORT,
-  BACKEND_URL, FRONTEND_URL, ARTIFACTS_DIR, BROWSER_REGISTRY_PATH,
+  BACKEND_URL, FRONTEND_URL, ARTIFACTS_DIR, BROWSER_REGISTRY_PATH, TESTNET,
   readContractAddresses, type StackInfo, type StackMode,
 } from './env.js';
 
@@ -126,10 +126,15 @@ export class Stack {
 
   /** Fail loudly if a stack port is already taken — no silent reuse. */
   async assertPortsFree(): Promise<void> {
-    for (const [name, port] of [
-      ['aztec node', NODE_PORT], ['anvil', ANVIL_PORT],
-      ['backend', BACKEND_PORT], ['frontend', FRONTEND_PORT],
-    ] as const) {
+    // Testnet mode only owns the local vite (3000); the node/anvil/backend are
+    // remote (live testnet + live ws relay), so don't probe their local ports.
+    const ports = TESTNET
+      ? ([['frontend', FRONTEND_PORT]] as const)
+      : ([
+          ['aztec node', NODE_PORT], ['anvil', ANVIL_PORT],
+          ['backend', BACKEND_PORT], ['frontend', FRONTEND_PORT],
+        ] as const);
+    for (const [name, port] of ports) {
       if (await portInUse(port)) {
         throw new Error(
           `Port ${port} (${name}) is already in use. The harness owns the full stack — ` +
@@ -197,29 +202,45 @@ export class Stack {
     // (the 4.3.1 acceptance-run break). A completed `vite optimize` under the
     // same env leaves a warm cache, so the server starts reload-free.
     const frontendCwd = resolve(ROOT, 'packages/frontend');
+    // Testnet: serve the SAME app against the deployed testnet contracts + the
+    // live ws relay. `--mode testnet` loads .env.testnet (PXE + verified
+    // addresses + AZTEC_ENABLED); process.env VITE_* take priority over .env
+    // files, so these override the file's stale localhost VITE_WS_URL and add
+    // the faucet + testkit. Local mode is unchanged (just VITE_TESTKIT).
+    const modeArgs = TESTNET ? ['--mode', 'testnet'] : [];
+    const viteEnv: Record<string, string | undefined> = TESTNET
+      ? { VITE_TESTKIT: '1', VITE_WS_URL: 'wss://ws.aztec-arena.com', VITE_FAUCET_URL: 'https://ws.aztec-arena.com' }
+      : { VITE_TESTKIT: '1' };
     // Sync public/ circuit + contract artifacts from target/ before serving.
     // The dev server serves public/ as-is (no build step), and committed public
     // copies can lag target/ after a contracts/circuits change (seen after the
-    // C2 merge) — a stale ABI would mismatch the freshly-deployed contracts.
+    // C2 merge) — a stale ABI would mismatch the deployed contracts.
     log('syncing frontend public artifacts from target...');
     await this.runToCompletion('copy-artifacts', 'bash',
       ['-c', 'npm run copy-circuits && npm run copy-contracts'],
       { cwd: ROOT, timeoutMs: 60_000 });
-    log('pre-optimizing frontend deps (warm vite cache)...');
-    await this.runToCompletion('frontend-optimize', 'npx', ['vite', 'optimize'], {
+    log(`pre-optimizing frontend deps (warm vite cache)${TESTNET ? ' [testnet]' : ''}...`);
+    await this.runToCompletion('frontend-optimize', 'npx', ['vite', 'optimize', ...modeArgs], {
       cwd: frontendCwd,
-      env: { VITE_TESTKIT: '1' },
+      env: viteEnv,
       timeoutMs: BOOT_TIMEOUTS.optimizeMs,
     });
-    const proc = this.spawnLogged('frontend', 'npx', ['vite', '--port', String(FRONTEND_PORT), '--strictPort'], {
+    const proc = this.spawnLogged('frontend', 'npx', ['vite', '--port', String(FRONTEND_PORT), '--strictPort', ...modeArgs], {
       cwd: frontendCwd,
-      env: { VITE_TESTKIT: '1' },
+      env: viteEnv,
     });
     await waitFor('frontend (vite)', () => httpOk(FRONTEND_URL), BOOT_TIMEOUTS.frontendMs, proc);
   }
 
   async bootAll(): Promise<StackInfo> {
     await this.assertPortsFree();
+    if (TESTNET) {
+      // The chain (testnet) and ws relay (ws.aztec-arena.com) are already live;
+      // only the local vite is ours. Addresses come from .env.testnet.
+      log('testnet mode — using live testnet + live ws relay; booting local vite only');
+      await this.bootFrontend();
+      return this.writeInfo(readContractAddresses());
+    }
     await this.bootSandbox();
     await this.deployContracts();
     await this.bootBackend();
