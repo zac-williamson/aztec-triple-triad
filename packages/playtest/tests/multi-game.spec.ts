@@ -381,8 +381,16 @@ async function playOneGame(
   // ── Layer 1 (chain, private): card counts + the specific claimed id ────
   const winnerExpect = countMap(winnerPre); winnerExpect.set(claimed, (winnerExpect.get(claimed) ?? 0) + 1);
   const loserExpect = countMap(loserPre);
-  if ((loserExpect.get(claimed) ?? 0) < 1) throw where('rules', `loser never owned claimed #${claimed}`);
-  loserExpect.set(claimed, loserExpect.get(claimed)! - 1);
+  const loserClaimedBefore = loserExpect.get(claimed) ?? 0;
+  if (loserClaimedBefore < 1) throw where('rules', `loser never owned claimed #${claimed}`);
+  // countMap never stores a zero count, so when the loser held its LAST copy of
+  // the claimed card, drop the entry rather than set it to 0 — a [claimed,0]
+  // entry can never equal the actual multiset (which simply omits the card),
+  // and expectEventually would spin out 180s on a game the product settled
+  // correctly (a false negative; surfaces only when the random pack draw left
+  // the loser a single copy of the claimed id).
+  if (loserClaimedBefore - 1 > 0) loserExpect.set(claimed, loserClaimedBefore - 1);
+  else loserExpect.delete(claimed);
 
   await winnerD.expectEventually(`${winnerD.name} (winner) card count +1`,
     async () => (await winnerD.privateCards()).length, winnerPre.length + 1);
