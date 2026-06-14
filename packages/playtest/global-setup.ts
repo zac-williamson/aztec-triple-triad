@@ -6,7 +6,7 @@
 import { mkdirSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import { buildSync } from 'esbuild';
-import { Stack } from './src/stack.js';
+import { Stack, killRegisteredBrowsers } from './src/stack.js';
 import {
   REUSE_STACK, ROOT, ARTIFACTS_DIR, STACK_INFO_PATH, GAME_LOGIC_BUNDLE_PATH,
   PXE_URL, BACKEND_URL, FRONTEND_URL,
@@ -43,6 +43,11 @@ async function assertReachable(name: string, url: string, init?: RequestInit): P
 
 export default async function globalSetup(): Promise<void> {
   mkdirSync(ARTIFACTS_DIR, { recursive: true });
+  // Reap any browsers leaked by a prior run whose runner was killed before its
+  // teardown could run — start every run on a clean machine (no accumulating
+  // orphaned Chromium across runs).
+  const leaked = await killRegisteredBrowsers();
+  if (leaked) console.log(`[stack] reaped ${leaked} browser(s) leaked by a prior run`);
   bundleGameLogic();
 
   if (REUSE_STACK) {

@@ -8,13 +8,13 @@
  * Children are spawned detached (own process group) so teardown can kill the
  * whole tree — `aztec start` forks anvil and node workers.
  */
-import { spawn, type ChildProcess } from 'child_process';
-import { mkdirSync, openSync, closeSync, writeFileSync } from 'fs';
+import { spawn, execFileSync, type ChildProcess } from 'child_process';
+import { mkdirSync, openSync, closeSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { resolve } from 'path';
 import net from 'net';
 import {
   ROOT, PXE_URL, NODE_PORT, ANVIL_PORT, BACKEND_PORT, FRONTEND_PORT,
-  BACKEND_URL, FRONTEND_URL, ARTIFACTS_DIR,
+  BACKEND_URL, FRONTEND_URL, ARTIFACTS_DIR, BROWSER_REGISTRY_PATH,
   readContractAddresses, type StackInfo, type StackMode,
 } from './env.js';
 
@@ -241,4 +241,85 @@ export async function killProcessGroup(pid: number, name: string): Promise<void>
   }
   log(`${name} did not stop on SIGTERM — sending SIGKILL`);
   signal('SIGKILL');
+}
+
+// ── Per-player browser PID registry ──────────────────────────────────────────
+// Playwright launches each campaign browser detached (own process group) and
+// kills it only via exit/SIGINT/SIGTERM hooks; a SIGKILLed worker orphans them.
+// We record their pids so teardown can kill the leaked process GROUPS — the same
+// `process.kill(-pid)` Playwright itself uses — even when its hooks never ran.
+
+interface BrowserEntry { pid: number; name: string }
+
+/**
+ * PIDs of every currently-alive Chromium process-GROUP LEADER that looks like a
+ * Playwright-managed browser (its argv0 lives under the playwright browser
+ * cache — so the user's own Chrome, whose path does not, is never matched).
+ * Playwright launches each browser detached as its own group leader (pid==pgid);
+ * its renderer/GPU helpers share that group but are not leaders, so killing the
+ * leader's group takes them too. `@playwright/test`'s client Browser exposes no
+ * pid, so the campaign diffs this set across a launch to learn the new pid.
+ */
+export function playwrightChromiumLeaders(): Set<number> {
+  let out = '';
+  try { out = execFileSync('ps', ['-Ao', 'pid=,pgid=,command='], { encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 }); }
+  catch { return new Set(); }
+  const pids = new Set<number>();
+  for (const line of out.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+    if (!m) continue;
+    const pid = Number(m[1]), pgid = Number(m[2]), cmd = m[3];
+    if (pid === pgid && /ms-playwright|playwright|chrome-mac|chrome-linux|chromium/i.test(cmd)) pids.add(pid);
+  }
+  return pids;
+}
+
+function readBrowserRegistry(): BrowserEntry[] {
+  if (!existsSync(BROWSER_REGISTRY_PATH)) return [];
+  try { return JSON.parse(readFileSync(BROWSER_REGISTRY_PATH, 'utf-8')) as BrowserEntry[]; }
+  catch { return []; }
+}
+
+/** Record a launched browser's main pid (serial single-worker → no write race). */
+export function registerBrowser(pid: number, name: string): void {
+  const list = readBrowserRegistry();
+  list.push({ pid, name });
+  writeFileSync(BROWSER_REGISTRY_PATH, JSON.stringify(list, null, 2));
+}
+
+/** Drop a pid on clean dispose so teardown never targets a recycled pid. */
+export function deregisterBrowser(pid: number): void {
+  const list = readBrowserRegistry().filter(e => e.pid !== pid);
+  if (list.length) writeFileSync(BROWSER_REGISTRY_PATH, JSON.stringify(list, null, 2));
+  else rmSync(BROWSER_REGISTRY_PATH, { force: true });
+}
+
+/** Full command path of a pid (empty if gone) — guards against pid recycling. */
+function processCommand(pid: number): string {
+  try { return execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf-8' }).trim(); }
+  catch { return ''; }
+}
+
+/**
+ * Kill any registered browser still alive (the SIGKILLed-worker leak case),
+ * then clear the registry. A comm guard ensures a since-recycled pid can never
+ * take out an unrelated process group: we only kill if the pid still looks like
+ * a Chromium. Returns how many leaked browsers it actually killed.
+ */
+export async function killRegisteredBrowsers(): Promise<number> {
+  const list = readBrowserRegistry();
+  let killed = 0;
+  for (const { pid, name } of list) {
+    const cmd = processCommand(pid);
+    if (!cmd) continue; // gone already (clean dispose or died)
+    if (!/chrom|headless|playwright/i.test(cmd)) {
+      log(`browser ${name} pid ${pid} is now '${cmd.slice(0, 40)}…' (recycled) — not killing`);
+      continue;
+    }
+    log(`killing LEAKED browser ${name} (pid ${pid}) — process group`);
+    await killProcessGroup(pid, `browser-${name}`);
+    killed++;
+  }
+  rmSync(BROWSER_REGISTRY_PATH, { force: true });
+  return killed;
 }

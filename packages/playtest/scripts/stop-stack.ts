@@ -1,7 +1,11 @@
 /** Stop a stack started by boot-stack.ts (reads .artifacts/standalone-stack.json). */
 import { existsSync, rmSync } from 'fs';
-import { killProcessGroup } from '../src/stack.js';
+import { killProcessGroup, killRegisteredBrowsers } from '../src/stack.js';
 import { readStackInfo, STANDALONE_INFO_PATH } from '../src/env.js';
+
+// Reap any per-player Chromium left behind by a test run against this stack.
+const leakedBrowsers = await killRegisteredBrowsers();
+if (leakedBrowsers) console.log(`[stack] killed ${leakedBrowsers} leaked browser process group(s)`);
 
 if (!existsSync(STANDALONE_INFO_PATH)) {
   console.log('[stack] no standalone-stack.json — nothing to stop');

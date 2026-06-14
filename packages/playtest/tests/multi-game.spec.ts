@@ -13,6 +13,7 @@
  * the C1 ladder. Winner is derived from the live rules mirror (not hardcoded);
  * who queues first (→ P1) alternates each game to vary the win/loss paths.
  */
+import os from 'os';
 import { test, expect } from '@playwright/test';
 import type { Player } from '@axolotl-arena/game-logic';
 import { PlayerDriver } from '../src/player.js';
@@ -48,22 +49,82 @@ function pickHand(owned: number[]): number[] {
 /**
  * Hard wall-clock guard around a campaign phase. A stuck run FAILS FAST instead
  * of zombie-hanging until the 60-min Playwright test timeout. Races against:
- *  - a wall-clock budget (the proof physics ceiling for a healthy run), AND
- *  - each driver's `dead` signal, so a crashed/wedged page (watchdog-detected
- *    in ~2 min) fails long before that budget elapses.
+ *  - a wall-clock budget (the proof physics ceiling for a healthy run),
+ *  - each driver's `dead` signal (a crashed/wedged page, watchdog-detected in
+ *    ~2 min), AND
+ *  - the backend-liveness signal (the WS relay process dying mid-run — the
+ *    proven cause of BOTH prior campaign hangs: it manifested as onboarding's
+ *    ws.connected staying false and as a settled winner unable to relay the
+ *    note to the loser; without this guard either just runs out the deadline
+ *    far from the real cause).
+ * `deadSignals` are never-resolving rejections; passing them here surfaces the
+ * true failure fast — it does NOT retry or mask anything.
  */
 async function withDeadline<T>(
-  label: string, ms: number, drivers: PlayerDriver[], fn: () => Promise<T>,
+  label: string, ms: number, deadSignals: Promise<never>[], fn: () => Promise<T>,
 ): Promise<T> {
   let timer: NodeJS.Timeout;
   const guard = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`PHASE TIMEOUT: "${label}" did not finish within ${ms / 1000}s — likely a hang`)), ms);
   });
   try {
-    return await Promise.race([fn(), guard, ...drivers.map(d => d.dead)]);
+    return await Promise.race([fn(), guard, ...deadSignals]);
   } finally {
     clearTimeout(timer!);
   }
+}
+
+/**
+ * Backend-liveness watchdog. Polls `/health`; after a few consecutive failures
+ * it rejects with a timestamped "BACKEND DEAD" so a phase racing it fails in
+ * ~15s instead of running out a 7–25 min deadline. This is diagnosis, not a
+ * mask: the WS relay process exiting mid-run is exactly what wedged the two
+ * acceptance runs (winner settles on-chain but cannot relay the won-card note;
+ * onboarding never sees ws.connected) — and the failure pointed at the wrong
+ * layer because nothing watched the backend itself.
+ */
+function startBackendLiveness(): { dead: Promise<never>; stop: () => void } {
+  const EVERY = 5_000, PROBE_TIMEOUT = 5_000, MAX_FAILS = 3;
+  let timer: NodeJS.Timeout;
+  let stopped = false;
+  let fails = 0;
+  let rejectDead!: (e: Error) => void;
+  const dead = new Promise<never>((_, reject) => { rejectDead = reject; });
+  dead.catch(() => {}); // never an unhandled rejection if nothing is racing it
+  const tick = async (): Promise<void> => {
+    if (stopped) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT) });
+      fails = res.ok ? 0 : fails + 1;
+    } catch { fails++; }
+    if (stopped) return;
+    if (fails >= MAX_FAILS) {
+      rejectDead(new Error(
+        `BACKEND DEAD: ${BACKEND_URL}/health unreachable ${fails}× (~${(fails * EVERY) / 1000}s) ` +
+        `at ${new Date().toISOString()} — the WS relay process exited mid-run (inspect backend.log; ` +
+        `no "backend stopped" at teardown == it was already gone). This is the root cause of the ` +
+        `two prior campaign hangs, surfaced fast instead of as a phase timeout.`));
+      return;
+    }
+    timer = setTimeout(() => void tick(), EVERY);
+  };
+  timer = setTimeout(() => void tick(), EVERY);
+  return { dead, stop: () => { stopped = true; clearTimeout(timer); } };
+}
+
+/**
+ * Log host memory + load at each checkpoint. The backend died mid-proof in both
+ * acceptance runs; if it dies again on the clean machine, a free-memory cliff or
+ * climbing load average right before it would corroborate memory pressure
+ * (jetsam) vs. rule it out (the open question the rotated unified-log couldn't
+ * answer). `os.freemem()` undercounts cached pages on macOS, so read the trend,
+ * not the absolute.
+ */
+function logMem(label: string): void {
+  const gib = (b: number) => (b / 2 ** 30).toFixed(2);
+  const freePct = Math.round((os.freemem() / os.totalmem()) * 100);
+  const load = os.loadavg().map(n => n.toFixed(1)).join('/');
+  console.log(`[mem@${label}] free=${gib(os.freemem())}/${gib(os.totalmem())}GiB (${freePct}%) load(1/5/15)=${load}`);
 }
 
 /** Log both tabs' live WebGL context counts — leak (climbs) vs crash (flat). */
@@ -91,6 +152,7 @@ interface GameRow {
 test.describe.serial('multi-game with packs', () => {
   let alice: PlayerDriver;
   let bob: PlayerDriver;
+  let backend: { dead: Promise<never>; stop: () => void };
   const rows: GameRow[] = [];
   // Cross-game identity sets: a fresh game must mint a NEW ws room id and a NEW
   // on-chain game id. Re-seeing one fingerprints a specific carryover (see the
@@ -105,6 +167,7 @@ test.describe.serial('multi-game with packs', () => {
         `bob cards ${r.bobCards} tokens ${r.bobTokens} | claimed #${r.claimed} | settle ${r.settleOk ? 'OK' : 'FAIL'}`;
       console.log('\n=== C-multi per-game results ===\n' + rows.map(fmt).join('\n') + '\n');
     }
+    backend?.stop();
     await alice?.dispose();
     await bob?.dispose();
   });
@@ -114,20 +177,28 @@ test.describe.serial('multi-game with packs', () => {
     if (!stack.addresses) throw new Error('stack.json has no contract addresses — setup incomplete');
     const addresses = stack.addresses;
     const chain = await ChainClient.connect(addresses);
+    logMem('start');
+    // Watch the WS relay for the whole run; both prior hangs were it dying.
+    backend = startBackendLiveness();
 
     // ── Onboard two ISOLATED browser PROCESSES (one Chromium per player so the
-    //    two tabs don't share a GPU process; serial — shared anvil funding key) ──
-    alice = await PlayerDriver.launch('alice', stack.logsDir);
-    await alice.waitConnected();
-    bob = await PlayerDriver.launch('bob', stack.logsDir);
-    await bob.waitConnected();
-    for (const d of [alice, bob]) {
-      expect(await d.privateCards(), `${d.name} starter cards`).toEqual(STARTER_CARDS);
-      expect(await d.tokenBalance(), `${d.name} starter tokens`).toBe(STARTER_TOKENS);
-    }
+    //    two tabs don't share a GPU process; serial — shared anvil funding key).
+    //    Raced against backend.dead: in run #1 the backend died here and the bare
+    //    waitConnected ran out its full 420s with ws.connected stuck false. ──
+    await withDeadline('onboard both players', DEADLINES.pack, [backend.dead], async () => {
+      alice = await PlayerDriver.launch('alice', stack.logsDir);
+      await alice.waitConnected();
+      bob = await PlayerDriver.launch('bob', stack.logsDir);
+      await bob.waitConnected();
+      for (const d of [alice, bob]) {
+        expect(await d.privateCards(), `${d.name} starter cards`).toEqual(STARTER_CARDS);
+        expect(await d.tokenBalance(), `${d.name} starter tokens`).toBe(STARTER_TOKENS);
+      }
+    });
+    logMem('after-onboard');
 
     // ── Pack open (both) → 15 cards each, 0 tokens; assert discoverability ──
-    await withDeadline('open packs (both)', DEADLINES.pack, [alice, bob], async () => {
+    await withDeadline('open packs (both)', DEADLINES.pack, [alice.dead, bob.dead, backend.dead], async () => {
       for (const d of [alice, bob]) {
         const newIds = await d.openPack();
         expect(newIds.length, `${d.name} pack gives ${PACK_SIZE} cards`).toBe(PACK_SIZE);
@@ -144,15 +215,17 @@ test.describe.serial('multi-game with packs', () => {
     });
 
     await logWebgl('after-packs', [alice, bob]);
+    logMem('after-packs');
 
     // ── FIVE consecutive games in one session ─────────────────────────────
     for (let g = 1; g <= GAMES; g++) {
       // Alternate who queues first → who is P1 (varies win/loss paths).
       const first = g % 2 === 1 ? alice : bob;
       const second = first === alice ? bob : alice;
-      await withDeadline(`game ${g}`, DEADLINES.game, [alice, bob], () =>
+      await withDeadline(`game ${g}`, DEADLINES.game, [alice.dead, bob.dead, backend.dead], () =>
         playOneGame(g, first, second, chain, addresses, rows, seen));
       await logWebgl(`after-game-${g}`, [alice, bob]);
+      logMem(`after-game-${g}`);
     }
 
     // All five green.

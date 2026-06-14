@@ -9,6 +9,7 @@ import { resolve } from 'path';
 import type { PhaseSnapshot, ClickTarget } from '../../frontend/src/testkit/contract.js';
 import { FRONTEND_URL } from './env.js';
 import { launchIsolatedBrowser } from './browser.js';
+import { registerBrowser, deregisterBrowser, playwrightChromiumLeaders } from './stack.js';
 
 declare global {
   interface Window {
@@ -90,6 +91,8 @@ export class PlayerDriver {
   private rejectDead!: (err: Error) => void;
   private deadReason: string | null = null;
   private watchdogTimer: NodeJS.Timeout | null = null;
+  /** Main Chromium pid(s) of this player's browser, for leak-registry cleanup. */
+  private browserPids: number[] = [];
 
   constructor(readonly name: string, readonly page: Page, readonly browser?: Browser) {
     this.dead = new Promise<never>((_, reject) => { this.rejectDead = reject; });
@@ -98,9 +101,18 @@ export class PlayerDriver {
 
   /** Launch an ISOLATED Chromium process for this player and boot it. */
   static async launch(name: string, logsDir: string): Promise<PlayerDriver> {
+    // Diff the Chromium group-leaders across the launch to learn the new
+    // browser's pid (the client Browser exposes none). Serial single-worker
+    // launches make the diff unambiguous. Register it so a SIGKILLed worker
+    // can't leak the detached browser past teardown — Playwright's own cleanup
+    // only fires on a graceful exit (exit/SIGINT/SIGTERM hooks).
+    const before = playwrightChromiumLeaders();
     const { browser, context } = await launchIsolatedBrowser();
+    const newPids = [...playwrightChromiumLeaders()].filter(pid => !before.has(pid));
+    for (const pid of newPids) registerBrowser(pid, name);
     const page = await context.newPage();
     const driver = new PlayerDriver(name, page, browser);
+    driver.browserPids = newPids;
     await driver.boot(logsDir);
     return driver;
   }
@@ -189,6 +201,10 @@ export class PlayerDriver {
     this.stopWatchdog();
     await this.page.context().close().catch(() => {});
     await this.browser?.close().catch(() => {});
+    // Clean close → drop from the leak registry so teardown never targets a
+    // since-recycled pid.
+    for (const pid of this.browserPids) deregisterBrowser(pid);
+    this.browserPids = [];
   }
 
   async phase(): Promise<PhaseSnapshot> {
