@@ -1105,3 +1105,23 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - lane-8: building PLAYTEST_TESTNET mode (no local sandbox; testnet-scaled timeouts onboarding 30m/settle
   40m; isolated browsers; keepalive+liveness+reaper), then ONE full game on testnet FIRST (verify settle
   txHash + chain.gameStatus==settled + taken card), then multi-game on green. Watchdog bod19dtpz.
+
+## 06-14 — live faucet DIAGNOSED from the box (Zac authorized SSH + refunded treasury to 0.43 ETH)
+- BURN CONCERN UNFOUNDED: treasury nonce=9 (9 txs total over the whole project); Fee Juice is a test ERC20
+  the funder MINTS for free (log: "Funder Fee Juice ERC20 balance 0 < 1000…; minting"), bridging 1000/claim
+  but minting it, not buying. Only ETH cost = L1 gas on ~9 txs ≈ ~0.08 ETH. No runaway burn possible (asset
+  is minted). Treasury now 0.429 ETH.
+- Faucet failure = NOT out-of-gas. Two real issues from journalctl:
+  (A) SYNCHRONOUS ~600s wait: "Waiting up to 600s for the L1->L2 message to be included" before returning the
+      claim → POST /faucet takes ~10min → HTTP clients (curl@45s, app fetch) time out first = the "hang".
+      Valid bridges DO complete (0x192a…, my test 0x2222… deposited + confirmed in-tree).
+  (B) Field-modulus rejections: claims for 0xc672…/0x541…/0x7a12… failed "Value 0x… ≥ field modulus" — those
+      l2Addresses exceed the Aztec field (NOT valid AztecAddresses). Valid ones bridged fine. The testnet
+      onboarding passed raw/invalid addresses.
+- lane-8 re-engaged: (a) make the onboarding faucet-call tolerate ~600s (long timeout / poll), (b) root-cause
+  the invalid-address source + pass the real derived AztecAddress; then re-run one full game. Watchdog
+  bvh6s09t7 (15min zombie threshold to allow the 600s faucet wait).
+- PRODUCT FLAG (beyond the smoke): the 600s synchronous faucet hangs ANY client — a real user onboarding on
+  www.aztec-arena.com would hit the same ~10min stall unless the app's faucet-call tolerates it. Proper fix =
+  async faucet (return claim immediately + poll) — a lane-4/lane-2 follow-up. The smoke will reveal whether
+  the current app faucet-call tolerates the wait at all.
