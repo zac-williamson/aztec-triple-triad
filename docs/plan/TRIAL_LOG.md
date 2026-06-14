@@ -995,3 +995,18 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   impossible (a real external network condition, not a code mask) — keepalive FIRST. lane-2 working it.
 - lane-8: C-multi GREEN stands verified; correctly blocked on the lane-2 onboarding fix; will re-run
   C-multi for REPEATABLE acceptance the moment it lands. Monitored by v4 watchdog.
+
+## 06-14 — keepalive fix MERGED; lane-8 re-running for REPEATABLE acceptance (last piece)
+- lane-2 `8193eb6` → testnet `309a9e9`. Gate-reviewed + VERIFIED: root cause = the node HTTP/2 connection
+  idle-drops during the 1-3min CPU-pinned `proveTx` (no node requests), so the next send fails with
+  ERR_CONNECTION_RESET (~30% onboarding + settlement). Fix = `nodeKeepalive.ts` `startNodeKeepalive`:
+  `getBlockNumber` ping every 15s (under the ~58s idle-drop) keeps the connection warm through proving,
+  wired into `sendTx` so it covers BOTH onboarding deploy+mint AND process_game settlement. CONFIRMED it
+  is a pure KEEPALIVE (prevention), NOT a retry/reconnect — per Zac's no-mask bar; the best-effort ping
+  swallow is a heartbeat, not the tx (tx errors still surface). Real tests (cadence<58s, best-effort,
+  wiring guard), tsc clean, 335 tests green (ran the full suite). It also took my diagnosis correction
+  (explicitly "NOT the post-connect poll").
+- lane-8 UNBLOCKED: rebasing + re-running C-multi for REPEATABLE acceptance (run ~2× clean to prove
+  onboarding is now reliable + the 5-game campaign passes repeatably). This is the LAST piece — the
+  campaign logic + all harness/env blockers are resolved; only repeatable-pass confirmation remains.
+- Status: PRIMARY GOAL (5-game no-carryover) achieved + verified; repeatable acceptance in flight.
