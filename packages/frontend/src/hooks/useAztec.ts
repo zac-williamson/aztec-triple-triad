@@ -2,8 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { AZTEC_CONFIG } from '../aztec/AztecContext';
 import { prepareConnection, deployAndRegister, type PreparedConnection } from '../aztec/connectToAztec';
 import type { FeeJuiceClaim } from '../aztec/fundDevnet';
-import txManager from '../aztec/txManager';
-import { pxe, setPxeWallet } from '../aztec/pxe';
+import { pxe, setPxeWallet, runPxeTx } from '../aztec/pxe';
 type ConnectionStatus =
   | 'disconnected'
   | 'connecting'
@@ -68,16 +67,18 @@ export function useAztec(): UseAztecReturn {
       // every funding path so fees/labels/post-deploy wiring can't drift.
       const runDeploy = async (label: string, feeJuiceClaim?: FeeJuiceClaim) => {
         setStatus('deploying');
-        const result = await txManager.runTx({
+        // Bind the PXE door BEFORE the deploy so deployAndRegister's inline ops
+        // (mint, note import, card read) resolve contracts for this wallet.
+        setPxeWallet(prepared.wallet);
+        const result = await runPxeTx({
           type: 'deploy_account',
           label,
-          execute: async (setPhase) => {
+          execute: async (ops, setPhase) => {
             setPhase('sending');
-            return deployAndRegister(prepared, { log, feeJuiceClaim });
+            return deployAndRegister(prepared, ops, { log, feeJuiceClaim });
           },
         });
         walletRef.current = result.wallet;
-        setPxeWallet(result.wallet); // bind the PXE module's contracts to this wallet
         nodeClientRef.current = result.node;
         setOwnedCardIds(result.ownedCardIds);
         setStatus('connected');
@@ -137,16 +138,18 @@ export function useAztec(): UseAztecReturn {
     setError(null);
 
     try {
-      const result = await txManager.runTx({
+      // Bind the PXE door BEFORE the deploy so deployAndRegister's inline ops
+      // resolve contracts for this wallet.
+      setPxeWallet(prepared.wallet);
+      const result = await runPxeTx({
         type: 'deploy_account',
         label: 'Deploying account & minting starter cards...',
-        execute: async (setPhase) => {
+        execute: async (ops, setPhase) => {
           setPhase('sending');
-          return deployAndRegister(prepared, { log });
+          return deployAndRegister(prepared, ops, { log });
         },
       });
       walletRef.current = result.wallet;
-      setPxeWallet(result.wallet); // bind the PXE module's contracts to this wallet
       nodeClientRef.current = result.node;
       setAccountAddress(result.accountAddress);
       setOwnedCardIds(result.ownedCardIds);

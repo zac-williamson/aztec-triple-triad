@@ -8,18 +8,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 
 const h = vi.hoisted(() => ({
-  runTx: vi.fn(),
+  runPxeTx: vi.fn(),
   readTokenBalance: vi.fn(),
   setPxeWallet: vi.fn(),
   prepareConnection: vi.fn(),
   deployAndRegister: vi.fn(),
 }));
 
-vi.mock('../aztec/txManager', () => ({ default: { runTx: h.runTx } }));
 vi.mock('../aztec/pxe', () => ({
   pxe: { readTokenBalance: h.readTokenBalance },
   setPxeWallet: h.setPxeWallet,
-  runPxeTx: vi.fn(),
+  runPxeTx: h.runPxeTx,
 }));
 vi.mock('../aztec/connectToAztec', () => ({
   prepareConnection: h.prepareConnection,
@@ -42,9 +41,9 @@ const WALLET = { id: 'wallet' };
 describe('useAztec refreshTokenBalance — reads via the PXE queue door (Stage 2)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    h.prepareConnection.mockResolvedValue({ accountAddress: '0xACC', alreadyDeployed: true, node: {} });
+    h.prepareConnection.mockResolvedValue({ wallet: WALLET, accountAddress: '0xACC', alreadyDeployed: true, node: {} });
     h.deployAndRegister.mockResolvedValue({ wallet: WALLET, node: {}, accountAddress: '0xACC', ownedCardIds: [] });
-    h.runTx.mockImplementation(async ({ execute }: { execute: (p: unknown) => unknown }) => execute(vi.fn()));
+    h.runPxeTx.mockImplementation(async ({ execute }: { execute: (ops: unknown, sp: unknown) => unknown }) => execute({}, vi.fn()));
     h.readTokenBalance.mockResolvedValue(42n);
   });
 
