@@ -1031,3 +1031,32 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
 - LIMITATION (Zac "always working"): within an awake session the v4 watchdog (45s) + cron (10min) keep
   lane-8 monitored/recovered; but the playtest runs locally, so machine sleep pauses the work AND all
   local monitoring until wake. No local monitor can run while the machine sleeps.
+
+## 06-14 (pm) — REPEATABLE ACCEPTANCE GREEN 2/2; the 2 "hangs" were ONE cause (backend death)
+- Root-caused from the artifacts (not STATUS): BOTH acceptance hangs are the **backend WS relay
+  PROCESS dying mid-proof** — silent (no JS crash, no `.ips`), confirmed dead because teardown logged
+  no "backend stopped" and every browser reconnect got `ERR_CONNECTION_REFUSED`. Run #1 was it dying
+  during onboarding (alice's Aztec onboarding SUCCEEDED — cards imported, `connected` — only
+  `ws.connected` stayed false); run #2 was it dying during the game-5 settlement (winner settled
+  ON-CHAIN, txHash logged, but couldn't relay the won-card note → loser's `opponentSettled` never set).
+  Not a proving stall, not a game-5 state/carryover bug.
+- Memory: the "82% free" was a steady-state (idle) reading. Live `[mem@…]` logging shows the runs
+  execute at ~0.1 GiB free / swap ~93% / compressor thrashing. The **cleanup gap was the enabler** —
+  the campaign launches one DETACHED Chromium per player; a SIGKILLed worker orphans them and they
+  leaked across the day's runs, adding ~400 MB×N baseline that starved the prover (run #1's deploy
+  proof took **198s** vs **~18s** on a clean stack) and sustained the pressure window until the OS
+  killed the backend. Dispositive, empirical: clean stack ⇒ GREEN 2/2; polluted stack ⇒ backend dead
+  2/2 (same ~0.09 GiB-free at game 5 on the clean runs, but the backend SURVIVES without the leak
+  baseline). So memory pressure IS the kill mechanism — the actionable enabler is the leak, as routed.
+- Fixes (lane/8-playtest): `247fdd2` reap leaked per-player Chromium by process group (pid registry,
+  diffed from the OS since Playwright's client Browser exposes no pid; reaped in setup/teardown/
+  stop-stack, comm-guarded vs pid recycling) + fail-fast `/health` backend-liveness raced in
+  withDeadline + per-checkpoint memory logging. `b75d2f7` probe proving the reaper kills the group.
+  `22d761b` a SEPARATE latent harness false-negative the clean re-run surfaced: the loser-multiset
+  assertion left a `[claimed,0]` entry (countMap never stores zeros) → 180s false fail when the random
+  pack draw left the loser a single copy of the claimed id (both pre-fix clean runs hit it in game 1;
+  the GREEN run got lucky duplicates). Drop the entry at the last copy.
+- Pass rate: runs 1–2 (pre-multiset-fix) FAIL on that false-negative (NOT the hangs — hangs did not
+  recur). **Runs 3 & 4 (fixed): GREEN, 5/5 games each, 19 real ClientIVC proofs, 0
+  ERR_CONNECTION_REFUSED, full game-5 settle relays, clean teardown (no leaked Chromium, ports free).**
+  Repeatable acceptance met. No masking, no retries around any hang.
