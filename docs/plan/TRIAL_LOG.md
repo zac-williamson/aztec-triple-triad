@@ -1060,3 +1060,19 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   recur). **Runs 3 & 4 (fixed): GREEN, 5/5 games each, 19 real ClientIVC proofs, 0
   ERR_CONNECTION_REFUSED, full game-5 settle relays, clean teardown (no leaked Chromium, ports free).**
   Repeatable acceptance met. No masking, no retries around any hang.
+
+## 06-14 — ★ orchestrator VERIFIED + MERGED (`afdd5d2`); answered Zac's backend-memory question
+- Zac: "why does the backend memory grow per game?" Investigated the code: it does NOT — `StoredGameRoom`
+  holds board+cards only (no proofs/transcript); proofs buffer to inboxes only for OFFLINE players,
+  cleared on reconnect. Two KB-scale cleanup gaps (finished rooms / inboxes freed only by stale-timeout)
+  — noted for lane-4, not the cause. The 0.09 GiB collapse is SYSTEM-wide (client Chromium + ClientIVC
+  proving + orphaned-Chromium leak); the backend is the OS-killed victim. Confirms lane-8's 4th diagnosis.
+- Independently VERIFIED the GREEN against artifacts (lane-8's first 3 diagnoses were wrong → trust
+  artifacts): `accept-clean-3` + `accept-clean-4` each `1 passed` / 5 settle OK / 0 ERR_CONNECTION_REFUSED.
+- Gate-reviewed `247fdd2`/`b75d2f7`/`22d761b`: no-mask (liveness throws not retries; multiset is
+  test-correctness), frontend all VITE_TESTKIT-gated (prod-safe). MERGED lane/8-playtest → testnet
+  `afdd5d2` (21 files: validated C-multi harness + fixes + docs).
+- ★ PRIMARY GOAL COMPLETE: packs → 5 consecutive games, real proofs, per-game 3-layer validation, no
+  carryover — REPEATABLE (2×) + merged. Residual: thin backend memory margin on this saturated dev box
+  (fail-fast guard names it if it recurs); minor lane-4 backend hygiene (delete finished rooms +
+  clearInbox on game-end).
