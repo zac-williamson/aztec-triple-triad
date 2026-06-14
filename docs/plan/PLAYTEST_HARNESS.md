@@ -426,14 +426,14 @@ att.8 5.9m) → A1+A2 upgrade validated repeatably; harness ready to merge.
     survives; only the multi-game duration exposed it. See docs/plan/BUG_WEBGL_HANG.md.
 22. **Hang guards must fail-fast on a wedged page, not at the proof budget.** The
     `withDeadline` (15/25 min) and per-read `withTimeout` (180 s) guards DID fire
-    (Node timers, page-independent) but only at the happy-path budget; a page
-    that lost its WebGL context then *limped* (slow `ensureContracts` retries, no
-    real progress) was only caught after 25 min. Added a per-driver liveness
-    watchdog (`startWatchdog`): `page.on('crash')` immediate, WebGL
-    lost-unrestored >120 s, or ~60 s of dead pings → rejects a `driver.dead`
-    promise that `withDeadline` and `waitPhase` race against. A dead page now
-    fails in ~2 min. No false positives: healthy context losses restore in <1 s
-    and legit proving never loses a context.
+    (Node timers, page-independent) but only at the happy-path budget. Added a
+    per-driver liveness watchdog (`startWatchdog`): `page.on('crash')` immediate,
+    or ~60 s of unanswerable pings → rejects a `driver.dead` promise that
+    `withDeadline` and `waitPhase` race against. A wedged page fails in ~1–2 min.
+    **CORRECTION (this claim was wrong):** the watchdog originally ALSO declared
+    death on a WebGL context "lost & not restored >120 s" — which **false-
+    positived and killed a healthy game mid-proof** (assumption 25). It now keys
+    ONLY on unresponsiveness; the WebGL probe is diagnostics-only.
 23. **The real "guards didn't fire" bug was UNBOUNDED CLICKS, not the watchdog.**
     Playwright's default `actionTimeout` is **0 (unbounded)**, and `use.actionTimeout`
     does NOT reach contexts we launch ourselves — so a bare `.click()` on a wedged
@@ -455,6 +455,21 @@ att.8 5.9m) → A1+A2 upgrade validated repeatably; harness ready to merge.
     settlement and hide the bug); fix dispatched to lane-2 (toast must not intercept
     game-button clicks; pack notification must clear on completion). Harness blocked
     on that fix, then rebase + re-run to reach the carryover games.
+25. **Watchdog WebGL-death path was a FALSE POSITIVE — killed a healthy game
+    (fixed).** After the lane-2 toast fix merged, the run finally cleared packs →
+    matchmaking → **into game 1** (the game's SwampScene `<Canvas>` mounted,
+    `live=1`, 8 move proofs generated). But the watchdog then declared `PAGE DEAD —
+    WebGL context lost & not restored for 129s` and killed a demonstrably healthy
+    game. Cause: React **`StrictMode`** (main.tsx) dev-double-mounts every R3F
+    `<Canvas>` (`CREATED #1 live=1`, `CREATED #2 live=2`, `LOST live=1` within
+    113 ms at mount) — the orphaned first mount's `webglcontextlost` fires while
+    the live canvas renders fine; the probe set `lostSinceEpoch` on ANY loss, so
+    the watchdog tripped 120 s later. Also fundamentally wrong for this harness:
+    testkit gates MenuScene off, so `live==0` is the NORMAL menu state. Fix:
+    the watchdog keys ONLY on unresponsiveness (`page.crash` + dead pings); the
+    WebGL probe is diagnostics-only. Real wedges are still caught (ping-fail, or
+    the bounded per-op timeouts). This is a correction to MY OWN guard, not a mask
+    — the game was provably progressing when wrongly killed.
 
 ## Carryover hypothesis matrix (C-multi prep — root-cause the FIRST failure instantly)
 

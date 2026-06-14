@@ -18,25 +18,25 @@ declare global {
 
 const POLL_MS = 250;
 
-/** Live-context snapshot the in-page WebGL probe maintains. */
+/** Live-context snapshot the in-page WebGL probe maintains (diagnostics only). */
 export interface WebglStats {
   created: number;   // total WebGL contexts ever created in this tab
   lost: number;      // total contextlost events
   restored: number;  // total contextrestored events
   live: number;      // created − lost + restored (best-effort live count)
-  lostSinceEpoch: number; // Date.now() of the current unrestored loss, or 0 if none
 }
 
 /**
- * Injected before any app JS. Patches getContext to COUNT WebGL contexts and
- * timestamp losses, so the harness can (a) prove whether a freeze is a
- * context-count leak (live climbs) vs a GPU-process crash (live low, loss
- * sudden), and (b) fail fast when a context stays lost. Pure observation — it
- * does not change rendering. Written as plain JS (no TS) because Playwright
- * serializes it via .toString() into the page.
+ * Injected before any app JS. Patches getContext to COUNT WebGL contexts, so
+ * logWebgl can show whether a session leaks contexts (created climbs, live
+ * climbs) vs churns benignly (created climbs, live stays ~1 — e.g. StrictMode
+ * dev double-mounts that orphan one context per `<Canvas>` mount). PURELY
+ * diagnostic — it does NOT drive the liveness watchdog (which keys on
+ * unresponsiveness, not WebGL state). Plain JS — Playwright serializes it via
+ * .toString() into the page.
  */
 function installWebglProbe(): void {
-  const stats = { created: 0, lost: 0, restored: 0, live: 0, lostSinceEpoch: 0 };
+  const stats = { created: 0, lost: 0, restored: 0, live: 0 };
   (window as unknown as { __webglStats: typeof stats }).__webglStats = stats;
   const proto = HTMLCanvasElement.prototype as unknown as {
     getContext: (type: string, ...rest: unknown[]) => unknown;
@@ -49,11 +49,10 @@ function installWebglProbe(): void {
       console.log('[webgl] CREATED #' + stats.created + ' live=' + stats.live);
       this.addEventListener('webglcontextlost', function () {
         stats.lost++; stats.live = Math.max(0, stats.live - 1);
-        if (!stats.lostSinceEpoch) stats.lostSinceEpoch = Date.now();
         console.log('[webgl] LOST total=' + stats.lost + ' live=' + stats.live);
       });
       this.addEventListener('webglcontextrestored', function () {
-        stats.restored++; stats.live++; stats.lostSinceEpoch = 0;
+        stats.restored++; stats.live++;
         console.log('[webgl] RESTORED total=' + stats.restored + ' live=' + stats.live);
       });
     }
@@ -137,37 +136,30 @@ export class PlayerDriver {
   }
 
   /**
-   * Liveness watchdog. Every 15s it pings the page (bounded) and inspects the
-   * WebGL probe. Declares the page dead — failing fast — when either:
-   *  - the ping is unanswerable for ~4 consecutive cycles (~60s) → wedged page;
-   *  - a WebGL context has been lost and NOT restored for >120s → the GPU
-   *    process crash we diagnosed (the page may still limp, so the ping alone
-   *    would not catch it). Healthy context losses restore in <1s, and legit
-   *    proving never loses a context, so neither path false-positives.
+   * Liveness watchdog. Every 15s it pings the page with a trivial bounded
+   * `evaluate`; ~4 consecutive unanswerable pings (~60s) → the page's event loop
+   * is wedged → declare it dead (plus `page.on('crash')`, immediate). A wedged
+   * page can't answer the ping, so the Node-side timeout on the ping is what
+   * fires. We do NOT key death on WebGL state: under React StrictMode every R3F
+   * `<Canvas>` dev-double-mounts, so the orphaned mount's `webglcontextlost`
+   * fires while the live canvas renders fine — and in testkit the menu has NO
+   * canvas at all (MenuScene gated off), so live==0 is the NORMAL menu state.
+   * Either would false-positive a WebGL-based death (it killed a healthy game
+   * mid-proof once). The WebGL probe stays purely for diagnostics (logWebgl);
+   * any real wedge is caught here (ping) or by the bounded per-op timeouts.
    */
   startWatchdog(opts: {
-    pingEvery?: number; pingTimeout?: number; maxPingFails?: number; webglGraceMs?: number;
+    pingEvery?: number; pingTimeout?: number; maxPingFails?: number;
   } = {}): void {
     const PING_EVERY = opts.pingEvery ?? 15_000;
     const PING_TIMEOUT = opts.pingTimeout ?? 20_000;
     const MAX_PING_FAILS = opts.maxPingFails ?? 4;
-    const WEBGL_GRACE_MS = opts.webglGraceMs ?? 120_000;
     let pingFails = 0;
     const tick = async (): Promise<void> => {
       if (this.deadReason) return;
       try {
-        const s = await this.withTimeout(
-          this.page.evaluate(() => (window as unknown as { __webglStats?: WebglStats }).__webglStats ?? null),
-          PING_TIMEOUT, 'liveness ping');
+        await this.withTimeout(this.page.evaluate(() => 1), PING_TIMEOUT, 'liveness ping');
         pingFails = 0; // page answered
-        if (s && s.lostSinceEpoch > 0) {
-          const lostFor = Date.now() - s.lostSinceEpoch;
-          if (lostFor > WEBGL_GRACE_MS) {
-            this.declareDead(`WebGL context lost & not restored for ${Math.round(lostFor / 1000)}s ` +
-              `(live=${s.live}, totalLost=${s.lost}) — GPU-process crash, page is wedged`);
-            return;
-          }
-        }
       } catch {
         pingFails++;
         if (pingFails >= MAX_PING_FAILS) {
