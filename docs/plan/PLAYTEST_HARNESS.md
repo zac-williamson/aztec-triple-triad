@@ -471,6 +471,41 @@ att.8 5.9m) → A1+A2 upgrade validated repeatably; harness ready to merge.
     the bounded per-op timeouts). This is a correction to MY OWN guard, not a mask
     — the game was provably progressing when wrongly killed.
 
+## C-multi RESULT — GREEN (5 consecutive games, real proofs)
+
+`run-2026-06-14T09-05-06` — **1 passed (14.5m)**. Two players open a pack each
+(→15 cards), then play FIVE consecutive games in ONE session (no stack reset),
+three-layer + no-carryover validated after each. Per-game table:
+
+| game | winner | alice cards | bob cards | alice tok | bob tok | claimed | settle |
+|------|--------|-------------|-----------|-----------|---------|---------|--------|
+| 1 | alice | 15→16 | 15→14 | 0→20 | 0→20 | #4 | OK |
+| 2 | bob | 16→15 | 14→15 | 20→40 | 20→40 | #4 | OK |
+| 3 | alice | 15→16 | 15→14 | 40→60 | 40→60 | #4 | OK |
+| 4 | bob | 16→15 | 14→15 | 60→80 | 60→80 | #4 | OK |
+| 5 | alice | 15→16 | 15→14 | 80→100 | 80→100 | #4 | OK |
+
+Verified genuine (not a single-snapshot misread): Playwright `1 passed`; 5
+settlement txs spread across the timeline (3 alice / 2 bob, matching winners);
+93 tx-blocks of real chain activity; ~13.5 min wall-clock of real proving; both
+browsers end together (clean teardown). Card/token economy internally
+consistent (winner +1 card / +20 tok, loser −1 / +20). **No carryover**: the
+gap-checks never tripped — the merged lane-2 `useGameSession`/`useGameSettlement`
+reset work holds across games. WebGL `created` climbs +1/game (StrictMode churn)
+but `live` stays 0–1 → no context leak. The multi-game carryover bug class did
+NOT manifest on the merged 4.3.1 stack.
+
+26. **Onboarding HTTP/2 transport flake (intermittent ~1/4; lane-2 resilience
+    gap).** In `run-…T08-50-15`, bob's onboarding hit
+    `net::ERR_HTTP2_PROTOCOL_ERROR` / `Failed to fetch` ~3 min into his deploy+mint
+    proving — the node was healthy (no crash/error in sandbox.log; alice onboarded
+    fine just before). A transient HTTP/2 drop during the long CPU-blocked proving.
+    The real gap: `useAztec` went to a TERMINAL `status='error'` with NO retry, so
+    onboarding dead-ended → 420 s timeout. A transient transport blip should not
+    kill onboarding — `useAztec` should retry/reconnect (lane-2). Did not recur on
+    the next run (onboarded clean → GREEN above). The harness does NOT add a retry
+    (no-masking); reported for a real fix.
+
 ## Carryover hypothesis matrix (C-multi prep — root-cause the FIRST failure instantly)
 
 The campaign plays 5 games in ONE session with NO stack reset, so anything from
