@@ -775,3 +775,13 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   — verifying the harness now reaches the games, then it hunts the real carryover bugs (7 candidates
   from its reset analysis). The actual multi-game carryover bug class is STILL NOT REACHED.
 - Process note: sweep.sh can grab a stale STATUS line — capture panes directly for critical status.
+
+## 06-13 — FAST MODE ABANDONED (Zac: REAL proofs only). lane-8 is doing the PROPER playtest.
+- Zac directive: NO fast mode — the playtest MUST use real proofs (proper proving is the point).
+  My "wire VITE_FAST_PROOFS" routing was wrong twice over (also pushed it before verifying). Interrupted
+  lane-2 mid-implementation and told it to DISCARD/revert all fastProofs + dummy-gameplay edits (never
+  committed/merged). Real proofs are the standing requirement; do NOT reintroduce a fast-proof path.
+- lane-8 is already correct: iterating the multi-game campaign in REAL-PROOF mode (reduced game count
+  via MULTIGAME_GAMES), MenuScene page-degradation fixed (gated off under VITE_TESTKIT), 2-game
+  confirmation run in flight. Its STATUS = `working` (in progress) → per the new discipline, LEAVE IT
+  ALONE to complete and surface the real carryover bugs (7 candidates). Hours-per-run is accepted.
