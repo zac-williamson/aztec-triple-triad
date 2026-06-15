@@ -8,7 +8,7 @@
  *  - Connects to the public testnet RPC
  *
  * Prerequisites:
- *   1. Get Fee Juice from the bridge https://bridge.gregojuice.anothercoffeefor.me/ (select Testnet)
+ *   1. Get Fee Juice from the bridge https://bridge.aztec-kit.anothercoffeefor.me/ (select Testnet)
  *   2. Set env vars for your funded deployer account:
  *      export AZTEC_PXE_URL=https://rpc.testnet.aztec-labs.com
  *      export DEPLOYER_SECRET=0x...    # Fr hex from aztec-wallet
@@ -209,7 +209,7 @@ async function main() {
     console.log(`  DEPLOYER_SECRET=${secretFr.toString()} DEPLOYER_SALT=${saltFr.toString()} DEPLOYER_SIGNING_KEY=${signingKey.toString()} npx tsx scripts/deploy-testnet.ts`);
     console.log('\nFunding options:');
     console.log(`  npx tsx scripts/fund-testnet.ts ${deployerAddress.toString()}   (one-key treasury bridge)`);
-    console.log('  or the Fee Juice bridge: https://bridge.gregojuice.anothercoffeefor.me/ (select Testnet)');
+    console.log('  or the Fee Juice bridge: https://bridge.aztec-kit.anothercoffeefor.me/ (select Testnet)');
     return;
   }
 

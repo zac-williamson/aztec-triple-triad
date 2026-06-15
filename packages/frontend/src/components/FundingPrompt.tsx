@@ -10,7 +10,7 @@ interface FundingPromptProps {
   onConfirm: () => void;
 }
 
-const BRIDGE_URL = 'https://bridge.gregojuice.anothercoffeefor.me/';
+const BRIDGE_URL = 'https://bridge.aztec-kit.anothercoffeefor.me/';
 
 export function FundingPrompt({ accountAddress, onConfirm }: FundingPromptProps) {
   const copyAddress = () => {
