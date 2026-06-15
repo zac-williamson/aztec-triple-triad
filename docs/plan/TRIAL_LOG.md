@@ -1241,3 +1241,25 @@ Orchestrator-owned. One entry per sweep/event. Newest at top.
   live-URL doc + optional multi-game.
 - PROCESS: future pushes are clean (.artifacts gitignored + stripped). Keep local testnet == origin/testnet
   going forward (push after merges) so prod never silently drifts 99 commits behind again.
+
+## 06-14 — HAND-BUILT FAUCET RIPPED from all deployed code (Zac directive)
+- Zac: a hand-rolled treasury faucet (no sybil resistance, drains, leaky abstraction) must NOT live in the
+  deployed app - exactly the kind of leaky abstraction he warned against. Ripped everywhere (commit c9ba759):
+  - backend: deleted src/faucet/ + the POST /faucet route + FAUCET_ENABLED wiring + faucet tests. tsc clean,
+    174 backend tests pass, zero faucet refs remain.
+  - frontend: deleted requestFeeJuiceClaim + the auto-faucet onboarding branch + faucetUrl config. Testnet
+    onboarding now = MANUAL funding; FundingPrompt points to the OFFICIAL Aztec Fee Juice faucet
+    (https://aztec-faucet.nethermind.io), replacing a non-official bridge.gregojuice URL. Pushed -> Vercel
+    rebuilds the faucet-free app.
+  - deploy config/docs cleaned of all faucet references (triad-backend.service / .env.example / DEPLOY.md).
+- NEW funding model:
+  - Real users: self-fund via the OFFICIAL Aztec faucet (manual prompt). The app NEVER touches a treasury.
+  - Playtest: lane-8 building a LOCAL script (scripts/, reuse scripts/lib/feeJuiceBridge.ts + the treasury key
+    like scripts/fund-testnet.ts) that funds + deploys FIXED playtest accounts; the harness uses those
+    PRE-FUNDED accounts on aztec-arena.com (no app faucet, no VITE_FAUCET_URL).
+- REMAINING: box backend redeploy (run deploy/update-backend.sh ON the box) to drop the now-DORMANT /faucet
+  endpoint + remove FAUCET_ENABLED + the treasury key file from the box. It's a live-relay restart -> time it
+  when no playtest is mid-flight (it would interrupt lane-8). The deployed frontend already calls no faucet, so
+  the endpoint is dormant; this is running-backend + key hygiene.
+- LESSON: the hand-built faucet (built as "Item I" by the backend lane) was a leaky abstraction I should have
+  caught against Zac's original heuristics. See [[feedback-autonomous-orchestration]].

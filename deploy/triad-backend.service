@@ -36,12 +36,5 @@ ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=true
 
-# --- Fee Juice faucet (item I) — uncomment ONLY when FAUCET_ENABLED=true ---
-# The faucet reads the treasury key and writes the claim store under the user's
-# home, which ProtectHome=read-only otherwise blocks. Grant write access to just
-# the private dir (keeps the rest of $HOME read-only). Adjust the path if you set
-# FEE_JUICE_CLAIMS_FILE / TREASURY_L1_KEY_FILE elsewhere.
-# ReadWritePaths=/home/ubuntu/.aztec-triad-private
-
 [Install]
 WantedBy=multi-user.target
