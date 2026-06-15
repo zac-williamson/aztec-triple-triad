@@ -70,7 +70,7 @@ function AppInner() {
 
       {showMenuScene && <MenuScene />}
 
-      {(aztec.status === 'funding' || aztec.status === 'deploying') && (
+      {aztec.status === 'deploying' && (
         <FundingProgress status={aztec.status} />
       )}
 
@@ -84,7 +84,6 @@ function AppInner() {
       {showTutorialPrompt &&
         game.screen === 'main-menu' &&
         aztec.status !== 'needs-funding' &&
-        aztec.status !== 'funding' &&
         aztec.status !== 'deploying' && (
           <TutorialPrompt onLearnToPlay={handleTutorial} onSkip={handlePromptSkip} />
         )}

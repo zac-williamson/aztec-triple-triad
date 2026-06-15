@@ -1,21 +1,14 @@
 /**
- * Auto-onboarding progress screen (item I). Shown while the testnet faucet
- * funds the new account and the combined deploy+mint runs — replacing the
- * manual copy-address / bridge / "I've funded" round-trip with a zero-action
- * "Getting you set up…" screen. Driven purely by the connection status:
- *   'funding'   → requesting Fee Juice from the faucet
- *   'deploying' → deploy account + mint starter cards (one tx)
- * On 'connected' the app auto-continues to the menu; on faucet failure the
- * status flips to 'needs-funding' and FundingPrompt takes over (fallback).
+ * Onboarding progress screen shown while the combined deploy+mint tx runs
+ * (status === 'deploying'). This covers both the new-account deploy + starter
+ * mint and the returning-account restore (both land on 'deploying'). On
+ * 'connected' the app auto-continues to the menu.
  */
 interface FundingProgressProps {
-  status: 'funding' | 'deploying';
+  status: 'deploying';
 }
 
-// Step 2 covers both the new-account mint and the returning-account restore
-// (both land on 'deploying'), so the copy stays true for either.
 const STEPS: { key: FundingProgressProps['status']; label: string }[] = [
-  { key: 'funding', label: 'Requesting Fee Juice' },
   { key: 'deploying', label: 'Deploying account & loading your cards' },
 ];
 
@@ -40,8 +33,8 @@ export function FundingProgress({ status }: FundingProgressProps) {
         </div>
 
         <p style={{ fontFamily: "'Cinzel', serif", fontSize: 14, color: '#5a4a34', margin: '16px 0 20px' }}>
-          Preparing your Aztec account — no wallet, no gas, no copy-paste. This
-          takes up to a minute on the first visit.
+          Preparing your Aztec account. This takes up to a minute on the first
+          visit.
         </p>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, textAlign: 'left', margin: '0 auto', maxWidth: 320 }}>

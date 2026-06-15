@@ -9,7 +9,7 @@ import { render, screen } from '@testing-library/react';
 import { App } from '../App';
 
 // Mutable Aztec connection state so individual tests can drive the status the
-// App routes on (funding/deploying overlay, needs-funding fallback, item I).
+// App routes on (deploying overlay, needs-funding manual-funding fallback).
 const azt = vi.hoisted(() => ({ status: 'unsupported' as string, accountAddress: null as string | null }));
 
 // Polyfill ResizeObserver for jsdom (required by React Three Fiber / react-use-measure)
@@ -27,7 +27,7 @@ beforeAll(() => {
 vi.mock('../hooks/useAztec', () => ({
   useAztec: () => ({
     status: azt.status,
-    isConnecting: azt.status === 'funding' || azt.status === 'deploying',
+    isConnecting: azt.status === 'deploying',
     hasConnected: azt.status === 'connected',
     accountAddress: azt.accountAddress,
     isAvailable: false,
@@ -128,22 +128,16 @@ describe('App Integration', () => {
     expect(mapWinnerId('draw')).toBe(3);
   });
 
-  // Item I: the auto-onboarding overlay shows while funding/deploying, and the
-  // manual FundingPrompt remains the fallback when the faucet is unavailable.
-  it('shows the auto-onboarding progress screen while funding', () => {
-    azt.status = 'funding';
+  // The onboarding overlay shows while deploying, and the manual FundingPrompt
+  // is the funding path on a non-local network (the app never auto-funds).
+  it('shows the onboarding progress screen while deploying', () => {
+    azt.status = 'deploying';
     render(<App />);
     expect(screen.getByText('Getting You Set Up')).toBeTruthy();
     expect(screen.queryByText('Fund Your Account')).toBeNull();
   });
 
-  it('shows the progress screen while deploying', () => {
-    azt.status = 'deploying';
-    render(<App />);
-    expect(screen.getByText('Getting You Set Up')).toBeTruthy();
-  });
-
-  it('falls back to the manual FundingPrompt when funding is needed', () => {
+  it('shows the manual FundingPrompt when funding is needed', () => {
     azt.status = 'needs-funding';
     azt.accountAddress = '0xABCDEF';
     render(<App />);

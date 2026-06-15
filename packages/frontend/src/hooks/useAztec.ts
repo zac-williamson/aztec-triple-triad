@@ -6,8 +6,7 @@ import { pxe, setPxeWallet, runPxeTx } from '../aztec/pxe';
 type ConnectionStatus =
   | 'disconnected'
   | 'connecting'
-  | 'funding' // testnet: requesting Fee Juice from the backend faucet (item I)
-  | 'needs-funding' // faucet unavailable/failed → manual funding fallback
+  | 'needs-funding' // non-local network → manual Fee Juice funding via the official Aztec faucet
   | 'deploying'
   | 'connected'
   | 'error'
@@ -95,26 +94,11 @@ export function useAztec(): UseAztecReturn {
           const { fundAccountOnDevnet } = await import('../aztec/fundDevnet');
           const claim = await fundAccountOnDevnet(prepared.node, prepared.accountAddress, log);
           await runDeploy('Deploying account & minting starter cards...', claim);
-        } else if (AZTEC_CONFIG.faucetUrl) {
-          // Testnet — auto-fund via the backend treasury faucet (item I,
-          // Option B), then deploy+mint in one tx. A faucet *request* failure
-          // degrades to the manual FundingPrompt so onboarding never dead-ends;
-          // a deploy failure after a good claim is a real error (outer catch).
-          let claim: FeeJuiceClaim | null = null;
-          try {
-            setStatus('funding');
-            log('Requesting Fee Juice from the faucet...');
-            const { requestFeeJuiceClaim } = await import('../aztec/requestFeeJuiceClaim');
-            claim = await requestFeeJuiceClaim(AZTEC_CONFIG.faucetUrl, prepared.accountAddress);
-          } catch (faucetErr) {
-            console.warn('[useAztec] Faucet funding failed; falling back to manual funding:', faucetErr);
-            setStatus('needs-funding');
-          }
-          if (claim) {
-            await runDeploy('Deploying account & minting starter cards...', claim);
-          }
         } else {
-          // No faucet configured — manual funding prompt.
+          // Testnet (or any non-local network) — the app NEVER auto-funds from a
+          // treasury faucet. Drop straight to the manual FundingPrompt, which
+          // points the user at the official Aztec Fee Juice faucet. After they
+          // confirm funding, `confirmFunded` runs the deploy+mint.
           setStatus('needs-funding');
         }
       }
@@ -219,7 +203,7 @@ export function useAztec(): UseAztecReturn {
 
   return {
     status,
-    isConnecting: status === 'connecting' || status === 'funding' || status === 'deploying',
+    isConnecting: status === 'connecting' || status === 'deploying',
     hasConnected: status === 'connected',
     accountAddress,
     isAvailable: status === 'connected',
