@@ -19,6 +19,22 @@ declare global {
 
 const POLL_MS = 250;
 
+// clickCell settle/confirm tuning (testnet move-flake fix). Board cells are
+// STATIC meshes (BoardCell3D never moves them), so once no fly/capture
+// animation is running the cell projects to a stable pixel to sub-pixel; a
+// jitter larger than SETTLE_EPS_PX between samples means the scene is still
+// moving and a click could land off-cell. Require a few consecutive stable
+// samples before trusting the projected pixel as a click point.
+const SETTLE_EPS_PX = 2;
+const SETTLE_STABLE_SAMPLES = 3;
+// A successful cell click clears selectedCardIndex and starts our fly animation
+// synchronously (GameScreen3D.handleCellClick). If the card stays SELECTED with
+// the scene idle for this many consecutive polls after the click, the click was
+// DROPPED (handleCellClick early-returned mid-animation) — fail loud rather than
+// silently wait out the full boardUpdate timeout. ~16 * POLL_MS/2 ≈ 2s, safely
+// longer than the click→handler latency so a healthy placement never trips it.
+const PLACEMENT_DROP_SAMPLES = 16;
+
 /** Live-context snapshot the in-page WebGL probe maintains (diagnostics only). */
 export interface WebglStats {
   created: number;   // total WebGL contexts ever created in this tab
@@ -79,6 +95,7 @@ export const TIMEOUTS = TESTNET ? {
   packTx: 1_200_000,        // purchase tx + 10-note import + block inclusion (20 min)
   pxeRead: 300_000,         // testnet PXE reads sync across real blocks
   evaluate: 60_000,
+  placementConfirm: 120_000, // confirm a cell click registered; fail loud on a miss, not a 240s board-update timeout
   eventually: 420_000,      // private-note discovery by block scanning, ~36s slots (7 min)
 } : {
   install: 120_000,      // first boot after an SDK bump cold-optimizes the @aztec deps in-browser
@@ -93,6 +110,7 @@ export const TIMEOUTS = TESTNET ? {
   packTx: 600_000,          // purchase_card_pack: tx proving + 10-note import
   pxeRead: 180_000,         // hard backstop for a single PXE read; a true hang fails fatally, never masked
   evaluate: 30_000,         // a bare page.evaluate (phase snapshot) must not hang the run
+  placementConfirm: 30_000, // confirm a cell click registered; fail loud on a miss, not a board-update timeout
   eventually: 180_000,      // private-state eventual consistency (PXE note discovery) after a tx
 };
 
@@ -455,11 +473,16 @@ export class PlayerDriver {
     );
   }
 
-  private async clickProjected(target: ClickTarget): Promise<void> {
-    const { x, y } = await this.page.evaluate(
-      t => window.__triadTest!.getScreenXY(t as any),
-      target as any,
+  /** Project a click target to viewport px via the live camera (bounded read). */
+  private async projectTarget(target: ClickTarget): Promise<{ x: number; y: number }> {
+    return this.withTimeout(
+      this.page.evaluate(t => window.__triadTest!.getScreenXY(t as any), target as any),
+      TIMEOUTS.evaluate, 'getScreenXY',
     );
+  }
+
+  private async clickProjected(target: ClickTarget): Promise<void> {
+    const { x, y } = await this.projectTarget(target);
     await this.page.mouse.click(x, y);
   }
 
@@ -474,9 +497,112 @@ export class PlayerDriver {
     );
   }
 
-  /** Click a board cell (a card must already be selected). */
+  /**
+   * Place the selected card on board cell [row,col] via a projected canvas click.
+   *
+   * Root-cause fix for the testnet move-flake (a game stalled at move ~6: board
+   * frozen, the mover's card stuck selected). The app SILENTLY drops a cell
+   * click in two ways: GameScreen3D.handleCellClick early-returns while a
+   * fly/capture animation is running, and R3F's onPointerMissed DESELECTS the
+   * card if the projected pixel lands off-cell. On the local sandbox the scene
+   * settles between moves before the harness clicks; on testnet's slower cadence
+   * the previous move's incoming fly/capture can still be animating when we fire.
+   * So: (1) wait for a SETTLED scene before projecting+clicking — no fly/cascade
+   * AND a stable projection of THIS cell — then (2) CONFIRM the placement
+   * registered, failing loud on a miss instead of burning the 240s board-update
+   * timeout. This is NOT a retry: the settle-wait is the fix; one missed click
+   * fails loud (root-cause, never mask).
+   */
   async clickCell(row: number, col: number): Promise<void> {
-    await this.clickProjected({ type: 'cell', row, col });
+    const target = { type: 'cell' as const, row, col };
+    await this.waitCellSettled(target);
+    await this.clickProjected(target);
+    await this.confirmPlacement(row, col);
+  }
+
+  /**
+   * Hold until cell [target] is safe to click: my turn, a card still selected,
+   * NO fly/capture animation in flight, and the cell's projected pixel stable
+   * across consecutive samples (so the click can't land off-cell against a
+   * moving scene). Reuses the testkit interaction snapshot + the live
+   * getScreenXY projection — no new app signal needed (the cells are static, so
+   * "no animation + stable projection" fully characterizes a settled target).
+   * Fails loud on timeout — never fires a click into an unsettled scene.
+   */
+  private async waitCellSettled(target: { type: 'cell'; row: number; col: number }): Promise<void> {
+    const deadline = Date.now() + TIMEOUTS.interactionIdle;
+    let prev: { x: number; y: number } | null = null;
+    let stable = 0;
+    let last: PhaseSnapshot | null = null;
+    let projErr = '';
+    while (Date.now() < deadline) {
+      if (this.deadReason) throw new Error(`${this.name}: PAGE DEAD before cell click — ${this.deadReason}`);
+      last = await this.phase().catch(() => null);
+      const idle = last?.game?.status === 'playing'
+        && last.game.isMyTurn
+        && last.interaction !== null
+        && !last.interaction.flying
+        && !last.interaction.cascading
+        && last.interaction.selectedCardIndex !== null;
+      if (idle) {
+        const xy = await this.projectTarget(target).then(p => p, (e) => { projErr = String(e); return null; });
+        if (xy && prev && Math.abs(xy.x - prev.x) <= SETTLE_EPS_PX && Math.abs(xy.y - prev.y) <= SETTLE_EPS_PX) {
+          if (++stable >= SETTLE_STABLE_SAMPLES) return;
+        } else {
+          stable = 0;
+        }
+        prev = xy;
+      } else {
+        stable = 0;
+        prev = null;
+      }
+      await this.page.waitForTimeout(POLL_MS / 2).catch(() => {});
+    }
+    throw new Error(
+      `${this.name}: cell [${target.row},${target.col}] never became clickable within ` +
+      `${TIMEOUTS.interactionIdle / 1000}s (scene/selection never settled${projErr ? `; last projection error: ${projErr}` : ''})\n` +
+      `last phase: ${JSON.stringify(last, null, 2)}`,
+    );
+  }
+
+  /**
+   * Confirm the cell click registered a placement. handleCellClick's success
+   * path fills the cell and starts our fly animation; a click dropped
+   * mid-animation leaves the card selected and the cell empty, and an off-cell
+   * click deselects it — neither fills the cell. Return the instant the cell is
+   * filled (or our fly starts); fail loud once the scene is idle with the card
+   * still selected and the cell empty (a dropped click), or at the deadline
+   * (any other miss). No re-click — a confirmed miss is surfaced, not retried.
+   */
+  private async confirmPlacement(row: number, col: number): Promise<void> {
+    const deadline = Date.now() + TIMEOUTS.placementConfirm;
+    let dropStreak = 0;
+    let last: PhaseSnapshot | null = null;
+    while (Date.now() < deadline) {
+      if (this.deadReason) throw new Error(`${this.name}: PAGE DEAD after cell click — ${this.deadReason}`);
+      last = await this.phase().catch(() => null);
+      if (last?.game?.board[row]?.[col]?.cardId != null) return; // card landed — registered
+      if (last?.interaction?.flying) return;                     // our fly started — accepted
+      const droppedNow = last?.interaction != null
+        && last.interaction.selectedCardIndex !== null
+        && !last.interaction.flying
+        && !last.interaction.cascading;
+      dropStreak = droppedNow ? dropStreak + 1 : 0;
+      if (dropStreak >= PLACEMENT_DROP_SAMPLES) {
+        throw new Error(
+          `${this.name}: cell [${row},${col}] click did NOT place — card still selected ` +
+          `(index ${last!.interaction!.selectedCardIndex}), scene idle, cell empty. The projected click was ` +
+          `dropped (handleCellClick early-return) or missed the cell; the settle-wait should prevent this.\n` +
+          `last phase: ${JSON.stringify(last, null, 2)}`,
+        );
+      }
+      await this.page.waitForTimeout(POLL_MS / 2).catch(() => {});
+    }
+    throw new Error(
+      `${this.name}: cell [${row},${col}] placement not confirmed within ${TIMEOUTS.placementConfirm / 1000}s ` +
+      `(cell empty, no fly started — likely an off-cell click that deselected the card)\n` +
+      `last phase: ${JSON.stringify(last, null, 2)}`,
+    );
   }
 
   async waitBoardCount(occupied: number): Promise<PhaseSnapshot> {
