@@ -4,10 +4,10 @@
  * coordinates, and waits on app state (never wall-clock sleeps).
  */
 import type { Page, Browser } from '@playwright/test';
-import { createWriteStream, type WriteStream } from 'fs';
+import { createWriteStream, readFileSync, writeFileSync, type WriteStream } from 'fs';
 import { resolve } from 'path';
 import type { PhaseSnapshot, ClickTarget } from '../../frontend/src/testkit/contract.js';
-import { FRONTEND_URL, TESTNET } from './env.js';
+import { FRONTEND_URL, TESTNET, PLAYTEST_ACCOUNTS_PATH, readContractAddresses } from './env.js';
 import { launchIsolatedBrowser } from './browser.js';
 import { registerBrowser, deregisterBrowser, playwrightChromiumLeaders } from './stack.js';
 
@@ -96,6 +96,74 @@ export const TIMEOUTS = TESTNET ? {
   eventually: 180_000,      // private-state eventual consistency (PXE note discovery) after a tx
 };
 
+/** One account in the provisioned pool manifest (provision-playtest-accounts.ts). */
+interface PlaytestPoolEntry {
+  index: number;
+  address: string;
+  secret: string;
+  salt: string;
+  signingKey: string;
+  /** Full StoredCard[] — seeded verbatim into the browser cardStore. */
+  starterCards: unknown[];
+  used: boolean;
+}
+
+/**
+ * Claim the next unused account from the provisioned pool (SINGLE-USE), mark it
+ * used in the manifest, and build the localStorage seed that makes the app
+ * restore it as an already-deployed account with its 5 starter cards — no app
+ * faucet, no funding step (docs/plan/PLAYTEST_SELFFUND.md). Serial single-worker
+ * launches make the manifest read-modify-write race-free.
+ *
+ * The seed keys mirror config.ts storageKeys (scoped by the game contract addr)
+ * and cardStore.ts exactly, so prepareConnection restores the keys, sees
+ * `deployed`, skips minting, and re-imports the cards from the seeded cardStore.
+ */
+function claimPlaytestAccount(): Record<string, string> {
+  let manifest: PlaytestPoolEntry[];
+  try {
+    manifest = JSON.parse(readFileSync(PLAYTEST_ACCOUNTS_PATH, 'utf-8')) as PlaytestPoolEntry[];
+  } catch {
+    throw new Error(
+      `PLAYTEST_TESTNET needs a provisioned account pool at ${PLAYTEST_ACCOUNTS_PATH}.\n` +
+        `Run: npx tsx scripts/provision-playtest-accounts.ts --count <N>`,
+    );
+  }
+  const entry = manifest.find((e) => !e.used);
+  if (!entry) {
+    throw new Error(
+      `Playtest account pool exhausted (all ${manifest.length} used — single-use). Provision more:\n` +
+        `  npx tsx scripts/provision-playtest-accounts.ts --start ${manifest.length} --count <N>`,
+    );
+  }
+
+  // Well-formedness guard (no mask): a corrupt/partial manifest entry must fail
+  // loud here, not silently seed garbage and fall through to the removed funding
+  // path. The keys come from the shared deterministic deriver
+  // (scripts/lib/playtestAccounts.ts) and the provision script already verified
+  // each recorded account holds cards [1..5] + 100 ARNA on-chain.
+  const HEX66 = /^0x[0-9a-fA-F]{64}$/;
+  if (!HEX66.test(entry.secret) || !HEX66.test(entry.salt) || !HEX66.test(entry.signingKey)) {
+    throw new Error(`Manifest entry #${entry.index} has malformed keys — re-provision the pool.`);
+  }
+  if (!HEX66.test(entry.address) || !Array.isArray(entry.starterCards) || entry.starterCards.length !== 5) {
+    throw new Error(`Manifest entry #${entry.index} missing its address or 5 starter cards — re-provision.`);
+  }
+
+  entry.used = true;
+  writeFileSync(PLAYTEST_ACCOUNTS_PATH, JSON.stringify(manifest, null, 2));
+
+  const { nft, game } = readContractAddresses();
+  return {
+    [`aztec_tt_account_secret_${game}`]: entry.secret,
+    [`aztec_tt_account_salt_${game}`]: entry.salt,
+    [`aztec_tt_signing_key_${game}`]: entry.signingKey,
+    [`aztec_tt_deployed_${game}`]: 'deployed',
+    [`aztec_tt_cards_minted_${entry.address}_${nft}`]: 'true',
+    [`aztec_tt_card_inventory_${entry.address}_${game}`]: JSON.stringify(entry.starterCards),
+  };
+}
+
 export class PlayerDriver {
   private consoleLog: WriteStream | null = null;
 
@@ -132,12 +200,16 @@ export class PlayerDriver {
     const page = await context.newPage();
     const driver = new PlayerDriver(name, page, browser);
     driver.browserPids = newPids;
-    await driver.boot(logsDir);
+    // TESTNET: claim a pre-funded, pre-deployed account from the provisioned pool
+    // and seed it into localStorage so onboarding restores it (no app faucet).
+    // Local sandbox keeps the auto-fund path (seed stays undefined).
+    const seed = TESTNET ? claimPlaytestAccount() : undefined;
+    await driver.boot(logsDir, seed);
     return driver;
   }
 
   /** Navigate, capture console/page errors to the artifacts dir, skip the tutorial. */
-  async boot(logsDir: string): Promise<void> {
+  async boot(logsDir: string, localStorageSeed?: Record<string, string>): Promise<void> {
     this.consoleLog = createWriteStream(resolve(logsDir, `browser-${this.name}.log`));
     this.page.on('console', msg =>
       this.consoleLog!.write(`[${new Date().toISOString()}] [${msg.type()}] ${msg.text()}\n`));
@@ -149,6 +221,15 @@ export class PlayerDriver {
 
     // Count WebGL contexts before app JS runs, so leak-vs-crash is observable.
     await this.page.addInitScript(installWebglProbe);
+    // Seed the pre-provisioned account into localStorage BEFORE any app JS, so
+    // prepareConnection restores an already-deployed account (alreadyDeployed →
+    // no funding step) with its starter cards re-imported from the seeded
+    // cardStore. Runs before goto; only set in TESTNET mode.
+    if (localStorageSeed) {
+      await this.page.addInitScript((entries: Record<string, string>) => {
+        for (const k in entries) localStorage.setItem(k, entries[k]);
+      }, localStorageSeed);
+    }
     await this.page.goto(FRONTEND_URL);
     await this.page.waitForFunction(() => !!window.__triadTest, undefined, {
       timeout: TIMEOUTS.install, polling: POLL_MS,

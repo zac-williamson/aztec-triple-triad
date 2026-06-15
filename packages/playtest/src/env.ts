@@ -38,6 +38,13 @@ export const PLAYTEST_DIR = resolve(ROOT, 'packages/playtest');
 export const ARTIFACTS_DIR = resolve(PLAYTEST_DIR, '.artifacts');
 /** Per-test-run handoff (globalSetup → tests → globalTeardown). */
 export const STACK_INFO_PATH = resolve(ARTIFACTS_DIR, 'stack.json');
+/**
+ * Pre-provisioned playtest account pool (scripts/provision-playtest-accounts.ts).
+ * In TESTNET mode the harness claims the next unused account from here and seeds
+ * its keys + minted starter cards into localStorage, so onboarding restores an
+ * already-deployed account with no app faucet. See docs/plan/PLAYTEST_SELFFUND.md.
+ */
+export const PLAYTEST_ACCOUNTS_PATH = resolve(ARTIFACTS_DIR, 'playtest-accounts.json');
 /** Registry for a long-lived stack from scripts/boot-stack.ts (stop-stack.ts kills it). */
 export const STANDALONE_INFO_PATH = resolve(ARTIFACTS_DIR, 'standalone-stack.json');
 /**
