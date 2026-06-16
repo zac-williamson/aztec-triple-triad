@@ -8,12 +8,14 @@
  * so ONLY the relay's GAME_ABANDONMENT_WARNING is new — hence the harness runs
  * with PLAYTEST_TESTNET=1 PLAYTEST_LOCAL_BACKEND=1 (see src/stack.ts).
  *
- * FLOW: onboard 2 pre-funded accounts → create+join → play 2 moves (P1 then P2)
- * so a card is claimable and it is P1's turn → P1 STOPS (never moves) → after
- * >=60s the relay warns BOTH browsers (idlePlayer=player1) → P2 (the non-idle
- * player) claims → claim_abandoned_game (on-chain status → 5 abandoned_claimed)
- * → on-chain dispute window (>=5 blocks) → settle_abandoned_game (status → 3
- * settled) → P2 receives the claimed card (P1's hand[0]).
+ * FLOW: onboard 2 pre-funded accounts → create+join → play 4 moves (P1,P2,P1,P2)
+ * so the abandoner has played >=2 cards (claimable) and it is P1's turn → P1 STOPS
+ * (never moves) → during the runway BEFORE the 60s deadline the relay warns BOTH
+ * browsers of IMPENDING abandonment (idlePlayer=player1, countdown > 0) → at the
+ * 60s deadline the claim becomes available → P2 (the non-idle player) claims →
+ * claim_abandoned_game (on-chain status → 5 abandoned_claimed) → on-chain dispute
+ * window (>=5 blocks) → settle_abandoned_game (status → 3 settled) → P2 receives
+ * the claimed card (P1's hand[0]).
  *
  * Fully asserts reality — no masks / relaxed asserts: deterministic keys, the
  * REAL 60s inactivity threshold, the REAL on-chain claim/dispute/settle path,
@@ -143,17 +145,26 @@ test.describe.serial('present-but-idle abandonment', () => {
     // The contract claims the opponent's hand[0]; P1's hand is STARTER, so card 1.
     const claimedCard = STARTER_CARDS[0];
 
-    // ── P1 STOPS. The relay must warn BOTH browsers after >=60s of inactivity ─
-    // (no move is driven for p1d — we wait out the REAL 60s inactivity window.
-    // This is a ws-relay signal, independent of on-chain inclusion.)
+    // ── P1 STOPS. The relay warns BOTH browsers of IMPENDING abandonment during
+    //    the runway BEFORE the 60s deadline (warn lead, docs/plan/ABANDONED_GAMES.md):
+    //    idlePlayer=player1, with a live countdown still > 0 (not yet claimable).
+    //    The idle player (P1) gets this too — it is their forfeit countdown. No
+    //    move is driven for p1d; this is a ws-relay signal, independent of
+    //    on-chain inclusion. ──
     const [w1, w2] = await Promise.all([
       p1d.waitAbandonmentWarning('player1'),
       p2d.waitAbandonmentWarning('player1'),
     ]);
     for (const [d, w] of [[p1d, w1], [p2d, w2]] as const) {
       expect(w.abandonment.warning!.idlePlayer, `${d.name} warning idlePlayer`).toBe('player1');
-      expect(w.abandonment.warning!.secondsIdle, `${d.name} warning secondsIdle >= 60`).toBeGreaterThanOrEqual(60);
+      expect(w.abandonment.warning!.secondsIdle, `${d.name} warned during the runway`).toBeGreaterThanOrEqual(30);
+      expect(w.abandonment.warning!.secondsUntilClaimable, `${d.name} impending: countdown still running`).toBeGreaterThan(0);
     }
+
+    // ── The deadline passes (>=60s idle) → the claim becomes AVAILABLE to P2
+    //    (the non-idle player), mirroring the enabled "Claim abandoned game"
+    //    button. P1 keeps idling, so it stays claimable. ──
+    await p2d.waitClaimAvailable();
 
     // ── The claim is an ON-CHAIN action: wait for create_game + join_game to be
     //    MINED (the ws moves above ran ahead of on-chain inclusion). onChainGameId

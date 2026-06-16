@@ -18,7 +18,9 @@ interface AbandonmentBannerProps {
 /**
  * Warning banner for the present-but-idle abandonment flow
  * (docs/plan/ABANDONED_GAMES.md "Message contract"):
- *  - If I AM the idle player: "move now or your opponent can claim the game".
+ *  - If I AM the idle player: a live countdown to the abandonment deadline
+ *    ("Ns until the game is flagged abandoned and you forfeit a card"), then a
+ *    "flagged as abandoned — move immediately" message once it is claimable.
  *  - If I am NOT the idle player: "Opponent isn't moving" + a live countdown
  *    and, once claimable, a "Claim abandoned game" button → onClaimAbandoned.
  *  - During the on-chain dispute window the claimant sees the dispute countdown
@@ -88,14 +90,28 @@ export function AbandonmentBanner({
     >
       {iAmIdle ? (
         <span data-testid="abandonment-warning-self">
-          You haven't moved — move now or your opponent can claim the game
+          {claimable ? (
+            <>Game flagged as <strong>abandoned</strong> — your opponent can claim now. Move immediately or you forfeit a card.</>
+          ) : (
+            <>
+              You haven't moved —{' '}
+              <strong data-testid="abandonment-countdown-self">{secondsLeft}s</strong>
+              {' '}until the game is flagged abandoned and you forfeit a card. Move now!
+            </>
+          )}
         </span>
       ) : (
         <>
           <span data-testid="abandonment-warning-opponent">
-            Opponent isn't moving
-            {!claimable && secondsLeft !== null && (
-              <> — claimable in <strong data-testid="abandonment-countdown">{secondsLeft}s</strong></>
+            {claimable ? (
+              <>Opponent abandoned the game</>
+            ) : (
+              <>
+                Opponent isn't moving
+                {secondsLeft !== null && (
+                  <> — claimable in <strong data-testid="abandonment-countdown">{secondsLeft}s</strong></>
+                )}
+              </>
             )}
           </span>
           <button

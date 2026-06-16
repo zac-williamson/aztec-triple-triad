@@ -1809,6 +1809,8 @@ describe('Session staleness (item G)', () => {
 describe('Present-but-idle abandonment warning', () => {
   // A server tuned for fast detection: 150ms no-move threshold, checked every
   // 25ms. Lets these tests exercise the real interval without sleeping 60s.
+  // warnLead=0 → warn AT the deadline (these tests assert detection, not the
+  // impending-warning runway, which has its own test below).
   const MOVE_INACTIVITY = 150;
 
   function makeFastServer(): Promise<{ srv: CardGameServer; p: number }> {
@@ -1817,6 +1819,7 @@ describe('Present-but-idle abandonment warning', () => {
       port: p,
       sessionHandshakeMs: 50,
       moveInactivityMs: MOVE_INACTIVITY,
+      abandonmentWarnLeadMs: 0,
       abandonmentCheckIntervalMs: 25,
     });
     return new Promise((resolve) => {
@@ -1874,6 +1877,34 @@ describe('Present-but-idle abandonment warning', () => {
         expect(typeof w.secondsUntilClaimable).toBe('number');
       }
 
+      a.ws.close();
+      b.ws.close();
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('warns of IMPENDING abandonment before the deadline, with a countdown (not a constant)', async () => {
+    // Deadline 6s, warn 5s before it → the first warning fires at ~1s of idle
+    // (well before the 6s deadline) carrying a countdown to the deadline, so the
+    // about-to-forfeit player sees their time running out. The pre-change code
+    // only warned AT the deadline and sent a constant secondsUntilClaimable.
+    const p = 4300 + Math.floor(Math.random() * 600);
+    const srv = createServer({
+      port: p, sessionHandshakeMs: 50,
+      moveInactivityMs: 6000, abandonmentWarnLeadMs: 5000, abandonmentCheckIntervalMs: 50,
+    });
+    await new Promise<void>((r) => srv.httpServer.listen(p, () => r()));
+    try {
+      const { a, b, ca, gameId } = await startGame(p);
+      const w = await ca.wait((m) => m.type === 'GAME_ABANDONMENT_WARNING') as any;
+      expect(w.gameId).toBe(gameId);
+      expect(w.idlePlayer).toBe('player1');
+      // Impending: still time on the clock (not yet claimable).
+      expect(w.secondsUntilClaimable).toBeGreaterThan(0);
+      // A real countdown to the 6s deadline — strictly less than the full window
+      // (the pre-change code sent a constant 6 here).
+      expect(w.secondsUntilClaimable).toBeLessThan(6);
       a.ws.close();
       b.ws.close();
     } finally {

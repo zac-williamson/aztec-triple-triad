@@ -22,6 +22,16 @@ const LOCK_TTL_MS = 5000; // 5-second deadlock guard
  */
 export const MOVE_INACTIVITY_MS = 60 * 1000; // 60 seconds
 
+/**
+ * How long BEFORE the inactivity deadline to start warning both players about
+ * IMPENDING abandonment. The warning fires once the current player has been idle
+ * for >= (MOVE_INACTIVITY_MS - ABANDONMENT_WARN_LEAD_MS) and carries a live
+ * `secondsUntilClaimable` countdown to the deadline; at the deadline (countdown
+ * 0) the game becomes claimable. This gives the idle player a visible runway to
+ * move before forfeiting (docs/plan/ABANDONED_GAMES.md "impending abandonment").
+ */
+export const ABANDONMENT_WARN_LEAD_MS = 30 * 1000; // warn during the final 30s
+
 /** A game whose player-whose-turn-it-is has not moved for >= the threshold. */
 export interface IdleGame {
   gameId: string;

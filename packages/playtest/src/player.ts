@@ -670,6 +670,21 @@ export class PlayerDriver {
   }
 
   /**
+   * Wait until the on-chain claim is actually AVAILABLE to this (non-idle) tab —
+   * the impending-abandonment countdown has reached the deadline
+   * (secondsUntilClaimable <= 0, ~60s idle). Distinct from waitAbandonmentWarning,
+   * which fires earlier while abandonment is only IMPENDING (the runway during
+   * which the idle player can still move). Mirrors the claim button's enabled state.
+   */
+  async waitClaimAvailable(): Promise<PhaseSnapshot> {
+    return this.waitPhase(
+      'abandoned-claim available (deadline reached)',
+      p => p.abandonment?.claimAvailable === true,
+      TIMEOUTS.abandonWarn,
+    );
+  }
+
+  /**
    * Trigger the abandoned-game claim (claim_abandoned_game → on-chain dispute
    * window → settle_abandoned_game) — the testkit equivalent of clicking
    * "Claim abandoned game". Fire-and-forget; observe progress via

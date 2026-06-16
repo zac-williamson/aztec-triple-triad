@@ -1,7 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import http from 'http';
 import { v4 as uuidv4 } from 'uuid';
-import { GameManager, MOVE_INACTIVITY_MS } from './GameManager.js';
+import { GameManager, MOVE_INACTIVITY_MS, ABANDONMENT_WARN_LEAD_MS } from './GameManager.js';
 import type { ClientMessage, ServerMessage } from './types.js';
 import type { GameState } from '@axolotl-arena/game-logic';
 import { SESSION_TTL_MS } from './store/GameStore.js';
@@ -62,10 +62,16 @@ export interface ServerOptions {
   /** Period of the present-but-idle abandonment detector. Default: 5 seconds. */
   abandonmentCheckIntervalMs?: number;
   /**
-   * No-move threshold (ms) before a game's current player is reported idle and
-   * both players are warned. Default: 60 seconds (MOVE_INACTIVITY_MS).
+   * No-move threshold (ms) — the abandonment DEADLINE. Once the current player
+   * has been idle this long the game is claimable. Default: 60s (MOVE_INACTIVITY_MS).
    */
   moveInactivityMs?: number;
+  /**
+   * How long BEFORE the deadline to start warning both players of impending
+   * abandonment (the warning carries a countdown to the deadline). Default: 30s
+   * (ABANDONMENT_WARN_LEAD_MS).
+   */
+  abandonmentWarnLeadMs?: number;
 }
 
 export interface CardGameServer {
@@ -84,6 +90,11 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
   const cleanupIntervalMs = options.cleanupIntervalMs ?? CLEANUP_INTERVAL_MS;
   const abandonmentCheckIntervalMs = options.abandonmentCheckIntervalMs ?? ABANDONMENT_CHECK_INTERVAL_MS;
   const moveInactivityMs = options.moveInactivityMs ?? MOVE_INACTIVITY_MS;
+  const warnLeadMs = options.abandonmentWarnLeadMs ?? ABANDONMENT_WARN_LEAD_MS;
+  // Start warning this many ms of idleness before the deadline (impending
+  // abandonment). Clamped to >= 0 so a lead longer than the deadline just warns
+  // from the first detection.
+  const warnAfterMs = Math.max(0, moveInactivityMs - warnLeadMs);
   const gameManager = new GameManager(store);
 
   // playerId → WebSocket (in-memory, rebuilt on reconnect)
@@ -871,7 +882,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
    * warns from the start.
    */
   async function checkAbandonment(): Promise<void> {
-    const idleGames = await gameManager.findIdleGames(moveInactivityMs);
+    const idleGames = await gameManager.findIdleGames(warnAfterMs);
     const idleIds = new Set(idleGames.map(g => g.gameId));
 
     // Prune trackers for games that are no longer idle (moved, ended, removed).
@@ -879,7 +890,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       if (!idleIds.has(gameId)) lastIdleWarning.delete(gameId);
     }
 
-    const secondsUntilClaimable = Math.ceil(moveInactivityMs / 1000);
+    const deadlineSeconds = Math.ceil(moveInactivityMs / 1000);
     for (const game of idleGames) {
       const prev = lastIdleWarning.get(game.gameId);
       // Warn on first detection, then only after the refresh interval elapses.
@@ -887,6 +898,9 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         continue;
       }
       lastIdleWarning.set(game.gameId, game.secondsIdle);
+      // Live countdown to the deadline: > 0 while abandonment is impending, 0
+      // once the game is claimable. Both UIs tick it locally between re-sends.
+      const secondsUntilClaimable = Math.max(0, deadlineSeconds - game.secondsIdle);
       const warning: ServerMessage = {
         type: 'GAME_ABANDONMENT_WARNING',
         gameId: game.gameId,

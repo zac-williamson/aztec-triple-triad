@@ -1,7 +1,8 @@
 /**
  * AbandonmentBanner — the present-but-idle abandonment UX
  * (docs/plan/ABANDONED_GAMES.md "Message contract"):
- *  - idle player sees "move now or forfeit"
+ *  - idle player sees a live countdown to the deadline + a forfeit warning,
+ *    then "flagged as abandoned — move immediately" once claimable
  *  - non-idle player sees "Opponent isn't moving" + live countdown + a
  *    "Claim abandoned game" button that fires only once claimable
  *  - during the on-chain dispute window, the claimant sees the dispute banner.
@@ -31,17 +32,37 @@ describe('AbandonmentBanner', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('shows the "move now or forfeit" message when I AM the idle player', () => {
+  it('shows a live countdown + forfeit warning when I AM the idle player (impending)', () => {
     render(
       <AbandonmentBanner
-        warning={warn({ idlePlayer: 'player1' })} myPlayer="player1"
+        warning={warn({ idlePlayer: 'player1', secondsUntilClaimable: 5 })} myPlayer="player1"
         isClaimingAbandoned={false} abandonedDisputeCountdown={null}
         onClaimAbandoned={noop}
       />,
     );
     expect(screen.getByTestId('abandonment-warning-self')).toBeTruthy();
-    expect(screen.getByText(/move now or your opponent can claim/i)).toBeTruthy();
+    // The idle player sees how long until they forfeit (a live countdown).
+    expect(screen.getByTestId('abandonment-countdown-self').textContent).toBe('5s');
+    expect(screen.getByText(/until the game is flagged abandoned/i)).toBeTruthy();
+    expect(screen.getByText(/forfeit a card/i)).toBeTruthy();
     // The idle player gets NO claim button.
+    expect(screen.queryByTestId('claim-abandoned-game')).toBeNull();
+  });
+
+  it('tells the idle player the game is flagged abandoned once claimable', () => {
+    render(
+      <AbandonmentBanner
+        warning={warn({ idlePlayer: 'player1', secondsUntilClaimable: 0 })} myPlayer="player1"
+        isClaimingAbandoned={false} abandonedDisputeCountdown={null}
+        onClaimAbandoned={noop}
+      />,
+    );
+    // textContent (the <strong> splits the text nodes): full message check.
+    const selfBanner = screen.getByTestId('abandonment-warning-self');
+    expect(selfBanner.textContent).toMatch(/flagged as abandoned/i);
+    expect(selfBanner.textContent).toMatch(/move immediately or you forfeit/i);
+    // No countdown once claimable, and still no claim button for the idle player.
+    expect(screen.queryByTestId('abandonment-countdown-self')).toBeNull();
     expect(screen.queryByTestId('claim-abandoned-game')).toBeNull();
   });
 

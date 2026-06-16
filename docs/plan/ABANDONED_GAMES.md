@@ -45,10 +45,16 @@ were played (if none played, both recover their original cards). Permissionless.
 
 ## Message contract (backend ↔ frontend — both build to this)
 - Server→Client (BUFFERED): `GAME_ABANDONMENT_WARNING { gameId, idlePlayer: 'player1'|'player2',
-  secondsIdle, secondsUntilClaimable }` — broadcast to both players when the player-whose-turn-it-is has not
-  moved for >=60s. Re-sent/updated as the window progresses; cleared if a move arrives.
-- Frontend reaction: if I am NOT `idlePlayer` → show "opponent isn't moving" + countdown + enable
-  "Claim abandoned game" (→ `handleAbandonedGame()`); if I AM `idlePlayer` → show "move now or forfeit".
+  secondsIdle, secondsUntilClaimable, idlePlayerCardIds }` — broadcast to BOTH players during the runway
+  BEFORE the deadline (IMPENDING abandonment): it fires once the current player has been idle for
+  `>= (MOVE_INACTIVITY_MS − ABANDONMENT_WARN_LEAD_MS)` (default warn at 30s) and carries
+  `secondsUntilClaimable`, a live countdown to the 60s deadline. At the deadline `secondsUntilClaimable`
+  reaches 0 and the game is claimable. Re-sent as the countdown advances; cleared if a move arrives.
+  `idlePlayerCardIds` rides along so the claimant knows the abandoner's hand to claim a card.
+- Frontend reaction (`AbandonmentBanner`): if I am NOT `idlePlayer` → "Opponent isn't moving — claimable in
+  Ns", then an enabled "Claim abandoned game" button once the countdown hits 0 (→ `handleAbandonedGame()`); if
+  I AM `idlePlayer` → a live forfeit countdown "Ns until the game is flagged abandoned and you forfeit a card",
+  then "flagged as abandoned — move immediately" once claimable.
 
 ## Decisions (made autonomously — no blocking questions)
 - **Reuse** the existing contract claim/settle + the frontend `handleAbandonedGame()`; Phase 1 is detection +
