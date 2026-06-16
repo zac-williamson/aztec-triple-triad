@@ -9,7 +9,8 @@
     "start": "node dist/server.js",
     "dev": "npx tsx src/server.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "smoke:abandonment": "npm run build && node scripts/impending-abandonment-smoke.mjs"
   },
   "dependencies": {
     "@axolotl-arena/game-logic": "*",
