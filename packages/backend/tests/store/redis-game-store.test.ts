@@ -21,6 +21,7 @@ function makeRoom(overrides: Partial<StoredGameRoom> = {}): StoredGameRoom {
     player2CardIds: [],
     createdAt: Date.now(),
     lastActivity: Date.now(),
+    lastMoveTimestamp: Date.now(),
     expectedMoveNumber: 0,
     onChainStatus: { player1Tx: 'idle', player2Tx: 'idle', canSettle: false },
     ...overrides,

@@ -479,6 +479,121 @@ describe('useWebSocket', () => {
     });
   });
 
+  // --- GAME_ABANDONMENT_WARNING (present-but-idle) ---
+
+  describe('abandonment warning', () => {
+    async function setupConnectedHook() {
+      const hook = renderHook(() => useWebSocket('ws://test'));
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      act(() => { ws.simulateSessionEstablished(); });
+      return { result: hook.result, ws };
+    }
+
+    it('starts with no abandonmentWarning', async () => {
+      const { result } = await setupConnectedHook();
+      expect(result.current.abandonmentWarning).toBeNull();
+    });
+
+    it('GAME_ABANDONMENT_WARNING sets abandonmentWarning (idlePlayer, secondsIdle, secondsUntilClaimable)', async () => {
+      const { result, ws } = await setupConnectedHook();
+      act(() => {
+        ws.simulateMessage({
+          type: 'GAME_ABANDONMENT_WARNING', gameId: 'g1',
+          idlePlayer: 'player1', secondsIdle: 60, secondsUntilClaimable: 5,
+        });
+      });
+      expect(result.current.abandonmentWarning).toEqual({
+        idlePlayer: 'player1', secondsIdle: 60, secondsUntilClaimable: 5,
+      });
+    });
+
+    it('updates the warning on a re-sent message (countdown progresses)', async () => {
+      const { result, ws } = await setupConnectedHook();
+      act(() => {
+        ws.simulateMessage({
+          type: 'GAME_ABANDONMENT_WARNING', gameId: 'g1',
+          idlePlayer: 'player2', secondsIdle: 60, secondsUntilClaimable: 5,
+        });
+      });
+      act(() => {
+        ws.simulateMessage({
+          type: 'GAME_ABANDONMENT_WARNING', gameId: 'g1',
+          idlePlayer: 'player2', secondsIdle: 63, secondsUntilClaimable: 2,
+        });
+      });
+      expect(result.current.abandonmentWarning).toEqual({
+        idlePlayer: 'player2', secondsIdle: 63, secondsUntilClaimable: 2,
+      });
+    });
+
+    it('clears the warning when a GAME_STATE (board update / move) arrives', async () => {
+      const { result, ws } = await setupConnectedHook();
+      act(() => {
+        ws.simulateMessage({
+          type: 'GAME_ABANDONMENT_WARNING', gameId: 'g1',
+          idlePlayer: 'player1', secondsIdle: 60, secondsUntilClaimable: 5,
+        });
+      });
+      expect(result.current.abandonmentWarning).not.toBeNull();
+
+      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player2', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
+      act(() => { ws.simulateMessage({ type: 'GAME_STATE', gameState: state, captures: [] }); });
+      expect(result.current.abandonmentWarning).toBeNull();
+    });
+
+    it('clears the warning when the opponent proves a move (MOVE_PROVEN)', async () => {
+      const { result, ws } = await setupConnectedHook();
+      act(() => {
+        ws.simulateMessage({
+          type: 'GAME_ABANDONMENT_WARNING', gameId: 'g1',
+          idlePlayer: 'player1', secondsIdle: 60, secondsUntilClaimable: 5,
+        });
+      });
+      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player2', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
+      act(() => {
+        ws.simulateMessage({
+          type: 'MOVE_PROVEN', gameState: state, captures: [],
+          moveProof: { proof: 'x' }, handIndex: 0, row: 0, col: 0,
+        });
+      });
+      expect(result.current.abandonmentWarning).toBeNull();
+    });
+
+    it('clears the warning when the game ends (GAME_OVER)', async () => {
+      const { result, ws } = await setupConnectedHook();
+      act(() => { ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 }); });
+      act(() => {
+        ws.simulateMessage({
+          type: 'GAME_ABANDONMENT_WARNING', gameId: 'g1',
+          idlePlayer: 'player2', secondsIdle: 60, secondsUntilClaimable: 0,
+        });
+      });
+      expect(result.current.abandonmentWarning).not.toBeNull();
+
+      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 6, player2Score: 4, status: 'finished', winner: 'player1' };
+      act(() => {
+        ws.simulateMessage({
+          type: 'GAME_OVER', gameState: state, winner: 'player1',
+          player1CardIds: [1, 2, 3, 4, 5], player2CardIds: [6, 7, 8, 9, 10],
+        });
+      });
+      expect(result.current.abandonmentWarning).toBeNull();
+    });
+
+    it('leaveGame clears the warning', async () => {
+      const { result, ws } = await setupConnectedHook();
+      act(() => {
+        ws.simulateMessage({
+          type: 'GAME_ABANDONMENT_WARNING', gameId: 'g1',
+          idlePlayer: 'player1', secondsIdle: 60, secondsUntilClaimable: 5,
+        });
+      });
+      act(() => { result.current.leaveGame(); });
+      expect(result.current.abandonmentWarning).toBeNull();
+    });
+  });
+
   describe('notifyAbandonedGameSettled', () => {
     it('sends ABANDONED_GAME_SETTLED with the gameId (QA-F3)', async () => {
       const { result } = renderHook(() => useWebSocket('ws://test'));

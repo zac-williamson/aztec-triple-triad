@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import type { GameState, Player, Card, Board } from '../types';
+import type { AbandonmentWarning } from '../hooks/useWebSocket';
 import { SwampScene } from './SwampScene';
 import { GameHUD } from './GameHUD';
 import type { ChainViewData } from './ChainViewPanel';
@@ -32,6 +33,14 @@ interface GameScreenProps {
   settleProgress?: { myHand: boolean; oppHand: boolean; moves: number };
   opponentSettled?: boolean;
   takenCardId?: number | null;
+  /** Present-but-idle abandonment warning (null when none active). */
+  abandonmentWarning?: AbandonmentWarning | null;
+  /** True while the abandoned claim+settle flow runs. */
+  isClaimingAbandoned?: boolean;
+  /** Seconds left in the on-chain dispute window during a claim (else null). */
+  abandonedDisputeCountdown?: number | null;
+  /** Trigger the abandoned-game claim flow (non-idle player's button). */
+  onClaimAbandoned?: () => void;
   /** Data for the "you see / chain sees" privacy panel (GameHUD toggle). */
   chainView?: ChainViewData;
   /** Practice mode (local, no chain): suppress the HUD's settlement/result UI. */
@@ -59,6 +68,10 @@ export function GameScreen3D({
   settleProgress,
   opponentSettled,
   takenCardId,
+  abandonmentWarning,
+  isClaimingAbandoned,
+  abandonedDisputeCountdown,
+  onClaimAbandoned,
   chainView,
   practiceMode,
   tutorialHighlightCells,
@@ -280,6 +293,10 @@ export function GameScreen3D({
         settleTxStatus={settleTxStatus}
         opponentSettled={opponentSettled}
         takenCardId={takenCardId}
+        abandonmentWarning={abandonmentWarning}
+        isClaimingAbandoned={isClaimingAbandoned}
+        abandonedDisputeCountdown={abandonedDisputeCountdown}
+        onClaimAbandoned={onClaimAbandoned}
         chainView={chainView}
         practiceMode={practiceMode}
       />

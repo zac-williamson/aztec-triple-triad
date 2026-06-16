@@ -68,6 +68,10 @@ export interface UseGameSettlementReturn {
 
   // Actions
   handleSettle: (selectedCardId: number) => Promise<void>;
+  /** Claim + settle a present-but-idle (or disconnected) opponent's abandoned
+   *  game. Wired to the "Claim abandoned game" button and the testkit; also
+   *  auto-fired by the opponent-disconnected effect. Idempotent. */
+  handleAbandonedGame: () => Promise<void>;
 
   // Stable functions for the facade
   cancelAbandonedUi: () => void;
@@ -734,6 +738,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     isClaimingAbandoned,
     abandonedDisputeCountdown,
     handleSettle,
+    handleAbandonedGame,
     cancelAbandonedUi,
     resetForMenu,
   };

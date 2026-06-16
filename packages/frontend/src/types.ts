@@ -112,6 +112,11 @@ export type ServerMessage =
   | { type: 'GAME_LIST'; games: GameListEntry[] }
   | { type: 'GAME_INFO'; game: GameListEntry | null }
   | { type: 'OPPONENT_DISCONNECTED'; gameId: string }
+  // Present-but-idle abandonment warning — broadcast to BOTH players when the
+  // player whose turn it is has not moved for >=60s. Re-sent/updated as the
+  // window progresses; cleared client-side when a move/GAME_STATE arrives or
+  // the game ends (docs/plan/ABANDONED_GAMES.md "Message contract").
+  | { type: 'GAME_ABANDONMENT_WARNING'; gameId: string; idlePlayer: Player; secondsIdle: number; secondsUntilClaimable: number }
   | { type: 'ERROR'; message: string }
   | { type: 'HAND_PROOF'; gameId: string; handProof: HandProofData; fromPlayer: 1 | 2 }
   | { type: 'MOVE_PROVEN'; gameId: string; gameState: GameState; captures: { row: number; col: number }[]; moveProof: MoveProofData; handIndex: number; row: number; col: number }

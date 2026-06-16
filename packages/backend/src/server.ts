@@ -1,7 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import http from 'http';
 import { v4 as uuidv4 } from 'uuid';
-import { GameManager } from './GameManager.js';
+import { GameManager, MOVE_INACTIVITY_MS } from './GameManager.js';
 import type { ClientMessage, ServerMessage } from './types.js';
 import type { GameState } from '@axolotl-arena/game-logic';
 import { SESSION_TTL_MS } from './store/GameStore.js';
@@ -14,6 +14,13 @@ const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
 const DISCONNECT_TIMEOUT_MS = 60 * 1000; // 60 seconds reconnection window
 const SESSION_HANDSHAKE_MS = 2000; // 2 seconds to send RESUME before new session
+// How often the present-but-idle abandonment detector runs. Short relative to
+// the 60s threshold so the first warning fires promptly at ~60s rather than
+// being bound to the 5-minute stale-cleanup loop.
+const ABANDONMENT_CHECK_INTERVAL_MS = 5 * 1000; // 5 seconds
+// Minimum gap between successive warning broadcasts for the same idle spell, so
+// the countdown refreshes without spamming a message every tick.
+const ABANDONMENT_WARNING_REFRESH_MS = 10 * 1000; // 10 seconds
 // Defense in depth behind the store-level SESSION_TTL_MS: even if a session
 // key survives (TTL semantics change, store bug), RESUME refuses anything
 // not seen for this long and issues a fresh session instead.
@@ -39,6 +46,9 @@ const BUFFERED_MESSAGE_TYPES = new Set([
   'OPPONENT_AZTEC_INFO',
   'NOTE_DATA',
   'OPPONENT_SETTLING',
+  // So an offline (disconnected-but-recoverable) player still learns on
+  // reconnect that they were flagged idle / may forfeit.
+  'GAME_ABANDONMENT_WARNING',
 ]);
 
 export interface ServerOptions {
@@ -49,6 +59,13 @@ export interface ServerOptions {
   sessionHandshakeMs?: number;
   /** Period of the stale games/queue/sessions sweep. Default: 5 minutes. */
   cleanupIntervalMs?: number;
+  /** Period of the present-but-idle abandonment detector. Default: 5 seconds. */
+  abandonmentCheckIntervalMs?: number;
+  /**
+   * No-move threshold (ms) before a game's current player is reported idle and
+   * both players are warned. Default: 60 seconds (MOVE_INACTIVITY_MS).
+   */
+  moveInactivityMs?: number;
 }
 
 export interface CardGameServer {
@@ -65,12 +82,19 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
   const store = options.store ?? new MemoryGameStore();
   const sessionHandshakeMs = options.sessionHandshakeMs ?? SESSION_HANDSHAKE_MS;
   const cleanupIntervalMs = options.cleanupIntervalMs ?? CLEANUP_INTERVAL_MS;
+  const abandonmentCheckIntervalMs = options.abandonmentCheckIntervalMs ?? ABANDONMENT_CHECK_INTERVAL_MS;
+  const moveInactivityMs = options.moveInactivityMs ?? MOVE_INACTIVITY_MS;
   const gameManager = new GameManager(store);
 
   // playerId → WebSocket (in-memory, rebuilt on reconnect)
   const clients = new Map<string, WebSocket>();
   // playerId → disconnect timeout (for reconnection window)
   const disconnectTimeouts = new Map<string, NodeJS.Timeout>();
+  // gameId → secondsIdle of the last GAME_ABANDONMENT_WARNING broadcast for the
+  // current idle spell. Used to throttle re-warnings and to detect when an idle
+  // spell has ended (entry pruned once the game is no longer idle), so a later
+  // idle spell warns fresh from the start.
+  const lastIdleWarning = new Map<string, number>();
 
   // Allowed origins for CORS and WebSocket connections.
   // Set ALLOWED_ORIGINS env var to a comma-separated list in production
@@ -837,6 +861,48 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     }
   }
 
+  /**
+   * Present-but-idle abandonment detector. Finds every in-progress game whose
+   * current player has not moved for >= moveInactivityMs and warns BOTH players
+   * with GAME_ABANDONMENT_WARNING. The warning is refreshed (re-sent with a
+   * larger secondsIdle) at most once per ABANDONMENT_WARNING_REFRESH_MS so the
+   * countdown advances without spamming. The per-game tracker is pruned once a
+   * game is no longer idle (a move arrived or it ended) so the next idle spell
+   * warns from the start.
+   */
+  async function checkAbandonment(): Promise<void> {
+    const idleGames = await gameManager.findIdleGames(moveInactivityMs);
+    const idleIds = new Set(idleGames.map(g => g.gameId));
+
+    // Prune trackers for games that are no longer idle (moved, ended, removed).
+    for (const gameId of lastIdleWarning.keys()) {
+      if (!idleIds.has(gameId)) lastIdleWarning.delete(gameId);
+    }
+
+    const secondsUntilClaimable = Math.ceil(moveInactivityMs / 1000);
+    for (const game of idleGames) {
+      const prev = lastIdleWarning.get(game.gameId);
+      // Warn on first detection, then only after the refresh interval elapses.
+      if (prev !== undefined && game.secondsIdle - prev < ABANDONMENT_WARNING_REFRESH_MS / 1000) {
+        continue;
+      }
+      lastIdleWarning.set(game.gameId, game.secondsIdle);
+      const warning: ServerMessage = {
+        type: 'GAME_ABANDONMENT_WARNING',
+        gameId: game.gameId,
+        idlePlayer: game.idlePlayer,
+        secondsIdle: game.secondsIdle,
+        secondsUntilClaimable,
+      };
+      await sendToPlayer(game.player1Id, warning);
+      await sendToPlayer(game.player2Id, warning);
+    }
+  }
+
+  const abandonmentInterval = setInterval(() => {
+    void checkAbandonment();
+  }, abandonmentCheckIntervalMs);
+
   const cleanupInterval = setInterval(async () => {
     await gameManager.cleanupStaleGames();
     await gameManager.cleanupStaleQueue();
@@ -848,6 +914,8 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
 
   async function close(): Promise<void> {
     clearInterval(cleanupInterval);
+    clearInterval(abandonmentInterval);
+    lastIdleWarning.clear();
     for (const timeout of disconnectTimeouts.values()) {
       clearTimeout(timeout);
     }

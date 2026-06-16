@@ -78,6 +78,12 @@ export type ServerMessage =
   | { type: 'GAME_LIST'; games: GameListEntry[] }
   | { type: 'GAME_INFO'; game: GameListEntry | null }
   | { type: 'OPPONENT_DISCONNECTED'; gameId: string }
+  // Present-but-idle abandonment warning. Broadcast to BOTH players once the
+  // player whose turn it is (`idlePlayer`) has not moved for >= 60s while the
+  // game is still 'playing'. Re-sent as the idle window grows; cleared (no
+  // further sends) once a move arrives or the game ends. Buffered so an
+  // offline player receives the latest warning on reconnect.
+  | { type: 'GAME_ABANDONMENT_WARNING'; gameId: string; idlePlayer: 'player1' | 'player2'; secondsIdle: number; secondsUntilClaimable: number }
   | { type: 'ERROR'; message: string }
   // Proof-based messages
   | { type: 'HAND_PROOF'; gameId: string; handProof: HandProofData; fromPlayer: 1 | 2 }
@@ -118,6 +124,8 @@ export interface GameRoom {
   player2CardIds: number[];
   createdAt: number;
   lastActivity: number;
+  /** Timestamp of the last PLACE_CARD move; drives idle-abandonment detection. */
+  lastMoveTimestamp: number;
   expectedMoveNumber: number;
   processing: boolean;
   onChainStatus: OnChainGameStatus;

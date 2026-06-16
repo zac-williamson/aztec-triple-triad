@@ -1,6 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { ClientMessage, ServerMessage, GameState, Player, GameListEntry, HandProofData, MoveProofData, PlaintextNoteData } from '../types';
 
+/**
+ * Present-but-idle abandonment warning, as surfaced to the UI. Mirrors the
+ * server's GAME_ABANDONMENT_WARNING payload (minus the redundant gameId/type).
+ * `idlePlayer` is the player whose turn it is and who has not moved; the OTHER
+ * player may claim the game once `secondsUntilClaimable` reaches 0.
+ */
+export interface AbandonmentWarning {
+  idlePlayer: Player;
+  secondsIdle: number;
+  secondsUntilClaimable: number;
+}
+
 const DEFAULT_WS_URL = 'ws://localhost:3001';
 const SESSION_TOKEN_KEY = 'aztec_tt_ws_session_token';
 const MAX_RECONNECT_DELAY_MS = 30_000;
@@ -16,6 +28,8 @@ export interface UseWebSocketReturn {
   error: string | null;
   gameOver: { winner: Player | 'draw' } | null;
   opponentDisconnected: boolean;
+  /** Live present-but-idle abandonment warning, or null when none is active. */
+  abandonmentWarning: AbandonmentWarning | null;
   opponentHandProof: HandProofData | null;
   lastMoveProof: { moveProof: MoveProofData; handIndex: number; row: number; col: number } | null;
   opponentAztecAddress: string | null;
@@ -74,6 +88,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const [error, setError] = useState<string | null>(null);
   const [gameOver, setGameOver] = useState<{ winner: Player | 'draw' } | null>(null);
   const [opponentDisconnected, setOpponentDisconnected] = useState(false);
+  const [abandonmentWarning, setAbandonmentWarning] = useState<AbandonmentWarning | null>(null);
   const [opponentHandProof, setOpponentHandProof] = useState<HandProofData | null>(null);
   const [lastMoveProof, setLastMoveProof] = useState<{ moveProof: MoveProofData; handIndex: number; row: number; col: number } | null>(null);
   const [opponentAztecAddress, setOpponentAztecAddress] = useState<string | null>(null);
@@ -173,10 +188,14 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
         case 'GAME_STATE':
           setGameState(msg.gameState);
           setLastCaptures(msg.captures);
+          // A board update means someone moved — the idle clock resets.
+          setAbandonmentWarning(null);
           break;
         case 'GAME_OVER':
           setGameState(msg.gameState);
           setGameOver({ winner: msg.winner });
+          // Game ended — no further abandonment warning applies.
+          setAbandonmentWarning(null);
           if (playerNumberRef.current) {
             const oppIds = playerNumberRef.current === 1 ? msg.player2CardIds : msg.player1CardIds;
             if (oppIds && oppIds.length > 0) setOpponentCardIds(oppIds);
@@ -188,12 +207,21 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
         case 'OPPONENT_DISCONNECTED':
           setOpponentDisconnected(true);
           break;
+        case 'GAME_ABANDONMENT_WARNING':
+          setAbandonmentWarning({
+            idlePlayer: msg.idlePlayer,
+            secondsIdle: msg.secondsIdle,
+            secondsUntilClaimable: msg.secondsUntilClaimable,
+          });
+          break;
         case 'HAND_PROOF':
           setOpponentHandProof(msg.handProof);
           break;
         case 'MOVE_PROVEN':
           setGameState(msg.gameState);
           setLastCaptures(msg.captures);
+          // The opponent proved a move — the idle clock resets.
+          setAbandonmentWarning(null);
           setLastMoveProof({
             moveProof: msg.moveProof,
             handIndex: msg.handIndex,
@@ -284,6 +312,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     setError(null);
     setGameOver(null);
     setOpponentDisconnected(false);
+    setAbandonmentWarning(null);
     send({ type: 'CREATE_GAME', cardIds });
   }, [send]);
 
@@ -291,6 +320,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     setError(null);
     setGameOver(null);
     setOpponentDisconnected(false);
+    setAbandonmentWarning(null);
     send({ type: 'JOIN_GAME', gameId: id, cardIds });
   }, [send]);
 
@@ -351,6 +381,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     setGameOver(null);
     setOpponentDisconnected(false);
     setMatchmakingStatus('idle');
+    setAbandonmentWarning(null);
     send({ type: 'QUEUE_MATCHMAKING', cardIds });
   }, [send]);
 
@@ -378,6 +409,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     setGameOver(null);
     setError(null);
     setOpponentDisconnected(false);
+    setAbandonmentWarning(null);
     setOpponentHandProof(null);
     setLastMoveProof(null);
     setOpponentAztecAddress(null);
@@ -413,6 +445,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     error,
     gameOver,
     opponentDisconnected,
+    abandonmentWarning,
     opponentHandProof,
     lastMoveProof,
     opponentAztecAddress,

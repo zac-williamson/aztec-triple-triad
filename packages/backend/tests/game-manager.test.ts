@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { GameManager } from '../src/GameManager.js';
+import { GameManager, MOVE_INACTIVITY_MS } from '../src/GameManager.js';
 import { MemoryGameStore } from '../src/store/MemoryGameStore.js';
 
 // Valid card IDs from the card database (Level 1 cards)
@@ -461,6 +461,108 @@ describe('GameManager', () => {
       const cleaned = await manager.cleanupStaleGames();
       expect(cleaned).toBe(0);
       expect(await manager.getGameCount()).toBe(1);
+    });
+  });
+
+  describe('findIdleGames (present-but-idle abandonment detection)', () => {
+    let gameId: string;
+
+    beforeEach(async () => {
+      const room = await manager.createGame('player-1', PLAYER1_CARDS);
+      gameId = room.id;
+      await manager.joinGame(gameId, 'player-2', PLAYER2_CARDS);
+    });
+
+    /** Back-date the room's last-move clock by `ms` so it appears idle. */
+    async function backdateLastMove(id: string, ms: number): Promise<void> {
+      const room = (await manager.getGame(id))!;
+      room.lastMoveTimestamp = Date.now() - ms;
+      await (manager as any).store.setGame(id, room);
+    }
+
+    it('does NOT report a game whose current player just moved', async () => {
+      // Fresh game (joinGame set lastMoveTimestamp = now): no one is idle yet.
+      expect(await manager.findIdleGames()).toEqual([]);
+    });
+
+    it('does NOT report at 59s but DOES report at exactly 60s of no-move', async () => {
+      await backdateLastMove(gameId, MOVE_INACTIVITY_MS - 1000); // 59s
+      expect(await manager.findIdleGames()).toEqual([]);
+
+      await backdateLastMove(gameId, MOVE_INACTIVITY_MS); // exactly 60s
+      const idle = await manager.findIdleGames();
+      expect(idle).toHaveLength(1);
+      expect(idle[0].gameId).toBe(gameId);
+    });
+
+    it('reports the idle game past the threshold', async () => {
+      await backdateLastMove(gameId, MOVE_INACTIVITY_MS + 5000); // 65s
+      const idle = await manager.findIdleGames();
+      expect(idle).toHaveLength(1);
+      expect(idle[0].gameId).toBe(gameId);
+      expect(idle[0].secondsIdle).toBeGreaterThanOrEqual(60);
+      expect(idle[0].player1Id).toBe('player-1');
+      expect(idle[0].player2Id).toBe('player-2');
+    });
+
+    it('idlePlayer is whoever it is to move (player1 at game start)', async () => {
+      // No moves yet → player1's turn → player1 is the idle one.
+      await backdateLastMove(gameId, MOVE_INACTIVITY_MS + 1000);
+      const idle = await manager.findIdleGames();
+      expect(idle[0].idlePlayer).toBe('player1');
+    });
+
+    it('idlePlayer follows the turn: after player1 moves, player2 is the idle one', async () => {
+      await manager.placeCard(gameId, 'player-1', 0, 0, 0, 0); // now player2's turn
+      await backdateLastMove(gameId, MOVE_INACTIVITY_MS + 1000);
+      const idle = await manager.findIdleGames();
+      expect(idle).toHaveLength(1);
+      expect(idle[0].idlePlayer).toBe('player2');
+    });
+
+    it('clears once a move arrives (the idle clock resets)', async () => {
+      await backdateLastMove(gameId, MOVE_INACTIVITY_MS + 1000);
+      expect(await manager.findIdleGames()).toHaveLength(1);
+
+      // player1 (whose turn it is) finally moves → game no longer idle.
+      await manager.placeCard(gameId, 'player-1', 0, 0, 0, 0);
+      expect(await manager.findIdleGames()).toEqual([]);
+    });
+
+    it('does NOT report a waiting game (no second player yet)', async () => {
+      const waiting = await manager.createGame('player-3', [11, 12, 13, 14, 15]);
+      // Even far past the threshold, a not-yet-started game is never "idle".
+      await backdateLastMove(waiting.id, MOVE_INACTIVITY_MS + 10_000);
+      const idle = await manager.findIdleGames();
+      expect(idle.some(g => g.gameId === waiting.id)).toBe(false);
+    });
+
+    it("does NOT report a finished game", async () => {
+      // Play to completion, then back-date — a finished game is never idle.
+      const positions: [number, number][] = [
+        [0, 0], [0, 1], [0, 2],
+        [1, 0], [1, 1], [1, 2],
+        [2, 0], [2, 1], [2, 2],
+      ];
+      for (let i = 0; i < 9; i++) {
+        const player = i % 2 === 0 ? 'player-1' : 'player-2';
+        const [row, col] = positions[i];
+        await manager.placeCard(gameId, player, 0, row, col, i);
+      }
+      const finished = (await manager.getGame(gameId))!;
+      expect(finished.state.status).toBe('finished');
+
+      await backdateLastMove(gameId, MOVE_INACTIVITY_MS + 10_000);
+      expect(await manager.findIdleGames()).toEqual([]);
+    });
+
+    it('honors a custom threshold and a custom now', async () => {
+      const room = (await manager.getGame(gameId))!;
+      const base = room.lastMoveTimestamp;
+      // 30s threshold, evaluated 40s after the last move → idle.
+      expect(await manager.findIdleGames(30_000, base + 40_000)).toHaveLength(1);
+      // Same instant, 60s threshold → not yet idle.
+      expect(await manager.findIdleGames(60_000, base + 40_000)).toEqual([]);
     });
   });
 });

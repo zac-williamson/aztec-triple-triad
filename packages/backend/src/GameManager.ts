@@ -15,6 +15,24 @@ const GAME_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const QUEUE_STALE_MS = 30 * 1000; // 30 seconds without ping
 const LOCK_TTL_MS = 5000; // 5-second deadlock guard
 
+/**
+ * No-move inactivity threshold after which an in-progress game is reported as
+ * idle (present-but-idle abandonment). Matches the contract's ~60s/5-block
+ * dispute window and the 60s disconnect window.
+ */
+export const MOVE_INACTIVITY_MS = 60 * 1000; // 60 seconds
+
+/** A game whose player-whose-turn-it-is has not moved for >= the threshold. */
+export interface IdleGame {
+  gameId: string;
+  /** The player whose turn it is — i.e. the one failing to move. */
+  idlePlayer: Player;
+  player1Id: string;
+  player2Id: string;
+  /** Whole seconds since the last move. */
+  secondsIdle: number;
+}
+
 export class GameManager {
   constructor(private store: GameStore) {}
 
@@ -64,6 +82,7 @@ export class GameManager {
       player2CardIds: [],
       createdAt: Date.now(),
       lastActivity: Date.now(),
+      lastMoveTimestamp: Date.now(),
       expectedMoveNumber: 0,
       onChainStatus: { player1Tx: 'idle', player2Tx: 'idle', canSettle: false },
     };
@@ -97,6 +116,8 @@ export class GameManager {
     const player2Hand = getCardsByIds(cardIds);
     room.state = createGame(player1Hand, player2Hand);
     room.lastActivity = Date.now();
+    // The game is now 'playing': start the first move's inactivity clock.
+    room.lastMoveTimestamp = Date.now();
 
     await this.store.setGame(gameId, room);
     await this.store.setPlayerGame(playerId, gameId);
@@ -142,6 +163,10 @@ export class GameManager {
       const result = placeCard(room.state, player, handIndex, row, col);
       room.state = result.newState;
       room.lastActivity = Date.now();
+      // Reset the per-move inactivity clock; this is what abandonment
+      // detection watches (separate from lastActivity, which other messages
+      // also refresh).
+      room.lastMoveTimestamp = Date.now();
       room.expectedMoveNumber++;
 
       await this.store.setGame(gameId, room);
@@ -265,6 +290,35 @@ export class GameManager {
 
   async cleanupStaleGames(): Promise<number> {
     return this.store.cleanupStaleGames(GAME_TIMEOUT_MS);
+  }
+
+  /**
+   * Return every in-progress game whose current player has not moved for at
+   * least `thresholdMs` (default 60s). Used by the abandonment detector to
+   * warn both players. Only games that are actually `'playing'` and have two
+   * players bound qualify — waiting, finished, and not-yet-joined games never
+   * appear. `idlePlayer` is `state.currentTurn`: the player who owes a move.
+   */
+  async findIdleGames(
+    thresholdMs: number = MOVE_INACTIVITY_MS,
+    now: number = Date.now(),
+  ): Promise<IdleGame[]> {
+    const rooms = await this.store.listGames();
+    const idle: IdleGame[] = [];
+    for (const room of rooms) {
+      if (!room.state || room.state.status !== 'playing') continue;
+      if (room.player2Id === null) continue;
+      const idleMs = now - room.lastMoveTimestamp;
+      if (idleMs < thresholdMs) continue;
+      idle.push({
+        gameId: room.id,
+        idlePlayer: room.state.currentTurn,
+        player1Id: room.player1Id,
+        player2Id: room.player2Id,
+        secondsIdle: Math.floor(idleMs / 1000),
+      });
+    }
+    return idle;
   }
 
   async updateTxStatus(

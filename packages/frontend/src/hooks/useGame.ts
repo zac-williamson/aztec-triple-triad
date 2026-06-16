@@ -51,6 +51,8 @@ export interface UseGameReturn {
   // Abandoned game
   isClaimingAbandoned: boolean;
   abandonedDisputeCountdown: number | null;
+  /** Claim a present-but-idle (or disconnected) opponent's abandoned game. */
+  handleClaimAbandoned: () => void;
   canGoBack: boolean;
 
   // Actions
@@ -284,6 +286,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     takenCardId: settlement.takenCardId,
     isClaimingAbandoned: settlement.isClaimingAbandoned,
     abandonedDisputeCountdown: settlement.abandonedDisputeCountdown,
+    handleClaimAbandoned: settlement.handleAbandonedGame,
     canGoBack,
     handlePlay, handleCardPacks, handleHandSelected,
     handleCancelMatchmaking, handlePackOpened, handlePackOpenComplete,

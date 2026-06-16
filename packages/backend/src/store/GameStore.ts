@@ -21,6 +21,16 @@ export interface StoredGameRoom {
   player2CardIds: number[];
   createdAt: number;
   lastActivity: number;
+  /**
+   * Timestamp of the most recent PLACE_CARD move, used solely for
+   * present-but-idle abandonment detection. Distinct from `lastActivity`,
+   * which any client message (proof relay, tx status, reconnect, etc.)
+   * refreshes — those keep the room alive but do NOT reset the per-move
+   * inactivity window. Set when the game starts (second player joins) and
+   * updated on every move; the detector compares `now - lastMoveTimestamp`
+   * against the 60s threshold while `state.status === 'playing'`.
+   */
+  lastMoveTimestamp: number;
   expectedMoveNumber: number;
   onChainStatus: OnChainGameStatus;
 }

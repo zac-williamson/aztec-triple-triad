@@ -51,6 +51,19 @@ export interface PhaseSnapshot {
     takenCardId: number | null;
     onChainError: string | null;
   };
+  /**
+   * Present-but-idle abandonment flow, for the harness to OBSERVE the warning
+   * and the on-chain claim/dispute window. `warning` is null until the relay
+   * broadcasts GAME_ABANDONMENT_WARNING; `claimAvailable` is true when the
+   * non-idle player may claim now (the warning's countdown has elapsed and the
+   * claim is not already running). Trigger the claim via __triadTest.claimAbandonedGame().
+   */
+  abandonment: {
+    warning: { idlePlayer: PlayerSide; secondsIdle: number; secondsUntilClaimable: number } | null;
+    isClaimingAbandoned: boolean;
+    disputeCountdown: number | null;
+    claimAvailable: boolean;
+  };
   interaction: {
     selectedCardIndex: number | null;
     flying: boolean;
@@ -88,6 +101,13 @@ export interface TriadTestApi {
   getScreenXY(target: ClickTarget): { x: number; y: number };
   /** Direct-dispatch escape hatch ("fast interaction" mode). Click mode is the default. */
   placeCard(handIndex: number, row: number, col: number): void;
+  /**
+   * Trigger the abandoned-game claim flow for a present-but-idle (or
+   * disconnected) opponent — equivalent to clicking "Claim abandoned game".
+   * Idempotent (a second call while claiming is a no-op). Returns immediately;
+   * observe progress via phase().abandonment.{isClaimingAbandoned,disputeCountdown}.
+   */
+  claimAbandonedGame(): void;
   /** Card token IDs in THIS tab's PXE (serialized through the app's PXE queue). */
   getPrivateCards(): Promise<number[]>;
   /** Arena Token balance from THIS tab's PXE (serialized through the app's PXE queue). */

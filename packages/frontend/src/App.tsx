@@ -160,6 +160,10 @@ function AppInner() {
           settleTxStatus={game.settleTxStatus}
           opponentSettled={game.opponentSettled}
           takenCardId={game.takenCardId}
+          abandonmentWarning={game.ws.abandonmentWarning}
+          isClaimingAbandoned={game.isClaimingAbandoned}
+          abandonedDisputeCountdown={game.abandonedDisputeCountdown}
+          onClaimAbandoned={game.handleClaimAbandoned}
           chainView={{
             onChainGameId: game.onChainGameId,
             myHandProof: game.myHandProof,

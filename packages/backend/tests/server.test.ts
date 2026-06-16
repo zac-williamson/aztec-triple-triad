@@ -1805,3 +1805,196 @@ describe('Session staleness (item G)', () => {
     }
   });
 });
+
+describe('Present-but-idle abandonment warning', () => {
+  // A server tuned for fast detection: 150ms no-move threshold, checked every
+  // 25ms. Lets these tests exercise the real interval without sleeping 60s.
+  const MOVE_INACTIVITY = 150;
+
+  function makeFastServer(): Promise<{ srv: CardGameServer; p: number }> {
+    const p = 4300 + Math.floor(Math.random() * 600);
+    const srv = createServer({
+      port: p,
+      sessionHandshakeMs: 50,
+      moveInactivityMs: MOVE_INACTIVITY,
+      abandonmentCheckIntervalMs: 25,
+    });
+    return new Promise((resolve) => {
+      srv.httpServer.listen(p, () => resolve({ srv, p }));
+    });
+  }
+
+  function connect(p: number): Promise<{ ws: WebSocket; sessionToken: string; playerId: string }> {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(`ws://localhost:${p}`);
+      ws.on('error', reject);
+      ws.on('message', function onFirst(data: WebSocket.Data) {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'SESSION_ESTABLISHED') {
+          ws.removeListener('message', onFirst);
+          resolve({ ws, sessionToken: msg.sessionToken, playerId: msg.playerId });
+        }
+      });
+    });
+  }
+
+  /** Create + join + first player makes one move so it's player2's turn. */
+  async function startGame(p: number) {
+    const a = await connect(p);
+    const b = await connect(p);
+    const ca = new MessageCollector(a.ws);
+    const cb = new MessageCollector(b.ws);
+
+    sendMessage(a.ws, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const created = await ca.wait((m) => m.type === 'GAME_CREATED') as any;
+    const gameId = created.gameId;
+
+    sendMessage(b.ws, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+    await cb.wait((m) => m.type === 'GAME_JOINED');
+    await ca.wait((m) => m.type === 'GAME_START');
+
+    return { a, b, ca, cb, gameId };
+  }
+
+  it('warns BOTH players when the current player goes idle, with the correct shape', async () => {
+    const { srv, p } = await makeFastServer();
+    try {
+      const { a, b, ca, cb, gameId } = await startGame(p);
+
+      // No move within the threshold → player1 (to move) is idle.
+      const w1 = await ca.wait((m) => m.type === 'GAME_ABANDONMENT_WARNING') as any;
+      const w2 = await cb.wait((m) => m.type === 'GAME_ABANDONMENT_WARNING') as any;
+
+      for (const w of [w1, w2]) {
+        expect(w.type).toBe('GAME_ABANDONMENT_WARNING');
+        expect(w.gameId).toBe(gameId);
+        expect(w.idlePlayer).toBe('player1');
+        expect(typeof w.secondsIdle).toBe('number');
+        expect(w.secondsIdle).toBeGreaterThanOrEqual(0);
+        expect(typeof w.secondsUntilClaimable).toBe('number');
+      }
+
+      a.ws.close();
+      b.ws.close();
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('reports the player whose turn it is (player2 after player1 has moved)', async () => {
+    const { srv, p } = await makeFastServer();
+    try {
+      const { a, b, ca, cb, gameId } = await startGame(p);
+
+      // player1 moves → now player2's turn; let player2 go idle.
+      sendMessage(a.ws, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0, moveNumber: 0 });
+      await ca.wait((m) => m.type === 'GAME_STATE');
+      await cb.wait((m) => m.type === 'GAME_STATE');
+
+      const w = await cb.wait((m) => m.type === 'GAME_ABANDONMENT_WARNING') as any;
+      expect(w.idlePlayer).toBe('player2');
+      expect(w.gameId).toBe(gameId);
+
+      a.ws.close();
+      b.ws.close();
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('stops warning once a move arrives', async () => {
+    const { srv, p } = await makeFastServer();
+    try {
+      const { a, b, ca, cb, gameId } = await startGame(p);
+
+      // First warning (player1 idle).
+      await ca.wait((m) => m.type === 'GAME_ABANDONMENT_WARNING');
+
+      // player1 finally moves → idle clock resets, warnings should cease.
+      sendMessage(a.ws, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0, moveNumber: 0 });
+      await ca.wait((m) => m.type === 'GAME_STATE');
+      await cb.wait((m) => m.type === 'GAME_STATE');
+
+      // Confirm no NEW warning about player1 arrives in a window covering
+      // several detector ticks. (A warning about player2 would be legitimate
+      // once player2 then goes idle, so we assert specifically on player1.)
+      // MessageCollector.wait rejects after 5s; race it against a shorter timer
+      // so the negative case resolves quickly.
+      const warnPromise = ca
+        .wait((m) => m.type === 'GAME_ABANDONMENT_WARNING' && (m as any).idlePlayer === 'player1')
+        .then(() => 'warned')
+        .catch(() => 'rejected');
+      const result = await Promise.race([
+        warnPromise,
+        new Promise<string>((r) => setTimeout(() => r('quiet'), 400)),
+      ]);
+      expect(result).not.toBe('warned');
+
+      a.ws.close();
+      b.ws.close();
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('does not warn for a game that has not started (only one player)', async () => {
+    const { srv, p } = await makeFastServer();
+    try {
+      const a = await connect(p);
+      const ca = new MessageCollector(a.ws);
+      sendMessage(a.ws, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+      await ca.wait((m) => m.type === 'GAME_CREATED');
+
+      // Wait well past the threshold + several ticks; no warning should arrive.
+      const warned = await Promise.race([
+        ca.wait((m) => m.type === 'GAME_ABANDONMENT_WARNING').then(() => true).catch(() => false),
+        new Promise<boolean>((r) => setTimeout(() => r(false), 500)),
+      ]);
+      expect(warned).toBe(false);
+
+      a.ws.close();
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('buffers the warning for an offline player and replays it on reconnect', async () => {
+    const { srv, p } = await makeFastServer();
+    try {
+      const { a, b, ca, gameId } = await startGame(p);
+      const bToken = b.sessionToken;
+
+      // player2 disconnects while it is player1's turn — player1 is the idle
+      // one and player2 is offline; the warning must be buffered for player2.
+      b.ws.close();
+      await ca.wait((m) => m.type === 'OPPONENT_DISCONNECTED');
+
+      // Let the detector fire at least once while player2 is offline.
+      await ca.wait((m) => m.type === 'GAME_ABANDONMENT_WARNING');
+
+      // player2 reconnects and should receive the buffered warning.
+      const ws2b = new WebSocket(`ws://localhost:${p}`);
+      const c2b = new MessageCollector(ws2b);
+      await new Promise<void>((resolve, reject) => {
+        ws2b.on('error', reject);
+        ws2b.on('open', () => ws2b.send(JSON.stringify({ type: 'RESUME', sessionToken: bToken })));
+        ws2b.on('message', function onMsg(data: WebSocket.Data) {
+          const m = JSON.parse(data.toString());
+          if (m.type === 'SESSION_ESTABLISHED' && m.resumed) {
+            ws2b.removeListener('message', onMsg);
+            resolve();
+          }
+        });
+      });
+
+      const replayed = await c2b.wait((m) => m.type === 'GAME_ABANDONMENT_WARNING') as any;
+      expect(replayed.gameId).toBe(gameId);
+      expect(replayed.idlePlayer).toBe('player1');
+
+      a.ws.close();
+      ws2b.close();
+    } finally {
+      await srv.close();
+    }
+  });
+});

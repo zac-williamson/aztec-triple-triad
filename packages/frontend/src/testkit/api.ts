@@ -71,6 +71,24 @@ function snapshotPhase(): PhaseSnapshot | null {
       takenCardId: game.takenCardId,
       onChainError: game.onChainError,
     },
+    abandonment: {
+      warning: ws.abandonmentWarning
+        ? {
+            idlePlayer: ws.abandonmentWarning.idlePlayer,
+            secondsIdle: ws.abandonmentWarning.secondsIdle,
+            secondsUntilClaimable: ws.abandonmentWarning.secondsUntilClaimable,
+          }
+        : null,
+      isClaimingAbandoned: game.isClaimingAbandoned,
+      disputeCountdown: game.abandonedDisputeCountdown,
+      // Non-idle player may claim now: a warning is active for the OTHER side,
+      // its countdown has elapsed, and a claim isn't already running.
+      claimAvailable:
+        !!ws.abandonmentWarning &&
+        ws.abandonmentWarning.idlePlayer !== myPlayer &&
+        ws.abandonmentWarning.secondsUntilClaimable <= 0 &&
+        !game.isClaimingAbandoned,
+    },
     interaction: gameScreen
       ? {
           selectedCardIndex: gameScreen.selectedCardIndex,
@@ -147,6 +165,11 @@ export function createApi(): TriadTestApi {
       const game = registry.game;
       if (!game) throw new Error('testkit: app bridge not published');
       game.handlePlaceCard(handIndex, row, col);
+    },
+    claimAbandonedGame: () => {
+      const game = registry.game;
+      if (!game) throw new Error('testkit: app bridge not published');
+      game.handleClaimAbandoned();
     },
     getPrivateCards: readPrivateCards,
     getTokenBalance: readTokenBalance,

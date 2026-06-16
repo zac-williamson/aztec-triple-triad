@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import type { GameState, Player, Card } from '../types';
+import type { AbandonmentWarning } from '../hooks/useWebSocket';
 import type { ProofStatusInfo, SettleTxStatus } from './GameScreen3D';
 import { SettlementCardPicker } from './SettlementCardPicker';
+import { AbandonmentBanner } from './AbandonmentBanner';
 import { ChainViewPanel, type ChainViewData } from './ChainViewPanel';
 import '../components/GameScreen.css';
 
@@ -24,6 +26,14 @@ interface GameHUDProps {
   settleTxStatus?: SettleTxStatus;
   opponentSettled?: boolean;
   takenCardId?: number | null;
+  /** Present-but-idle abandonment warning (null when none active). */
+  abandonmentWarning?: AbandonmentWarning | null;
+  /** True while the abandoned claim+settle flow runs. */
+  isClaimingAbandoned?: boolean;
+  /** Seconds left in the on-chain dispute window during a claim (else null). */
+  abandonedDisputeCountdown?: number | null;
+  /** Trigger the abandoned-game claim flow (non-idle player's button). */
+  onClaimAbandoned?: () => void;
   /** Data for the "you see / chain sees" privacy panel; omitting hides the toggle. */
   chainView?: ChainViewData;
   /**
@@ -76,6 +86,10 @@ export function GameHUD({
   settleTxStatus = 'idle',
   opponentSettled = false,
   takenCardId = null,
+  abandonmentWarning = null,
+  isClaimingAbandoned = false,
+  abandonedDisputeCountdown = null,
+  onClaimAbandoned,
   chainView,
   practiceMode = false,
 }: GameHUDProps) {
@@ -150,6 +164,18 @@ export function GameHUD({
         <div className="game-screen__alert" style={{ position: 'fixed', top: 40, left: 0, right: 0, zIndex: 10 }}>
           Opponent disconnected
         </div>
+      )}
+
+      {/* Present-but-idle abandonment warning + claim button + dispute window.
+          Suppressed in practice mode (local, no chain → nothing to claim). */}
+      {!practiceMode && onClaimAbandoned && (
+        <AbandonmentBanner
+          warning={abandonmentWarning}
+          myPlayer={myPlayer}
+          isClaimingAbandoned={isClaimingAbandoned}
+          abandonedDisputeCountdown={abandonedDisputeCountdown}
+          onClaimAbandoned={onClaimAbandoned}
+        />
       )}
 
       {/* Proof status indicator */}
