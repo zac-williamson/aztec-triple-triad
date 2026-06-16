@@ -16,6 +16,17 @@ export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
  */
 export const TESTNET = process.env.PLAYTEST_TESTNET === '1';
 
+/**
+ * Hybrid testnet mode: boot a LOCAL backend (the merged ws-relay code) as the ws
+ * relay instead of the live relay, while still using the live testnet chain +
+ * deployed contracts. For exercising backend changes not yet on the deployed
+ * relay box (e.g. the present-but-idle abandonment warning, before a box
+ * redeploy). Only meaningful with TESTNET=1; the frontend's VITE_WS_URL points
+ * at the local backend, on-chain ops still hit the testnet RPC + .env.testnet
+ * contracts. See docs/plan/ABANDONED_GAMES.md.
+ */
+export const LOCAL_BACKEND = process.env.PLAYTEST_LOCAL_BACKEND === '1';
+
 // PXE the harness-side ChainClient reads public game state from. Testnet points
 // it at the public RPC; local defaults to the sandbox node.
 export const PXE_URL = process.env.PLAYTEST_PXE_URL || 'http://localhost:8080';

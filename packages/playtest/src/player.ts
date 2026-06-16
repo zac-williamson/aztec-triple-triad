@@ -96,6 +96,7 @@ export const TIMEOUTS = TESTNET ? {
   pxeRead: 300_000,         // testnet PXE reads sync across real blocks
   evaluate: 60_000,
   placementConfirm: 120_000, // confirm a cell click registered; fail loud on a miss, not a 240s board-update timeout
+  abandonWarn: 180_000,     // backend present-but-idle warning: fires at >=60s idle, checked every 5s (3 min headroom)
   eventually: 420_000,      // private-note discovery by block scanning, ~36s slots (7 min)
 } : {
   install: 120_000,      // first boot after an SDK bump cold-optimizes the @aztec deps in-browser
@@ -111,6 +112,7 @@ export const TIMEOUTS = TESTNET ? {
   pxeRead: 180_000,         // hard backstop for a single PXE read; a true hang fails fatally, never masked
   evaluate: 30_000,         // a bare page.evaluate (phase snapshot) must not hang the run
   placementConfirm: 30_000, // confirm a cell click registered; fail loud on a miss, not a board-update timeout
+  abandonWarn: 120_000,     // backend present-but-idle warning (>=60s idle, checked every 5s)
   eventually: 180_000,      // private-state eventual consistency (PXE note discovery) after a tx
 };
 
@@ -646,6 +648,46 @@ export class PlayerDriver {
     return this.waitPhase(
       'opponent settlement received',
       p => p.chain.opponentSettled && p.chain.takenCardId !== null,
+      TIMEOUTS.settleTx,
+    );
+  }
+
+  // ── Present-but-idle abandonment (docs/plan/ABANDONED_GAMES.md) ──────────
+
+  /**
+   * Wait until the relay's GAME_ABANDONMENT_WARNING reaches this tab with the
+   * given idle player. Returns the live phase so the caller can assert
+   * secondsIdle etc. Fires once the player-whose-turn-it-is has been idle >=60s
+   * (backend checks every 5s), so this needs the long abandonWarn budget.
+   */
+  async waitAbandonmentWarning(idlePlayer: 'player1' | 'player2'): Promise<PhaseSnapshot> {
+    return this.waitPhase(
+      `abandonment warning (idle=${idlePlayer})`,
+      (p, want) => p.abandonment?.warning != null && p.abandonment.warning.idlePlayer === want,
+      TIMEOUTS.abandonWarn,
+      idlePlayer,
+    );
+  }
+
+  /**
+   * Trigger the abandoned-game claim (claim_abandoned_game → on-chain dispute
+   * window → settle_abandoned_game) — the testkit equivalent of clicking
+   * "Claim abandoned game". Fire-and-forget; observe progress via
+   * phase().abandonment.{isClaimingAbandoned,disputeCountdown} and the on-chain
+   * status (ChainClient.gameStatus → 5 abandoned_claimed → 3 settled).
+   */
+  async claimAbandonedGame(): Promise<void> {
+    await this.withTimeout(
+      this.page.evaluate(() => window.__triadTest!.claimAbandonedGame()),
+      TIMEOUTS.evaluate, 'claimAbandonedGame',
+    );
+  }
+
+  /** Wait until this tab has entered the abandoned-claim flow (claim started). */
+  async waitClaimingAbandoned(): Promise<PhaseSnapshot> {
+    return this.waitPhase(
+      'abandoned-claim started',
+      p => p.abandonment?.isClaimingAbandoned === true,
       TIMEOUTS.settleTx,
     );
   }

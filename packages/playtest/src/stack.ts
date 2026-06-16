@@ -14,7 +14,7 @@ import { resolve } from 'path';
 import net from 'net';
 import {
   ROOT, PXE_URL, NODE_PORT, ANVIL_PORT, BACKEND_PORT, FRONTEND_PORT,
-  BACKEND_URL, FRONTEND_URL, ARTIFACTS_DIR, BROWSER_REGISTRY_PATH, TESTNET,
+  BACKEND_URL, FRONTEND_URL, ARTIFACTS_DIR, BROWSER_REGISTRY_PATH, TESTNET, LOCAL_BACKEND,
   readContractAddresses, type StackInfo, type StackMode,
 } from './env.js';
 
@@ -127,9 +127,13 @@ export class Stack {
   /** Fail loudly if a stack port is already taken — no silent reuse. */
   async assertPortsFree(): Promise<void> {
     // Testnet mode only owns the local vite (3000); the node/anvil/backend are
-    // remote (live testnet + live ws relay), so don't probe their local ports.
+    // remote (live testnet + live ws relay), so don't probe their local ports —
+    // except in LOCAL_BACKEND mode, where we also own the local backend (5174).
+    const testnetPorts = LOCAL_BACKEND
+      ? ([['backend', BACKEND_PORT], ['frontend', FRONTEND_PORT]] as const)
+      : ([['frontend', FRONTEND_PORT]] as const);
     const ports = TESTNET
-      ? ([['frontend', FRONTEND_PORT]] as const)
+      ? testnetPorts
       : ([
           ['aztec node', NODE_PORT], ['anvil', ANVIL_PORT],
           ['backend', BACKEND_PORT], ['frontend', FRONTEND_PORT],
@@ -205,11 +209,14 @@ export class Stack {
     // Testnet: serve the SAME app against the deployed testnet contracts + the
     // live ws relay. `--mode testnet` loads .env.testnet (PXE + verified
     // addresses + AZTEC_ENABLED); process.env VITE_* take priority over .env
-    // files, so these override the file's stale localhost VITE_WS_URL and add
-    // the faucet + testkit. Local mode is unchanged (just VITE_TESTKIT).
+    // files, so this overrides the file's stale localhost VITE_WS_URL. NO
+    // VITE_FAUCET_URL — the app faucet was ripped (deployed onboarding self-funds
+    // via the official Aztec faucet); the harness instead injects PRE-FUNDED,
+    // pre-deployed accounts (see docs/plan/PLAYTEST_SELFFUND.md), so onboarding
+    // restores `alreadyDeployed` with no funding step. Local mode unchanged.
     const modeArgs = TESTNET ? ['--mode', 'testnet'] : [];
     const viteEnv: Record<string, string | undefined> = TESTNET
-      ? { VITE_TESTKIT: '1', VITE_WS_URL: 'wss://ws.aztec-arena.com', VITE_FAUCET_URL: 'https://ws.aztec-arena.com' }
+      ? { VITE_TESTKIT: '1', VITE_WS_URL: LOCAL_BACKEND ? `ws://localhost:${BACKEND_PORT}` : 'wss://ws.aztec-arena.com' }
       : { VITE_TESTKIT: '1' };
     // Sync public/ circuit + contract artifacts from target/ before serving.
     // The dev server serves public/ as-is (no build step), and committed public
@@ -235,9 +242,16 @@ export class Stack {
   async bootAll(): Promise<StackInfo> {
     await this.assertPortsFree();
     if (TESTNET) {
-      // The chain (testnet) and ws relay (ws.aztec-arena.com) are already live;
-      // only the local vite is ours. Addresses come from .env.testnet.
-      log('testnet mode — using live testnet + live ws relay; booting local vite only');
+      // Live testnet chain + .env.testnet contracts. The ws relay is either the
+      // live box or — in LOCAL_BACKEND mode — our own local backend (the merged
+      // ws-relay code, e.g. to exercise the abandonment warning before a box
+      // redeploy). Addresses come from .env.testnet either way.
+      if (LOCAL_BACKEND) {
+        log('testnet mode + LOCAL_BACKEND — live testnet chain, LOCAL ws relay; booting backend + vite');
+        await this.bootBackend();
+      } else {
+        log('testnet mode — using live testnet + live ws relay; booting local vite only');
+      }
       await this.bootFrontend();
       return this.writeInfo(readContractAddresses());
     }
