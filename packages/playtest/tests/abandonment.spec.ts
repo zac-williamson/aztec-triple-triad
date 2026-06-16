@@ -28,11 +28,16 @@ import { readStackInfo } from '../src/env.js';
 
 const STARTER_CARDS = [1, 2, 3, 4, 5];
 // Play 4 moves (P1:0,2  P2:1,3) → board holds claimable cards AND it's P1's
-// turn again. WHY 4 (not 2): the claimant claims a card only when the abandoner
-// (P1) has played >=2 moves — handleAbandonedGame gates claimedCardId on
-// `numValid >= 2` (collected proofs of the OPPONENT's moves). With 2 total moves
-// P1 has played just 1, so claimedCardId falls to 0 and BOTH recover (no claim).
-// 4 total moves → P1 has played 2 → a card (P1's hand[0]) is genuinely claimed.
+// turn again. handleAbandonedGame claims a card only when BOTH hold:
+//   (1) `numValid >= 2` — the claimant collected >=2 proofs of the OPPONENT's
+//       moves (i.e. the abandoner actually played). With 2 total moves P1 has
+//       played just 1, so this fails and BOTH recover. 4 total moves → P1 has
+//       played 2 → satisfied.
+//   (2) the claimant KNOWS the abandoner's hand (`opponentCardIds`). Card ids are
+//       normally exchanged only at GAME_OVER, which an abandonment never reaches —
+//       so the relay rides the idle player's hand on GAME_ABANDONMENT_WARNING and
+//       the claimant adopts it (backend GameManager.findIdleGames + useWebSocket).
+// Both satisfied → a card (P1's hand[0]) is genuinely claimed.
 const PRE_MOVES = 4;
 
 /** Multiset of card ids (a win/claim can add a second copy of an id). */

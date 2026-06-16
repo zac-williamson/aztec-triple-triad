@@ -24,11 +24,16 @@ const hoisted = vi.hoisted(() => ({
   sendSettleMock: vi.fn().mockResolvedValue('0xSETTLE_TX'),
 }));
 
-vi.mock('../../aztec/AztecContext', () => ({
+vi.mock('../../aztec/AztecContext', () => {
+  // Block-aware dispute wait polls node.getBlockNumber() until 5 blocks elapse
+  // since the claim. Advance one block per call so the window opens and
+  // settle_abandoned_game fires deterministically under fake timers.
+  let block = 1000;
+  return ({
   useAztecContext: () => ({
     wallet: { fake: 'wallet' },
     accountAddress: '0xME',
-    nodeClient: { fake: 'node' },
+    nodeClient: { fake: 'node', getBlockNumber: () => Promise.resolve(block++) },
     isAvailable: true,
     ownedCardIds: [],
     updateOwnedCards: vi.fn(),
@@ -43,7 +48,8 @@ vi.mock('../../aztec/AztecContext', () => ({
     refreshOwnedCards: vi.fn(),
     tokenBalance: 0,
   }),
-}));
+  });
+});
 
 vi.mock('../../aztec/noteImporter', () => ({
   fetchTxEffectData: hoisted.fetchTxEffectDataMock,

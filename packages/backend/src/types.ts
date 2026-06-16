@@ -83,7 +83,10 @@ export type ServerMessage =
   // game is still 'playing'. Re-sent as the idle window grows; cleared (no
   // further sends) once a move arrives or the game ends. Buffered so an
   // offline player receives the latest warning on reconnect.
-  | { type: 'GAME_ABANDONMENT_WARNING'; gameId: string; idlePlayer: 'player1' | 'player2'; secondsIdle: number; secondsUntilClaimable: number }
+  // `idlePlayerCardIds` is the idle (abandoning) player's committed hand. The
+  // OTHER player needs it to claim a card on-chain; an abandonment never reaches
+  // GAME_OVER (the only other place card ids are exchanged), so it rides here.
+  | { type: 'GAME_ABANDONMENT_WARNING'; gameId: string; idlePlayer: 'player1' | 'player2'; secondsIdle: number; secondsUntilClaimable: number; idlePlayerCardIds: number[] }
   | { type: 'ERROR'; message: string }
   // Proof-based messages
   | { type: 'HAND_PROOF'; gameId: string; handProof: HandProofData; fromPlayer: 1 | 2 }

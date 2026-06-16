@@ -893,6 +893,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         idlePlayer: game.idlePlayer,
         secondsIdle: game.secondsIdle,
         secondsUntilClaimable,
+        idlePlayerCardIds: game.idlePlayerCardIds,
       };
       await sendToPlayer(game.player1Id, warning);
       await sendToPlayer(game.player2Id, warning);

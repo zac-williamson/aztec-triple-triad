@@ -31,6 +31,13 @@ export interface IdleGame {
   player2Id: string;
   /** Whole seconds since the last move. */
   secondsIdle: number;
+  /**
+   * The idle (abandoning) player's committed hand card ids. The OTHER player
+   * needs these to claim a card on-chain: they are otherwise exchanged only at
+   * GAME_OVER (see useWebSocket GAME_OVER), which an abandonment never reaches,
+   * so without them the claimant falls back to a no-card recovery.
+   */
+  idlePlayerCardIds: number[];
 }
 
 export class GameManager {
@@ -316,6 +323,8 @@ export class GameManager {
         player1Id: room.player1Id,
         player2Id: room.player2Id,
         secondsIdle: Math.floor(idleMs / 1000),
+        idlePlayerCardIds:
+          room.state.currentTurn === 'player1' ? room.player1CardIds : room.player2CardIds,
       });
     }
     return idle;

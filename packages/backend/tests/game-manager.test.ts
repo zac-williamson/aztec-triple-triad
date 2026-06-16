@@ -520,6 +520,25 @@ describe('GameManager', () => {
       expect(idle[0].idlePlayer).toBe('player2');
     });
 
+    it("carries the idle player's hand so the claimant can claim a card on-chain", async () => {
+      // player1's turn at game start → player1 is the abandoner. The relay must
+      // surface player1's committed hand: the claimant (player2) otherwise never
+      // learns it (card ids are exchanged only at GAME_OVER) and falls back to a
+      // no-card recovery instead of claiming a card.
+      await backdateLastMove(gameId, MOVE_INACTIVITY_MS + 1000);
+      let idle = await manager.findIdleGames();
+      expect(idle[0].idlePlayer).toBe('player1');
+      expect(idle[0].idlePlayerCardIds).toEqual(PLAYER1_CARDS);
+
+      // The idle hand follows the turn: after player1 moves it is player2 who owes
+      // the next move, so player2's hand is the one a claimant would need.
+      await manager.placeCard(gameId, 'player-1', 0, 0, 0, 0);
+      await backdateLastMove(gameId, MOVE_INACTIVITY_MS + 1000);
+      idle = await manager.findIdleGames();
+      expect(idle[0].idlePlayer).toBe('player2');
+      expect(idle[0].idlePlayerCardIds).toEqual(PLAYER2_CARDS);
+    });
+
     it('clears once a move arrives (the idle clock resets)', async () => {
       await backdateLastMove(gameId, MOVE_INACTIVITY_MS + 1000);
       expect(await manager.findIdleGames()).toHaveLength(1);

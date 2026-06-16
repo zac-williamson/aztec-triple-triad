@@ -213,6 +213,15 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
             secondsIdle: msg.secondsIdle,
             secondsUntilClaimable: msg.secondsUntilClaimable,
           });
+          // The claimant (the NON-idle player) needs the abandoner's committed
+          // hand to claim a card on-chain. Card ids are otherwise exchanged only
+          // at GAME_OVER, which an abandonment never reaches — so adopt the idle
+          // player's ids here. (Guarded so the idle player never overwrites its
+          // own opponentCardIds with its own hand.)
+          if (playerNumberRef.current && msg.idlePlayerCardIds?.length) {
+            const myPlayer: Player = playerNumberRef.current === 1 ? 'player1' : 'player2';
+            if (msg.idlePlayer !== myPlayer) setOpponentCardIds(msg.idlePlayerCardIds);
+          }
           break;
         case 'HAND_PROOF':
           setOpponentHandProof(msg.handProof);

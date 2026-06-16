@@ -592,6 +592,41 @@ describe('useWebSocket', () => {
       act(() => { result.current.leaveGame(); });
       expect(result.current.abandonmentWarning).toBeNull();
     });
+
+    // The claimant needs the abandoner's hand to claim a card on-chain. Card ids
+    // are otherwise exchanged only at GAME_OVER, which an abandonment never
+    // reaches, so the relay rides them on the warning and the NON-idle player
+    // adopts them — without this the claim falls back to a no-card recovery.
+    it('the NON-idle (claimant) player adopts the abandoner\'s hand as opponentCardIds', async () => {
+      const { result, ws } = await setupConnectedHook();
+      // I am player2; player1 is idle (the abandoner).
+      act(() => { ws.simulateMessage({ type: 'GAME_JOINED', gameId: 'g1', playerNumber: 2,
+        gameState: { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 5, player2Score: 5, status: 'playing', winner: null } }); });
+      expect(result.current.opponentCardIds).toEqual([]);
+      act(() => {
+        ws.simulateMessage({
+          type: 'GAME_ABANDONMENT_WARNING', gameId: 'g1',
+          idlePlayer: 'player1', secondsIdle: 60, secondsUntilClaimable: 0,
+          idlePlayerCardIds: [1, 2, 3, 4, 5],
+        });
+      });
+      expect(result.current.opponentCardIds).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    it('the IDLE player does NOT overwrite opponentCardIds with its own hand', async () => {
+      const { result, ws } = await setupConnectedHook();
+      // I am player1 — the idle/abandoning player. The warning is ABOUT me, so
+      // idlePlayerCardIds is my OWN hand; it must not become my opponentCardIds.
+      act(() => { ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 }); });
+      act(() => {
+        ws.simulateMessage({
+          type: 'GAME_ABANDONMENT_WARNING', gameId: 'g1',
+          idlePlayer: 'player1', secondsIdle: 60, secondsUntilClaimable: 0,
+          idlePlayerCardIds: [1, 2, 3, 4, 5],
+        });
+      });
+      expect(result.current.opponentCardIds).toEqual([]);
+    });
   });
 
   describe('notifyAbandonedGameSettled', () => {
