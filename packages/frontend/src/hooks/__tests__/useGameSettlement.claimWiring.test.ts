@@ -23,11 +23,17 @@ const hoisted = vi.hoisted(() => ({
   sendSettleMock: vi.fn().mockResolvedValue('0xSETTLE_TX'),
 }));
 
-vi.mock('../../aztec/AztecContext', () => ({
+vi.mock('../../aztec/AztecContext', () => {
+  // Block-aware dispute wait polls node.getBlockNumber() until 5 blocks elapse
+  // since the claim. Advance one block per poll so the window opens and
+  // settle_abandoned_game fires (the real node advances by wall-clock; +1 per
+  // poll is enough to exercise the loop deterministically under fake timers).
+  let block = 1000;
+  return ({
   useAztecContext: () => ({
     wallet: { fake: 'wallet' },
     accountAddress: '0xME',
-    nodeClient: { fake: 'node' },
+    nodeClient: { fake: 'node', getBlockNumber: () => Promise.resolve(block++) },
     isAvailable: true,
     ownedCardIds: [],
     updateOwnedCards: vi.fn(),
@@ -42,7 +48,8 @@ vi.mock('../../aztec/AztecContext', () => ({
     refreshOwnedCards: vi.fn(),
     tokenBalance: 0,
   }),
-}));
+  });
+});
 
 vi.mock('../../aztec/noteImporter', () => ({ fetchTxEffectData: hoisted.fetchTxEffectDataMock }));
 vi.mock('../../aztec/cardStore', () => ({ addCards: hoisted.addCardsMock }));
@@ -192,7 +199,8 @@ describe('present-but-idle claim wiring', () => {
     // isClaimingAbandoned flips true synchronously at the start of the flow.
     expect(result.current.isClaimingAbandoned).toBe(true);
 
-    // Drive the claim tx → 65s dispute window → settle tx → postEffects.
+    // Drive the claim tx → block-based dispute window (poll until 5 blocks
+    // elapse; the mock advances 1 block per ~3s poll) → settle tx → postEffects.
     await act(async () => { await vi.advanceTimersByTimeAsync(80_000); });
 
     expect(hoisted.sendClaimMock).toHaveBeenCalled();
@@ -216,9 +224,12 @@ describe('present-but-idle claim wiring', () => {
     // Advance past the claim tx into the dispute window, but not past it.
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
 
+    // The countdown is now a block-based estimate (~5 blocks × observed s/block,
+    // seeded at 5×40s), not the old fixed 65s — assert it's surfaced + positive
+    // within a sane bound rather than pinning the old wall-clock value.
     expect(result.current.abandonedDisputeCountdown).not.toBeNull();
     expect(result.current.abandonedDisputeCountdown!).toBeGreaterThan(0);
-    expect(result.current.abandonedDisputeCountdown!).toBeLessThanOrEqual(65);
+    expect(result.current.abandonedDisputeCountdown!).toBeLessThanOrEqual(5 * 60);
   });
 
   it('is idempotent — a second call while claiming does not start a second claim', async () => {

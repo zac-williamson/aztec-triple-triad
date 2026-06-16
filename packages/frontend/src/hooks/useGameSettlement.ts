@@ -619,14 +619,43 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
 
       console.log('[useGameSettlement] claim_abandoned_game mined, waiting for dispute window...');
 
-      // Step 2: Wait for dispute window (65 seconds to ensure 5 blocks)
-      const DISPUTE_SECONDS = 65;
-      setAbandonedDisputeCountdown(DISPUTE_SECONDS);
-      for (let i = DISPUTE_SECONDS; i > 0; i--) {
-        setAbandonedDisputeCountdown(i);
-        await new Promise(r => setTimeout(r, 1000));
+      // Step 2: Wait the on-chain DISPUTE WINDOW. The contract
+      // (settle_abandoned_game_public) requires
+      //   settle_block - claim_block >= DISPUTE_BLOCKS (5).
+      // A fixed wall-clock wait is WRONG: block time varies enormously (instant
+      // sandbox vs ~40s/block on testnet), so the old fixed 65s only covered 5
+      // blocks at ~13s/block and the settle REVERTED ("Dispute window not
+      // elapsed") on real testnet. Poll the node's block height until 5 blocks
+      // have elapsed since the claim, driving the UX countdown from the OBSERVED
+      // block rate. `claimBaselineBlock` is read right after the claim mined, so
+      // it is >= the contract's stored claim_block — we therefore never settle
+      // EARLY (worst case ~1 extra block of wait). Fail LOUD if the window has
+      // not opened within a sane ceiling (never settle early, never wait forever).
+      const DISPUTE_BLOCKS = 5;
+      const DISPUTE_MAX_MS = 20 * 60 * 1000; // ceiling — abort loudly, never infinite-wait (covers ~4min/block)
+      const disputeNode = aztec.nodeClient as { getBlockNumber: () => Promise<number | bigint> };
+      const claimBaselineBlock = Number(await disputeNode.getBlockNumber());
+      const disputeStart = Date.now();
+      let blocksElapsed = 0;
+      setAbandonedDisputeCountdown(DISPUTE_BLOCKS * 40); // initial estimate (~40s/block), refined in-loop
+      while (blocksElapsed < DISPUTE_BLOCKS) {
+        if (Date.now() - disputeStart > DISPUTE_MAX_MS) {
+          throw new Error(
+            `Abandoned-game dispute window did not open: only ${blocksElapsed}/${DISPUTE_BLOCKS} blocks elapsed in ` +
+            `${Math.round((Date.now() - disputeStart) / 1000)}s (claim baseline block ${claimBaselineBlock}). Aborting — ` +
+            `refusing to settle before the on-chain window or to wait indefinitely.`,
+          );
+        }
+        await new Promise(r => setTimeout(r, 3000));
+        const current = Number(await Promise.resolve(disputeNode.getBlockNumber()).catch(() => claimBaselineBlock + blocksElapsed));
+        blocksElapsed = Math.max(0, current - claimBaselineBlock);
+        // Countdown estimate from the observed block rate (fallback ~40s/block).
+        const elapsedS = (Date.now() - disputeStart) / 1000;
+        const secPerBlock = blocksElapsed > 0 ? elapsedS / blocksElapsed : 40;
+        setAbandonedDisputeCountdown(Math.ceil((DISPUTE_BLOCKS - blocksElapsed) * secPerBlock));
       }
       setAbandonedDisputeCountdown(0);
+      console.log(`[useGameSettlement] dispute window elapsed (${blocksElapsed} blocks since claim) — settling`);
 
       // Determine which card to claim (first opponent card placed on board, if any)
       // For now claim the first opponent card if any moves were played by opponent
@@ -672,6 +701,16 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           const callerNotes: PlaintextNoteData[] = [];
           for (let i = 0; i < capturedCardIds.length && i < 5; i++) {
             callerNotes.push({ tokenId: capturedCardIds[i], randomness: toHexString(callerRandomness[i]) });
+          }
+          // The contract ALSO mints the CLAIMED opponent card privately to the
+          // claimant (mint_single_card_private with caller_randomness[5]). Import
+          // it so the claimant actually RECEIVES the won card — parity with the
+          // normal settle's winner import (callerRandomness[5] there too). Without
+          // this the claimed card is on-chain-owned but never lands in the wallet
+          // (passive discovery is unreliable/too slow), so a claimed abandoned
+          // game silently drops the prize.
+          if (claimedCardId !== 0) {
+            callerNotes.push({ tokenId: claimedCardId, randomness: toHexString(callerRandomness[5]) });
           }
           await importNotes(ops, hash, callerNotes, 'Abandoned game recovery');
 
