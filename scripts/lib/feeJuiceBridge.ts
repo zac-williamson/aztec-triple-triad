@@ -152,12 +152,29 @@ export function readFunderKey(env: NodeJS.ProcessEnv = process.env): string {
     const file =
       env.TREASURY_L1_KEY_FILE?.replace(/^~/, homedir()) ||
       resolve(homedir(), '.aztec-triad-private', 'treasury-l1-key.txt');
+    let content: string;
     try {
-      key = readFileSync(file, 'utf-8').trim();
+      content = readFileSync(file, 'utf-8');
     } catch {
       throw new Error(`No treasury L1 key: set TREASURY_L1_KEY or place it at ${file} (chmod 600).`);
     }
-    if (!key) throw new Error(`Treasury key file ${file} is empty.`);
+    const trimmed = content.trim();
+    if (!trimmed) throw new Error(`Treasury key file ${file} is empty.`);
+    if (/^0x[0-9a-fA-F]{64}$/.test(trimmed)) {
+      key = trimmed; // the whole file is exactly the key
+    } else {
+      // Labeled / multi-line key file (e.g. a header line + the key): extract the
+      // single 0x 32-byte hex key embedded in it. (An L1 address is 40 hex, so a
+      // 64-hex match is unambiguously the private key.)
+      const m = content.match(/0x[0-9a-fA-F]{64}/);
+      if (!m) {
+        throw new Error(
+          `Treasury key file ${file} contains no 0x 32-byte hex private key. ` +
+            `Put a bare 0x-prefixed 32-byte key in it, or set TREASURY_L1_KEY.`,
+        );
+      }
+      key = m[0];
+    }
   }
   if (!/^0x[0-9a-fA-F]{64}$/.test(key)) {
     throw new Error('Treasury L1 key must be a 0x-prefixed 32-byte hex private key.');

@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, statSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -25,6 +25,7 @@ import {
   getStoredClaim,
   loadClaimStore,
   markClaimConsumed,
+  readFunderKey,
   type FeeJuiceClaim,
 } from './feeJuiceBridge';
 
@@ -141,6 +142,48 @@ describe('feeJuiceBridge helpers', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  describe('readFunderKey', () => {
+    it('returns the TREASURY_L1_KEY env value verbatim', () => {
+      const k = '0x' + 'a'.repeat(64);
+      expect(readFunderKey({ TREASURY_L1_KEY: k } as any)).toBe(k);
+    });
+
+    it('reads a file that is exactly the key', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'fk-'));
+      try {
+        const file = join(dir, 'k.txt');
+        const k = '0x' + 'b'.repeat(64);
+        writeFileSync(file, k + '\n');
+        expect(readFunderKey({ TREASURY_L1_KEY_FILE: file } as any)).toBe(k);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('extracts the key embedded in a labeled / multi-line file', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'fk-'));
+      try {
+        const file = join(dir, 'k.txt');
+        const k = '0x' + 'c'.repeat(64);
+        writeFileSync(file, `Subaccount: treasury demo\nnetwork sepolia\n${k}\n`);
+        expect(readFunderKey({ TREASURY_L1_KEY_FILE: file } as any)).toBe(k);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('throws a clear error when the file holds no 32-byte hex key', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'fk-'));
+      try {
+        const file = join(dir, 'k.txt');
+        writeFileSync(file, 'just some words, no key here\n');
+        expect(() => readFunderKey({ TREASURY_L1_KEY_FILE: file } as any)).toThrow(/no 0x 32-byte hex/);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   // Live bridge — only with Sepolia creds. Skipped otherwise (like the e2e gate).
