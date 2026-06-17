@@ -254,8 +254,19 @@ export class PlayerDriver {
     await this.page.waitForFunction(() => !!window.__triadTest, undefined, {
       timeout: TIMEOUTS.install, polling: POLL_MS,
     });
-    // First visit shows the tutorial prompt once the funding gate clears.
-    await this.page.getByTestId('tutorial-skip').click({ timeout: TIMEOUTS.wsConnect });
+    // A new player (the restore seed deliberately omits `tutorial_seen`) is
+    // offered the Xochitl tutorial. Since 2f11ede the prompt appears DURING
+    // 'deploying': the restored, already-deployed account still transits
+    // 'deploying' (see FundingProgress.tsx) and the prompt now rides that phase
+    // instead of waiting for the post-funding menu. Wait for the skip button
+    // explicitly — robust to it surfacing during 'deploying' OR later on the
+    // menu (Playwright re-checks actionability across the deploying→menu
+    // transition) — then skip to reach the menu. Keeping the click (rather than
+    // seeding tutorial_seen=true) also exercises and asserts the new
+    // parallel-onboarding path: if the prompt never appears, boot fails loud.
+    const tutorialSkip = this.page.getByTestId('tutorial-skip');
+    await tutorialSkip.waitFor({ state: 'visible', timeout: TIMEOUTS.wsConnect });
+    await tutorialSkip.click();
     this.startWatchdog();
   }
 
