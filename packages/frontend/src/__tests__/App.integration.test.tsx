@@ -107,6 +107,7 @@ vi.mock('../aztec/contracts', () => ({
 describe('App Integration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear(); // controls the new-player tutorial gate (tutorial_seen)
     azt.status = 'unsupported';
     azt.accountAddress = null;
   });
@@ -128,13 +129,26 @@ describe('App Integration', () => {
     expect(mapWinnerId('draw')).toBe(3);
   });
 
-  // The onboarding overlay shows while deploying, and the manual FundingPrompt
-  // is the funding path on a non-local network (the app never auto-funds).
-  it('shows the onboarding progress screen while deploying', () => {
+  // While deploying, a RETURNING player (tutorial already seen) sees the
+  // onboarding progress spinner; the manual FundingPrompt is the funding path on
+  // a non-local network (the app never auto-funds).
+  it('shows the onboarding progress screen while deploying (returning player)', () => {
+    localStorage.setItem('tutorial_seen', 'true');
     azt.status = 'deploying';
     render(<App />);
     expect(screen.getByText('Getting You Set Up')).toBeTruthy();
     expect(screen.queryByText('Fund Your Account')).toBeNull();
+    expect(screen.queryByText('First time here?')).toBeNull();
+  });
+
+  // A NEW player gets the tutorial prompt DURING deploying — so they play the
+  // tutorial in parallel with the account-deploy + starter-card txs instead of
+  // staring at the progress spinner (the bug this fixes).
+  it('offers the tutorial to a new player while deploying (parallel onboarding)', () => {
+    azt.status = 'deploying'; // localStorage cleared in beforeEach → new player
+    render(<App />);
+    expect(screen.getByText('First time here?')).toBeTruthy();
+    expect(screen.queryByText('Getting You Set Up')).toBeNull();
   });
 
   it('shows the manual FundingPrompt when funding is needed', () => {

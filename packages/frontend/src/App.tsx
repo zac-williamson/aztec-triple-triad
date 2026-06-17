@@ -55,6 +55,18 @@ function AppInner() {
     return <PracticeScreen onExit={() => setPracticeScreen(false)} />;
   }
 
+  // A new player is offered the tutorial. Crucially we ALSO show this during
+  // 'deploying' — i.e. right after they click "I've funded my account" — so they
+  // can play the tutorial while the account-deploy + starter-card txs run in the
+  // background (the deploy lives in AztecProvider, above this component, so it
+  // keeps running even while TutorialScreen is mounted). That turns the ~minute
+  // of onboarding into gameplay instead of a spinner. We never show it during
+  // 'needs-funding' (the FundingPrompt owns that moment).
+  const tutorialPromptVisible =
+    showTutorialPrompt &&
+    aztec.status !== 'needs-funding' &&
+    (aztec.status === 'deploying' || game.screen === 'main-menu');
+
   // The decorative menu 3D scene renders continuously on every menu screen.
   // Under the playtest harness (two headless tabs across a long multi-game
   // session) its WebGL context churn + render load degrades the page (context
@@ -70,7 +82,10 @@ function AppInner() {
 
       {showMenuScene && <MenuScene />}
 
-      {aztec.status === 'deploying' && (
+      {/* While deploying, the tutorial prompt (if shown) takes over — the user
+          plays instead of watching this spinner. Returning users / those who
+          skip the tutorial still see the progress. */}
+      {aztec.status === 'deploying' && !tutorialPromptVisible && (
         <FundingProgress status={aztec.status} />
       )}
 
@@ -81,12 +96,9 @@ function AppInner() {
         />
       )}
 
-      {showTutorialPrompt &&
-        game.screen === 'main-menu' &&
-        aztec.status !== 'needs-funding' &&
-        aztec.status !== 'deploying' && (
-          <TutorialPrompt onLearnToPlay={handleTutorial} onSkip={handlePromptSkip} />
-        )}
+      {tutorialPromptVisible && (
+        <TutorialPrompt onLearnToPlay={handleTutorial} onSkip={handlePromptSkip} />
+      )}
 
       {game.screen === 'main-menu' && (
         <MainMenu
