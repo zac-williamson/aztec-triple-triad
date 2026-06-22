@@ -149,14 +149,8 @@ balances: {
     /** set_nft_contract(addr: struct) */
     set_nft_contract: ((addr: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** set_update_delay(new_delay: integer) */
-    set_update_delay: ((new_delay: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
     /** sync_state(scope: struct) */
     sync_state: ((scope: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** update_to(new_class_id: struct) */
-    update_to: ((new_class_id: WrappedFieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
   };
 
   

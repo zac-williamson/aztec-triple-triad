@@ -47,7 +47,7 @@ import {
   readFunderKey,
 } from './lib/feeJuiceBridge';
 
-const DEFAULT_NODE_URL = 'https://rpc.testnet.aztec-labs.com';
+const DEFAULT_NODE_URL = 'https://v5.testnet.rpc.aztec-labs.com';
 
 async function main() {
   const force = process.argv.includes('--force');

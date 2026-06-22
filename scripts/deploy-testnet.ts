@@ -10,7 +10,7 @@
  * Prerequisites:
  *   1. Get Fee Juice from the bridge https://bridge.aztec-kit.anothercoffeefor.me/ (select Testnet)
  *   2. Set env vars for your funded deployer account:
- *      export AZTEC_PXE_URL=https://rpc.testnet.aztec-labs.com
+ *      export AZTEC_PXE_URL=https://v5.testnet.rpc.aztec-labs.com
  *      export DEPLOYER_SECRET=0x...    # Fr hex from aztec-wallet
  *      export DEPLOYER_SALT=0x...      # Fr hex from aztec-wallet
  *      export DEPLOYER_SIGNING_KEY=0x... # GrumpkinScalar hex
@@ -50,7 +50,7 @@ import {
 } from './lib/feeJuiceBridge';
 import { headroomMaxFeesPerGas } from './lib/feeSettings';
 
-const PXE_URL = process.env.AZTEC_PXE_URL || 'https://rpc.testnet.aztec-labs.com';
+const PXE_URL = process.env.AZTEC_PXE_URL || 'https://v5.testnet.rpc.aztec-labs.com';
 const ROOT_DIR = resolve(import.meta.dirname || __dirname, '..');
 
 // ====================== Helpers ======================

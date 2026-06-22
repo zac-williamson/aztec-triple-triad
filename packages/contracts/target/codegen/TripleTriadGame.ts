@@ -240,17 +240,11 @@ game_claim_block: {
     /** public_dispatch(selector: field) */
     public_dispatch: ((selector: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** set_update_delay(new_delay: integer) */
-    set_update_delay: ((new_delay: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
     /** settle_abandoned_game(game_id: field, caller_card_ids: array, caller_randomness: array, opponent_card_ids: array, claimed_card_id: field, opponent: struct) */
     settle_abandoned_game: ((game_id: FieldLike, caller_card_ids: FieldLike[], caller_randomness: FieldLike[], opponent_card_ids: FieldLike[], claimed_card_id: FieldLike, opponent: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** sync_state(scope: struct) */
     sync_state: ((scope: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** update_to(new_class_id: struct) */
-    update_to: ((new_class_id: WrappedFieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
   };
 
   

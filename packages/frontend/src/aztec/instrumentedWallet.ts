@@ -23,11 +23,13 @@ import { EmbeddedWallet as EmbeddedWalletBase, type EmbeddedWalletOptions } from
 import type { AztecNode } from '@aztec/aztec.js/node';
 import {
   extractOffchainOutput,
-  getGasLimits,
   NO_WAIT,
   type InteractionWaitOptions,
   type SendReturn,
 } from '@aztec/aztec.js/contracts';
+// v5: getGasLimits moved from @aztec/aztec.js/contracts to @aztec/wallet-sdk/base-wallet
+// and now takes (gasUsed, maxTxGasLimits, pad) instead of (simulationResult, pad).
+import { getGasLimits } from '@aztec/wallet-sdk/base-wallet';
 import { waitForTx } from '@aztec/aztec.js/node';
 import type { SendOptions } from '@aztec/aztec.js/wallet';
 import { CallAuthorizationRequest } from '@aztec/aztec.js/authorization';
@@ -156,7 +158,8 @@ export class InstrumentedWallet extends EmbeddedWalletBase {
       });
 
       // ── Compute production gas settings + fee options ────────────────
-      const estimated = getGasLimits(simulationResult, self.estimatedGasPadding ?? 0.1);
+      const maxTxGasLimits = await self.getMaxTxGasLimits();
+      const estimated = getGasLimits(simulationResult.gasUsed, maxTxGasLimits, self.estimatedGasPadding);
       const gasSettings = GasSettings.from({
         ...opts.fee?.gasSettings,
         maxFeesPerGas: estFeeOptions.gasSettings.maxFeesPerGas,

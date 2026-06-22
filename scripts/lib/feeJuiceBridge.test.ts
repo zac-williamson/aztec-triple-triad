@@ -191,7 +191,7 @@ describe('feeJuiceBridge helpers', () => {
   it.skipIf(!liveEnabled)('live: bridges to a throwaway L2 address', async () => {
     const { createAztecNodeClient } = await import('@aztec/aztec.js/node');
     const { bridgeFeeJuice } = await import('./feeJuiceBridge');
-    const node = createAztecNodeClient(process.env.AZTEC_PXE_URL || 'https://rpc.testnet.aztec-labs.com');
+    const node = createAztecNodeClient(process.env.AZTEC_PXE_URL || 'https://v5.testnet.rpc.aztec-labs.com');
     const claim = await bridgeFeeJuice({
       node,
       l1RpcUrl: process.env.TESTNET_L1_RPC_URL!,

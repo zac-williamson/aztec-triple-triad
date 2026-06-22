@@ -97,7 +97,7 @@ pub contract TripleTriadNFT {
             discovery::private_notes::process_private_note_msg,
             encoding::{decode_message, MESSAGE_PLAINTEXT_LEN},
             logs::note::encode_private_note_message,
-            message_delivery::MessageDelivery,
+            delivery::MessageDelivery,
             processing::validate_and_store_enqueued_notes_and_events,
         },
         note::{
@@ -388,7 +388,7 @@ pub contract TripleTriadNFT {
             [owner.to_field(), nonce_value],
         );
         let note = FieldNote { value: nonce_value };
-        storage.note_nonce.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        storage.note_nonce.at(owner).insert(note).deliver(MessageDelivery::onchain_constrained());
     }
 
     // --- Card Generation ---
@@ -401,8 +401,7 @@ pub contract TripleTriadNFT {
         let owner = self.msg_sender();
 
         // Get nhk_app_secret for deterministic randomness
-        let owner_npk_m = get_public_keys(owner).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
+        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
 
         // One starter claim per account (QA-F1). The nullifier is deterministic
@@ -418,7 +417,7 @@ pub contract TripleTriadNFT {
             self.context.anchor_block_header,
             compute_siloed_nullifier(self.address, claim_nullifier),
         );
-        self.context.push_nullifier(claim_nullifier);
+        self.context.push_nullifier_unsafe(claim_nullifier);
 
         // Mint 5 starter cards with deterministic randomness and emit CardCreated events
         for i in 0..5 {
@@ -430,7 +429,7 @@ pub contract TripleTriadNFT {
                 create_and_push_note(self.context, owner, STARTER_CARD_IDS[i], note_randomness);
             self.emit(CardCreated { note_tag, note_payload }).deliver_to(
                 owner,
-                MessageDelivery.OFFCHAIN,
+                MessageDelivery::offchain(),
             );
         }
 
@@ -446,8 +445,7 @@ pub contract TripleTriadNFT {
     #[external("private")]
     fn purchase_card_pack() {
         let owner = self.msg_sender();
-        let owner_npk_m = get_public_keys(owner).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
+        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
 
         // Burn 100 Arena Tokens
@@ -465,7 +463,7 @@ pub contract TripleTriadNFT {
                 create_and_push_note(self.context, owner, card_id as Field, note_randomness);
             self.emit(CardCreated { note_tag, note_payload }).deliver_to(
                 owner,
-                MessageDelivery.OFFCHAIN,
+                MessageDelivery::offchain(),
             );
         }
 
@@ -478,8 +476,7 @@ pub contract TripleTriadNFT {
     #[external("private")]
     fn preview_card_ids(nonce_value: Field) -> [Field; 10] {
         let owner = self.msg_sender();
-        let owner_npk_m = get_public_keys(owner).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
+        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
         let seed = self.context.request_nhk_app(owner_npk_m_hash);
 
         let mut result = [0 as Field; 10];
@@ -545,7 +542,7 @@ pub contract TripleTriadNFT {
         assert(self.msg_sender() == minter, "Only minter can mint");
 
         let note = FieldNote { value: token_id };
-        self.storage.private_nfts.at(to).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        self.storage.private_nfts.at(to).insert(note).deliver(MessageDelivery::onchain_constrained());
 
         self.enqueue_self.finalize_mint(to, token_id, packed_ranks);
     }
@@ -578,8 +575,7 @@ pub contract TripleTriadNFT {
         assert((caller == game) | (caller == owner), "Only game contract or owner can commit");
 
         // Get nhk_app_secret first (needed for nullifier logging and derivations)
-        let owner_npk_m = get_public_keys(owner).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
+        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
 
         // Log nonce note nullifier before popping
@@ -648,8 +644,7 @@ pub contract TripleTriadNFT {
         assert((caller == game) | (caller == owner), "Only game contract or owner can commit");
 
         // Get nhk_app_secret first (needed for nullifier logging and derivations)
-        let owner_npk_m = get_public_keys(owner).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
+        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
 
         // Log nonce note nullifier before popping
@@ -723,7 +718,7 @@ pub contract TripleTriadNFT {
             let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
             self.emit(CardCreated { note_tag, note_payload }).deliver_to(
                 to,
-                MessageDelivery.OFFCHAIN,
+                MessageDelivery::offchain(),
             );
         }
     }
@@ -744,7 +739,7 @@ pub contract TripleTriadNFT {
             let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
             self.emit(CardCreated { note_tag, note_payload }).deliver_to(
                 to,
-                MessageDelivery.OFFCHAIN,
+                MessageDelivery::offchain(),
             );
         }
     }
@@ -758,7 +753,7 @@ pub contract TripleTriadNFT {
         for i in 0..5 {
             let note = FieldNote { value: token_ids[i] };
             self.storage.private_nfts.at(to).insert(note).deliver(
-                MessageDelivery.ONCHAIN_CONSTRAINED,
+                MessageDelivery::onchain_constrained(),
             );
         }
     }
@@ -779,7 +774,7 @@ pub contract TripleTriadNFT {
             let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
             self.emit(CardCreated { note_tag, note_payload }).deliver_to(
                 to,
-                MessageDelivery.OFFCHAIN,
+                MessageDelivery::offchain(),
             );
         }
     }
@@ -795,7 +790,7 @@ pub contract TripleTriadNFT {
         let note_payload = encrypt_card_payload(token_id, randomness);
         self.emit(CardCreated { note_tag, note_payload }).deliver_to(
             to,
-            MessageDelivery.OFFCHAIN,
+            MessageDelivery::offchain(),
         );
     }
 
@@ -840,7 +835,7 @@ pub contract TripleTriadNFT {
         assert(notes.len() == 1, "Card not found");
 
         let note = FieldNote { value: token_id };
-        self.storage.private_nfts.at(to).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        self.storage.private_nfts.at(to).insert(note).deliver(MessageDelivery::onchain_constrained());
     }
 
     #[external("public")]
@@ -921,7 +916,7 @@ pub contract TripleTriadNFT {
         let owner = self.msg_sender();
 
         let note = FieldNote { value: token_id };
-        self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery::onchain_constrained());
 
         self.enqueue_self.finalize_reclaim(owner, token_id);
     }
@@ -1002,8 +997,7 @@ pub contract TripleTriadNFT {
     #[external("private")]
     fn compute_note_randomness(nonce_value: Field, count: u32) -> [Field; 10] {
         let owner = self.msg_sender();
-        let owner_npk_m = get_public_keys(owner).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
+        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
 
         let mut result = [0 as Field; 10];
@@ -1025,8 +1019,7 @@ pub contract TripleTriadNFT {
     #[external("private")]
     fn preview_game_data(nonce_value: Field) -> [Field; 7] {
         let owner = self.msg_sender();
-        let owner_npk_m = get_public_keys(owner).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
+        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
 
         let game_id = derive_game_id(nhk_app_secret, nonce_value);
@@ -1049,8 +1042,7 @@ pub contract TripleTriadNFT {
     #[external("private")]
     fn compute_blinding_factor(game_id: Field) -> Field {
         let owner = self.msg_sender();
-        let owner_npk_m = get_public_keys(owner).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
+        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
         let seed = self.context.request_nhk_app(owner_npk_m_hash);
         poseidon2_hash([seed, self.address.to_field(), game_id])
     }
@@ -1157,7 +1149,7 @@ pub contract TripleTriadNFT {
             let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
             self.emit(CardCreated { note_tag, note_payload }).deliver_to(
                 to,
-                MessageDelivery.OFFCHAIN,
+                MessageDelivery::offchain(),
             );
         }
     }
@@ -1168,8 +1160,7 @@ pub contract TripleTriadNFT {
     fn get_cards_for_new_player_test(nonce_value: Field) {
         let owner = self.msg_sender();
 
-        let owner_npk_m = get_public_keys(owner).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
+        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
 
         for i in 0..5 {
@@ -1181,7 +1172,7 @@ pub contract TripleTriadNFT {
                 create_and_push_note(self.context, owner, STARTER_CARD_IDS[i], note_randomness);
             self.emit(CardCreated { note_tag, note_payload }).deliver_to(
                 owner,
-                MessageDelivery.OFFCHAIN,
+                MessageDelivery::offchain(),
             );
         }
 
@@ -1226,7 +1217,7 @@ pub contract TripleTriadNFT {
             let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
             self.emit(CardCreated { note_tag, note_payload }).deliver_to(
                 to,
-                MessageDelivery.OFFCHAIN,
+                MessageDelivery::offchain(),
             );
         }
         // Advance nonce by 6 (same as mint_for_game_winner)
@@ -1240,8 +1231,7 @@ pub contract TripleTriadNFT {
     fn test_nullify_cards(owner: AztecAddress, token_ids: [Field; 5]) {
         assert(self.msg_sender() == owner, "Only owner can nullify");
 
-        let owner_npk_m = get_public_keys(owner).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
+        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
 
         // Log nullifiers before popping for diagnostic comparison
@@ -1271,8 +1261,7 @@ pub contract TripleTriadNFT {
     /// Does NOT touch note_nonce -- caller manages nonce separately.
     #[external("private")]
     fn test_create_10_cards(to: AztecAddress, token_ids: [Field; 10], nonce_offset: Field) {
-        let owner_npk_m = get_public_keys(to).npk_m;
-        let owner_npk_m_hash = owner_npk_m.hash();
+        let owner_npk_m_hash = get_public_keys(to).npk_m_hash;
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
 
         for i in 0..10 {
@@ -1282,7 +1271,7 @@ pub contract TripleTriadNFT {
             let note_payload = encrypt_card_payload(token_ids[i], note_randomness);
             self.emit(CardCreated { note_tag, note_payload }).deliver_to(
                 to,
-                MessageDelivery.OFFCHAIN,
+                MessageDelivery::offchain(),
             );
         }
     }

@@ -23,7 +23,7 @@
  * starter-state assert intact — no relaxed asserts anywhere).
  *
  * Usage:
- *   export AZTEC_PXE_URL=https://rpc.testnet.aztec-labs.com
+ *   export AZTEC_PXE_URL=https://v5.testnet.rpc.aztec-labs.com
  *   export TESTNET_L1_RPC_URL=https://...sepolia...
  *   export TREASURY_L1_KEY=0x...            # or TREASURY_L1_KEY_FILE (chmod 600)
  *   npx tsx scripts/provision-playtest-accounts.ts --count 8
@@ -66,7 +66,7 @@ import { STARTER_CARD_IDS, STARTER_CARD_COUNT } from '../packages/frontend/src/a
 import type { StoredCard } from '../packages/frontend/src/aztec/cardStore';
 
 const ROOT_DIR = resolve(import.meta.dirname || __dirname, '..');
-const PXE_URL = process.env.AZTEC_PXE_URL || 'https://rpc.testnet.aztec-labs.com';
+const PXE_URL = process.env.AZTEC_PXE_URL || 'https://v5.testnet.rpc.aztec-labs.com';
 const ENV_PATH = resolve(ROOT_DIR, 'packages/frontend/.env.testnet');
 const MANIFEST_PATH = resolve(ROOT_DIR, 'packages/playtest/.artifacts/playtest-accounts.json');
 const TX_TIMEOUT = 600; // seconds — testnet block inclusion + proving headroom

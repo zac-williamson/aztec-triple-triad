@@ -35,7 +35,7 @@ pub contract ArenaToken {
             discovery::private_notes::process_private_note_msg,
             encoding::{decode_message, MESSAGE_PLAINTEXT_LEN},
             logs::note::encode_private_note_message,
-            message_delivery::MessageDelivery,
+            delivery::MessageDelivery,
             processing::validate_and_store_enqueued_notes_and_events,
         },
         note::note_interface::{NoteHash, NoteType},
@@ -99,7 +99,7 @@ pub contract ArenaToken {
             "Unauthorized: only admin, NFT, or game contract can mint",
         );
 
-        self.storage.balances.at(to).add(amount).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        self.storage.balances.at(to).add(amount).deliver(MessageDelivery::onchain_constrained());
     }
 
     /// Mint a reward to a recipient who is NOT the tx submitter (the game loser,
@@ -133,7 +133,7 @@ pub contract ArenaToken {
         let nft = self.storage.nft_contract.read();
         assert(caller == nft, "Only NFT contract can burn");
 
-        self.storage.balances.at(from).sub(amount).deliver(MessageDelivery.ONCHAIN_CONSTRAINED);
+        self.storage.balances.at(from).sub(amount).deliver(MessageDelivery::onchain_constrained());
     }
 
     /// Query a player's private token balance (unconstrained, runs client-side).

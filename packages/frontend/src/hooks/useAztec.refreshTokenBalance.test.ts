@@ -27,7 +27,7 @@ vi.mock('../aztec/connectToAztec', () => ({
 vi.mock('../aztec/AztecContext', () => ({
   AZTEC_CONFIG: {
     enabled: true,
-    pxeUrl: 'https://rpc.testnet.aztec-labs.com',
+    pxeUrl: 'https://v5.testnet.rpc.aztec-labs.com',
     tokenContractAddress: '0xtoken',
     storageKeys: { accountAddress: 'acc' },
   },
