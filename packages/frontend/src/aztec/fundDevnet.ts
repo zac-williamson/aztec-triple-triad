@@ -49,12 +49,28 @@ export async function fundAccountOnDevnet(
   const result = await portalManager.bridgeTokensPublic(l2Address, undefined, true);
   log('Fee Juice bridged to L1 portal');
 
-  // Wait for L1→L2 message to appear in the L2 tree.
-  // With SEQ_MIN_TX_PER_BLOCK=0, the sequencer produces empty blocks
-  // that incorporate pending L1→L2 messages.
+  // Wait for the L1→L2 message to appear in the L2 tree.
+  // v5: `aztec start --local-network` runs an AUTOMINE sequencer
+  // (USE_AUTOMINE_SEQUENCER) that only builds an L2 block on tx activity — so a
+  // freshly-bridged L1→L2 message has no block to land in (the 4.x timer-based
+  // empty-block behaviour from minTxsPerBlock=0 is gone). Nudge the sequencer to
+  // mine an empty block each poll via the debug endpoint (exposed by
+  // AZTEC_NODE_DEBUG=true in start-sandbox.sh); ~2 blocks after the deposit the
+  // message is included. minTxsPerBlock=0 is still required so the nudged block
+  // can be empty. No-op/ignored if the debug endpoint is absent.
+  const mineBlock = async () => {
+    try {
+      await fetch('http://localhost:8080', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'aztecDebug_mineBlock', params: [], id: 1 }),
+      });
+    } catch { /* slot may already hold a block; ignore and retry next poll */ }
+  };
   const messageHash = Fr.fromHexString(result.messageHash);
   log('Waiting for L1→L2 message to be included in L2...');
   for (let i = 0; i < 120; i++) {
+    await mineBlock();
     try {
       const witness = await node.getL1ToL2MessageMembershipWitness('latest', messageHash);
       if (witness) {
