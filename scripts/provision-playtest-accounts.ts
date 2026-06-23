@@ -291,24 +291,38 @@ async function provisionOne(index: number, opts: ProvisionOpts): Promise<Manifes
   const claim = await obtainClaim(node, addressStr, opts.minFeeJuice);
   console.log('  deploying account (claim paid in-tx)...');
   let freshlyDeployed = false;
-  try {
-    const deployMethod = await account.getDeployMethod();
-    await deployMethod.send({
-      from: NO_FROM,
-      fee: {
-        paymentMethod: new FeeJuicePaymentMethodWithClaim(address, claim),
-        gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) },
-      },
-      wait: { timeout: TX_TIMEOUT },
-    });
-    markClaimConsumed(claimStorePath(), addressStr);
-    freshlyDeployed = true;
-    console.log('  account deployed; claim consumed');
-  } catch (err: any) {
-    const msg = String(err?.cause?.message ?? err?.message ?? err);
-    if (/Existing nullifier/i.test(msg)) {
-      console.log('  account already deployed (Existing nullifier) — proceeding to mint');
-    } else {
+  // Testnet prunes block history fast: after a long obtainClaim (the L1->L2 bridge
+  // message wait) the PXE's anchor block can be pruned by deploy time, so the tx is
+  // rejected "Invalid tx: Block header not found". Retry — a fresh build re-anchors
+  // to a current block (the PXE keeps syncing forward between attempts). This is
+  // transient-infra resilience, not masking: a real revert (Existing nullifier) is
+  // handled separately and anything else after the retries still throws.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const deployMethod = await account.getDeployMethod();
+      await deployMethod.send({
+        from: NO_FROM,
+        fee: {
+          paymentMethod: new FeeJuicePaymentMethodWithClaim(address, claim),
+          gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) },
+        },
+        wait: { timeout: TX_TIMEOUT },
+      });
+      markClaimConsumed(claimStorePath(), addressStr);
+      freshlyDeployed = true;
+      console.log('  account deployed; claim consumed');
+      break;
+    } catch (err: any) {
+      const msg = String(err?.cause?.message ?? err?.message ?? err);
+      if (/Existing nullifier/i.test(msg)) {
+        console.log('  account already deployed (Existing nullifier) — proceeding to mint');
+        break;
+      }
+      if (/Block header not found|Invalid tx/i.test(msg) && attempt < 6) {
+        console.log(`  deploy attempt ${attempt} failed (${msg.slice(0, 70)}); re-syncing PXE + retrying...`);
+        await sleep(PXE_SYNC_WAIT_MS);
+        continue;
+      }
       throw err;
     }
   }
