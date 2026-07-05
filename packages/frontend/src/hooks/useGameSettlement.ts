@@ -46,6 +46,10 @@ export interface SettlementPlayDeps {
   getMoveProofs: () => MoveProofData[];
   waitForHandProofs: (timeoutMs: number) => Promise<void>;
   waitForMoveProofs: (timeoutMs: number) => Promise<void>;
+  /** Reactive: true once both hand proofs + all 9 move proofs are collected
+   *  (used to auto-settle a draw, where neither player is the winner). Optional
+   *  so unit-test mocks that don't exercise the draw path can omit it. */
+  canSettle?: boolean;
 }
 
 export interface UseGameSettlementParams {
@@ -345,8 +349,11 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           throw new Error('No opponent randomness (OPPONENT_AZTEC_INFO incomplete)');
         }
 
-        // Notify opponent NOW — settlement will actually proceed.
-        // Uses captured function ref that binds to the game's WebSocket send().
+        // Notify the opponent NOW — settlement will actually proceed. Uses the
+        // captured ref bound to the game's WebSocket send(). For a DRAW this is the
+        // SETTLE_STARTED that engages the opponent's wait-for-relay path (the SAME
+        // path the win-loser uses): only ONE player settles a draw; the other waits
+        // for the relayed cards rather than sending a second, doomed transaction.
         capturedNotifySettle(capturedGameId, selectedCardId);
 
         const capturedMoveProofs = play.getMoveProofs();
@@ -471,6 +478,8 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
       },
     }).catch((err) => {
       const message = err instanceof Error ? err.message : 'Transaction failed';
+      // Only ONE player settles a draw (single-settler), so a failure here is a
+      // genuine settle failure — never a benign "lost the race" revert. Surface it.
       console.error('[useGameSettlement] settleGame error:', err);
       setSettleError(message);
       setSettleTxStatus('error');
@@ -483,6 +492,43 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
       session.getSettlementInfo, session.backfillSettlementInfoFromWs, session.clearSettlementInfo,
       play.getMyHandProof, play.getOpponentHandProof, play.waitForHandProofs,
       play.waitForMoveProofs, play.getMoveProofs]);
+
+  // Auto-settle a DRAW. Neither player is "the winner", so the win card-picker
+  // never renders and nothing would otherwise call handleSettle — leaving both
+  // wagered hands stranded on-chain. SINGLE SETTLER (NOT both-attempt): the game
+  // settles exactly once, so only PLAYER 1 sends process_game (winner_id=3 → both
+  // hands re-minted, +20 tokens each) and relays player 2's cards; player 2 sends
+  // NO transaction — it waits for the relay via the same path the win-loser uses
+  // (SETTLE_STARTED → awaiting_settlement → NOTE_DATA import). A second
+  // process_game would only revert on the already-settled game; we never send it.
+  const drawSettleTriggeredRef = useRef(false);
+  useEffect(() => {
+    if (ws.gameOver?.winner !== 'draw') { drawSettleTriggeredRef.current = false; return; }
+    if (ws.playerNumber !== 1) return;              // single settler: only player 1 settles; player 2 waits for the relay
+    if (drawSettleTriggeredRef.current) return;     // fire once per draw
+    if (!play.canSettle) return;                    // need the full proof transcript
+    if (settleTxStatus !== 'idle') return;          // not already settling
+    drawSettleTriggeredRef.current = true;
+    // The draw is declared OFF-CHAIN (relay) before the slower ON-CHAIN join
+    // lands, so the game may still be 'joining'/'awaiting_join' here. handleSettle
+    // runs its waitForActivePhase INSIDE the serial PXE queue — if we call it now
+    // it grabs the queue slot and waits for the join, but the join is queued
+    // BEHIND it and can never run → deadlock until the timeout. So wait for the
+    // game to become 'active' OUT here (outside the queue) first, letting the join
+    // run; only then enter handleSettle (whose own active-check then passes fast).
+    if (session.getPhase() === 'active') {
+      console.log('[useGameSettlement] draw detected — auto-settling (player 1, winner_id=3)');
+      void handleSettle(0);
+    } else {
+      console.log('[useGameSettlement] draw detected — awaiting on-chain active, then auto-settling (player 1)');
+      void session.waitForActivePhase(AZTEC_SETTLE_TX_TIMEOUT * 1000)
+        .then(() => handleSettle(0))
+        .catch((e) => {
+          console.error('[useGameSettlement] draw auto-settle aborted — game never became active:', e);
+          drawSettleTriggeredRef.current = false; // allow a retry if the phase recovers
+        });
+    }
+  }, [ws.gameOver, ws.playerNumber, play.canSettle, settleTxStatus, handleSettle, session.getPhase, session.waitForActivePhase]);
 
   // --- Abandoned game handler ---
   const handleAbandonedGame = useCallback(async () => {

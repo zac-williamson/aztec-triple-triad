@@ -165,9 +165,9 @@ test.describe.serial('multi-game with packs', () => {
     // Print the per-game table regardless of pass/fail.
     if (rows.length) {
       const fmt = (r: GameRow) =>
-        `  game ${r.game} | ${r.outcome === 'draw' ? 'DRAW (no settle)' : `winner=${r.winner}`} | ` +
+        `  game ${r.game} | ${r.outcome === 'draw' ? 'DRAW (settled)' : `winner=${r.winner}`} | ` +
         `alice cards ${r.aliceCards} tokens ${r.aliceTokens} | bob cards ${r.bobCards} tokens ${r.bobTokens} | ` +
-        (r.outcome === 'draw' ? 'hands stranded (product bug)' : `claimed #${r.claimed} | settle ${r.settleOk ? 'OK' : 'FAIL'}`);
+        (r.outcome === 'draw' ? `both hands returned + 20 each | settle ${r.settleOk ? 'OK' : 'FAIL'}` : `claimed #${r.claimed} | settle ${r.settleOk ? 'OK' : 'FAIL'}`);
       console.log('\n=== C-multi per-game results ===\n' + rows.map(fmt).join('\n') + '\n');
     }
     backend?.stop();
@@ -231,10 +231,9 @@ test.describe.serial('multi-game with packs', () => {
       logMem(`after-game-${g}`);
     }
 
-    // All games completed. Decisive games must have settled; a draw is a VALID
-    // completed game that does NOT settle by design — the draw branch fully
-    // asserts its real outcome (incl. the stranded-hands product bug), so it
-    // needs no settle assertion here.
+    // All games completed. Both decisive games and draws settle on-chain (a draw
+    // via the single-settler path); the per-outcome branch above fully asserts
+    // each one's settled state, so no extra settle assertion is needed here.
     expect(rows.length, 'all games completed').toBe(GAMES);
     for (const r of rows) {
       if (r.outcome === 'draw') continue;
@@ -366,16 +365,12 @@ async function playOneGame(
   seen.onChainGameIds.add(onChainGameId);
 
   // ════════════════════════════ DRAW outcome ════════════════════════════
-  // KNOWN PRODUCT BUG (flagged to Zac as a separate follow-up — do NOT fix it
-  // here): a draw is never settled. On a draw GameHUD shows BOTH players only
-  // "Back to Lobby" (no card picker), and nothing auto-settles, so the 5-card
-  // hand each player committed (nullified) at create_game/join_game is NEVER
-  // returned — a draw STRANDS both wagered hands on-chain and pays no reward.
-  // The draw-settle path (useGameSettlement.handleSettle with selectedCardId=0
-  // → process_game returns both hands, no transfer) EXISTS but is unwired in the
-  // UI. We FULLY assert that real outcome below (no relaxed asserts); if the
-  // draw-settle ever gets wired the card/token/status asserts flip and this
-  // fails loud — exactly the regression signal we want.
+  // A draw is a legitimate result: the board is 9 cells, but score = owned cells
+  // PLUS the one card each player still holds, so a 5-board split + that leftover
+  // hand card = 5-5. The draw-settle is wired SINGLE-SETTLER: player 1 auto-fires
+  // the one handleSettle(0) (contract winner_id=3 returns BOTH hands, +20 each);
+  // player 2 waits for the relay. We fully assert that settled outcome below
+  // (net-0 cards, +20 each, status settled) — with no failing transaction.
   if (outcome === 'draw') {
     // Genuine draw, agreed by both browsers: board full, scores tied, no winner.
     for (const [d, ph] of [[first, firstOver], [second, secondOver]] as const) {
@@ -384,25 +379,37 @@ async function playOneGame(
       expect(ph.game!.myScore, `game ${gameNum} draw: ${d.name} scores tied`).toBe(ph.game!.opponentScore);
       expect(ph.ws.gameOver!.winner, `game ${gameNum} draw: ${d.name} winner=draw`).toBe('draw');
     }
-    // No settlement happened or is pending on either side (a draw never settles).
-    for (const d of [first, second]) {
-      const c = (await d.phase()).chain;
-      expect(c.settleTxStatus, `game ${gameNum} draw: ${d.name} never settled`).toBe('idle');
-      expect(c.opponentSettled, `game ${gameNum} draw: ${d.name} no opponent settle`).toBe(false);
-      expect(c.takenCardId, `game ${gameNum} draw: ${d.name} no card taken`).toBeNull();
-    }
-    // Public chain: created+joined but NOT settled — only create/join touch the
-    // chain, process_game never ran, so a draw leaves the game 'active'.
-    expect(await chain.gameStatus(onChainGameId), `game ${gameNum} draw: on-chain not settled (active)`)
-      .toBe(GAME_STATUS.active);
-    // Card economy (the bug): each committed 5-card hand is stranded, never
-    // returned → private cards drop by exactly HAND; no settlement → no reward.
-    await alice.expectEventually(`game ${gameNum} draw: alice hand stranded (−${HAND})`,
-      async () => (await alice.privateCards()).length, aliceBeforeCards.length - HAND);
-    await bob.expectEventually(`game ${gameNum} draw: bob hand stranded (−${HAND})`,
-      async () => (await bob.privateCards()).length, bobBeforeCards.length - HAND);
-    expect(await alice.tokenBalance(), `game ${gameNum} draw: alice no reward`).toBe(aliceBeforeTokens);
-    expect(await bob.tokenBalance(), `game ${gameNum} draw: bob no reward`).toBe(bobBeforeTokens);
+    // SINGLE SETTLER: player 1 (the creator) sends the ONE process_game(winner_id=3)
+    // — re-mints BOTH hands, pays 20 tokens each, relays player 2's returned cards.
+    // Player 2 sends NO tx; it waits for that relay (the same path the win-loser
+    // uses). No second, doomed process_game → no revert.
+    // Wait on the SETTLER's (player 1's) confirmation. Player 2's cards arrive via
+    // the relay; the net-0 card + token asserts below poll until that import lands.
+    // (A draw has no "taken card", so the win-loser's waitOpponentSettled — which
+    // keys on takenCardId !== null — never resolves and must not be used here.)
+    const settlerD = driverFor('player1');
+    await settlerD.waitSettleConfirmed();
+    // Public chain: the draw is SETTLED (process_game ran), not left active.
+    await alice.expectEventually(`game ${gameNum} draw: on-chain settled`,
+      async () => await chain.gameStatus(onChainGameId), GAME_STATUS.settled);
+    // Card economy: each wagered 5-card hand is RETURNED (winner_id=3 re-mints
+    // both, no transfer) → private card count nets to 0 across the game; and both
+    // players are paid the 20-token reward.
+    await alice.expectEventually(`game ${gameNum} draw: alice hand returned (net 0)`,
+      async () => (await alice.privateCards()).length, aliceBeforeCards.length);
+    await bob.expectEventually(`game ${gameNum} draw: bob hand returned (net 0)`,
+      async () => (await bob.privateCards()).length, bobBeforeCards.length);
+    await alice.expectEventually(`game ${gameNum} draw: alice tokens +${GAME_REWARD}`,
+      () => alice.tokenBalance(), aliceBeforeTokens + GAME_REWARD);
+    await bob.expectEventually(`game ${gameNum} draw: bob tokens +${GAME_REWARD}`,
+      () => bob.tokenBalance(), bobBeforeTokens + GAME_REWARD);
+    // Public chain: on-chain players == the two browser accounts.
+    const drawPlayers = await chain.gamePlayers(onChainGameId);
+    expect([drawPlayers.player1.toLowerCase(), drawPlayers.player2.toLowerCase()].sort(),
+      `game ${gameNum} draw: on-chain players`).toEqual([
+        (await alice.phase()).accountAddress!.toLowerCase(),
+        (await bob.phase()).accountAddress!.toLowerCase(),
+      ].sort());
     // Backend room finished (GAME_OVER released both players for the next game).
     const drawRes = await fetch(`${BACKEND_URL}/games/${wsGameId}`);
     if (drawRes.ok) {
@@ -421,9 +428,9 @@ async function playOneGame(
       bobCards: `${bobBeforeCards.length}→${(await bob.privateCards()).length}`,
       aliceTokens: `${aliceBeforeTokens}→${await alice.tokenBalance()}`,
       bobTokens: `${bobBeforeTokens}→${await bob.tokenBalance()}`,
-      claimed: null, settleOk: null,
+      claimed: null, settleOk: true,
     });
-    return; // draw fully asserted — continue to the next game
+    return; // settled draw fully asserted — continue to the next game
   }
 
   // ══════════════════════════ DECISIVE outcome ══════════════════════════
@@ -441,8 +448,13 @@ async function playOneGame(
   // Mid-game nullification: the 5 committed hand cards are spent → count − 5.
   const winnerPre = winnerD === alice ? aliceBeforeCards : bobBeforeCards;
   const loserPre = loserD === alice ? aliceBeforeCards : bobBeforeCards;
-  expect((await winnerD.privateCards()).length, `${winnerD.name} hand committed`).toBe(winnerPre.length - HAND);
-  expect((await loserD.privateCards()).length, `${loserD.name} hand committed`).toBe(loserPre.length - HAND);
+  // Poll, don't snapshot: the nullifier lands on-chain by waitCanSettle, but the
+  // PXE's private-note view catches up a beat later (more so under request
+  // pacing), so a bare snapshot here races the 5th card's nullification.
+  await winnerD.expectEventually(`${winnerD.name} hand committed`,
+    async () => (await winnerD.privateCards()).length, winnerPre.length - HAND);
+  await loserD.expectEventually(`${loserD.name} hand committed`,
+    async () => (await loserD.privateCards()).length, loserPre.length - HAND);
 
   let settleOk = false;
   try {
