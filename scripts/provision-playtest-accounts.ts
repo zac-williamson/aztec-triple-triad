@@ -85,6 +85,12 @@ interface ManifestEntry {
   starterCards: StoredCard[];
   /** Single-use flag: the harness flips this to true on claim. */
   used: boolean;
+  /** rollupVersion of the chain this account was provisioned on. The rc
+   *  testnet re-genesises on upgrades, orphaning every account — an entry
+   *  stamped for a different chain is re-provisioned, not skipped (same
+   *  deterministic keys, fresh deploy). Entries without a stamp predate it
+   *  and are treated as stale. */
+  rollupVersion?: number;
 }
 
 interface ProvisionOpts {
@@ -417,6 +423,13 @@ async function main() {
     loadArtifact('arena_token-ArenaToken'),
   ]);
 
+  // Chain identity: accounts only exist on the chain they were deployed to,
+  // and the rc testnet re-genesises on upgrades. Stamp new entries and treat
+  // a mismatched (or missing) stamp as "this account does not exist anymore".
+  const { rollupVersion } = await createAztecNodeClient(PXE_URL).getNodeInfo();
+  const currentRollupVersion = Number(rollupVersion);
+  console.log(`  Chain:  rollupVersion ${currentRollupVersion}`);
+
   const byIndex = new Map<number, ManifestEntry>(loadManifest().map((e) => [e.index, e]));
   const opts: ProvisionOpts = { nftAddress, tokenAddress, nftArtifact, tokenArtifact, minFeeJuice };
 
@@ -425,11 +438,15 @@ async function main() {
   for (let i = start; i < start + count; i++) {
     const existing = byIndex.get(i);
     if (existing && existing.starterCards?.length === STARTER_CARD_COUNT) {
-      console.log(`\nskip #${i} — already provisioned (${existing.address}, used=${existing.used})`);
-      skipped++;
-      continue;
+      if (existing.rollupVersion === currentRollupVersion) {
+        console.log(`\nskip #${i} — already provisioned (${existing.address}, used=${existing.used})`);
+        skipped++;
+        continue;
+      }
+      console.log(`\nre-provision #${i} — manifest entry is from a different chain (rollupVersion ${existing.rollupVersion ?? 'unstamped'} vs ${currentRollupVersion})`);
     }
     const entry = await provisionOne(i, opts);
+    entry.rollupVersion = currentRollupVersion;
     byIndex.set(i, entry);
     // Incremental write so a mid-run failure preserves completed accounts.
     saveManifest([...byIndex.values()].sort((a, b) => a.index - b.index));
