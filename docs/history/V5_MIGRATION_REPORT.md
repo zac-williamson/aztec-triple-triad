@@ -257,3 +257,52 @@ measurement probe in the harness that should be removed or formalized before com
   pruning behavior is the network's, not the app's, and should ease as v5
   stabilizes — but the app should still be made resilient to it rather than
   depend on it.
+
+---
+
+## 8. Addendum (2026-07-05): the rc.2 re-genesis, and the wedge root-caused
+
+_Written by the follow-up session that completed the outstanding work._
+
+**The testnet re-genesis'd again.** On 2026-06-30 (the day after `5.0.0-rc.2`
+was published) the v5 testnet was redeployed onto the rc.2 protocol
+(rollupVersion 4239416255 → 2787991301). Everything §2 deployed was orphaned —
+site up, node answering, every game interaction dead. The app was bumped to
+rc.2 (one API break: `AztecAddress.fromString` → `fromStringUnsafe`) and the
+three contracts redeployed:
+
+| Contract | Address (v5-rc.2 testnet) |
+|---|---|
+| NFT (cards) | `0x10df90239cc64c7827d57f8fe2958dd1c674d59865f9940c3549917b4b594375` |
+| Game | `0x0646172450367389f74e52d4501b42e8df19645e34f40e76d4f14fc8a31b3706` |
+| Token (rewards) | `0x0c6a812b03dd931549bfa86ca5a560fea420dc882b4efebb1b24dccb44530f88` |
+
+`scripts/check-testnet-state.ts` now exists so the next re-genesis is a
+3-minute detection, not a debugging session. Expect one more when stable v5
+ships.
+
+**The §6.1 wedge was our own bug.** The fix direction §6.1 proposed ("keep
+P2's PXE synced during the idle wait") was right, but the root cause was
+sharper than "the harness idles": the v5 embedded browser PXE has **no
+background sync at all** (`autoSync: false`) — stock `EmbeddedWallet.sendTx`
+compensates by syncing as its FIRST line, and our `instrumentedWallet.sendTx`
+override (ported from the 4.3.1 shape, where no such line existed) **omitted
+it**. Simulates synced; sends didn't. Every send therefore proved against an
+anchor as stale as the last simulate — the idle joiner's was 40s+ old, the
+testnet prunes that fast, and the "testnet instability" of §6.1 was mostly us
+again (the same lesson as §4.3, one layer deeper).
+
+Why it wedged *permanently*: once the anchor's block is pruned, the SDK's
+block-stream walk-back throws, the error is swallowed, and `pxe.sync()`
+resolves "successfully" having advanced nothing — forever. So a sync that
+*reports* success is not a health signal; anchor-vs-tip lag is.
+
+The fix that shipped: (1) `sendTx` syncs first again (stock parity) and logs
+`anchor #N hash tip #M lag L` on every send; (2) a keep-synced scheduler
+enqueues one sync per 15s of genuine queue idle, covering the joiner's wait
+and lobby idling; (3) `withReorgRetry` does sync-then-retry (no queue-holding
+sleeps) and **fails fast with `[PXE_WEDGED]`** when a resync can't move a
+far-behind anchor; (4) a "Repair Chain Sync" action rebuilds only the
+`pxe_data_*` stores (keys/cards/wallet survive) for the already-wedged case;
+(5) each harness browser caps prover threads at half the cores so one
+browser's proof can't starve the other's sync.

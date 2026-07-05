@@ -9,14 +9,16 @@ join, settle — and settlement recursively verifies the full proof transcript
 the wagered card. See `README.md` for setup as a user; this file is for people
 (and agents) changing the code.
 
-## Current effort (June 2026)
+## Current state (July 2026)
 
-The project is being revived for the Aztec 4.3.1 testnet by parallel
-workstreams. **`docs/plan/MASTER_PLAN.md` is the source of truth** — read it
-before making changes; it defines lane file-ownership (who may edit what),
-the dependency graph, and the ground rules repeated below. The April testnet
-contracts no longer exist (the testnet was redeployed on a new rollup);
-local-sandbox work at the pinned version is unaffected.
+The app runs on the **Aztec v5 testnet** (5.0.0-rc.2). Beware: the rc-series
+testnet **re-genesises on protocol upgrades** (it did on 2026-06-17 for v5 and
+again on 2026-06-30 for rc.2), silently orphaning deployed contracts — run
+`npx tsx scripts/check-testnet-state.ts` when anything on-chain looks dead,
+and expect one more redeploy when stable v5 ships. The June-2026 lane-based
+revival (docs/plan/MASTER_PLAN.md) is finished; those docs are history, not
+current process. `docs/history/V5_MIGRATION_REPORT.md` records the v4→v5
+migration and its lessons (rate-limiter detour, idle-joiner anchor wedge).
 
 ## Repo map
 
@@ -46,27 +48,29 @@ is the wishlist.
 
 | What | Pin |
 |------|-----|
-| Aztec CLI / sandbox install | `4.3.1` (worktree `.aztecrc` pins it) |
-| npm `@aztec/*` packages | `4.3.1` |
-| aztec-nr git tags in `Nargo.toml` (contracts + circuits) | `v4.3.1` |
-| nargo / `@noir-lang/noir_js` | `1.0.0-beta.21` |
+| Aztec CLI / sandbox install | `5.0.0-rc.2` (worktree `.aztecrc` pins it) |
+| npm `@aztec/*` packages | `5.0.0-rc.2` |
+| aztec-nr git tags in `Nargo.toml` (contracts) | `v5.0.0-rc.2` |
+| nargo / `@noir-lang/noir_js` | `1.0.0-beta.22` |
 | poseidon git tag (circuits) | `v0.3.0` |
 | Node.js | >= 22 |
 
-One uniform set on **4.3.1 stable** (landed by Lanes 1+2, June 2026). Treat it
-as one set — never bump one without the others, never mix versions across
-packages.
+One uniform set on **5.0.0-rc.2** (July 2026; the testnet re-genesis'd onto it
+2026-06-30). Treat it as one set — never bump one without the others, never mix
+versions across packages. The standalone circuits carry no aztec-nr deps (only
+poseidon); the three contracts carry the aztec-nr tags.
 
 ```bash
-aztec-up use 4.3.1     # switch an existing install; or install fresh:
-bash -i <(curl -s https://install.aztec.network) 4.3.1
+aztec-up install 5.0.0-rc.2   # then switch the active toolchain:
+aztec-up use 5.0.0-rc.2
 ```
 
-The committed `.aztecrc` pins the toolchain for this checkout. One 4.2-era
-footgun while both toolchains coexist: the old CLI wrapper reads `.aztecrc`
-only from `$PWD`, not ancestor directories — run contract/circuit commands
-with `current` actually on 4.3.1 (details in `docs/plan/LANE_1_CHAIN.md`
-ASSUMPTIONS).
+The committed `.aztecrc` pins the toolchain for this checkout, but run
+contract/circuit commands with `~/.aztec/current` actually on 5.0.0-rc.2
+(`aztec --version` to confirm). Install footgun: `aztec-up install` aborts
+mid-way if anything (like a leftover sandbox `anvil`) blocks its bundled
+foundryup — a "completed" install with an empty `versions/<v>/bin/` is a
+broken one; re-run it.
 
 ## Build, run, test
 
@@ -85,14 +89,21 @@ cd packages/contracts && aztec compile && aztec codegen target/ -o target/codege
 # standalone circuits — these DO use nargo
 cd circuits && nargo compile
 
-# contract tests need a running TXE (4.3.1 invocation — the bare `txe` binary is gone)
+# contract tests need a running TXE (the bare `txe` binary is gone since 4.3.1)
 aztec start --txe --port 8081 &
 cd packages/contracts && nargo test --oracle-resolver http://127.0.0.1:8081
 # in TXE tests, cross-package deploys must use env.deploy("@package/Name") —
-# bare names crash the TXE process (4.3.1 upstream bug, see LANE_1_CHAIN.md)
+# bare names crash the TXE process (4.3.1-era upstream bug, see LANE_1_CHAIN.md)
 
-npm test                              # TS unit tests, all workspaces
+npm test                              # CAUTION: runs EVERY workspace's `test`,
+                                      # including playtest = full Playwright E2E
+                                      # (boots a sandbox, ~45 min). For units:
+npm test -w packages/game-logic -w packages/backend -w packages/frontend
+npm run test:scripts
 npm run test:all                      # full suite: Redis + TXE + every package
+
+npx tsx scripts/check-testnet-state.ts   # is the testnet deploy still alive?
+                                         # (detects the rc testnet's re-genesis)
 
 cd packages/frontend && npm run dev:devnet    # or dev:testnet
 ```
@@ -102,8 +113,8 @@ cd packages/frontend && npm run dev:devnet    # or dev:testnet
 From `docs/plan/MASTER_PLAN.md`; repeated here because every one of these was
 learned the hard way.
 
-1. **Versions**: the pin set above, everywhere (uniform 4.3.1). Never mix Aztec
-   versions across packages.
+1. **Versions**: the pin set above, everywhere (uniform 5.0.0-rc.2). Never mix
+   Aztec versions across packages.
 2. **Contracts compile with `aztec compile`**, not `nargo compile` (misses AVM
    transpilation + VK generation). Standalone circuits use `nargo compile`.
 3. **Contract tests run against TXE** (see command above).
@@ -126,6 +137,13 @@ learned the hard way.
 10. **`game_id` and `randomness` are derived IN-CIRCUIT** — never pass them in
     from the frontend.
 11. **`npm install --legacy-peer-deps`**, always.
+12. **The browser PXE has NO background sync** — its proof anchor advances only
+    inside an explicit `pxe.sync()`. Every wallet send must sync FIRST
+    (`instrumentedWallet.sendTx` does; keep that parity with stock
+    `EmbeddedWallet`), and idle windows are covered by
+    `pxeKeepSynced.ts`. A send proving against a stale anchor gets pruned
+    off the rc testnet ("Block hash … not found"), and once pruned the
+    PXE's sync wedges permanently ("[PXE_WEDGED]" → Repair Chain Sync).
 
 ## Wallet pattern
 
