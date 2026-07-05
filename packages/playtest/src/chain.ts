@@ -49,7 +49,7 @@ export class ChainClient {
     const gameArtifactRaw = JSON.parse(readFileSync(
       resolve(ROOT, 'packages/contracts/target/triple_triad_game-TripleTriadGame.json'), 'utf-8'));
     const gameArtifact = loadContractArtifact(gameArtifactRaw);
-    const gameAddr = AztecAddress.fromString(addresses.game);
+    const gameAddr = AztecAddress.fromStringUnsafe(addresses.game);
     const instance = await node.getContract(gameAddr);
     if (!instance) throw new Error(`Game contract not found on-chain at ${addresses.game}`);
     await wallet.registerContract(instance, gameArtifact);

@@ -190,7 +190,7 @@ vi.mock('../../aztec/contracts', () => {
   return {
     ensureContracts: vi.fn().mockResolvedValue({
       gameContract, nftContract, fee: {}, Fr: FakeFr,
-      AztecAddress: { fromString: (s: string) => s, ZERO: '0x0' },
+      AztecAddress: { fromStringUnsafe: (s: string) => s, ZERO: '0x0' },
     }),
     contractCache: {},
     warmupContracts: vi.fn(),

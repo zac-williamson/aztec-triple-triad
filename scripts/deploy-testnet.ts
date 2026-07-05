@@ -312,8 +312,8 @@ async function main() {
 
   if (nftEnvAddr && tokenEnvAddr) {
     console.log('\nReusing existing NFT + Token from env vars...');
-    nftContract = await Contract.at(AztecAddress.fromString(nftEnvAddr), nftArtifact, wallet as never);
-    tokenContract = await Contract.at(AztecAddress.fromString(tokenEnvAddr), tokenArtifact, wallet as never);
+    nftContract = await Contract.at(AztecAddress.fromStringUnsafe(nftEnvAddr), nftArtifact, wallet as never);
+    tokenContract = await Contract.at(AztecAddress.fromStringUnsafe(tokenEnvAddr), tokenArtifact, wallet as never);
     console.log(`  NFT:   ${nftContract.address}`);
     console.log(`  Token: ${tokenContract.address}`);
   } else {
@@ -342,7 +342,7 @@ async function main() {
   const gameEnvAddr = process.env.GAME_ADDRESS;
   if (gameEnvAddr) {
     console.log('Reusing existing Game from env var...');
-    gameContract = await Contract.at(AztecAddress.fromString(gameEnvAddr), gameArtifact, wallet as never);
+    gameContract = await Contract.at(AztecAddress.fromStringUnsafe(gameEnvAddr), gameArtifact, wallet as never);
     console.log(`  Game:  ${gameContract.address}`);
   } else {
     console.log('Deploying TripleTriadGame...');

@@ -83,7 +83,7 @@ vi.mock('@aztec/aztec.js/fields', () => ({
   Fr: class { constructor(public v: unknown) {} toString() { return String(this.v); } },
 }));
 vi.mock('@aztec/aztec.js/addresses', () => ({
-  AztecAddress: { fromString: (s: string) => s },
+  AztecAddress: { fromStringUnsafe: (s: string) => s },
 }));
 
 vi.mock('../../aztec/circuitLoader', () => ({

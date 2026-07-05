@@ -155,7 +155,7 @@ export async function deployAndRegister(
 
   let nftArtifact: any = null;
   if (AZTEC_CONFIG.nftContractAddress) {
-    const nftAddress = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
+    const nftAddress = AztecAddress.fromStringUnsafe(AZTEC_CONFIG.nftContractAddress);
     await wallet.registerSender(nftAddress, 'nft-contract');
     try {
       const nftInstance = await node.getContract(nftAddress);
@@ -168,7 +168,7 @@ export async function deployAndRegister(
   }
 
   if (AZTEC_CONFIG.gameContractAddress) {
-    const gameAddress = AztecAddress.fromString(AZTEC_CONFIG.gameContractAddress);
+    const gameAddress = AztecAddress.fromStringUnsafe(AZTEC_CONFIG.gameContractAddress);
     await wallet.registerSender(gameAddress, 'game-contract');
     try {
       const gameInstance = await node.getContract(gameAddress);
@@ -181,7 +181,7 @@ export async function deployAndRegister(
   }
 
   if (AZTEC_CONFIG.tokenContractAddress) {
-    const tokenAddress = AztecAddress.fromString(AZTEC_CONFIG.tokenContractAddress);
+    const tokenAddress = AztecAddress.fromStringUnsafe(AZTEC_CONFIG.tokenContractAddress);
     await wallet.registerSender(tokenAddress, 'token-contract');
     try {
       const tokenInstance = await node.getContract(tokenAddress);

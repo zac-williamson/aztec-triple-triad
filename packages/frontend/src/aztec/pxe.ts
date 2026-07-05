@@ -78,7 +78,7 @@ function makeOps(schedule: Schedule) {
       schedule(async () => {
         const { tokenContract, AztecAddress } = await resolveContracts();
         if (!tokenContract) throw new Error('token contract unavailable');
-        const addr = AztecAddress.fromString(owner);
+        const addr = AztecAddress.fromStringUnsafe(owner);
         const { result } = await tokenContract.methods.get_balance(addr).simulate({ from: addr });
         return BigInt(result.toString());
       }),
@@ -92,7 +92,7 @@ function makeOps(schedule: Schedule) {
     ): Promise<{ gameId: string; randomness: string[]; blindingFactor: string; status: number }> =>
       schedule(async () => {
         const { gameContract, nftContract, Fr, AztecAddress } = await resolveContracts();
-        const addr = AztecAddress.fromString(owner);
+        const addr = AztecAddress.fromStringUnsafe(owner);
         const { result: nonceResult } = await nftContract.methods.get_note_nonce(addr).simulate({ from: addr });
         const nonceFr = toFr(Fr, nonceResult);
         const { result: preview }: any = await nftContract.methods.preview_game_data(nonceFr).simulate({ from: addr });
@@ -111,7 +111,7 @@ function makeOps(schedule: Schedule) {
     ): Promise<{ randomness: string[]; blindingFactor: string }> =>
       schedule(async () => {
         const { nftContract, Fr, AztecAddress } = await resolveContracts();
-        const addr = AztecAddress.fromString(owner);
+        const addr = AztecAddress.fromStringUnsafe(owner);
         const gameIdFr = toFr(Fr, gameId);
         const { result: nonceResult } = await nftContract.methods.get_note_nonce(addr).simulate({ from: addr });
         const { result: blinding } = await nftContract.methods.compute_blinding_factor(gameIdFr).simulate({ from: addr });
@@ -125,7 +125,7 @@ function makeOps(schedule: Schedule) {
     readPrivateCards: (owner: string): Promise<number[]> =>
       schedule(async () => {
         const { nftContract, AztecAddress } = await resolveContracts();
-        const addr = AztecAddress.fromString(owner);
+        const addr = AztecAddress.fromStringUnsafe(owner);
         const ids: number[] = [];
         let pageIndex = 0;
         let hasMore = true;
@@ -147,7 +147,7 @@ function makeOps(schedule: Schedule) {
     previewCardPack: (owner: string, count: number): Promise<{ cardIds: number[]; nonce: string }> =>
       schedule(async () => {
         const { nftContract, Fr, AztecAddress } = await resolveContracts();
-        const addr = AztecAddress.fromString(owner);
+        const addr = AztecAddress.fromStringUnsafe(owner);
         const { result: nonceResult } = await nftContract.methods.get_note_nonce(addr).simulate({ from: addr });
         const { result: preview }: any = await nftContract.methods.preview_card_ids(nonceResult).simulate({ from: addr });
         const cardIds = Array.from({ length: count }, (_, i) => Number(preview[i]));
@@ -158,7 +158,7 @@ function makeOps(schedule: Schedule) {
     computeNoteRandomness: (owner: string, nonce: string, count: number): Promise<string[]> =>
       schedule(async () => {
         const { nftContract, Fr, AztecAddress } = await resolveContracts();
-        const addr = AztecAddress.fromString(owner);
+        const addr = AztecAddress.fromStringUnsafe(owner);
         const nonceFr = toFr(Fr, nonce);
         const { result }: any = await nftContract.methods.compute_note_randomness(nonceFr, count).simulate({ from: addr });
         return Array.from({ length: count }, (_, i) => toFr(Fr, result[i]).toString());
@@ -182,7 +182,7 @@ function makeOps(schedule: Schedule) {
     sendCreateGame: (owner: string, ids: number[], opts: SendOpts): Promise<string> =>
       schedule(() => withReorgRetry('create_game', async () => {
         const { gameContract, Fr, AztecAddress } = await resolveContracts();
-        const addr = AztecAddress.fromString(owner);
+        const addr = AztecAddress.fromStringUnsafe(owner);
         const { receipt } = await gameContract.methods
           .create_game(ids.map((id) => new Fr(BigInt(id))))
           .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
@@ -192,7 +192,7 @@ function makeOps(schedule: Schedule) {
     sendJoinGame: (owner: string, gameId: string, ids: number[], opts: SendOpts): Promise<string> =>
       schedule(() => withReorgRetry('join_game', async () => {
         const { gameContract, Fr, AztecAddress } = await resolveContracts();
-        const addr = AztecAddress.fromString(owner);
+        const addr = AztecAddress.fromStringUnsafe(owner);
         const { receipt } = await gameContract.methods
           .join_game(toFr(Fr, gameId), ids.map((id) => new Fr(BigInt(id))))
           .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
@@ -202,7 +202,7 @@ function makeOps(schedule: Schedule) {
     sendPurchaseCardPack: (owner: string, opts: SendOpts): Promise<string> =>
       schedule(async () => {
         const { nftContract, AztecAddress } = await resolveContracts();
-        const addr = AztecAddress.fromString(owner);
+        const addr = AztecAddress.fromStringUnsafe(owner);
         const { receipt } = await nftContract.methods
           .purchase_card_pack()
           .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
@@ -212,7 +212,7 @@ function makeOps(schedule: Schedule) {
     sendMintStarterCards: (owner: string, opts: SendOpts): Promise<string> =>
       schedule(async () => {
         const { nftContract, AztecAddress } = await resolveContracts();
-        const addr = AztecAddress.fromString(owner);
+        const addr = AztecAddress.fromStringUnsafe(owner);
         const { receipt } = await nftContract.methods
           .get_cards_for_new_player()
           .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
@@ -246,7 +246,7 @@ function makeOps(schedule: Schedule) {
     ): Promise<number[]> =>
       schedule(async () => {
         const { nftContract, Fr, AztecAddress } = await resolveContracts();
-        const myAddr = AztecAddress.fromString(owner);
+        const myAddr = AztecAddress.fromStringUnsafe(owner);
         const { noteHashes, firstNullifier } = txEffect;
         const paddedHashes = padNoteHashes(Fr, noteHashes);
         const txHashFr = toFr(Fr, txHash);
@@ -282,7 +282,7 @@ function makeOps(schedule: Schedule) {
           console.warn('[pxe] token reward: no token contract configured');
           return false;
         }
-        const myAddr = AztecAddress.fromString(owner);
+        const myAddr = AztecAddress.fromStringUnsafe(owner);
         const { result: rewardRandomness } = await tokenContract.methods
           .compute_reward_randomness(playerRandomness.map((r) => toFr(Fr, r)))
           .simulate({ from: myAddr });
@@ -356,7 +356,7 @@ export async function withReorgRetry<T>(label: string, attempt: () => Promise<T>
 async function sendGameMethod(method: string, owner: string, args: unknown[], opts: SendOpts): Promise<string> {
   return withReorgRetry(method, async () => {
     const { gameContract, AztecAddress } = await resolveContracts();
-    const addr = AztecAddress.fromString(owner);
+    const addr = AztecAddress.fromStringUnsafe(owner);
     const { receipt } = await gameContract.methods[method](...args)
       .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
     return requireTxHash(receipt, method);

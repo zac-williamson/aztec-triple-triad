@@ -395,7 +395,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
 
         setPhase('sending');
 
-        const opponent = AztecAddress.fromString(capturedOpponentAddress);
+        const opponent = AztecAddress.fromStringUnsafe(capturedOpponentAddress);
 
         const callerRandomness = capturedGameRandomness.map(v => toFrUtil(Fr, v));
         const opponentRandomness = capturedOpponentRandomness.map(v => toFrUtil(Fr, v));
@@ -725,7 +725,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           setPhase('sending');
 
           const { Fr, AztecAddress } = await loadSdk();
-          const opponent = AztecAddress.fromString(capturedOpponentAddress);
+          const opponent = AztecAddress.fromStringUnsafe(capturedOpponentAddress);
           const callerRandomness = capturedGameRandomness!.map(v => toFrUtil(Fr, v));
 
           const settleArgs = [

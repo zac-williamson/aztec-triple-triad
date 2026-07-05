@@ -32,7 +32,7 @@ export async function fundAccountOnDevnet(
     import('@aztec/aztec.js/fields'),
   ]);
 
-  const l2Address = AztecAddress.fromString(accountAddress);
+  const l2Address = AztecAddress.fromStringUnsafe(accountAddress);
 
   const l1Client = createExtendedL1Client(
     ['http://localhost:8545'],

@@ -100,7 +100,7 @@ vi.mock('../../aztec/contracts', () => ({
   ensureContracts: vi.fn().mockResolvedValue({
     fee: {},
     Fr: class { static fromHexString(s: string) { return s; } constructor(v: any) {} },
-    AztecAddress: { fromString: (s: string) => s },
+    AztecAddress: { fromStringUnsafe: (s: string) => s },
   }),
   contractCache: {},
   warmupContracts: vi.fn(),

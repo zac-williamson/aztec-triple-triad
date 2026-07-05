@@ -64,7 +64,7 @@ export async function ensureContracts(wallet: unknown) {
 
   if (!contractCache.gameContract) {
     if (!AZTEC_CONFIG.gameContractAddress) throw new Error('gameContractAddress not configured');
-    const gameAddr = AztecAddress.fromString(AZTEC_CONFIG.gameContractAddress);
+    const gameAddr = AztecAddress.fromStringUnsafe(AZTEC_CONFIG.gameContractAddress);
     const gameResp = await fetch('/contracts/triple_triad_game-TripleTriadGame.json');
     if (!gameResp.ok) throw new Error('Failed to load game contract artifact');
     const gameArtifact = loadContractArtifact(await gameResp.json());
@@ -74,14 +74,14 @@ export async function ensureContracts(wallet: unknown) {
 
   if (!contractCache.nftContract) {
     if (!AZTEC_CONFIG.nftContractAddress) throw new Error('nftContractAddress not configured');
-    const nftAddr = AztecAddress.fromString(AZTEC_CONFIG.nftContractAddress);
+    const nftAddr = AztecAddress.fromStringUnsafe(AZTEC_CONFIG.nftContractAddress);
     const nftArtifact = await getNftArtifact();
     console.log(`[PXE-TRACE] ${Date.now()} Contract.at(NFT, ${nftAddr})`);
     contractCache.nftContract = await Contract.at(nftAddr, nftArtifact, wallet as never);
   }
 
   if (!contractCache.tokenContract && AZTEC_CONFIG.tokenContractAddress) {
-    const tokenAddr = AztecAddress.fromString(AZTEC_CONFIG.tokenContractAddress);
+    const tokenAddr = AztecAddress.fromStringUnsafe(AZTEC_CONFIG.tokenContractAddress);
     const tokenResp = await fetch('/contracts/arena_token-ArenaToken.json');
     if (tokenResp.ok) {
       const tokenArtifact = loadContractArtifact(await tokenResp.json());

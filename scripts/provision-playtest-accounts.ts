@@ -265,8 +265,8 @@ async function provisionOne(index: number, opts: ProvisionOpts): Promise<Manifes
 
   await wallet.registerSender(address, 'player');
   const { Contract } = await import('@aztec/aztec.js/contracts');
-  const nftAddr = AztecAddress.fromString(opts.nftAddress);
-  const tokenAddr = AztecAddress.fromString(opts.tokenAddress);
+  const nftAddr = AztecAddress.fromStringUnsafe(opts.nftAddress);
+  const tokenAddr = AztecAddress.fromStringUnsafe(opts.tokenAddress);
   // Register the pre-deployed NFT + Token INSTANCES in this fresh PXE so their
   // methods can be simulated/sent. Contract.at alone does not register the
   // on-chain instance — connectToAztec.ts does this node.getContract →

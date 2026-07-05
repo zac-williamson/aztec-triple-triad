@@ -34,7 +34,7 @@ class FakeFr {
   constructor(public v: any) {}
   toString() { return String(this.v); }
 }
-const AztecAddress = { fromString: (s: string) => ({ __addr: s }) };
+const AztecAddress = { fromStringUnsafe: (s: string) => ({ __addr: s }) };
 const sim = (result: any) => ({ simulate: vi.fn().mockResolvedValue({ result }) });
 
 beforeEach(() => {

@@ -28,7 +28,7 @@ describe('pxe — serial-queue door', () => {
     h.simulate.mockResolvedValue({ result: 7n });
     h.ensureContracts.mockResolvedValue({
       tokenContract: { methods: { get_balance: () => ({ simulate: h.simulate }) } },
-      AztecAddress: { fromString: (s: string) => s },
+      AztecAddress: { fromStringUnsafe: (s: string) => s },
     });
   });
 

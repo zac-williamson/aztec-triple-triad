@@ -115,7 +115,7 @@ async function readPrivateCards(): Promise<number[]> {
   const { wallet, accountAddress } = requireConnected();
   return txManager.enqueuePxe(async () => {
     const { nftContract, AztecAddress } = await ensureContracts(wallet);
-    const owner = AztecAddress.fromString(accountAddress);
+    const owner = AztecAddress.fromStringUnsafe(accountAddress);
     const ids: number[] = [];
     let pageIndex = 0;
     let hasMore = true;
@@ -140,7 +140,7 @@ async function readTokenBalance(): Promise<number> {
   return txManager.enqueuePxe(async () => {
     const { tokenContract, AztecAddress } = await ensureContracts(wallet);
     if (!tokenContract) throw new Error('testkit: token contract not configured');
-    const owner = AztecAddress.fromString(accountAddress);
+    const owner = AztecAddress.fromStringUnsafe(accountAddress);
     const { result } = await tokenContract.methods
       .get_balance(owner)
       .simulate({ from: owner });

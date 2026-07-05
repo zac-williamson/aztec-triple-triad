@@ -256,7 +256,7 @@ export async function bridgeFeeJuice(params: BridgeParams): Promise<FeeJuiceClai
     import('@aztec/aztec.js/fields'),
   ]);
 
-  const l2 = AztecAddress.fromString(l2Address);
+  const l2 = AztecAddress.fromStringUnsafe(l2Address);
 
   // Determine the L1 chain id from the RPC and pass it EXPLICITLY. Without a
   // chain, createExtendedL1Client defaults to Anvil's 31337, so any non-Anvil L1
