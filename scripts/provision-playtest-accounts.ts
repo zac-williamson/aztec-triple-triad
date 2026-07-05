@@ -314,11 +314,21 @@ async function provisionOne(index: number, opts: ProvisionOpts): Promise<Manifes
       break;
     } catch (err: any) {
       const msg = String(err?.cause?.message ?? err?.message ?? err);
-      if (/Existing nullifier/i.test(msg)) {
-        console.log('  account already deployed (Existing nullifier) — proceeding to mint');
+      // "Existing nullifier" (resent before the original mined) OR "Nullifier
+      // conflict with existing tx" (the original deploy landed LATE — after our
+      // wait timed out and we resent) both mean the account is already on-chain
+      // and the claim is spent. Skip the deploy and go mint.
+      if (/Existing nullifier|Nullifier conflict/i.test(msg)) {
+        console.log('  account already deployed (nullifier already on-chain) — proceeding to mint');
         break;
       }
-      if (/Block header not found|Invalid tx/i.test(msg) && attempt < 6) {
+      // Block header not found / Invalid tx: the anchor block was pruned during the
+      // long L1->L2 bridge wait — a fresh build re-anchors to a current block.
+      // Timeout awaiting isMined / dropped: the v5 testnet was slow to mine or
+      // reorged the deploy out of the mempool — resend. All transient; if a slow
+      // original lands late, the resend hits "Existing nullifier" (handled above),
+      // so a retry can never double-deploy.
+      if (/Block header not found|Invalid tx|Timeout awaiting isMined|dropped/i.test(msg) && attempt < 6) {
         console.log(`  deploy attempt ${attempt} failed (${msg.slice(0, 70)}); re-syncing PXE + retrying...`);
         await sleep(PXE_SYNC_WAIT_MS);
         continue;
