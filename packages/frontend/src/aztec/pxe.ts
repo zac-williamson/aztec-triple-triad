@@ -303,10 +303,46 @@ function makeOps(schedule: Schedule) {
 }
 
 const MAX_TX_ATTEMPTS = 3;
-/** Wait between reorg-retry attempts: let the PXE's background sync advance PAST
- *  the pruned anchor block before we re-prove (a bare immediate resubmit reuses
- *  the same stale anchor and fails identically). Mirrors the f28640f deploy wait. */
-const PXE_RESYNC_WAIT_MS = 15_000;
+
+/**
+ * A resync that leaves the anchor UNMOVED while this many blocks behind the tip
+ * means the PXE's chain-sync is wedged on a pruned block: the SDK's block-stream
+ * walk-back hits a block the node no longer serves, aborts, and `pxe.sync()`
+ * still resolves "successfully" having advanced nothing. Re-proving against
+ * that anchor is doomed — fail fast instead of burning a 3-minute proof.
+ */
+export const WEDGE_LAG_BLOCKS = 10;
+
+/** Marker baked into the wedge error message so UI/harness can match it. */
+export const PXE_WEDGED_MARKER = '[PXE_WEDGED]';
+
+export function isPxeWedgedError(err: unknown): boolean {
+  return (err instanceof Error ? err.message : String(err)).includes(PXE_WEDGED_MARKER);
+}
+
+/** Anchor freshness report — mirrors instrumentedWallet's PxeSyncReport. */
+export interface PxeSyncReport {
+  anchorBlock: number;
+  anchorHash: string;
+  tipBlock: number;
+  lag: number;
+  advanced: boolean;
+  syncMs: number;
+}
+
+/**
+ * Sync the bound wallet's PXE to the chain tip and report anchor freshness.
+ * Null when no wallet is bound yet (pre-connect) — callers treat that as
+ * "nothing to sync". NOTE: this drives the PXE's own internal job queue, not
+ * txManager's — safe to call from inside a txManager queue item.
+ */
+export async function resyncPxe(label = 'resync', quiet = false): Promise<PxeSyncReport | null> {
+  const w = currentWallet as {
+    syncPxeAndReport?: (label?: string, quiet?: boolean) => Promise<PxeSyncReport>;
+  } | null;
+  if (!w?.syncPxeAndReport) return null;
+  return w.syncPxeAndReport(label, quiet);
+}
 
 /**
  * True for the transient v5-testnet tx failures that V4's stable testnet never
@@ -332,22 +368,33 @@ export function isTransientTestnetTxFailure(err: unknown): boolean {
  * most one can ever land. Without this, a single rc-testnet reorg strands a game
  * (seen on testnet; never on V4, whose testnet didn't reorg mid-game). The retry
  * only fires on the matched transient failures, so the happy path is unchanged.
+ *
+ * Sync-then-retry, no sleeps: the browser PXE has NO background sync, so the
+ * earlier passive-wait variant just held the serial queue for 15s and re-proved
+ * against the identical dead anchor (observed live: anchor unmoved across two
+ * waits). Instead we drive a sync NOW; if the anchor still doesn't move while
+ * far behind the tip, the PXE's chain-sync is wedged on a pruned block and
+ * every future attempt is doomed — fail fast with an explicit wedge error
+ * rather than masking it with more retries.
  */
-export async function withReorgRetry<T>(label: string, attempt: () => Promise<T>, resyncWaitMs: number = PXE_RESYNC_WAIT_MS): Promise<T> {
+export async function withReorgRetry<T>(
+  label: string,
+  attempt: () => Promise<T>,
+  resync: (label?: string, quiet?: boolean) => Promise<PxeSyncReport | null> = resyncPxe,
+): Promise<T> {
   for (let n = 1; ; n++) {
     try {
       return await attempt();
     } catch (err) {
-      if (n < MAX_TX_ATTEMPTS && isTransientTestnetTxFailure(err)) {
-        // Wait for the PXE's background sync to advance PAST the pruned anchor
-        // before re-proving — a bare immediate retry re-anchors to the same stale
-        // block and fails identically (seen: 3 tries in 0.4s, all "block hash not
-        // found"). This is the proven f28640f deploy-retry pattern.
-        console.warn(`[pxe] ${label}: anchor pruned on attempt ${n}/${MAX_TX_ATTEMPTS} (${err instanceof Error ? err.message : err}); waiting ${resyncWaitMs}ms for PXE re-sync, then re-proving`);
-        if (resyncWaitMs > 0) await new Promise((r) => setTimeout(r, resyncWaitMs));
-        continue;
+      if (n >= MAX_TX_ATTEMPTS || !isTransientTestnetTxFailure(err)) throw err;
+      console.warn(`[pxe] ${label}: transient tx failure on attempt ${n}/${MAX_TX_ATTEMPTS} (${err instanceof Error ? err.message : err}); resyncing PXE, then re-proving`);
+      const report = await resync(`${label} retry ${n}`);
+      if (report && !report.advanced && report.lag >= WEDGE_LAG_BLOCKS) {
+        throw new Error(
+          `${label}: PXE chain-sync is wedged ${PXE_WEDGED_MARKER} — anchor #${report.anchorBlock} (${report.anchorHash.slice(0, 10)}…) did not advance on resync while ${report.lag} blocks behind the tip (#${report.tipBlock}). ` +
+          'The network pruned that block and local sync cannot pass it, so re-proving fails identically. Use "Repair chain sync" to rebuild local chain state, then retry.',
+        );
       }
-      throw err;
     }
   }
 }

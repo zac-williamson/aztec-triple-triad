@@ -3,6 +3,7 @@ import { AZTEC_CONFIG } from '../aztec/AztecContext';
 import { prepareConnection, deployAndRegister, type PreparedConnection } from '../aztec/connectToAztec';
 import type { FeeJuiceClaim } from '../aztec/fundDevnet';
 import { pxe, setPxeWallet, runPxeTx } from '../aztec/pxe';
+import { startPxeKeepSynced } from '../aztec/pxeKeepSynced';
 type ConnectionStatus =
   | 'disconnected'
   | 'connecting'
@@ -200,6 +201,15 @@ export function useAztec(): UseAztecReturn {
     })();
     return () => { cancelled = true; };
   }, [status, refreshTokenBalance]);
+
+  // Keep the PXE's proof anchor fresh for the whole connected lifetime.
+  // Without it, any idle window (joiner waiting on the opponent's create_game,
+  // lobby time) ages the anchor past the testnet's prune horizon and the next
+  // proof is rejected — the idle-joiner wedge.
+  useEffect(() => {
+    if (status !== 'connected') return;
+    return startPxeKeepSynced();
+  }, [status]);
 
   return {
     status,

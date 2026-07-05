@@ -19,6 +19,7 @@ vi.mock('../aztec/pxe', () => ({
   pxe: { readTokenBalance: h.readTokenBalance },
   setPxeWallet: h.setPxeWallet,
   runPxeTx: h.runPxeTx,
+  resyncPxe: vi.fn(async () => null), // pulled in via useAztec -> pxeKeepSynced
 }));
 vi.mock('../aztec/connectToAztec', () => ({
   prepareConnection: h.prepareConnection,

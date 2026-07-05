@@ -43,12 +43,60 @@ import { GasSettings } from '@aztec/stdlib/gas';
 import { txProgress, type PhaseTiming, type TxProgressEvent } from './txProgress';
 import { startNodeKeepalive } from './nodeKeepalive';
 
+/** Anchor freshness after a PXE sync — the one-glance wedge diagnostic. */
+export interface PxeSyncReport {
+  /** Block number of the PXE's fully-synced anchor (what proofs anchor to). */
+  anchorBlock: number;
+  anchorHash: string;
+  /** The node's current tip at report time. */
+  tipBlock: number;
+  /** tipBlock - anchorBlock. Healthy sends are ≤2; a large lag that survives a
+   *  sync means the sync is silently wedged on a pruned block. */
+  lag: number;
+  /** Whether this sync moved the anchor (false is fine at lag 0). */
+  advanced: boolean;
+  syncMs: number;
+}
+
+/** Post-sync lag above which a keep-synced tick escalates to a console.warn. */
+export const PXE_SYNC_WARN_LAG = 5;
+
 export class InstrumentedWallet extends EmbeddedWalletBase {
   static override create<T extends EmbeddedWalletBase = InstrumentedWallet>(
     nodeOrUrl: string | AztecNode,
     options?: EmbeddedWalletOptions,
   ): Promise<T> {
     return super.create<T>(nodeOrUrl, options);
+  }
+
+  /**
+   * Sync the PXE to the chain tip and report the anchor's freshness.
+   *
+   * The embedded browser PXE has autoSync disabled — its fully-synced anchor
+   * only advances inside an explicit `pxe.sync()`. This is the single place the
+   * app triggers one outside a wallet op; the report makes anchor staleness
+   * (the pruned-anchor wedge's precondition) visible in every log line.
+   *
+   * `quiet` logs only when the post-sync lag exceeds PXE_SYNC_WARN_LAG — used
+   * by the periodic keep-synced tick so healthy idling stays silent.
+   */
+  async syncPxeAndReport(label = 'sync', quiet = false): Promise<PxeSyncReport> {
+    const self = this as unknown as Record<string, any>;
+    const before = await self.pxe.getSyncedBlockHeader().catch(() => undefined);
+    const syncStart = Date.now();
+    await self.pxe.sync();
+    const syncMs = Date.now() - syncStart;
+    const after = await self.pxe.getSyncedBlockHeader();
+    const tipBlock = Number(await self.aztecNode.getBlockNumber());
+    const anchorBlock = Number(after?.getBlockNumber?.() ?? NaN);
+    const anchorHash = String(await after?.hash?.() ?? 'none');
+    const beforeHash = String(await before?.hash?.() ?? 'none');
+    const advanced = anchorHash !== beforeHash;
+    const lag = tipBlock - anchorBlock;
+    const line = `[wallet] ${label}: anchor #${anchorBlock} ${anchorHash.slice(0, 10)}… tip #${tipBlock} lag ${lag}${advanced ? '' : ' (unmoved)'} (sync ${syncMs}ms)`;
+    if (lag > PXE_SYNC_WARN_LAG) console.warn(line);
+    else if (!quiet) console.log(line);
+    return { anchorBlock, anchorHash, tipBlock, lag, advanced, syncMs };
   }
 
   override async sendTx<W extends InteractionWaitOptions = undefined>(
@@ -79,6 +127,15 @@ export class InstrumentedWallet extends EmbeddedWalletBase {
     };
 
     try {
+      // ── Sync the PXE first — stock EmbeddedWallet.sendTx parity ──────
+      // Stock v5 sendTx BEGINS with `await this.pxe.sync()` (autoSync is off in
+      // the browser entrypoint, so this is the only thing that advances the
+      // proof anchor before proving). This override omitted it — a 4.3.1-era
+      // port — leaving sends anchored to a block as stale as the LAST simulate.
+      // An idle joiner's last simulate is 40s+ old; the testnet prunes that
+      // fast, producing "Block hash … not found … possibly a reorg" rejects.
+      await this.syncPxeAndReport(`${label} (pre-send)`);
+
       // ── Pre-simulation gas estimation fee options ───────────────────
       const estFeeOptions = await self.completeFeeOptions({
         from: opts.from,

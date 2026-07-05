@@ -377,3 +377,29 @@ export async function connectToAztec(options?: {
   // No surrounding tx queue item here (one-shot legacy path) — enqueue via `pxe`.
   return deployAndRegister(prepared, pxe, options);
 }
+
+/**
+ * Wedge recovery: rebuild the PXE's local chain state without touching the
+ * account.
+ *
+ * When the PXE's synced anchor block gets pruned by the network, its own
+ * chain-sync re-queries that dead block, silently aborts, and can never
+ * advance again (the "[PXE_WEDGED]" error from pxe.withReorgRetry). There is
+ * no SDK reset API, and recreating the wallet reopens the same wedged
+ * IndexedDB store — the only real fix is deleting the PXE stores so the next
+ * connect re-syncs from scratch.
+ *
+ * Deletes ONLY the pxe_data_* databases. The wallet_data_* stores, the
+ * account secret/salt/signing key, the card store, and all other
+ * localStorage survive — after the reload the existing restore path
+ * (deployAndRegister -> importCardNotes -> readPrivateCards) rebuilds note
+ * state. This is an explicit user/harness action, never an automatic
+ * fallback.
+ */
+export function repairChainSync(): void {
+  const idbNames = JSON.parse(localStorage.getItem('aztec_idb_names') ?? '[]') as string[];
+  for (const name of idbNames) {
+    if (name.startsWith('pxe_data_')) indexedDB.deleteDatabase(name);
+  }
+  window.location.reload();
+}

@@ -5,6 +5,7 @@
  */
 import type { Page, Browser } from '@playwright/test';
 import { createWriteStream, readFileSync, writeFileSync, type WriteStream } from 'fs';
+import { cpus } from 'os';
 import { resolve } from 'path';
 import type { PhaseSnapshot, ClickTarget } from '../../frontend/src/testkit/contract.js';
 import { FRONTEND_URL, TESTNET, PLAYTEST_ACCOUNTS_PATH, readContractAddresses } from './env.js';
@@ -261,6 +262,13 @@ export class PlayerDriver {
 
     // Count WebGL contexts before app JS runs, so leak-vs-crash is observable.
     await this.page.addInitScript(installWebglProbe);
+    // Two headless browsers prove on ONE machine: at full hardwareConcurrency
+    // each, whichever proves first starves the other's timers and PXE sync
+    // (an aggravator of the stale-anchor wedge). Cap each at half the cores.
+    const proofThreads = Math.max(2, Math.floor(cpus().length / 2));
+    await this.page.addInitScript((threads: number) => {
+      localStorage.setItem('triad_proof_threads', String(threads));
+    }, proofThreads);
     // Seed the pre-provisioned account into localStorage BEFORE any app JS, so
     // prepareConnection restores an already-deployed account (alreadyDeployed →
     // no funding step) with its starter cards re-imported from the seeded

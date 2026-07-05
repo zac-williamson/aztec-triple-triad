@@ -118,6 +118,18 @@ export function MainMenu({
 
       <button
         className="main-menu__btn-clear"
+        data-testid="repair-chain-sync"
+        title="Rebuilds local chain-sync state (fixes 'PXE chain-sync is wedged' errors). Your account and cards are kept."
+        onClick={async () => {
+          const { repairChainSync } = await import('../aztec/connectToAztec');
+          repairChainSync();
+        }}
+      >
+        Repair Chain Sync
+      </button>
+
+      <button
+        className="main-menu__btn-clear"
         onClick={async () => {
           // Read stored IDB names BEFORE clearing localStorage
           const idbNames = JSON.parse(localStorage.getItem('aztec_idb_names') ?? '[]') as string[];

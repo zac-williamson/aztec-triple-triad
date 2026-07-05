@@ -111,6 +111,15 @@ class TxManager {
     return this.inFlightGameIds.has(gameId);
   }
 
+  /**
+   * True when no PXE op is queued or executing. The keep-synced scheduler only
+   * syncs during genuine idle — a running op keeps the anchor fresh itself
+   * (every send/simulate begins with its own PXE sync).
+   */
+  isPxeQueueIdle(): boolean {
+    return this.pxeItems.length === 0 && !this.pxeProcessing;
+  }
+
   // ── Entry Management ──────────────────────────────────────────
 
   private addEntry(type: TxType, label: string, gameId?: string): string {
