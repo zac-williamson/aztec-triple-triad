@@ -173,25 +173,31 @@ function makeOps(schedule: Schedule) {
       }),
 
     // ── Sends → txHash ────────────────────────────────────────────
+    // wait.interval=15s (SECONDS, like timeout), NOT the SDK's 1s default: on
+    // testnet a tx mines in ~15-30s, so 1s getTxReceipt polling fires ~1×/s per
+    // in-flight tx. Across two browsers sharing one egress IP, that receipt-poll
+    // overlaps the proving read-bursts and pushes past the node's 300-req/min/IP
+    // rate cap — whose 429s the browser mis-reports as bogus "CORS" errors and
+    // kills the settle. 15s detects mining promptly at 1/15 the request rate.
     sendCreateGame: (owner: string, ids: number[], opts: SendOpts): Promise<string> =>
-      schedule(async () => {
+      schedule(() => withReorgRetry('create_game', async () => {
         const { gameContract, Fr, AztecAddress } = await resolveContracts();
         const addr = AztecAddress.fromString(owner);
         const { receipt } = await gameContract.methods
           .create_game(ids.map((id) => new Fr(BigInt(id))))
-          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs } });
+          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
         return requireTxHash(receipt, 'create_game');
-      }),
+      })),
 
     sendJoinGame: (owner: string, gameId: string, ids: number[], opts: SendOpts): Promise<string> =>
-      schedule(async () => {
+      schedule(() => withReorgRetry('join_game', async () => {
         const { gameContract, Fr, AztecAddress } = await resolveContracts();
         const addr = AztecAddress.fromString(owner);
         const { receipt } = await gameContract.methods
           .join_game(toFr(Fr, gameId), ids.map((id) => new Fr(BigInt(id))))
-          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs } });
+          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
         return requireTxHash(receipt, 'join_game');
-      }),
+      })),
 
     sendPurchaseCardPack: (owner: string, opts: SendOpts): Promise<string> =>
       schedule(async () => {
@@ -199,7 +205,7 @@ function makeOps(schedule: Schedule) {
         const addr = AztecAddress.fromString(owner);
         const { receipt } = await nftContract.methods
           .purchase_card_pack()
-          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs } });
+          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
         return requireTxHash(receipt, 'purchase_card_pack');
       }),
 
@@ -209,7 +215,7 @@ function makeOps(schedule: Schedule) {
         const addr = AztecAddress.fromString(owner);
         const { receipt } = await nftContract.methods
           .get_cards_for_new_player()
-          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs } });
+          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
         return requireTxHash(receipt, 'get_cards_for_new_player');
       }),
 
@@ -296,13 +302,65 @@ function makeOps(schedule: Schedule) {
   };
 }
 
+const MAX_TX_ATTEMPTS = 3;
+/** Wait between reorg-retry attempts: let the PXE's background sync advance PAST
+ *  the pruned anchor block before we re-prove (a bare immediate resubmit reuses
+ *  the same stale anchor and fails identically). Mirrors the f28640f deploy wait. */
+const PXE_RESYNC_WAIT_MS = 15_000;
+
+/**
+ * True for the transient v5-testnet tx failures that V4's stable testnet never
+ * produced: the rc testnet reorgs/prunes under an in-flight tx, so the mempool
+ * evicts it ("Tx dropped by P2P node") or the block its tx was anchored to is
+ * pruned before it lands ("Block header not found" / "Block hash <h> not found
+ * when querying world state ... possibly a reorg"). These are NOT logic errors —
+ * re-syncing past the pruned block and re-proving against the fresh tip succeeds.
+ */
+export function isTransientTestnetTxFailure(err: unknown): boolean {
+  const m = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return m.includes('dropped by p2p')
+    || m.includes('block header not found')
+    || m.includes('not found when querying world state')
+    || m.includes('anchor block')
+    || m.includes('possibly a reorg');
+}
+
+/**
+ * Re-prove + resend a game tx that hit a transient reorg/prune failure. Safe to
+ * retry: every game op is gated by note nullifiers (the wagered cards, the game
+ * completion), so a resubmit and any stray original are mutually exclusive — at
+ * most one can ever land. Without this, a single rc-testnet reorg strands a game
+ * (seen on testnet; never on V4, whose testnet didn't reorg mid-game). The retry
+ * only fires on the matched transient failures, so the happy path is unchanged.
+ */
+export async function withReorgRetry<T>(label: string, attempt: () => Promise<T>, resyncWaitMs: number = PXE_RESYNC_WAIT_MS): Promise<T> {
+  for (let n = 1; ; n++) {
+    try {
+      return await attempt();
+    } catch (err) {
+      if (n < MAX_TX_ATTEMPTS && isTransientTestnetTxFailure(err)) {
+        // Wait for the PXE's background sync to advance PAST the pruned anchor
+        // before re-proving — a bare immediate retry re-anchors to the same stale
+        // block and fails identically (seen: 3 tries in 0.4s, all "block hash not
+        // found"). This is the proven f28640f deploy-retry pattern.
+        console.warn(`[pxe] ${label}: anchor pruned on attempt ${n}/${MAX_TX_ATTEMPTS} (${err instanceof Error ? err.message : err}); waiting ${resyncWaitMs}ms for PXE re-sync, then re-proving`);
+        if (resyncWaitMs > 0) await new Promise((r) => setTimeout(r, resyncWaitMs));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 /** Shared impl for the game-contract proof sends (process/claim/settle). */
 async function sendGameMethod(method: string, owner: string, args: unknown[], opts: SendOpts): Promise<string> {
-  const { gameContract, AztecAddress } = await resolveContracts();
-  const addr = AztecAddress.fromString(owner);
-  const { receipt } = await gameContract.methods[method](...args)
-    .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs } });
-  return requireTxHash(receipt, method);
+  return withReorgRetry(method, async () => {
+    const { gameContract, AztecAddress } = await resolveContracts();
+    const addr = AztecAddress.fromString(owner);
+    const { receipt } = await gameContract.methods[method](...args)
+      .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
+    return requireTxHash(receipt, method);
+  });
 }
 
 function requireTxHash(receipt: any, label: string): string {

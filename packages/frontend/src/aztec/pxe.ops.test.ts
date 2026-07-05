@@ -58,7 +58,9 @@ describe('pxe send ops — enqueue + base-fee headroom, contract stays inside', 
     expect(send).toHaveBeenCalledWith(expect.objectContaining({
       from: { __addr: '0xME' },
       fee: { gasSettings: { maxFeesPerGas: 'HEADROOM' } },
-      wait: { timeout: 123 },
+      // interval:15 — poll getTxReceipt every 15s, not the SDK's 1s default
+      // (testnet txs mine in minutes; cuts receipt-poll request volume).
+      wait: { timeout: 123, interval: 15 },
     }));
     expect(txHash).toBe('0xTX');
   });

@@ -58,6 +58,13 @@ export async function prepareConnection(options?: {
   const { GrumpkinScalar } = foundationModule;
   const { Fr } = fieldsModule;
 
+  // Vanilla node client — exactly what a single real player and V4 used. Measured
+  // uncapped rate is ~190/min combined (2 browsers on 1 IP), well under the node's
+  // 300/min/IP cap, so the client-side rate-limiter was unnecessary AND harmful:
+  // capping below the PXE's natural ~170/min delayed its critical sync/receipt/send
+  // requests and starved it. Request batching is removed too (it risked the PXE
+  // misreading a coalesced chain view). If the cap is ever truly approached, cut
+  // real request volume — do not re-add a governor.
   const node = createAztecNodeClient(AZTEC_CONFIG.pxeUrl);
 
   // Secret + salt (persisted or random)
