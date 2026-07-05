@@ -239,6 +239,26 @@ export class PlayerDriver {
     // don't wait out any budget.
     this.page.on('crash', () => this.declareDead('renderer process crashed (page.on("crash"))'));
 
+    // Opt-in rpc-probe: tally every JSON-RPC POST to the node (timestamp +
+    // method) into rpc-<name>.csv, to attribute request-rate bursts against the
+    // testnet 300/min/IP cap (this is how the client-side rate-limiter detour
+    // was diagnosed and killed — keep it available).
+    if (process.env.PLAYTEST_RPC_PROBE === '1') {
+      const rpcLog = createWriteStream(resolve(logsDir, `rpc-${this.name}.csv`));
+      this.page.on('request', req => {
+        if (req.method() !== 'POST') return;
+        const u = req.url();
+        if (!/:8080|testnet\.rpc\.aztec/.test(u)) return;
+        // v5 JSON-RPC batches calls → body is an array; capture every method.
+        let m = 'nonjson';
+        try {
+          const b = JSON.parse(req.postData() || '{}');
+          m = Array.isArray(b) ? b.map((x: { method?: string }) => x?.method ?? '?').join('|') : (b.method ?? '?');
+        } catch { /* keep nonjson */ }
+        rpcLog.write(`${Date.now()},${m}\n`);
+      });
+    }
+
     // Count WebGL contexts before app JS runs, so leak-vs-crash is observable.
     await this.page.addInitScript(installWebglProbe);
     // Seed the pre-provisioned account into localStorage BEFORE any app JS, so
