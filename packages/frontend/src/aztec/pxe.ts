@@ -200,14 +200,14 @@ function makeOps(schedule: Schedule) {
       })),
 
     sendPurchaseCardPack: (owner: string, opts: SendOpts): Promise<string> =>
-      schedule(async () => {
+      schedule(() => withReorgRetry('purchase_card_pack', async () => {
         const { nftContract, AztecAddress } = await resolveContracts();
         const addr = AztecAddress.fromStringUnsafe(owner);
         const { receipt } = await nftContract.methods
           .purchase_card_pack()
           .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
         return requireTxHash(receipt, 'purchase_card_pack');
-      }),
+      })),
 
     sendMintStarterCards: (owner: string, opts: SendOpts): Promise<string> =>
       schedule(async () => {
@@ -358,7 +358,16 @@ export function isTransientTestnetTxFailure(err: unknown): boolean {
     || m.includes('block header not found')
     || m.includes('not found when querying world state')
     || m.includes('anchor block')
-    || m.includes('possibly a reorg');
+    || m.includes('possibly a reorg')
+    // Transport-level: the gateway occasionally resets a connection
+    // mid-request (net::ERR_CONNECTION_RESET killed a pack purchase,
+    // 2026-07-05). Chrome surfaces it as a fetch TypeError; Safari as
+    // "Load failed". A resend is safe for the same nullifier-gating
+    // reason as the reorg cases — at most one of the original and the
+    // retry can ever land.
+    || m.includes('failed to fetch')
+    || m.includes('connection reset')
+    || m.includes('load failed');
 }
 
 /**
@@ -388,7 +397,14 @@ export async function withReorgRetry<T>(
     } catch (err) {
       if (n >= MAX_TX_ATTEMPTS || !isTransientTestnetTxFailure(err)) throw err;
       console.warn(`[pxe] ${label}: transient tx failure on attempt ${n}/${MAX_TX_ATTEMPTS} (${err instanceof Error ? err.message : err}); resyncing PXE, then re-proving`);
-      const report = await resync(`${label} retry ${n}`);
+      // The resync is diagnostic + freshness, not a gate: if it ALSO fails
+      // (e.g. the same momentary connection reset that broke the attempt),
+      // proceed to the retry anyway — the next attempt's own send-side sync
+      // re-anchors it, and a genuine wedge still gets caught next loop.
+      const report = await resync(`${label} retry ${n}`).catch((syncErr) => {
+        console.warn(`[pxe] ${label}: resync after attempt ${n} failed too (${syncErr instanceof Error ? syncErr.message : syncErr}); retrying regardless`);
+        return null;
+      });
       if (report && !report.advanced && report.lag >= WEDGE_LAG_BLOCKS) {
         throw new Error(
           `${label}: PXE chain-sync is wedged ${PXE_WEDGED_MARKER} — anchor #${report.anchorBlock} (${report.anchorHash.slice(0, 10)}…) did not advance on resync while ${report.lag} blocks behind the tip (#${report.tipBlock}). ` +

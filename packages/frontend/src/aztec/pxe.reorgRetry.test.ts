@@ -8,6 +8,14 @@ describe('isTransientTestnetTxFailure', () => {
     expect(isTransientTestnetTxFailure(new Error('anchor block was pruned'))).toBe(true);
   });
 
+  it('matches transport-level connection failures (gateway resets)', () => {
+    // net::ERR_CONNECTION_RESET surfaces as a fetch TypeError in Chrome and
+    // "Load failed" in Safari — killed a pack purchase on 2026-07-05.
+    expect(isTransientTestnetTxFailure(new TypeError('Failed to fetch'))).toBe(true);
+    expect(isTransientTestnetTxFailure(new Error('Load failed'))).toBe(true);
+    expect(isTransientTestnetTxFailure(new Error('socket hang up: connection reset by peer'))).toBe(true);
+  });
+
   it('does NOT match genuine (non-transient) failures', () => {
     // A real revert / assertion is a logic failure — retrying must NOT hide it.
     expect(isTransientTestnetTxFailure(new Error('Assertion failed: Game must be in active state'))).toBe(false);
@@ -81,6 +89,18 @@ describe('withReorgRetry', () => {
     // advanced=false at lag 0 is normal (already at tip) — must not be a wedge.
     const resync = healthyResync({ advanced: false, lag: 0 });
     expect(await withReorgRetry('create_game', attempt, resync)).toBe('txhash');
+    expect(attempt).toHaveBeenCalledTimes(2);
+  });
+
+  it('still retries when the diagnostic resync itself fails (connection down)', async () => {
+    let calls = 0;
+    const attempt = vi.fn(async () => {
+      calls++;
+      if (calls === 1) throw new TypeError('Failed to fetch');
+      return 'txhash';
+    });
+    const resync = vi.fn(async () => { throw new TypeError('Failed to fetch'); });
+    expect(await withReorgRetry('purchase_card_pack', attempt, resync)).toBe('txhash');
     expect(attempt).toHaveBeenCalledTimes(2);
   });
 
