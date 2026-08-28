@@ -278,13 +278,31 @@ export async function bridgeFeeJuice(params: BridgeParams): Promise<FeeJuiceClai
   });
   const l1Client = createExtendedL1Client([l1RpcUrl], funderKey, chain);
 
-  const portalManager = await L1FeeJuicePortalManager.new(node, l1Client, {
+  // Derive the logger from a REAL one rather than hand-listing methods. A
+  // hand-rolled {info,warn,error,debug,verbose} stub broke on the 5.2 bump:
+  // L1TxUtils.estimateGas started calling `this.logger?.trace(...)`, so the
+  // bridge died with "this.logger?.trace is not a function" before minting.
+  // Copying a real logger's surface (trace/fatal/isLevelEnabled/level/...) and
+  // overriding only the levels we surface keeps this immune to the SDK adding
+  // another level method later.
+  const { createLogger } = await import('@aztec/foundation/log');
+  const baseLogger: any = createLogger('scripts:feeJuiceBridge');
+  const bridgeLogger: any = {};
+  for (const key in baseLogger) {
+    const value = baseLogger[key];
+    bridgeLogger[key] = typeof value === 'function' ? value.bind(baseLogger) : value;
+  }
+  const noop = () => {};
+  Object.assign(bridgeLogger, {
     info: log,
     warn: log,
     error: log,
-    debug: () => {},
-    verbose: () => {},
-  } as any);
+    debug: noop,
+    verbose: noop,
+    trace: noop,
+  });
+
+  const portalManager = await L1FeeJuicePortalManager.new(node, l1Client, bridgeLogger);
 
   // Ensure the funder holds enough Fee Juice ERC20, THEN bridge with mint=false.
   //
