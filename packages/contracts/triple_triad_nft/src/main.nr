@@ -414,7 +414,7 @@ pub contract TripleTriadNFT {
         // nullifiers make the sequencer drop the tx).
         let claim_nullifier = poseidon2_hash([DOM_SEP__STARTER_CLAIM, nhk_app_secret]);
         assert_nullifier_did_not_exist_by(
-            self.context.anchor_block_header,
+            self.context.get_anchor_block_header(),
             compute_siloed_nullifier(self.address, claim_nullifier),
         );
         self.context.push_nullifier_unsafe(claim_nullifier);
@@ -504,7 +504,7 @@ pub contract TripleTriadNFT {
             [owner.to_field(), value, randomness],
         );
         let note = FieldNote { value };
-        let note_hash_counter = context.side_effect_counter;
+        let note_hash_counter = context.get_side_effect_counter();
         // Owned<PrivateSet> uses the BASE storage slot (not a derived/mapped slot).
         // Use the auto-generated storage_layout() to get the correct slot.
         let storage_slot = TripleTriadNFT::storage_layout().private_nfts.slot;

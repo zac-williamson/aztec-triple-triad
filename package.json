@@ -14,13 +14,13 @@
     "build": "npm run copy-circuits && npm run copy-contracts && npm run build --workspaces"
   },
   "dependencies": {
-    "@aztec/aztec.js": "5.0.0-rc.2",
-    "@aztec/bb.js": "5.0.0-rc.2",
-    "@aztec/constants": "5.0.0-rc.2",
-    "@aztec/foundation": "5.0.0-rc.2",
-    "@aztec/noir-contracts.js": "5.0.0-rc.2",
-    "@aztec/stdlib": "5.0.0-rc.2",
-    "@aztec/wallets": "5.0.0-rc.2"
+    "@aztec/aztec.js": "5.2.0-nightly.20260815",
+    "@aztec/bb.js": "5.2.0-nightly.20260815",
+    "@aztec/constants": "5.2.0-nightly.20260815",
+    "@aztec/foundation": "5.2.0-nightly.20260815",
+    "@aztec/noir-contracts.js": "5.2.0-nightly.20260815",
+    "@aztec/stdlib": "5.2.0-nightly.20260815",
+    "@aztec/wallets": "5.2.0-nightly.20260815"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

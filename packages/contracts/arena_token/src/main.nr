@@ -230,7 +230,7 @@ pub contract ArenaToken {
         randomness: Field,
     ) -> Field {
         let note = UintNote { value };
-        let note_hash_counter = context.side_effect_counter;
+        let note_hash_counter = context.get_side_effect_counter();
         let storage_slot = ArenaToken::storage_layout().balances.slot;
         // UintNote is a partial note; its hash uses a commitment scheme, so we
         // call its own compute_note_hash rather than re-deriving by hand.
