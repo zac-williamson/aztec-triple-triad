@@ -12,9 +12,8 @@ export interface ArenaBotConfig {
    *
    * NOTE: the product goal behind this number ("players should not wait") is
    * only partly served by it — on-chain create/join dominate the wall clock at
-   * ~2.5 min, so 20s of queue is not where the wait actually is. Kept
-   * configurable and defaulted to the requested 20s, but see
-   * docs/plan/BACKEND_OPPONENT.md §4 before tuning it down further.
+   * ~2.5 min, so the queue is not where the wait actually is. See
+   * docs/plan/BACKEND_OPPONENT.md §4 before tuning it down.
    */
   joinThresholdMs: number;
   /** How often to poll /queue. */
@@ -77,7 +76,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ArenaBotCon
     wsUrl: env.ARENA_BOT_WS_URL ?? 'ws://localhost:5174',
     httpUrl: env.ARENA_BOT_HTTP_URL ?? 'http://localhost:5174',
     token,
-    joinThresholdMs: int(env.ARENA_BOT_JOIN_THRESHOLD_MS, 20_000),
+    joinThresholdMs: int(env.ARENA_BOT_JOIN_THRESHOLD_MS, 30_000),
     pollIntervalMs: int(env.ARENA_BOT_POLL_INTERVAL_MS, 2_000),
     queueTimeoutMs: int(env.ARENA_BOT_QUEUE_TIMEOUT_MS, 60_000),
     handCardIds,

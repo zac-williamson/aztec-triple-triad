@@ -868,7 +868,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
           const position = await gameManager.queuePlayer(playerId, msg.cardIds);
           send(ws, { type: 'MATCHMAKING_QUEUED', position }, playerId);
 
-          const match = await gameManager.tryMatch(new Set(clients.keys()));
+          const match = await gameManager.tryMatch(new Set(clients.keys()), isBotPlayerId);
           if (match) {
             const { entry1, entry2, room } = match;
             // Match metrics: wait time per side, and whether the arena bot was

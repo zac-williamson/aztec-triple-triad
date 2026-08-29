@@ -67,7 +67,7 @@ asserts `!nft_exists` against a **contract-wide** map. Proven by a real mint fai
 The stated goal is to avoid long queue waits. But if the bot plays one game at a
 time and a bot game takes ~10 minutes (measured: our campaign games are 10.1/10.2/9.9
 min for five games, so ~2 min each plus settlement), then player B — who queued to
-avoid waiting 20 seconds — waits for the whole bot game instead. The mitigation is
+avoid waiting 30 seconds — waits for the whole bot game instead. The mitigation is
 strictly worse than the disease for everyone after the first player.
 
 The fix is not complicated: a **pool of bot identities**, not one. Each is an
@@ -116,8 +116,8 @@ with the recursive settlement proof the expensive one. The bot pays Fee Juice ev
 game, so bot Fee Juice becomes an ops burden that scales with player count and must
 be monitored and topped up — the same treasury-drain shape as the playtest pool.
 
-**20 seconds optimizes the wrong bottleneck.** On-chain create/join take ~2.5 minutes
-in practice. A player matched at 20s still waits minutes for the chain. The queue is
+**The threshold optimizes the wrong bottleneck.** On-chain create/join take ~2.5 minutes
+in practice. A player matched at 30s still waits minutes for the chain. The queue is
 not where the latency is. If the goal is "the app feels responsive when nobody else
 is online", the higher-leverage fix is perceived-latency work on the create/join path,
 not manufacturing opponents.
@@ -274,13 +274,17 @@ remaining provisioned accounts, and must not happen while nobody is watching.
   require exactly `moveNumber + 1`. The bug was latent in the BOT too, not just
   the harness; it had simply been lucky with message timing. Unit-tested; **not
   yet verified on-chain** (see below).
-- **The local sandbox then broke**, blocking further chain verification:
-  `deploy-contracts.ts` fails "No L1 to L2 message found" because
-  `aztecDebug_mineBlock` now answers `buildEmptyBlock: runBuild returned
-  undefined`, even with SEQ_MIN_TX_PER_BLOCK=0 and AZTEC_NODE_DEBUG=true
-  confirmed on the process and a clean restart. Succeeded twice early that night, then failed on
-  every attempt after, including three clean restarts — not a flake. Recorded in
-  [[v5-sandbox-playtest-gotchas]]. Testnet is unaffected.
+- **The "sandbox is broken" entry above was WRONG, and the bug was mine.** I had
+  been restarting the sandbox with `pkill -f "aztec start --local-network"`. That
+  pattern never matches: the real argv is `node …/index.js start --local-network`,
+  so `pkill` matched nothing and exited non-zero, every "clean restart" silently
+  left the OLD sandbox running, the new one died on `EADDRINUSE`, and I kept
+  talking to a stale instance whose L1 clock had drifted hours from wall time —
+  hence "No L1 to L2 message found" and `runBuild returned undefined`. It looked
+  like a regression precisely because it was perfectly reproducible. **Kill the
+  sandbox by port — `kill -9 $(lsof -tiTCP:8080 -sTCP:LISTEN)` — and verify the
+  port is free before starting another.** No Aztec defect involved; the two early
+  successes were simply the first, un-stale instance.
 - Still open: re-verify the move-proof fix and see a settled game once the
   sandbox cooperates; phase 5 (identity pool, as N processes); phase 6 (testnet).
 

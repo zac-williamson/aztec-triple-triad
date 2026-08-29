@@ -12,7 +12,7 @@ const stubBot = (over: Partial<ReturnType<ArenaBot['getStats']>> = {}) => ({
     state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
     joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0,
     settleFailures: 0, settlements: 0, lastOnChainGameId: null,
-    abandonedGames: 0, cardsRecovered: 0, lastError: null, ...over,
+    abandonedGames: 0, cardsStranded: 0, lastError: null, ...over,
   }),
 }) as unknown as ArenaBot;
 
@@ -36,14 +36,14 @@ describe('bot health endpoint', () => {
 
   it('surfaces the counters an operator needs to see a breakage', async () => {
     running = startHealthServer(stubBot({
-      proofFailures: 2, commitFailures: 1, abandonedGames: 3, cardsRecovered: 15,
+      proofFailures: 2, commitFailures: 1, abandonedGames: 3, cardsStranded: 15,
       lastError: 'prove-hand: boom',
     }), PORT);
     const { body } = await get('/metrics');
     expect(body.healthy).toBe(false);
     expect(body.totalFailures).toBe(3);
     expect(body.abandonedGames).toBe(3);
-    expect(body.cardsRecovered).toBe(15);
+    expect(body.cardsStranded).toBe(15);
     expect(body.lastError).toBe('prove-hand: boom');
   });
 

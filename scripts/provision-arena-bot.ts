@@ -212,6 +212,7 @@ async function main(): Promise<number> {
   console.log(`  Bot:    ${botAddress}`);
 
   const nftAddress = readEnvAddress('VITE_NFT_CONTRACT_ADDRESS');
+  const tokenAddress = readEnvAddress('VITE_TOKEN_CONTRACT_ADDRESS');
 
   // 1. Deploy the bot account, paying with its bridged claim in-tx.
   const claim = await obtainClaim(node, botAddress, Number(l1ChainId));
@@ -266,6 +267,20 @@ async function main(): Promise<number> {
   await wallet.registerContract(nftInstance, nftArtifact);
   await wallet.registerSender(nftAddr, 'nft');
   const nft = await Contract.at(nftAddr, nftArtifact, wallet as never);
+
+  // ArenaToken too, and not for symmetry: get_cards_for_new_player calls
+  // ArenaToken.mint_private (the signup reward), so a PXE that does not know
+  // the token instance fails the starter claim with
+  // "No contract instance found for address 0x…" — from inside a call the
+  // script never makes directly, which makes it read like an NFT bug.
+  const tokenArtifact = loadContractArtifact(
+    JSON.parse(readFileSync(resolve(ROOT_DIR, 'packages/contracts/target/arena_token-ArenaToken.json'), 'utf-8')),
+  );
+  const tokenAddr = AztecAddress.fromStringUnsafe(tokenAddress);
+  const tokenInstance = await node.getContract(tokenAddr);
+  if (!tokenInstance) throw new Error(`ArenaToken ${tokenAddress} not found on this chain`);
+  await wallet.registerContract(tokenInstance, tokenArtifact);
+  await wallet.registerSender(tokenAddr, 'token');
 
   // 3. Claim starter cards AS THE BOT — this is what initialises its
   //    `note_nonce`. Without it every create_game/join_game fails

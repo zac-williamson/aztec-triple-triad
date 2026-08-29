@@ -58,9 +58,9 @@ export interface BotStats {
   settlements: number;
   /** On-chain id of the game just played, so callers can verify it independently. */
   lastOnChainGameId: string | null;
-  /** Games abandoned by the watchdog, and cards clawed back by cancel_game. */
+  /** Games abandoned by the watchdog, and cards left locked in them. */
   abandonedGames: number;
-  cardsRecovered: number;
+  cardsStranded: number;
   lastError: string | null;
 }
 
@@ -139,7 +139,7 @@ export class ArenaBot {
   private readonly stats: BotStats = {
     state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
     joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0, settleFailures: 0, settlements: 0,
-    lastOnChainGameId: null, abandonedGames: 0, cardsRecovered: 0, lastError: null,
+    lastOnChainGameId: null, abandonedGames: 0, cardsStranded: 0, lastError: null,
   };
 
   private readonly chain: BotChainLike | null;
@@ -214,11 +214,16 @@ export class ArenaBot {
         && this.now() - this.gameStartedAt > this.cfg.gameTimeoutMs) {
       this.log(`game exceeded ${Math.round(this.cfg.gameTimeoutMs / 60_000)}min — abandoning`);
       this.stats.abandonedGames += 1;
-      const toRecover = this.recoverableCommit();
-      this.resetToIdle();
-      if (toRecover) {
-        void this.recoverCards(toRecover).catch(err => this.recordError('recover-cards', err as Error));
+      // If we had committed, those five cards stay locked until the game is
+      // resolved through the abandonment-claim path. We cannot cancel: that is
+      // creator-only and the bot never creates. Surfaced so an operator can see
+      // inventory draining rather than discovering it when the bot runs dry.
+      if (this.committed) {
+        this.log('WARNING: 5 cards remain committed to the abandoned game — ' +
+                 'recoverable only via the abandonment claim');
+        this.stats.cardsStranded += 5;
       }
+      this.resetToIdle();
       return;
     }
 
@@ -286,19 +291,22 @@ export class ArenaBot {
         break;
 
       case 'MATCH_FOUND':
+        // The bot JOINS games; it never creates them. The server orders the
+        // pair so a bot is never the creator, but if that ever failed we must
+        // not silently start creating games and wagering cards as player 1 —
+        // leave immediately and let a human take the slot.
+        if (msg.playerNumber === 1) {
+          this.stats.joinFailures += 1;
+          this.recordError('match', new Error('assigned as game CREATOR — the bot only joins; leaving'));
+          this.send({ type: 'CANCEL_GAME', gameId: msg.gameId });
+          this.resetToIdle();
+          break;
+        }
         this.gameId = msg.gameId;
         this.myPlayer = msg.playerNumber === 1 ? 'player1' : 'player2';
         this.state = 'playing';
         this.gameStartedAt = this.now();
         this.log(`matched into ${msg.gameId} as ${this.myPlayer}`);
-        // Chain commit runs detached: it takes minutes (proving + inclusion) and
-        // must not block the message loop, which still has to answer the relay.
-        if (this.chain && this.myPlayer === 'player1') {
-          void this.commitAsPlayer1(msg.gameId).catch(err => {
-            this.stats.commitFailures += 1;
-            this.recordError('commit-create', err as Error);
-          });
-        }
         this.maybeMove(msg.gameState);
         break;
 
@@ -402,42 +410,6 @@ export class ArenaBot {
       default:
         break;
     }
-  }
-
-  /**
-   * P1's on-chain commit: preview the derived game id + randomness, send
-   * create_game, then share the preview so P2 can join. Mirrors
-   * useGameSession's createGame pipeline; game_id and randomness are derived
-   * IN-CIRCUIT and must never be invented here.
-   */
-  private async commitAsPlayer1(wsGameId: string): Promise<void> {
-    const chain = this.chain!;
-    const { gameId, randomness, blindingFactor, status } = await chain.pxe.previewCreateGame(chain.address);
-    this.blindingFactor = blindingFactor;
-    this.myRandomness = randomness;
-    // P1 must record its OWN game id: settlement needs it, and so does
-    // cancel_game recovery. Only the P2 path was setting it.
-    this.onChainGameId = String(gameId);
-    this.stats.lastOnChainGameId = this.onChainGameId;
-    if (status !== 0) {
-      throw new Error(`on-chain game ${gameId} already has status ${status} — stale note nonce`);
-    }
-    // Share BEFORE the slow tx so P2 can prepare while create_game mines.
-    this.send({ type: 'SHARE_AZTEC_INFO', gameId: wsGameId, aztecAddress: chain.address, onChainGameId: gameId, gameRandomness: randomness });
-    void this.maybeProveHand().catch(() => undefined);
-    this.log(`create_game: committing ${this.hand.join(',')} for on-chain game ${String(gameId).slice(0, 18)}…`);
-
-    const txHash = await chain.pxe.sendCreateGame(chain.address, this.hand, { node: chain.nodeClient, timeoutMs: this.cfg.chainTxTimeoutMs });
-    if (this.gameId !== wsGameId) return; // game moved on while we were mining
-    this.send({ type: 'TX_CONFIRMED', gameId: wsGameId, txType: 'create_game', txHash });
-    this.committed = true;
-    this.log(`create_game mined: ${txHash.slice(0, 18)}…`);
-    // Our turn may have arrived while we were committing.
-    this.maybeMove(this.lastState ?? undefined);
-    void this.maybeProveHand().catch(err => {
-      this.stats.proofFailures += 1;
-      this.recordError('prove-hand', err as Error);
-    });
   }
 
   /** P2's on-chain commit: join the game id P1 shared. */
@@ -628,30 +600,6 @@ export class ArenaBot {
     const txHash = await chain.pxe.sendProcessGame(chain.address, args, { node: chain.nodeClient, timeoutMs: this.cfg.chainTxTimeoutMs });
     this.stats.settlements += 1;
     this.log(`settled on-chain: ${String(txHash).slice(0, 18)}…`);
-  }
-
-  /**
-   * If we created a game nobody joined, its five cards are recoverable by
-   * cancel_game. Captured BEFORE resetToIdle clears the state.
-   *
-   * Only the creator can cancel, and only while the game is still `created` —
-   * a game the opponent DID join needs the abandonment-claim path instead, so
-   * we do not attempt it here.
-   */
-  private recoverableCommit(): { gameId: string; cardIds: number[] } | null {
-    if (!this.chain || this.myPlayer !== 'player1' || !this.committed) return null;
-    if (!this.onChainGameId || this.hand.length !== 5) return null;
-    return { gameId: this.onChainGameId, cardIds: [...this.hand] };
-  }
-
-  private async recoverCards(what: { gameId: string; cardIds: number[] }): Promise<void> {
-    const chain = this.chain!;
-    this.log(`cancelling unjoined game ${what.gameId.slice(0, 18)}… to recover ${what.cardIds.join(',')}`);
-    await chain.pxe.sendCancelGame(chain.address, what.gameId, what.cardIds, {
-      node: chain.nodeClient, timeoutMs: this.cfg.chainTxTimeoutMs,
-    });
-    this.stats.cardsRecovered += what.cardIds.length;
-    this.log(`recovered ${what.cardIds.length} cards`);
   }
 
   /** Play if, and only if, it is our turn in a live game. */

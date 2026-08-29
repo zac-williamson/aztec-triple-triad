@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vite
 import { EventEmitter } from 'events';
 import { ArenaBot, type QueueSnapshot } from '../src/ArenaBot.js';
 import type { ArenaBotConfig } from '../src/config.js';
-import { createGame, getCardsByIds } from '@axolotl-arena/game-logic';
+import { createGame, getCardsByIds, placeCard } from '@axolotl-arena/game-logic';
 import type { GameState } from '@axolotl-arena/game-logic';
 
 /** Minimal stand-in for the `ws` client: records what the bot sends. */
@@ -37,6 +37,24 @@ function makeConfig(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
 
 function freshState(): GameState {
   return createGame(getCardsByIds(CARDS), getCardsByIds(CARDS));
+}
+
+/**
+ * A state where it is PLAYER 2's turn — the bot only ever joins, so it is always
+ * player 2 and never moves on a fresh board.
+ */
+function botTurnState(): GameState {
+  return placeCard(freshState(), 'player1', 0, 0, 0).newState;
+}
+
+/**
+ * The join handshake the bot needs before it will commit (and therefore before
+ * it will play): the creator shares its on-chain id, then its create_game is
+ * confirmed. As a joiner the bot has no other route to `committed`.
+ */
+function deliverJoinHandshake(socket: FakeSocket, gameId = 'g1', onChainGameId = FIELD(0xc1)): void {
+  socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId, aztecAddress: FIELD(0xdef), onChainGameId, gameRandomness: SIX_RANDOM });
+  socket.deliver({ type: 'ON_CHAIN_STATUS', gameId, status: { player1Tx: 'confirmed', player2Tx: 'pending' } });
 }
 
 /** Build a bot wired to a fake socket and a settable queue snapshot. */
@@ -148,14 +166,15 @@ describe('ArenaBot play', () => {
   it('plays a legal move when it is its turn', async () => {
     const h = harness();
     await h.ready();
-    // Fresh game: player1 moves first, so the bot as player1 must act.
-    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    // The bot joins as player 2, so it acts on a board where it is its turn.
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: botTurnState(), opponentIsBot: false });
     await vi.advanceTimersByTimeAsync(10);
 
     const placed = h.socket.lastOfType('PLACE_CARD');
     expect(placed).toBeTruthy();
     expect(placed.gameId).toBe('g1');
-    expect(placed.moveNumber).toBe(0);
+    // botTurnState already has player 1's opening card, so ours is move 1.
+    expect(placed.moveNumber).toBe(1);
     expect(placed.handIndex).toBeGreaterThanOrEqual(0);
     expect(placed.handIndex).toBeLessThan(5);
     expect(placed.row).toBeGreaterThanOrEqual(0);
@@ -166,7 +185,7 @@ describe('ArenaBot play', () => {
   it('stays silent when it is the opponent\'s turn', async () => {
     const h = harness();
     await h.ready();
-    // Bot is player2 but it is player1's turn.
+    // Fresh board: it is player1's turn, so the bot must stay silent.
     h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
     await vi.advanceTimersByTimeAsync(10);
     expect(h.socket.countOfType('PLACE_CARD')).toBe(0);
@@ -187,7 +206,7 @@ describe('ArenaBot play', () => {
   it('does not send a move that the game outran during the pacing delay', async () => {
     const h = harness(makeConfig({ moveDelayMs: 5_000 }));
     await h.ready();
-    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
     // Game ends before the delayed move fires.
     h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'player2', gameState: freshState() });
     await vi.advanceTimersByTimeAsync(6_000);
@@ -197,9 +216,10 @@ describe('ArenaBot play', () => {
 });
 
 describe('ArenaBot outcome accounting', () => {
+  // The bot only ever JOINS, so it is always player 2.
   const outcomes: [string, 'player1' | 'player2' | 'draw', keyof ReturnType<ArenaBot['getStats']>][] = [
-    ['win', 'player1', 'wins'],
-    ['loss', 'player2', 'losses'],
+    ['win', 'player2', 'wins'],
+    ['loss', 'player1', 'losses'],
     ['draw', 'draw', 'draws'],
   ];
 
@@ -207,7 +227,7 @@ describe('ArenaBot outcome accounting', () => {
     it(`records a ${label}`, async () => {
       const h = harness();
       await h.ready();
-      h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+      h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
       h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner, gameState: freshState() });
       const stats = h.bot.getStats();
       expect(stats.gamesPlayed).toBe(1);
@@ -235,7 +255,7 @@ describe('ArenaBot outcome accounting', () => {
   it('does not wedge in playing when the socket drops mid-game', async () => {
     const h = harness();
     await h.ready();
-    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
     expect(h.bot.getStats().state).toBe('playing');
     h.socket.close();
     expect(h.bot.getStats().state).toBe('idle');
@@ -308,29 +328,7 @@ describe('ArenaBot chain mode', () => {
     expect(h.bot.getStats().lastError).toMatch(/holds only 3/);
   });
 
-  it('as player1: shares the derived game id BEFORE the slow tx, then confirms', async () => {
-    const h = chainHarness();
-    await h.ready();
-    await vi.advanceTimersByTimeAsync(1_000);
-    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
-    await vi.advanceTimersByTimeAsync(50);
 
-    const shared = h.socket.lastOfType('SHARE_AZTEC_INFO');
-    expect(shared).toMatchObject({ gameId: 'g1', aztecAddress: '0xbot', onChainGameId: FIELD(0xabc) });
-    expect(h.f.calls.some(c => c[0] === 'create')).toBe(true);
-    expect(h.socket.lastOfType('TX_CONFIRMED')).toMatchObject({ txType: 'create_game', txHash: '0xtxcreate' });
-  });
-
-  it('as player1: refuses to commit onto a stale note nonce', async () => {
-    const h = chainHarness({ previewCreateGame: async () => ({ gameId: '0xg', randomness: [], blindingFactor: '0x', status: 2 }) });
-    await h.ready();
-    await vi.advanceTimersByTimeAsync(1_000);
-    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
-    await vi.advanceTimersByTimeAsync(50);
-    expect(h.f.calls.some(c => c[0] === 'create')).toBe(false);
-    expect(h.bot.getStats().commitFailures).toBe(1);
-    expect(h.bot.getStats().lastError).toMatch(/status 2/);
-  });
 
   it('as player2: does NOT join on the shared id alone — that races the chain', async () => {
     const h = chainHarness();
@@ -345,6 +343,22 @@ describe('ArenaBot chain mode', () => {
     // join_game asserts the game is in `created` state, so joining now would
     // fail "Game not in created state".
     expect(h.f.calls.some(c => c[0] === 'join')).toBe(false);
+  });
+
+  it('leaves immediately if the server ever assigns it the creator slot', async () => {
+    const h = chainHarness();
+    await h.ready();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    // The server orders every pair so a bot is never the creator. If that ever
+    // failed, the bot must NOT quietly start creating games — creating wagers
+    // five cards as player 1, which is exactly what we promised it never does.
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(h.socket.lastOfType('CANCEL_GAME')).toMatchObject({ gameId: 'g1' });
+    expect(h.bot.getStats().lastError).toMatch(/only joins/);
+    expect(h.f.calls.some((c: any[]) => c[0] === 'create' || c[0] === 'join')).toBe(false);
   });
 
   it('as player2: joins once the opponent\'s create_game is confirmed', async () => {
@@ -374,14 +388,6 @@ describe('ArenaBot chain mode', () => {
     expect(h.f.calls.filter(c => c[0] === 'join')).toHaveLength(1);
   });
 
-  it('as player1: does not commit when it is player2, and vice versa', async () => {
-    const h = chainHarness();
-    await h.ready();
-    await vi.advanceTimersByTimeAsync(1_000);
-    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
-    await vi.advanceTimersByTimeAsync(50);
-    expect(h.f.calls.some(c => c[0] === 'create')).toBe(false);
-  });
 });
 
 describe('ArenaBot proof flow', () => {
@@ -419,12 +425,13 @@ describe('ArenaBot proof flow', () => {
   it('waits for the opponent randomness before proving its hand', async () => {
     const h = h2();
     await h.ready();
-    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
     await vi.advanceTimersByTimeAsync(50);
-    // Our own preview has landed, but the opponent has shared nothing yet.
+    // Nothing shared yet: as the joiner we have neither our own preview nor the
+    // opponent's randomness, so no hand proof is possible.
     expect(h.p.calls.some(c => c[0] === 'hand')).toBe(false);
 
-    h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xh', gameRandomness: ['r1', 'r2', 'r3', 'r4', 'r5', 'r6'] });
+    deliverJoinHandshake(h.socket);
     await vi.advanceTimersByTimeAsync(50);
     expect(h.p.calls.some(c => c[0] === 'hand')).toBe(true);
     expect(h.socket.lastOfType('SUBMIT_HAND_PROOF')).toBeTruthy();
@@ -433,9 +440,9 @@ describe('ArenaBot proof flow', () => {
   it('submits exactly one hand proof however many times inputs re-arrive', async () => {
     const h = h2();
     await h.ready();
-    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
     for (let i = 0; i < 3; i++) {
-      h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xh', gameRandomness: ['r', 'r', 'r', 'r', 'r', 'r'] });
+      deliverJoinHandshake(h.socket);
       await vi.advanceTimersByTimeAsync(30);
     }
     expect(h.socket.countOfType('SUBMIT_HAND_PROOF')).toBe(1);
@@ -444,12 +451,12 @@ describe('ArenaBot proof flow', () => {
   it('proves its own move only once both card commitments are known', async () => {
     const h = h2();
     await h.ready();
-    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
-    h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xh', gameRandomness: ['r', 'r', 'r', 'r', 'r', 'r'] });
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
     await vi.advanceTimersByTimeAsync(50);
 
     // Play is gated on OUR commit, so the move only goes out on a later state.
-    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: freshState() });
+    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
     await vi.advanceTimersByTimeAsync(50);
     const placed = h.socket.lastOfType('PLACE_CARD');
     expect(placed, 'moves once committed').toBeTruthy();
@@ -466,21 +473,24 @@ describe('ArenaBot proof flow', () => {
   it('clears per-game proof inputs so they cannot leak into the next game', async () => {
     const h = h2();
     await h.ready();
-    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
-    h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xh', gameRandomness: ['r', 'r', 'r', 'r', 'r', 'r'] });
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
     await vi.advanceTimersByTimeAsync(50);
     expect(h.socket.countOfType('SUBMIT_HAND_PROOF')).toBe(1);
 
-    // Bot is player1 and 'won', so it attempts to settle. The transcript is
-    // incomplete here, so that attempt fails — and only THEN does it reset.
-    h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'player1', gameState: freshState() });
+    // The bot is player 2 (it only joins). Winning means it attempts to settle;
+    // the transcript is incomplete here so that attempt fails — and only THEN
+    // does it reset, which is the window this test is about.
+    h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'player2', gameState: freshState() });
     await vi.advanceTimersByTimeAsync(50);
     expect(h.bot.getStats().settleFailures).toBe(1);
     expect(h.bot.getStats().lastError).toMatch(/transcript incomplete/);
 
     // A second game must prove its own hand afresh, not reuse the first's state.
-    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g2', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
-    h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g2', aztecAddress: '0xh', gameRandomness: ['s', 's', 's', 's', 's', 's'] });
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g2', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    // A DIFFERENT on-chain id: the bot's committedGameIds guard refuses to
+    // re-commit one it has already handled, which is what we want in reality.
+    deliverJoinHandshake(h.socket, 'g2', FIELD(0xc2));
     await vi.advanceTimersByTimeAsync(50);
     expect(h.socket.countOfType('SUBMIT_HAND_PROOF')).toBe(2);
   });
@@ -539,7 +549,8 @@ describe('ArenaBot settlement', () => {
       await settle(80);
       socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber, gameState: freshState(), opponentIsBot: false });
       socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: OPP_ADDRESS, onChainGameId: CHAIN_GAME_ID, gameRandomness: RANDOMNESS });
-      await settle(50);
+      socket.deliver({ type: 'ON_CHAIN_STATUS', gameId: 'g1', status: { player1Tx: 'confirmed', player2Tx: 'pending' } });
+      await settle(80);
       if (seedTranscript) {
         socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: playerNumber === 1 ? 2 : 1, handProof: { proof: fakeProofB64(), publicInputs: ['0x3', '0x4'], cardCommit: hex(0x222) } });
         let start = initialHash;
@@ -557,7 +568,7 @@ describe('ArenaBot settlement', () => {
   }
 
   it('settles when it wins', async () => {
-    const h = settleHarness('player1', 1, true);
+    const h = settleHarness('player2', 2, true);
     await h.run();
     expect(h.sent).toHaveLength(1);
     expect(h.bot.getStats().settlements).toBe(1);
@@ -570,18 +581,17 @@ describe('ArenaBot settlement', () => {
     expect(h.bot.getStats().settlements).toBe(0);
   });
 
-  it('settles a draw only as player 1 — a second settler would revert', async () => {
-    const asP1 = settleHarness('draw', 1, true);
-    await asP1.run();
-    expect(asP1.sent).toHaveLength(1);
-
-    const asP2 = settleHarness('draw', 2, true);
-    await asP2.run();
-    expect(asP2.sent).toHaveLength(0);
+  it('never settles a draw — draw settlement is player 1, and the bot only joins', async () => {
+    // Draws are single-settler: player 1 alone fires winner_id=3, and a second
+    // settler reverts (tests/draw-game.spec.ts). Since the bot is always the
+    // JOINER it is never player 1, so the human settles every draw.
+    const h = settleHarness('draw', 2, true);
+    await h.run();
+    expect(h.sent).toHaveLength(0);
   });
 
   it('names what is missing rather than sending an incomplete transcript', async () => {
-    const h = settleHarness('player1', 1, false);
+    const h = settleHarness('player2', 2, false);
     await h.run();
     expect(h.sent).toHaveLength(0);
     expect(h.bot.getStats().settleFailures).toBe(1);
@@ -593,7 +603,7 @@ describe('ArenaBot commit gate', () => {
   it('does not play before its own cards are committed on-chain', async () => {
     const socket = new FakeSocket();
     // A commit that never resolves — the bot must simply not move.
-    const f = fakeChain({ sendCreateGame: () => new Promise(() => {}) });
+    const f = fakeChain({ sendJoinGame: () => new Promise(() => {}) });
     const bot = new ArenaBot(makeConfig(), {
       connect: () => socket as unknown as any,
       fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
@@ -605,7 +615,7 @@ describe('ArenaBot commit gate', () => {
     socket.deliver({ type: 'BOT_REGISTERED' });
     await vi.advanceTimersByTimeAsync(1_000);
 
-    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
     for (let i = 0; i < 5; i++) {
       socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: freshState() });
       await vi.advanceTimersByTimeAsync(100);
@@ -619,7 +629,7 @@ describe('ArenaBot commit gate', () => {
   it('plays normally with no chain — off-chain mode is unaffected', async () => {
     const h = harness();
     await h.ready();
-    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: botTurnState(), opponentIsBot: false });
     await vi.advanceTimersByTimeAsync(50);
     expect(h.socket.countOfType('PLACE_CARD')).toBe(1);
     h.bot.stop();
@@ -629,7 +639,7 @@ describe('ArenaBot commit gate', () => {
   it('plays once committed, even if its turn arrived DURING the commit', async () => {
     const socket = new FakeSocket();
     let releaseCommit: (v: string) => void = () => {};
-    const f = fakeChain({ sendCreateGame: () => new Promise<string>(r => { releaseCommit = r; }) });
+    const f = fakeChain({ sendJoinGame: () => new Promise<string>(r => { releaseCommit = r; }) });
     const bot = new ArenaBot(makeConfig(), {
       connect: () => socket as unknown as any,
       fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
@@ -641,9 +651,10 @@ describe('ArenaBot commit gate', () => {
     socket.deliver({ type: 'BOT_REGISTERED' });
     await vi.advanceTimersByTimeAsync(1_000);
 
-    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: botTurnState(), opponentIsBot: false });
+    deliverJoinHandshake(socket);
     // Our turn arrives while the commit is still in flight — and is dropped.
-    socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: freshState() });
+    socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
     await vi.advanceTimersByTimeAsync(50);
     expect(socket.countOfType('PLACE_CARD')).toBe(0);
 
@@ -697,7 +708,7 @@ describe('ArenaBot queue race', () => {
     await vi.advanceTimersByTimeAsync(100);
 
     // Match arrives while the queue fetch is still in flight.
-    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
     releaseFetch({ length: 1, oldestWaitMs: 30_000, entries: [] });
     await vi.advanceTimersByTimeAsync(100);
 
@@ -730,18 +741,20 @@ describe('ArenaBot move proof staleness', () => {
     socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
     socket.deliver({ type: 'BOT_REGISTERED' });
     await vi.advanceTimersByTimeAsync(1_000);
-    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
-    socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xh', onChainGameId: FIELD(0xc), gameRandomness: SIX_RANDOM });
-    socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 2, handProof: { proof: 'q', publicInputs: [], cardCommit: FIELD(0x2) } });
-    socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: freshState() });
+    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(socket);
+    socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 1, handProof: { proof: 'q', publicInputs: [], cardCommit: FIELD(0x2) } });
+    socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
     await vi.advanceTimersByTimeAsync(50);
     expect(socket.countOfType('PLACE_CARD')).toBe(1);
 
-    // A state TWO moves on: our card may have been captured, so its owner would
-    // no longer be us and the circuit would reject the proof.
-    const late: any = freshState();
-    late.board[0][0] = { card: { id: 1 }, owner: 'player2', originalOwner: 'player1' };
-    late.board[0][1] = { card: { id: 6 }, owner: 'player2', originalOwner: 'player2' };
+    // A board TWO moves past ours. The bot moved on a board that already had 1
+    // card, so its own after-state has 2; this has 4, by which point its card
+    // may have been captured — owner no longer us, and the circuit rejects it.
+    const late: any = botTurnState();
+    late.board[0][1] = { card: { id: 6 }, owner: 'player1', originalOwner: 'player2' };
+    late.board[0][2] = { card: { id: 7 }, owner: 'player1', originalOwner: 'player1' };
+    late.board[1][0] = { card: { id: 8 }, owner: 'player2', originalOwner: 'player2' };
     socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: late });
     await vi.advanceTimersByTimeAsync(50);
     expect(proved).toHaveLength(0);
@@ -750,7 +763,7 @@ describe('ArenaBot move proof staleness', () => {
 });
 
 describe('ArenaBot stuck-game watchdog', () => {
-  it('abandons a game that never finishes and recovers its cards', async () => {
+  it('abandons a stuck game and reports the cards left committed', async () => {
     const socket = new FakeSocket();
     const f = fakeChain();
     const cancels: any[] = [];
@@ -769,8 +782,9 @@ describe('ArenaBot stuck-game watchdog', () => {
     socket.deliver({ type: 'BOT_REGISTERED' });
     await vi.advanceTimersByTimeAsync(100);
 
-    // Matched as creator, commits, and the opponent then never joins.
-    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    // Joined and committed, then the game simply never finishes.
+    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(socket);
     await vi.advanceTimersByTimeAsync(100);
     expect(bot.getStats().state).toBe('playing');
 
@@ -782,9 +796,10 @@ describe('ArenaBot stuck-game watchdog', () => {
     // idle OR already re-queued for the next waiting player.
     expect(['idle', 'queued']).toContain(bot.getStats().state);
     expect(bot.getStats().abandonedGames).toBe(1);
-    expect(cancels).toHaveLength(1);
-    expect(cancels[0][2]).toHaveLength(5);       // the wagered hand
-    expect(bot.getStats().cardsRecovered).toBe(5);
+    // The bot only JOINS, so it cannot cancel (creator-only). Its committed
+    // cards stay locked pending the abandonment claim — surfaced, not silent.
+    expect(cancels).toHaveLength(0);
+    expect(bot.getStats().cardsStranded).toBe(5);
     bot.stop();
   });
 
@@ -815,5 +830,26 @@ describe('ArenaBot stuck-game watchdog', () => {
     expect(bot.getStats().abandonedGames).toBe(1);
     expect(cancels).toHaveLength(0);
     bot.stop();
+  });
+});
+
+describe('ArenaBot join-only policy', () => {
+  it('defaults to a 30s wait before offering itself', async () => {
+    const { configFromEnv } = await import('../src/config.js');
+    const cfg = configFromEnv({ ARENA_BOT_TOKEN: 't' } as NodeJS.ProcessEnv);
+    expect(cfg.joinThresholdMs).toBe(30_000);
+  });
+
+  it('does not offer a game at 29s, but does at 30s', async () => {
+    const h = harness(makeConfig({ joinThresholdMs: 30_000 }));
+    await h.ready();
+    h.setQueue({ length: 1, oldestWaitMs: 29_000 });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(h.socket.countOfType('QUEUE_MATCHMAKING')).toBe(0);
+
+    h.setQueue({ length: 1, oldestWaitMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(h.socket.countOfType('QUEUE_MATCHMAKING')).toBe(1);
+    h.bot.stop();
   });
 });

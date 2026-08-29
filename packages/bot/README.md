@@ -1,9 +1,17 @@
 # @axolotl-arena/bot — the arena bot
 
 A backend opponent that plays like any other player: it watches the matchmaking
-queue and, when somebody has waited past a threshold, queues itself and lets the
-server's ordinary `tryMatch` pair them. In chain mode it commits real cards,
-generates real proofs, and settles on-chain.
+queue and, when somebody has waited **more than 30 seconds**, queues itself and
+lets the server's ordinary `tryMatch` pair them. In chain mode it commits real
+cards, generates real proofs, and settles on-chain.
+
+**The bot only ever JOINS games. It never creates one.** That is enforced in two
+places, because one is not enough: `tryMatch` orders every pair so a bot takes
+the joiner slot, and the bot itself refuses a creator assignment (cancels and
+returns to idle) if the server ever hands it one. Creating means wagering five
+cards to open a game that may never be joined — a bot doing that unprompted is
+an unbounded drain on its own collection, and the queue it is supposed to drain
+would be full of its own empty games.
 
 Design rationale, the comparison with how other games handle this, and what the
 original ask was missing: **`docs/plan/BACKEND_OPPONENT.md`**. Read that first —
@@ -40,7 +48,7 @@ commit its cards is worse than one that never starts.
 | `ARENA_BOT_TOKEN` | — | **required**; must match the backend's |
 | `ARENA_BOT_CHAIN` | off | `1` enables chain mode |
 | `ARENA_BOT_INDEX` | `0` | which provisioned identity to run |
-| `ARENA_BOT_JOIN_THRESHOLD_MS` | `20000` | how long a player waits before the bot offers |
+| `ARENA_BOT_JOIN_THRESHOLD_MS` | `30000` | a player must have waited LONGER than this before the bot offers |
 | `ARENA_BOT_DIFFICULTY` | `greedy` | `random` \| `greedy` \| `lookahead` |
 | `ARENA_BOT_MOVE_DELAY_MS` | `1200` | pacing, so it does not feel inhumanly instant |
 | `ARENA_BOT_QUEUE_TIMEOUT_MS` | `60000` | leave the queue if no match forms |
@@ -76,9 +84,10 @@ Two endpoints, and they answer different questions:
   silently-refilling bot is an unbounded card faucet and is hard to walk back.
   Watch `cardsRecovered` and the spendable count.
 - **Committed cards vanish until the game settles.** So "spendable" is legitimately
-  lower than "owned" while a game is in flight, and a game that never settles
-  strands five cards until the watchdog cancels it (creator side) or the
-  abandonment path is used (joiner side).
+  lower than "owned" while a game is in flight. Because the bot is always the
+  joiner it cannot cancel a stuck game — cancel is creator-only — so its five
+  cards stay locked until the abandonment-claim path resolves it. The watchdog
+  counts these in `cardsStranded`; watch that number, it is a slow leak.
 - **The bot is DISCLOSED**, via `opponentIsBot` on `MATCH_FOUND` and a badge in
   the HUD. `REGISTER_BOT` is token-gated precisely so a normal client cannot
   claim to be the bot and suppress that.

@@ -410,7 +410,10 @@ export class GameManager {
    * paired with a ghost entry, orphaning the game and leaving the other
    * live player stuck in the queue.
    */
-  async tryMatch(livePlayerIds: Set<string>): Promise<{ entry1: QueueEntryData; entry2: QueueEntryData; room: StoredGameRoom } | null> {
+  async tryMatch(
+    livePlayerIds: Set<string>,
+    isBot: (playerId: string) => boolean = () => false,
+  ): Promise<{ entry1: QueueEntryData; entry2: QueueEntryData; room: StoredGameRoom } | null> {
     // Strip any stale entries before matching
     await this.store.removeDisconnectedQueueEntries(livePlayerIds);
 
@@ -432,11 +435,22 @@ export class GameManager {
       return null;
     }
 
-    const room = await this.createGame(entry1.playerId, entry1.cardIds);
-    await this.joinGame(room.id, entry2.playerId, entry2.cardIds);
+    // The arena bot must NEVER create a game — it only ever joins one a human is
+    // already waiting in. Queue order usually gives that for free (the bot only
+    // queues once a human is ahead of it), but "usually" is not a guarantee: a
+    // requeue, a stale-entry sweep, or two bots would flip it. Order explicitly.
+    let [creator, joiner] = [entry1, entry2];
+    if (isBot(creator.playerId) && !isBot(joiner.playerId)) {
+      [creator, joiner] = [joiner, creator];
+    }
+
+    const room = await this.createGame(creator.playerId, creator.cardIds);
+    await this.joinGame(room.id, joiner.playerId, joiner.cardIds);
 
     const updatedRoom = await this.store.getGame(room.id);
-    return { entry1, entry2, room: updatedRoom! };
+    // entry1/entry2 are reported as CREATOR/JOINER, which is what the caller
+    // uses to assign player numbers.
+    return { entry1: creator, entry2: joiner, room: updatedRoom! };
   }
 
   async updatePing(playerId: string): Promise<boolean> {
