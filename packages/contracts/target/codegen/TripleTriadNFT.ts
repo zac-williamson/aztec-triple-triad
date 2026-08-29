@@ -194,8 +194,8 @@ arena_bots: {
     /** import_note(owner: struct, value: field, randomness: field, tx_hash: field, unique_note_hashes: array, num_note_hashes: integer, first_nullifier: field, recipient: struct) */
     import_note: ((owner: AztecAddressLike, value: FieldLike, randomness: FieldLike, tx_hash: FieldLike, unique_note_hashes: FieldLike[], num_note_hashes: (bigint | number), first_nullifier: FieldLike, recipient: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** mint_bot_cards(slot: field, token_ids: array, packed_ranks: array, count: integer) */
-    mint_bot_cards: ((slot: FieldLike, token_ids: FieldLike[], packed_ranks: FieldLike[], count: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** mint_bot_cards(slot: field, token_ids: array, packed_ranks: array, randomness: array, count: integer) */
+    mint_bot_cards: ((slot: FieldLike, token_ids: FieldLike[], packed_ranks: FieldLike[], randomness: FieldLike[], count: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** mint_for_game_draw(token_ids: array, to: struct) */
     mint_for_game_draw: ((token_ids: FieldLike[], to: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;

@@ -365,15 +365,22 @@ async function main(): Promise<number> {
     ` — minting ${toMint} more to reach ${cardCount}`,
   );
 
-  // 4. Mint, in batches of 10 (the contract's array width). One tx per batch
-  //    rather than per card: at a thousand cards that is the difference between
-  //    a hundred transactions and a thousand.
-  const BATCH = 10;
+  // 4. Mint in batches. One tx per batch rather than per card: at a thousand
+  //    cards that is the difference between ~125 transactions and 1000.
+  //
+  //    EIGHT, not the contract's full array width of 10. Ten inserts in one
+  //    private call overflows a protocol bounded vec — "push out of bounds" —
+  //    despite MAX_NOTE_HASHES_PER_CALL being 16, because each constrained
+  //    delivery costs more than one slot. Eight is measured, not derived; the
+  //    array stays 10 wide so the unused slots are simply skipped by `count`.
+  const BATCH = 8;
+  /** The contract's array width. Slots past `count` are zero and ignored. */
+  const ARRAY_WIDTH = 10;
   const plan = collection.slice(0, toMint);
   for (let i = 0; i < plan.length; i += BATCH) {
     const batch = plan.slice(i, i + BATCH);
-    const ids = Array.from({ length: BATCH }, (_, k) => new Fr(BigInt(batch[k]?.id ?? 0)));
-    const ranks = Array.from({ length: BATCH }, (_, k) => new Fr(BigInt(batch[k]?.packed ?? 0)));
+    const ids = Array.from({ length: ARRAY_WIDTH }, (_, k) => new Fr(BigInt(batch[k]?.id ?? 0)));
+    const ranks = Array.from({ length: ARRAY_WIDTH }, (_, k) => new Fr(BigInt(batch[k]?.packed ?? 0)));
     try {
       await nft.methods.mint_bot_cards(new Fr(BigInt(index)), ids, ranks, batch.length).send({
         from: deployer.address,
@@ -381,6 +388,14 @@ async function main(): Promise<number> {
         wait: { timeout: TX_TIMEOUT },
       });
       console.log(`  minted ${Math.min(i + BATCH, plan.length)}/${plan.length}`);
+
+      // Sync so the recipient's TAGGING WINDOW advances. Constrained delivery
+      // consumes a tagging index per note, and the window (84) only slides
+      // forward as the recipient discovers what was sent — so minting a large
+      // stock without syncing dies partway with "Highest used index N is at or
+      // past the window end". The bot account lives in this same PXE, so one
+      // sync here finalises its indices.
+      await (wallet as unknown as { pxe: { sync: () => Promise<unknown> } }).pxe.sync();
     } catch (err: any) {
       // Do not silently continue: a partial collection that reports success is
       // worse than a loud stop, because the bot would then commit hands it

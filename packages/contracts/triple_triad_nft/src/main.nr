@@ -622,7 +622,13 @@ pub contract TripleTriadNFT {
     /// read from immutable storage rather than passed in, so it cannot be aimed
     /// at a player even by the minter.
     #[external("private")]
-    fn mint_bot_cards(slot: Field, token_ids: [Field; 10], packed_ranks: [Field; 10], count: u32) {
+    fn mint_bot_cards(
+        slot: Field,
+        token_ids: [Field; 10],
+        packed_ranks: [Field; 10],
+        randomness: [Field; 10],
+        count: u32,
+    ) {
         let minter = self.storage.minter.read();
         assert(self.msg_sender() == minter, "Only minter can mint");
         assert(count <= 10, "count exceeds batch size");
@@ -630,12 +636,25 @@ pub contract TripleTriadNFT {
         let bot = self.storage.arena_bots.at(slot).read();
         assert(!bot.is_zero(), "Arena bot slot not registered");
 
+        // create_and_push_note, NOT a tagged `insert(...).deliver(onchain_constrained())`.
+        //
+        // Constrained delivery consumes one tagging index per note per
+        // (sender, recipient) pair, and that window is a hard 84 that only
+        // advances as blocks FINALISE. Minting a deep stock that way dies at
+        // ~84 cards with "Highest used index N is at or past the window end",
+        // and waiting it out took minutes per handful — so a thousand cards was
+        // simply not reachable.
+        //
+        // Untagged notes have no such ceiling; the cost is that the recipient
+        // cannot discover them passively and must import each one. That is the
+        // right trade HERE and only here: the bot is our own infrastructure, the
+        // provisioner already writes it a manifest, and randomness supplied by
+        // the caller goes into that manifest for the bot to import from. It is
+        // the same path the card packs and starter cards already use.
         for i in 0..10 {
             if (i as u32) < count {
-                let note = FieldNote { value: token_ids[i] };
-                self.storage.private_nfts.at(bot).insert(note).deliver(
-                    MessageDelivery::onchain_constrained(),
-                );
+                let _: Field =
+                    create_and_push_note(self.context, bot, token_ids[i], randomness[i]);
             }
         }
 
