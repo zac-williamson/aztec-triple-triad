@@ -430,11 +430,16 @@ export class ArenaBot {
     if (!gameId) return;
     this.handProofSent = true;
 
-    this.myCardCommit = await this.proofs.cardCommitHash(this.hand, this.blindingFactor);
+    // Snapshot every input BEFORE awaiting. resetToIdle() nulls these on
+    // GAME_OVER, and proving is slow enough that a game ending mid-proof would
+    // otherwise read a null blinding factor ("Cannot read properties of null").
+    const cardIds = [...this.hand];
+    const blindingFactor = this.blindingFactor;
+    const opponentRandomness = [...this.opponentRandomness];
+
+    this.myCardCommit = await this.proofs.cardCommitHash(cardIds, blindingFactor);
     const handProof = await this.proofs.proveHand({
-      cardIds: this.hand,
-      blindingFactor: this.blindingFactor,
-      opponentRandomness: this.opponentRandomness,
+      cardIds, blindingFactor, opponentRandomness,
     });
     if (this.gameId !== gameId) return; // game ended while proving
     this.myHandProof = handProof;
@@ -460,6 +465,10 @@ export class ArenaBot {
 
     this.pendingMove = null;
     const gameId = this.gameId;
+    // Snapshot before awaiting — resetToIdle() clears these on GAME_OVER.
+    const blindingFactor = this.blindingFactor;
+    const myCommit = this.myCardCommit;
+    const oppCommit = this.opponentCardCommit;
     const currentPlayer: 1 | 2 = this.myPlayer === 'player1' ? 1 : 2;
     const ended = after.status === 'finished';
     const winnerId = !ended ? 0 : after.winner === 'player1' ? 1 : after.winner === 'player2' ? 2 : 3;
@@ -469,10 +478,10 @@ export class ArenaBot {
       boardBefore: pending.boardBefore, boardAfter: after.board,
       scoresBefore: pending.scoresBefore,
       scoresAfter: [after.player1Score, after.player2Score],
-      cardCommit1: currentPlayer === 1 ? this.myCardCommit : this.opponentCardCommit,
-      cardCommit2: currentPlayer === 1 ? this.opponentCardCommit : this.myCardCommit,
+      cardCommit1: currentPlayer === 1 ? myCommit : oppCommit,
+      cardCommit2: currentPlayer === 1 ? oppCommit : myCommit,
       gameEnded: ended, winnerId,
-      playerHandData: { cardIds: this.hand, blindingFactor: this.blindingFactor, handIndex: 0 },
+      playerHandData: { cardIds: [...this.hand], blindingFactor, handIndex: 0 },
     });
     if (this.gameId !== gameId || !gameId) return;
     // Key by the chain link, not the move number: sortProofChain orders the

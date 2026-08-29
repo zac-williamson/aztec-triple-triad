@@ -43,7 +43,10 @@ class ScriptedOpponent {
   private onChainGameId: string | null = null;
   private blinding: string | null = null;
   private randomness: string[] | null = null;
-  settled = false;
+  private oppRandomness: string[] | null = null;
+  private handProofSent = false;
+  private committed = false;
+  private lastState: GameState | null = null;
   over: string | null = null;
 
   constructor(private chain: BotChain, private proofs: BotProofs) {}
@@ -74,6 +77,10 @@ class ScriptedOpponent {
         break;
       }
       case 'OPPONENT_AZTEC_INFO':
+        if (Array.isArray(msg.gameRandomness)) {
+          this.oppRandomness = msg.gameRandomness as string[];
+          await this.maybeProveHand();
+        }
         if (this.me === 'player2' && msg.onChainGameId && !this.onChainGameId) {
           this.onChainGameId = String(msg.onChainGameId);
           await this.joinOnChain();
@@ -82,6 +89,8 @@ class ScriptedOpponent {
       case 'GAME_START':
       case 'GAME_STATE':
         this.move(msg.gameState);
+        break;
+      case 'ON_CHAIN_STATUS':
         break;
       case 'GAME_OVER':
         this.over = msg.winner;
@@ -102,6 +111,9 @@ class ScriptedOpponent {
     const tx = await this.chain.pxe.sendCreateGame(this.chain.address, this.hand, { node: this.chain.nodeClient, timeoutMs: 600_000 });
     this.send({ type: 'TX_CONFIRMED', gameId: this.gameId, txType: 'create_game', txHash: tx });
     log('opponent', `create_game mined ${String(tx).slice(0, 16)}…`);
+    this.committed = true;
+    await this.maybeProveHand();
+    this.move(this.lastState ?? undefined);
   }
 
   private async joinOnChain(): Promise<void> {
@@ -114,9 +126,26 @@ class ScriptedOpponent {
     const tx = await this.chain.pxe.sendJoinGame(this.chain.address, this.onChainGameId, this.hand, { node: this.chain.nodeClient, timeoutMs: 600_000 });
     this.send({ type: 'TX_CONFIRMED', gameId: this.gameId, txType: 'join_game', txHash: tx });
     log('opponent', `join_game mined ${String(tx).slice(0, 16)}…`);
+    this.committed = true;
+    await this.maybeProveHand();
+    this.move(this.lastState ?? undefined);
+  }
+
+  /** The bot's move proofs bind BOTH commitments, so we must publish ours. */
+  private async maybeProveHand(): Promise<void> {
+    if (this.handProofSent || !this.blinding || !this.oppRandomness || !this.gameId) return;
+    this.handProofSent = true;
+    const handProof = await this.proofs.proveHand({
+      cardIds: this.hand, blindingFactor: this.blinding, opponentRandomness: this.oppRandomness,
+    });
+    this.send({ type: 'SUBMIT_HAND_PROOF', gameId: this.gameId, handProof });
+    log('opponent', 'hand proof submitted');
   }
 
   private move(state: GameState | undefined): void {
+    if (state) this.lastState = state;
+    // Same gate as the bot: do not outrun our own commit.
+    if (!this.committed) return;
     if (!state || state.status !== 'playing' || state.currentTurn !== this.me) return;
     const m = chooseBotMove(state, { difficulty: 'greedy' });
     const moveNumber = state.board.flat().filter(c => c.card !== null).length;
