@@ -132,7 +132,7 @@ cd packages/frontend && npm run dev:devnet    # or dev:testnet
 From `docs/plan/MASTER_PLAN.md`; repeated here because every one of these was
 learned the hard way.
 
-1. **Versions**: the pin set above, everywhere (uniform 5.0.0-rc.2). Never mix
+1. **Versions**: the pin set above, everywhere (uniform 5.2.0-nightly.20260815). Never mix
    Aztec versions across packages.
 2. **Contracts compile with `aztec compile`**, not `nargo compile` (misses AVM
    transpilation + VK generation). Standalone circuits use `nargo compile`.

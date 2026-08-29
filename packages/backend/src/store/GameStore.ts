@@ -96,6 +96,12 @@ export interface GameStore {
   /** Remove and return the first two entries, or null if fewer than two. */
   popQueuePair(): Promise<[QueueEntryData, QueueEntryData] | null>;
   getQueueLength(): Promise<number>;
+  /**
+   * Snapshot of the queue in position order. Read-only introspection for the
+   * /queue endpoint and the arena bot, which needs each entry's `queuedAt` to
+   * decide whether anyone has waited past the bot's join threshold.
+   */
+  listQueue(): Promise<QueueEntryData[]>;
   isInQueue(playerId: string): Promise<boolean>;
   updateQueuePing(playerId: string): Promise<boolean>;
   cleanupStaleQueue(staleMs: number): Promise<number>;

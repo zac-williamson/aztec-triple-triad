@@ -443,8 +443,35 @@ export class GameManager {
     return this.store.updateQueuePing(playerId);
   }
 
+  /**
+   * Read-only queue view for /queue and the arena bot. `oldestWaitMs` is the
+   * signal the bot joins on: it is the wait of the player who has been waiting
+   * longest, i.e. the person the bot would be rescuing.
+   */
+  async queueSnapshot(now = Date.now()): Promise<{
+    length: number;
+    oldestWaitMs: number;
+    entries: { playerId: string; queuedAt: number; waitMs: number }[];
+  }> {
+    const entries = await this.store.listQueue();
+    const mapped = entries.map(e => ({
+      playerId: e.playerId,
+      queuedAt: e.queuedAt,
+      waitMs: Math.max(0, now - e.queuedAt),
+    }));
+    return {
+      length: mapped.length,
+      oldestWaitMs: mapped.reduce((max, e) => (e.waitMs > max ? e.waitMs : max), 0),
+      entries: mapped,
+    };
+  }
+
   async cleanupStaleQueue(): Promise<number> {
     return this.store.cleanupStaleQueue(QUEUE_STALE_MS);
+  }
+
+  async getQueueLength(): Promise<number> {
+    return this.store.getQueueLength();
   }
 
   async getGameCount(): Promise<number> {

@@ -150,6 +150,10 @@ export class MemoryGameStore implements GameStore {
     return this.queue.length;
   }
 
+  async listQueue(): Promise<QueueEntryData[]> {
+    return this.queue.map(e => ({ ...e }));
+  }
+
   async isInQueue(playerId: string): Promise<boolean> {
     return this.queue.some(e => e.playerId === playerId);
   }

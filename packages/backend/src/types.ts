@@ -63,6 +63,12 @@ export type ClientMessage =
   | { type: 'ABANDONED_GAME_SETTLED'; gameId: string }
   // Matchmaking
   | { type: 'QUEUE_MATCHMAKING'; cardIds: number[] }
+  /**
+   * Identify this session as the arena bot. Token-gated (ARENA_BOT_TOKEN) so a
+   * normal client cannot claim to be the bot and thereby suppress its own
+   * "you are playing a bot" disclosure.
+   */
+  | { type: 'REGISTER_BOT'; token: string }
   | { type: 'CANCEL_MATCHMAKING' }
   | { type: 'PING' }
   // Session resumption
@@ -102,7 +108,9 @@ export type ServerMessage =
   | { type: 'OPPONENT_SETTLING'; gameId: string; selectedCardId: number }
   // Matchmaking
   | { type: 'MATCHMAKING_QUEUED'; position: number }
-  | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState }
+  /** `opponentIsBot` is the disclosure flag: the UI labels the opponent. */
+  | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState; opponentIsBot: boolean }
+  | { type: 'BOT_REGISTERED' }
   | { type: 'MATCHMAKING_CANCELLED' }
   | { type: 'PONG' }
   // Session management

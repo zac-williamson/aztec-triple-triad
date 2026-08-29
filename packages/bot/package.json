@@ -1,0 +1,24 @@
+{
+  "name": "@axolotl-arena/bot",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "npx tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@axolotl-arena/backend": "*",
+    "@axolotl-arena/game-logic": "*",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.4.0",
+    "vitest": "^3.0.0"
+  }
+}

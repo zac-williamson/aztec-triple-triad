@@ -6,6 +6,7 @@ import type { ClientMessage, ServerMessage } from './types.js';
 import type { GameState } from '@axolotl-arena/game-logic';
 import { SESSION_TTL_MS } from './store/GameStore.js';
 import type { GameStore } from './store/GameStore.js';
+import * as metrics from './metrics.js';
 import { MemoryGameStore } from './store/MemoryGameStore.js';
 import { RedisGameStore } from './store/RedisGameStore.js';
 
@@ -36,6 +37,7 @@ const VALID_MESSAGE_TYPES = new Set([
   'SETTLE_STARTED',
   'ABANDONED_GAME_SETTLED',
   'QUEUE_MATCHMAKING', 'CANCEL_MATCHMAKING', 'PING',
+  'REGISTER_BOT',
   'RESUME',
 ]);
 
@@ -99,6 +101,14 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
 
   // playerId → WebSocket (in-memory, rebuilt on reconnect)
   const clients = new Map<string, WebSocket>();
+  /**
+   * Sessions that have authenticated as the arena bot via REGISTER_BOT. Used to
+   * (a) count bot matches in /metrics and (b) DISCLOSE to the human opponent
+   * that they are playing a bot. Token-gated so a normal client cannot suppress
+   * that disclosure by claiming to be the bot.
+   */
+  const botPlayerIds = new Set<string>();
+  const isBotPlayerId = (id: string): boolean => botPlayerIds.has(id);
   // playerId → disconnect timeout (for reconnection window)
   const disconnectTimeouts = new Map<string, NodeJS.Timeout>();
   // gameId → secondsIdle of the last GAME_ABANDONMENT_WARNING broadcast for the
@@ -139,6 +149,27 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       const count = await gameManager.getGameCount();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok', games: count }));
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/queue') {
+      // Read-only queue view. The arena bot polls this to learn whether anyone
+      // has waited past its join threshold; playerIds are already opaque
+      // session ids, so nothing extra is exposed here.
+      const snap = await gameManager.queueSnapshot();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(snap));
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/metrics') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ...metrics.snapshot(),
+        connectedClients: clients.size,
+        queueLength: await gameManager.getQueueLength(),
+        activeGames: await gameManager.getGameCount(),
+      }));
       return;
     }
 
@@ -325,6 +356,9 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         break;
       case 'ABANDONED_GAME_SETTLED':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
+        break;
+      case 'REGISTER_BOT':
+        if (typeof msg.token !== 'string' || msg.token.length === 0) return 'token is required';
         break;
       case 'QUEUE_MATCHMAKING':
         if (!Array.isArray(msg.cardIds)) return 'cardIds must be an array of numbers';
@@ -797,6 +831,21 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         break;
       }
 
+      case 'REGISTER_BOT': {
+        const expected = process.env.ARENA_BOT_TOKEN;
+        if (!expected) {
+          send(ws, { type: 'ERROR', message: 'Bot registration is not enabled' }, playerId);
+          break;
+        }
+        if (msg.token !== expected) {
+          send(ws, { type: 'ERROR', message: 'Bot registration refused' }, playerId);
+          break;
+        }
+        botPlayerIds.add(playerId);
+        send(ws, { type: 'BOT_REGISTERED' }, playerId);
+        break;
+      }
+
       case 'QUEUE_MATCHMAKING': {
         try {
           const position = await gameManager.queuePlayer(playerId, msg.cardIds);
@@ -805,17 +854,29 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
           const match = await gameManager.tryMatch(new Set(clients.keys()));
           if (match) {
             const { entry1, entry2, room } = match;
+            // Match metrics: wait time per side, and whether the arena bot was
+            // one of them (its playerId is tagged at queue time).
+            const matchedAt = Date.now();
+            metrics.increment('matchesFormed');
+            for (const e of [entry1, entry2]) metrics.recordMatchWait(matchedAt - e.queuedAt);
+            if (isBotPlayerId(entry1.playerId) || isBotPlayerId(entry2.playerId)) {
+              metrics.increment('botMatchesFormed');
+            }
+            // Each side is told whether ITS opponent is the bot — never whether
+            // it is itself, so the flag reads the same way for both.
             await sendToPlayer(entry1.playerId, {
               type: 'MATCH_FOUND',
               gameId: room.id,
               playerNumber: 1,
               gameState: sanitizeGameStateForPlayer(room.state, entry1.playerId, room),
+              opponentIsBot: isBotPlayerId(entry2.playerId),
             });
             await sendToPlayer(entry2.playerId, {
               type: 'MATCH_FOUND',
               gameId: room.id,
               playerNumber: 2,
               gameState: sanitizeGameStateForPlayer(room.state, entry2.playerId, room),
+              opponentIsBot: isBotPlayerId(entry1.playerId),
             });
           }
         } catch (err: any) {
@@ -846,6 +907,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
   async function handleDisconnect(playerId: string): Promise<void> {
     console.log(`[WS] player=${playerId.slice(0, 8)} disconnected`);
     clients.delete(playerId);
+    botPlayerIds.delete(playerId);
 
     await gameManager.dequeuePlayer(playerId);
 

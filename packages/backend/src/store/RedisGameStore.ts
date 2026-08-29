@@ -174,6 +174,11 @@ export class RedisGameStore implements GameStore {
     return this.redis.llen('queue');
   }
 
+  async listQueue(): Promise<QueueEntryData[]> {
+    const raw = await this.redis.lrange('queue', 0, -1);
+    return raw.map(item => JSON.parse(item) as QueueEntryData);
+  }
+
   async isInQueue(playerId: string): Promise<boolean> {
     const raw = await this.redis.lrange('queue', 0, -1);
     return raw.some(item => {
