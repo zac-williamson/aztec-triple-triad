@@ -250,4 +250,26 @@ remaining provisioned accounts, and must not happen while nobody is watching.
   commits, proves and settles. What remains is a full chain-mode game end to end
   on the sandbox (bot vs a scripted human, all three txs) — the pieces are each
   verified but have not yet been run together.
-- Still open: that end-to-end run; phase 5 (identity pool); phase 6 (testnet).
+- 2026-08-29: **chain path exercised on a sandbox, piece by piece.** Observed
+  working in real runs: the bot funds and deploys, claims its nonce, holds a
+  minted collection, offers a game to a waiting player, is matched by ordinary
+  matchmaking with `opponentIsBot=true` disclosed, commits via `join_game`,
+  submits its hand proof, and submits ALL FOUR of its move proofs. It also won a
+  game and entered settlement.
+- **NOT yet observed: a settled game on-chain.** The blocker is the test
+  harness, not the bot: the scripted opponent's own move proof fails
+  "Circuit execution failed: Owner not set correctly" (the bot's succeed in the
+  same run), so the 9-link transcript never completes and neither side can
+  settle. Fixing that opponent is the next step — it is test code.
+- Nine defects were found ONLY by running against a chain, every one invisible
+  to typechecking and 56 unit tests: missing `node` on sends, one-identity-per-
+  process, globally-unique token ids, the missing `note_nonce`, joining before
+  confirmation, held-vs-minted accounting, a commit/turn deadlock, reading proof
+  inputs across an await, and re-queueing during the /queue fetch.
+- Still open: fix the harness opponent's move proof and see a settled game;
+  phase 5 (identity pool, as N processes); phase 6 (testnet).
+
+**Operational note from testing:** every incomplete game strands its five
+committed cards permanently. About ten aborted runs consumed ~90 of the 257
+global card ids. That is the loss-budget risk in miniature, and a strong
+argument for an abandonment sweep before the pool ever runs unattended.

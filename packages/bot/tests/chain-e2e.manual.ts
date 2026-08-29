@@ -47,7 +47,17 @@ class ScriptedOpponent {
   private handProofSent = false;
   private committed = false;
   private lastState: GameState | null = null;
+  private myHandProof: any = null;
+  private oppHandProof: any = null;
+  private readonly moveProofs = new Map<string, any>();
+  private oppAddress: string | null = null;
+  private myCommit: string | null = null;
+  private oppCommit: string | null = null;
+  private oppCardIds: number[] = [];
+  private pending: { moveNumber: number; cardId: number; row: number; col: number;
+    boardBefore: GameState['board']; scoresBefore: [number, number] } | null = null;
   over: string | null = null;
+  settled = false;
 
   constructor(private chain: BotChain, private proofs: BotProofs) {}
 
@@ -77,6 +87,7 @@ class ScriptedOpponent {
         break;
       }
       case 'OPPONENT_AZTEC_INFO':
+        if (msg.aztecAddress) this.oppAddress = String(msg.aztecAddress);
         if (Array.isArray(msg.gameRandomness)) {
           this.oppRandomness = msg.gameRandomness as string[];
           await this.maybeProveHand();
@@ -88,13 +99,29 @@ class ScriptedOpponent {
         break;
       case 'GAME_START':
       case 'GAME_STATE':
+        await this.maybeProveMove(msg.gameState);
         this.move(msg.gameState);
         break;
       case 'ON_CHAIN_STATUS':
         break;
+      case 'HAND_PROOF':
+        if (msg.handProof?.cardCommit) {
+          this.oppHandProof = msg.handProof;
+          this.oppCommit = String(msg.handProof.cardCommit);
+        }
+        break;
+      case 'MOVE_PROVEN':
+        if (msg.moveProof?.startStateHash) this.moveProofs.set(String(msg.moveProof.startStateHash), msg.moveProof);
+        break;
       case 'GAME_OVER':
-        this.over = msg.winner;
         log('opponent', `game over: ${msg.winner}`);
+        if (Array.isArray(msg.player1CardIds) && Array.isArray(msg.player2CardIds)) {
+          this.oppCardIds = this.me === 'player1' ? msg.player2CardIds : msg.player1CardIds;
+        }
+        // Mirror the bot's rule: the winner settles; a draw is single-settler P1.
+        const iSettle = msg.winner === 'draw' ? this.me === 'player1' : msg.winner === this.me;
+        if (iSettle) { try { await this.settle(msg.winner); } catch (e) { log('opponent', `settle ERROR ${(e as Error).message}`); } }
+        this.over = msg.winner;
         break;
     }
   }
@@ -138,8 +165,33 @@ class ScriptedOpponent {
     const handProof = await this.proofs.proveHand({
       cardIds: this.hand, blindingFactor: this.blinding, opponentRandomness: this.oppRandomness,
     });
+    this.myHandProof = handProof;
+    this.myCommit = String(handProof.cardCommit);
     this.send({ type: 'SUBMIT_HAND_PROOF', gameId: this.gameId, handProof });
     log('opponent', 'hand proof submitted');
+  }
+
+  /** Prove OUR move once the relay echoes it back — the bot does the same. */
+  private async maybeProveMove(after: GameState | undefined): Promise<void> {
+    const p = this.pending;
+    if (!p || !after || !this.me || !this.myCommit || !this.oppCommit) return;
+    if (after.board.flat().filter(c => c.card !== null).length <= p.moveNumber) return;
+    this.pending = null;
+    const cur: 1 | 2 = this.me === 'player1' ? 1 : 2;
+    const ended = after.status === 'finished';
+    const winnerId = !ended ? 0 : after.winner === 'player1' ? 1 : after.winner === 'player2' ? 2 : 3;
+    const moveProof = await this.proofs.proveMove({
+      cardId: p.cardId, row: p.row, col: p.col, currentPlayer: cur,
+      boardBefore: p.boardBefore, boardAfter: after.board,
+      scoresBefore: p.scoresBefore, scoresAfter: [after.player1Score, after.player2Score],
+      cardCommit1: cur === 1 ? this.myCommit : this.oppCommit,
+      cardCommit2: cur === 1 ? this.oppCommit : this.myCommit,
+      gameEnded: ended, winnerId,
+      playerHandData: { cardIds: this.hand, blindingFactor: this.blinding, handIndex: 0 },
+    });
+    this.moveProofs.set(String(moveProof.startStateHash), moveProof);
+    this.send({ type: 'SUBMIT_MOVE_PROOF', gameId: this.gameId, handIndex: 0, row: p.row, col: p.col, moveNumber: p.moveNumber, moveProof });
+    log('opponent', `move proof ${p.moveNumber} submitted`);
   }
 
   private move(state: GameState | undefined): void {
@@ -149,10 +201,50 @@ class ScriptedOpponent {
     if (!state || state.status !== 'playing' || state.currentTurn !== this.me) return;
     const m = chooseBotMove(state, { difficulty: 'greedy' });
     const moveNumber = state.board.flat().filter(c => c.card !== null).length;
+    const card = (this.me === 'player1' ? state.player1Hand : state.player2Hand)[m.handIndex];
     // Paced like the bot, so proving can keep up with the relay.
     setTimeout(() => {
+      this.pending = {
+        moveNumber, cardId: card?.id ?? 0, row: m.row, col: m.col,
+        boardBefore: state.board, scoresBefore: [state.player1Score, state.player2Score],
+      };
       this.send({ type: 'PLACE_CARD', gameId: this.gameId, handIndex: m.handIndex, row: m.row, col: m.col, moveNumber });
     }, 2_000);
+  }
+
+  private async settle(winner: string): Promise<void> {
+    // Wait for the transcript, as the bot does — proving trails the relay.
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      if (this.myHandProof && this.oppHandProof && this.moveProofs.size >= 9) break;
+      await new Promise(r => setTimeout(r, 500));
+    }
+    if (!this.myHandProof || !this.oppHandProof || this.moveProofs.size < 9) {
+      throw new Error(`transcript incomplete (moves ${this.moveProofs.size}/9)`);
+    }
+    const { handVk, moveVk } = await this.proofs.verificationKeys();
+    const { Fr } = await import('@aztec/aztec.js/fields');
+    const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+    const { buildProcessGameArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
+    const iAmP1 = this.me === 'player1';
+    const args = await buildProcessGameArgs({
+      Fr, AztecAddress,
+      onChainGameId: this.onChainGameId!,
+      handVk, moveVk,
+      handProof1: iAmP1 ? this.myHandProof : this.oppHandProof,
+      handProof2: iAmP1 ? this.oppHandProof : this.myHandProof,
+      moveProofs: [...this.moveProofs.values()],
+      opponentAddress: this.oppAddress!,
+      selectedCardId: winner === 'draw' ? 0 : (this.oppCardIds[0] ?? 0),
+      myCardIds: this.hand,
+      opponentCardIds: this.oppCardIds,
+      myRandomness: this.randomness!,
+      opponentRandomness: this.oppRandomness!,
+    });
+    log('opponent', 'settling…');
+    const tx = await this.chain.pxe.sendProcessGame(this.chain.address, args, { node: this.chain.nodeClient, timeoutMs: 600_000 });
+    this.settled = true;
+    log('opponent', `settled on-chain ${String(tx).slice(0, 16)}…`);
   }
 
   close() { this.ws?.close(); }
