@@ -199,8 +199,16 @@ remaining provisioned accounts, and must not happen while nobody is watching.
   opponent's randomness exist, and a move proof after each of its own moves.
   Per-game proof inputs are cleared on game end so a stale blinding factor
   cannot leak into the next game. 45 bot tests.
-- Still open: **settlement** (the winner's recursive 11-proof `process_game`
-  call — orchestration lives in `useGameSettlement`, 871 lines of React);
-  an end-to-end chain-mode game on the sandbox; phase 5 (identity pool);
-  phase 6 (testnet). The bot commits, proves its hand and proves its moves, but
-  does not yet settle, so a chain-mode game will stall at settlement.
+- 2026-08-29: **settlement done.** `settlementArgs.ts` extracts the ordered
+  `process_game` transcript assembly out of `useGameSettlement` so browser and
+  bot build it identically (a wrong order is only rejected on-chain, after the
+  recursive verification). The bot gathers the transcript from both players over
+  the relay, keys move proofs by chain link so replays collapse, settles on a
+  win, settles a draw ONLY as player 1 (single-settler — a second settler
+  reverts), and refuses an incomplete transcript naming what is missing.
+  50 bot tests.
+- **Phase 3 is functionally complete**: the bot funds, deploys, holds cards,
+  commits, proves and settles. What remains is a full chain-mode game end to end
+  on the sandbox (bot vs a scripted human, all three txs) — the pieces are each
+  verified but have not yet been run together.
+- Still open: that end-to-end run; phase 5 (identity pool); phase 6 (testnet).
