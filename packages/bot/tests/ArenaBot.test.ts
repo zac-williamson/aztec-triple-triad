@@ -257,6 +257,7 @@ function fakeChain(over: Partial<Record<string, any>> = {}) {
         previewJoinGame: over.previewJoinGame ?? (async () => ({ randomness: SIX_RANDOM, blindingFactor: FIELD(0xb) })),
         sendCreateGame: over.sendCreateGame ?? (async (...a: any[]) => { calls.push(['create', ...a]); return '0xtxcreate'; }),
         sendJoinGame: over.sendJoinGame ?? (async (...a: any[]) => { calls.push(['join', ...a]); return '0xtxjoin'; }),
+        sendProcessGame: over.sendProcessGame ?? (async (...a: any[]) => { calls.push(['settle', ...a]); return '0xtxsettle'; }),
       },
     },
   };
