@@ -9,6 +9,7 @@ import { runPxeTx, pxe, type PxeOps } from '../aztec/pxe';
 import { toFr as toFrUtil, toHexString, bytesToFrArray, base64ToFrArray, hexToFr } from '../aztec/fieldUtils';
 import { AZTEC_TX_TIMEOUT, AZTEC_SETTLE_TX_TIMEOUT, CARDS_PER_HAND, TOTAL_MOVES, MOVE_PROOF_WAIT_TIMEOUT, HAND_PROOF_WAIT_TIMEOUT, GAME_TOKEN_REWARD } from '../aztec/gameConstants';
 import { requireWallet, requireAccountAddress } from '../aztec/walletGuards';
+import { padToHand, sortProofChain, computeCanonicalInitialHash } from '../aztec/settlementArgs';
 import type { HandProofData, MoveProofData, PlaintextNoteData } from '../types';
 
 /** Lazy-load the field/address SDK classes for building proof-tx arguments.
@@ -827,45 +828,4 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     cancelAbandonedUi,
     resetForMenu,
   };
-}
-
-/** Pad a card-ID list to a full hand (CARDS_PER_HAND) of Fr field elements. */
-function padToHand<F>(Fr: new (v: bigint) => F, ids: number[]): F[] {
-  const padded = [...ids];
-  while (padded.length < CARDS_PER_HAND) padded.push(0);
-  return padded.slice(0, CARDS_PER_HAND).map(id => new Fr(BigInt(id)));
-}
-
-/**
- * Order move proofs into the on-chain verification chain: proof i+1's start
- * state hash must equal proof i's end state hash, starting from the
- * canonical initial hash. Throws if any link is missing.
- */
-function sortProofChain<P extends { startStateHash: string; endStateHash: string }>(
-  proofs: P[],
-  count: number,
-  initialHash: string,
-): P[] {
-  const byStart = new Map<string, P>();
-  for (const p of proofs) byStart.set(p.startStateHash, p);
-
-  const sorted: P[] = [];
-  let nextHash = initialHash;
-  for (let i = 0; i < count; i++) {
-    const p = byStart.get(nextHash);
-    if (!p) throw new Error(`Proof chain broken at step ${i}`);
-    sorted.push(p);
-    nextHash = p.endStateHash;
-  }
-  return sorted;
-}
-
-/** Hash of the canonical initial game state: empty board, full hands, player 1
- *  to move, all per-cell original owners 0 (empty) — must equal the first move's
- *  boardBefore hash (C2 replay guard). */
-async function computeCanonicalInitialHash(): Promise<string> {
-  const { computeBoardStateHash } = await import('../aztec/proofWorker');
-  const emptyBoard = Array(18).fill('0');
-  const emptyOriginalOwners = Array(9).fill(0);
-  return computeBoardStateHash(emptyBoard, [CARDS_PER_HAND, CARDS_PER_HAND], 1, emptyOriginalOwners);
 }
