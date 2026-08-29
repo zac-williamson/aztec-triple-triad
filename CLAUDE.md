@@ -30,6 +30,8 @@ packages/
   frontend/      React + React Three Fiber app; all Aztec client code in src/aztec/
   contracts/     Aztec Noir contracts: triple_triad_nft, triple_triad_game, arena_token
   integration/   End-to-end tests against a live sandbox
+  bot/           Arena bot: backend opponent that queues, plays, proves and
+                 settles like any player (docs/plan/BACKEND_OPPONENT.md)
 circuits/        Standalone Noir circuits proven client-side:
                  prove_hand, game_move, dummy_move, card_data
 scripts/         deploy-contracts.ts, deploy-testnet.ts, test-all.sh, card-art generation
