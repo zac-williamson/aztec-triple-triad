@@ -306,6 +306,32 @@ async function main() {
     .send(await sendAs(deployerAddress));
   console.log('Token contract registered on NFT.');
 
+  // The arena bot is the ONE account allowed to hold duplicate cards
+  // (TripleTriadNFT.mint_bot_cards). Registered here, at deploy, because
+  // set_arena_bot is write-once: doing it later leaves a window in which a
+  // freshly deployed NFT has no bot and the exemption is unclaimed.
+  //
+  // Index 0 by convention — a pool runs several identities, but only one may be
+  // the duplicate-minting bot, and provisioning mints the pool's cards through
+  // it. Deriving the address here (rather than reading a manifest) means the
+  // deploy never depends on provisioning having run.
+  {
+    const { arenaBotAccount } = await import('./lib/arenaBotAccount');
+    const botKeys = arenaBotAccount(0);
+    // createSchnorrAccount DERIVES the address; it does not deploy anything, so
+    // the bot's account need not exist yet for this registration to be correct.
+    const botAccount = await wallet.createSchnorrAccount(
+      Fr.fromHexString(botKeys.secret),
+      Fr.fromHexString(botKeys.salt),
+      GrumpkinScalar.fromHexString(botKeys.signingKey),
+    );
+    console.log(`\nRegistering arena bot ${botAccount.address.toString()} on NFT...`);
+    await nftContract.methods
+      .set_arena_bot(botAccount.address)
+      .send(await sendAs(deployerAddress));
+    console.log('Arena bot registered on NFT.');
+  }
+
   console.log('Registering NFT contract on ArenaToken...');
   await tokenContract.methods
     .set_nft_contract(nftAddress)
