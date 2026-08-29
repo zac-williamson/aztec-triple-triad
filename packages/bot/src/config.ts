@@ -49,6 +49,18 @@ export interface ArenaBotConfig {
   gameTimeoutMs: number;
   /** How often to sweep the journal for games whose cards need reclaiming. */
   sweepIntervalMs: number;
+  /**
+   * How long to give player 1 to settle a DRAW before the bot does it itself.
+   * See ArenaBot.settle — the bot is always player 2, so without this a draw
+   * only ever settles if the human sticks around.
+   */
+  drawFallbackMs: number;
+  /**
+   * Seed for move selection. Unset in production — play should not be
+   * predictable from the board — but a harness that needs a specific OUTCOME
+   * (a draw, say) cannot get one while greedy breaks ties at random.
+   */
+  moveSeed?: number;
   /** Port for the bot's own health/metrics endpoint. 0 disables it. */
   healthPort: number;
 }
@@ -91,6 +103,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ArenaBotCon
     // Recovery is not urgent — the cards are not going anywhere — and each pass
     // may prove and wait out a dispute window, so a slow cadence is correct.
     sweepIntervalMs: int(env.ARENA_BOT_SWEEP_INTERVAL_MS, 900_000),
+    drawFallbackMs: int(env.ARENA_BOT_DRAW_FALLBACK_MS, 120_000),
+    ...(env.ARENA_BOT_MOVE_SEED ? { moveSeed: Number(env.ARENA_BOT_MOVE_SEED) } : {}),
     healthPort: Number(env.ARENA_BOT_HEALTH_PORT ?? 5175) || 0,
   };
 }

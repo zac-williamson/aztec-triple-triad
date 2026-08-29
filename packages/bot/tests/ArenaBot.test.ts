@@ -30,6 +30,7 @@ function makeConfig(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     // Unit tests assert the IMMEDIATE verdict on an incomplete transcript.
     settleWaitMs: 0,
     sweepIntervalMs: 900_000,
+    drawFallbackMs: 0,
     gameTimeoutMs: 1_800_000,
     healthPort: 0,
     ...over,
@@ -285,6 +286,9 @@ function fakeChain(over: Partial<Record<string, any>> = {}) {
         sendJoinGame: over.sendJoinGame ?? (async (...a: any[]) => { calls.push(['join', ...a]); return '0xtxjoin'; }),
         sendProcessGame: over.sendProcessGame ?? (async (...a: any[]) => { calls.push(['settle', ...a]); return '0xtxsettle'; }),
         sendCancelGame: over.sendCancelGame ?? (async (...a: any[]) => { calls.push(['cancel', ...a]); return '0xtxcancel'; }),
+        // 2 = active. The draw fallback reads this to decide whether player 1
+        // has already settled.
+        readGameStatus: over.readGameStatus ?? (async () => 2),
       },
     },
   };
@@ -549,7 +553,7 @@ describe('ArenaBot settlement', () => {
   /** Valid base64 for N 32-byte field elements — the args builder really decodes it. */
   const fakeProofB64 = (fields = 4) => Buffer.alloc(32 * fields).toString('base64');
 
-  function settleHarness(winner: string, playerNumber: 1 | 2, seedTranscript: boolean) {
+  function settleHarness(winner: string, playerNumber: 1 | 2, seedTranscript: boolean, over: any = {}) {
     const socket = new FakeSocket();
     const f = fakeChain();
     const sent: any[] = [];
@@ -561,7 +565,10 @@ describe('ArenaBot settlement', () => {
       proveHand: async () => ({ proof: fakeProofB64(), publicInputs: ['0x1', '0x2'], cardCommit: hex(0x111) }),
       proveMove: async () => ({ proof: fakeProofB64(), publicInputs: [], startStateHash: 'unused', endStateHash: '0x0' }),
     };
-    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 20, settleWaitMs: 300 }), {
+    // The draw fallback reads on-chain status; 2 = still active, i.e. player 1
+    // has not settled, which is the case these tests care about.
+    f.chain.pxe.readGameStatus = over.readGameStatus ?? (async () => 2);
+    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 20, settleWaitMs: 300, ...over }), {
       connect: () => socket as unknown as any,
       fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
       chain: f.chain as any, proofs: proofs as any, log: (m: string) => logs.push(m), now: () => Date.now(),
@@ -608,13 +615,16 @@ describe('ArenaBot settlement', () => {
     expect(h.bot.getStats().settlements).toBe(0);
   });
 
-  it('never settles a draw — draw settlement is player 1, and the bot only joins', async () => {
-    // Draws are single-settler: player 1 alone fires winner_id=3, and a second
-    // settler reverts (tests/draw-game.spec.ts). Since the bot is always the
-    // JOINER it is never player 1, so the human settles every draw.
-    const h = settleHarness('draw', 2, true);
+  it('settles a draw as player 2 once player 1 has had its chance', async () => {
+    // Draws are single-settler and player 1 fires it by convention, but the
+    // CONTRACT accepts either side ("For draws, caller could be either
+    // player"). Since the bot is always the JOINER, deferring unconditionally
+    // would mean a human who closes the tab on a draw locks BOTH hands forever
+    // — and the abandonment sweep cannot rescue it, because a completed draw
+    // has all 9 move proofs and the claim requires 1..8.
+    const h = settleHarness('draw', 2, true, { drawFallbackMs: 0 });
     await h.run();
-    expect(h.sent).toHaveLength(0);
+    expect(h.sent).toHaveLength(1);
   });
 
   it('names what is missing rather than sending an incomplete transcript', async () => {
@@ -1081,6 +1091,89 @@ describe('ArenaBot pool behaviour', () => {
     h.setQueue({ length: 1, oldestWaitMs: 60_000 });
     await vi.advanceTimersByTimeAsync(3_000);
     expect(h.socket.countOfType('QUEUE_MATCHMAKING')).toBe(1);
+    h.bot.stop();
+  });
+});
+
+describe('ArenaBot draw settlement', () => {
+  const mk = (over: any = {}, statusFn?: () => Promise<number>) => {
+    const socket = new FakeSocket();
+    const f = fakeChain();
+    f.chain.pxe.readGameStatus = statusFn ?? (async () => 2);  // 2 = still active
+    const proofs = {
+      cardCommitHash: async () => FIELD(0x1),
+      verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
+      proveHand: async () => ({ proof: 'p', publicInputs: ['a', 'b'], cardCommit: FIELD(0x1) }),
+      proveMove: async () => ({ proof: 'p', publicInputs: [], startStateHash: 's' }),
+    };
+    const bot = new ArenaBot(makeConfig({ settleWaitMs: 0, ...over }), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, proofs: proofs as any, log: () => {}, now: () => 1_000_000,
+    });
+    return { bot, socket, f };
+  };
+
+  async function playToDraw(h: ReturnType<typeof mk>) {
+    h.bot.start();
+    h.socket.emit('open');
+    h.socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    h.socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
+    await vi.advanceTimersByTimeAsync(50);
+    h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'draw', gameState: freshState() });
+    await vi.advanceTimersByTimeAsync(50);
+  }
+
+  it('attempts to settle a draw even though it is player 2', async () => {
+    // The bot is ALWAYS player 2 now. If it deferred to the "player 1 settles a
+    // draw" convention unconditionally, a human who closes the tab on a draw
+    // would lock both hands forever — the sweep cannot rescue it either, since
+    // a completed draw has all 9 move proofs and the claim needs 1..8.
+    const h = mk({ drawFallbackMs: 0 });
+    await playToDraw(h);
+    // The transcript is incomplete in this harness, so it fails at that check —
+    // which still proves it TRIED, rather than standing down on player number.
+    expect(h.bot.getStats().settleFailures).toBe(1);
+    expect(h.bot.getStats().lastError).toMatch(/transcript incomplete/);
+    h.bot.stop();
+  });
+
+  it('stands down if player 1 settled the draw during the fallback wait', async () => {
+    // status 3 = settled. Settling again burns a recursive proof to earn a revert.
+    const h = mk({ drawFallbackMs: 1_000 }, async () => 3);
+    await playToDraw(h);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(h.bot.getStats().settleFailures).toBe(0);
+    expect(h.bot.getStats().settlements).toBe(0);
+    h.bot.stop();
+  });
+
+  it('settles anyway when the status read fails', async () => {
+    // A duplicate settle reverts and costs a proof; skipping can strand ten
+    // cards permanently. Prefer the recoverable error.
+    const h = mk({ drawFallbackMs: 0 }, async () => { throw new Error('node down'); });
+    await playToDraw(h);
+    expect(h.bot.getStats().lastError).toMatch(/transcript incomplete/);
+    h.bot.stop();
+  });
+
+  it('still settles a win immediately, with no fallback wait', async () => {
+    const h = mk({ drawFallbackMs: 600_000 });
+    h.bot.start();
+    h.socket.emit('open');
+    h.socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    h.socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
+    await vi.advanceTimersByTimeAsync(50);
+    h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'player2', gameState: freshState() });
+    await vi.advanceTimersByTimeAsync(50);
+    // No wait: winning is unambiguous, only draws have a second claimant.
+    expect(h.bot.getStats().settleFailures).toBe(1);
     h.bot.stop();
   });
 });

@@ -41,6 +41,17 @@ const OPPONENT_DIFFICULTY = (process.env.E2E_OPPONENT_DIFFICULTY ?? 'greedy') as
  * the bot never creates and therefore can never cancel.
  */
 const ABANDON_AFTER = Number(process.env.E2E_ABANDON_AFTER_MOVES ?? 0);
+/**
+ * Fixed hands, to force a specific OUTCOME. A draw in particular cannot be
+ * arranged by difficulty alone — ranks are per token_id from a fixed database,
+ * so a draw needs a hand pair that happens to end 5-5 under greedy play. The
+ * draw path matters because the bot is always player 2, and a draw it fails to
+ * settle strands ten cards with NO recovery: the abandonment claim needs 1..8
+ * move proofs and a completed draw has all nine.
+ */
+const OPPONENT_SEED = process.env.E2E_OPPONENT_SEED ? Number(process.env.E2E_OPPONENT_SEED) : undefined;
+const FORCED_OPP_HAND = process.env.E2E_OPPONENT_HAND ? JSON.parse(process.env.E2E_OPPONENT_HAND) as number[] : null;
+const FORCED_BOT_HAND = process.env.E2E_BOT_HAND ? JSON.parse(process.env.E2E_BOT_HAND) as number[] : null;
 
 /** A chain-real opponent: queues first, plays greedily, commits/proves/settles. */
 class ScriptedOpponent {
@@ -78,7 +89,7 @@ class ScriptedOpponent {
   constructor(private chain: BotChain, private proofs: BotProofs) {}
 
   async run(): Promise<void> {
-    this.hand = await this.chain.selectHand(5);
+    this.hand = FORCED_OPP_HAND ?? await this.chain.selectHand(5);
     log('opponent', `hand ${this.hand.join(',')}`);
     this.ws = new WebSocket(`ws://localhost:${PORT}`);
     await new Promise<void>(r => this.ws.once('open', () => r()));
@@ -138,7 +149,13 @@ class ScriptedOpponent {
           this.oppCardIds = this.me === 'player1' ? msg.player2CardIds : msg.player1CardIds;
         }
         // Mirror the bot's rule: the winner settles; a draw is single-settler P1.
-        const iSettle = msg.winner === 'draw' ? this.me === 'player1' : msg.winner === this.me;
+        // E2E_OPPONENT_SKIP_DRAW_SETTLE simulates the human closing the tab on a
+        // draw, which is the ONLY thing standing between the bot and ten
+        // permanently stranded cards — the abandonment claim cannot rescue a
+        // completed draw (it needs 1..8 move proofs; a draw has nine).
+        const skipDraw = process.env.E2E_OPPONENT_SKIP_DRAW_SETTLE === '1' && msg.winner === 'draw';
+        if (skipDraw) log('opponent', 'walking away from a DRAW without settling');
+        const iSettle = !skipDraw && (msg.winner === 'draw' ? this.me === 'player1' : msg.winner === this.me);
         if (iSettle) { try { await this.settle(msg.winner); } catch (e) { log('opponent', `settle ERROR ${(e as Error).message}`); } }
         this.over = msg.winner;
         break;
@@ -255,7 +272,10 @@ class ScriptedOpponent {
     // card), and greedy-vs-greedy does not reliably produce one.
     const moveNumber = state.board.flat().filter(c => c.card !== null).length;
     if (this.scheduledFor !== null && this.scheduledFor >= moveNumber) return;
-    const m = chooseBotMove(state, { difficulty: OPPONENT_DIFFICULTY });
+    const m = chooseBotMove(state, {
+      difficulty: OPPONENT_DIFFICULTY,
+      ...(OPPONENT_SEED !== undefined ? { seed: OPPONENT_SEED } : {}),
+    });
     this.scheduledFor = moveNumber;
     const card = (this.me === 'player1' ? state.player1Hand : state.player2Hand)[m.handIndex];
     // Paced like the bot, so proving can keep up with the relay.
@@ -363,6 +383,11 @@ async function main(): Promise<void> {
   }
 
   const botChain = mk(0); await botChain.connect();
+  if (FORCED_BOT_HAND) {
+    // Test-only: pin the wager so a specific OUTCOME can be reproduced.
+    botChain.selectHand = async () => FORCED_BOT_HAND;
+    log('bot', `hand pinned to ${FORCED_BOT_HAND.join(',')}`);
+  }
   const botProofs = new BotProofs(m => log('bot:proofs', m));
   const { GameJournal } = await import('../src/GameJournal.js');
   const { AbandonmentSweep } = await import('../src/AbandonmentSweep.js');

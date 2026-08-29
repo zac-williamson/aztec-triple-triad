@@ -594,8 +594,20 @@ export class ArenaBot {
    * player 2 must send nothing or its tx reverts (see the draw-settlement path
    * in tests/draw-game.spec.ts). A loss: the winner settles, we just wait.
    */
+  /**
+   * A draw is settled by ONE player, by convention player 1 — the contract
+   * accepts either (`settle_game_draw`: "For draws, caller could be either
+   * player"), but both settling at once wastes a recursive proof and reverts.
+   *
+   * The bot is ALWAYS player 2, so that convention alone means a draw against
+   * the bot settles only if the human stays to do it. If they close the tab,
+   * both hands stay locked — and the abandonment sweep cannot rescue this one:
+   * a completed draw has all 9 move proofs, and the claim requires 1..8. So the
+   * bot settles draws too, but only as a FALLBACK, after giving player 1 time
+   * to do it (see settle()).
+   */
   private shouldSettle(winner: string): boolean {
-    if (winner === 'draw') return this.myPlayer === 'player1';
+    if (winner === 'draw') return true;
     return winner === this.myPlayer;
   }
 
@@ -610,6 +622,31 @@ export class ArenaBot {
     if (this.settling) return;
     this.settling = true;
     const chain = this.chain!, proofs = this.proofs!;
+
+    // Draw fallback: player 1 settles by convention, so stand back and only step
+    // in if they did not. Checked against the CHAIN, not a timer alone — the
+    // human may have settled at any point during the wait, and settling an
+    // already-settled game burns a recursive proof to earn a revert.
+    if (winner === 'draw' && this.myPlayer !== 'player1') {
+      this.log(`draw — giving player 1 ${Math.round(this.cfg.drawFallbackMs / 1000)}s to settle`);
+      await new Promise(r => setTimeout(r, this.cfg.drawFallbackMs));
+      const gameId = this.onChainGameId;
+      if (!gameId) return;
+      try {
+        const status = await chain.pxe.readGameStatus(chain.address, gameId);
+        if (status !== 2) {   // 2 = active; anything else means it is resolved
+          this.log(`draw already settled by player 1 (status ${status}) — standing down`);
+          return;
+        }
+      } catch (err) {
+        // If we cannot read the status, settling anyway is the safer error: a
+        // duplicate settle reverts and costs a proof, while skipping it can
+        // strand ten cards permanently.
+        this.log(`could not read game status (${(err as Error).message}) — settling the draw anyway`);
+      }
+      this.log('player 1 did not settle the draw — settling it ourselves');
+    }
+
 
     // Wait for the transcript to complete before judging it. Moves are relayed
     // on PLACE_CARD, but proving each one is slow, so GAME_OVER routinely
@@ -700,9 +737,12 @@ export class ArenaBot {
 
     let move;
     try {
-      // No seed: production play should not be predictable from the state.
-      // The harness passes one when it needs reproducibility.
-      move = chooseBotMove(state, { difficulty: this.cfg.difficulty });
+      // No seed in production: play should not be predictable from the board.
+      // The harness sets one when it needs a reproducible OUTCOME.
+      move = chooseBotMove(state, {
+        difficulty: this.cfg.difficulty,
+        ...(this.cfg.moveSeed !== undefined ? { seed: this.cfg.moveSeed } : {}),
+      });
     } catch (err) {
       this.stats.moveFailures += 1;
       return this.recordError('choose-move', err as Error);

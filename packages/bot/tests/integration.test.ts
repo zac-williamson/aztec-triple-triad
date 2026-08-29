@@ -37,6 +37,7 @@ function cfg(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     chainTxTimeoutMs: 600_000,
     settleWaitMs: 1_000,
     sweepIntervalMs: 900_000,
+    drawFallbackMs: 0,
     gameTimeoutMs: 1_800_000,
     healthPort: 0,
     ...over,
