@@ -677,3 +677,31 @@ describe('ArenaBot card shortage', () => {
     bot.stop();
   });
 });
+
+describe('ArenaBot queue race', () => {
+  it('does not re-queue when a match lands during the /queue fetch', async () => {
+    const socket = new FakeSocket();
+    let releaseFetch: (v: QueueSnapshot) => void = () => {};
+    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 50 }), {
+      connect: () => socket as unknown as any,
+      fetchQueue: () => new Promise<QueueSnapshot>(r => { releaseFetch = r; }),
+      log: () => {}, now: () => 1_000_000,
+    });
+    bot.start();
+    socket.emit('open');
+    socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Match arrives while the queue fetch is still in flight.
+    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    releaseFetch({ length: 1, oldestWaitMs: 30_000, entries: [] });
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Queueing now would be rejected "already in an active game", and the ERROR
+    // path would then reset us out of a game we are actually playing.
+    expect(socket.countOfType('QUEUE_MATCHMAKING')).toBe(0);
+    expect(bot.getStats().state).toBe('playing');
+    bot.stop();
+  });
+});

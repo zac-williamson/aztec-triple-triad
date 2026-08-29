@@ -208,6 +208,11 @@ export class ArenaBot {
     if (this.state !== 'idle') return;
 
     const snap = await this.fetchQueue(this.cfg.httpUrl);
+    // Re-check: a MATCH_FOUND can land WHILE the /queue fetch is in flight, and
+    // queueing again then gets rejected "You are already in an active game" —
+    // which the ERROR path treats as a join failure and resets us out of a game
+    // we are actually in.
+    if (this.state !== 'idle') return;
     // Only our own entry in the queue means there is nobody to rescue.
     if (snap.length === 0) return;
     if (snap.oldestWaitMs < this.cfg.joinThresholdMs) return;
@@ -234,6 +239,9 @@ export class ArenaBot {
         return;
       }
     }
+
+    // selectHand() is async too — same hazard.
+    if (this.state !== 'idle') return;
 
     this.log(`human waiting ${Math.round(snap.oldestWaitMs / 1000)}s — offering a game`);
     this.state = 'queued';
