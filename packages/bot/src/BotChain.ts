@@ -174,9 +174,17 @@ export class BotChain {
   }
 
   /**
-   * Pick five cards to wager. Lowest ids first, purely so a game is
-   * reproducible from the logs; strategy belongs in chooseBotMove, not here.
-   * Throws rather than committing a short hand — that would fail on-chain.
+   * Pick five cards to wager.
+   *
+   * DISTINCT types, not simply the lowest five ids. The bot's stock is
+   * deliberately duplicated — many copies of a few weak types — so "sort and
+   * take five" would hand it five copies of the same card every single game:
+   * legal, but a fixed and trivially readable hand. Rotating through the types
+   * it holds costs nothing and keeps games varied.
+   *
+   * Falls back to duplicates only if it genuinely holds fewer than five types,
+   * because a duplicated hand still plays; refusing would idle the bot over a
+   * cosmetic preference.
    */
   async selectHand(size = 5): Promise<number[]> {
     const held = await this.readCards();
@@ -186,6 +194,32 @@ export class BotChain {
         `BUDGET — every player who beats it takes one. Re-provision or lower the game rate.`,
       );
     }
-    return [...held].sort((a, b) => a - b).slice(0, size);
+
+    // Round-robin across the stacks the bot holds, one copy at a time. This
+    // maximises distinct types AND can never name more copies of an id than are
+    // actually held — a hand naming a card it does not have fails on-chain with
+    // "Could not find all 5 cards", which is precisely the failure this whole
+    // area has already cost us once.
+    const stacks = new Map<number, number>();
+    for (const id of held) stacks.set(id, (stacks.get(id) ?? 0) + 1);
+    const ids = [...stacks.keys()].sort((a, b) => (stacks.get(b)! - stacks.get(a)!) || a - b);
+
+    const hand: number[] = [];
+    while (hand.length < size) {
+      let tookOne = false;
+      for (const id of ids) {
+        if (hand.length === size) break;
+        const left = stacks.get(id)!;
+        if (left > 0) {
+          hand.push(id);
+          stacks.set(id, left - 1);
+          tookOne = true;
+        }
+      }
+      // Unreachable given the length check above, but a stock that cannot fill
+      // a hand must not spin forever.
+      if (!tookOne) break;
+    }
+    return hand.slice(0, size);
   }
 }

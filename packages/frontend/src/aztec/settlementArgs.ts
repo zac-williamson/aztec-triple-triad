@@ -134,7 +134,7 @@ export interface ClaimAbandonedInputs {
   dummyVk: Uint8Array;
   handProof1: { proof: string; publicInputs: string[] };
   handProof2: { proof: string; publicInputs: string[] };
-  /** The moves that DID complete — 1..8 of them, in any order. */
+  /** The moves that DID complete — 0..8 of them, in any order. */
   validMoveProofs: { proof: string; publicInputs: string[]; startStateHash: string; endStateHash: string }[];
   /** Generates one dummy proof, base64-encoded, to pad the chain. */
   makeDummyProof: () => Promise<string>;
@@ -156,13 +156,16 @@ export async function buildClaimAbandonedArgs(inputs: ClaimAbandonedInputs): Pro
   const toFrHex = (hex: string) => hexToFr(Fr, hex);
 
   const numValid = inputs.validMoveProofs.length;
-  if (numValid < 1 || numValid >= TOTAL_MOVES) {
-    // A complete chain is a normal settlement, not an abandonment; an empty one
-    // cannot show whose turn it was, which is what the claim rests on.
+  if (numValid >= TOTAL_MOVES) {
+    // A complete chain is a normal settlement, not an abandonment.
     throw new Error(
-      `claim_abandoned_game needs 1..${TOTAL_MOVES - 1} valid move proofs, got ${numValid}`,
+      `claim_abandoned_game needs 0..${TOTAL_MOVES - 1} valid move proofs, got ${numValid}`,
     );
   }
+  // ZERO is valid: a player can abandon between joining and their first move,
+  // and refusing that claim leaves both hands locked with no route back. The
+  // contract restricts a zero-move claim to player 2 — the party that did not
+  // fail to move — via its "it must be the opponent's turn" check.
 
   const sorted = sortProofChain(inputs.validMoveProofs, numValid, await computeCanonicalInitialHash());
   const allProofs: unknown[] = sorted.map(m => toFrArr(m.proof));

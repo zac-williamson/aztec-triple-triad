@@ -142,12 +142,17 @@ export class AbandonmentSweep {
                `(${rec.cardIds.length} cards stay locked)`);
       return;
     }
-    if (rec.moveProofs.length < 1 || rec.moveProofs.length >= 9) {
+    if (rec.moveProofs.length >= 9) {
       this.stats.skipped += 1;
-      this.log(`sweep: ${id} UNRECOVERABLE — ${rec.moveProofs.length} move proof(s); ` +
-               `the claim needs 1..8`);
+      // A complete game is settled by its winner, not claimed. If the winner
+      // never settles, the cards wait for them — there is no abandonment to
+      // claim, because nobody abandoned anything.
+      this.log(`sweep: ${id} complete (9 moves) — settled by its winner, not claimable`);
       return;
     }
+    // ZERO move proofs is claimable: the opponent abandoned between our join and
+    // their first move. The bot is always player 2, which is exactly who the
+    // contract permits to make a zero-move claim.
 
     this.log(`sweep: ${id} abandoned (${Math.round(age / 60_000)}min, ${rec.moveProofs.length}/9 moves) — claiming`);
     await this.claim(rec);

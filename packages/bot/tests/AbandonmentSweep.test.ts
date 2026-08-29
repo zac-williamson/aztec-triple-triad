@@ -148,6 +148,21 @@ describe('AbandonmentSweep', () => {
     expect(stats.skipped).toBe(1);
   });
 
+  it('claims a game abandoned before ANY move was played', async () => {
+    const h = harness(GAME_STATUS.active);
+    // The opponent vanished between our join and their first move. Refusing
+    // this claim was leaving both hands locked with no route back at all.
+    h.journal.write(record({ moveProofs: [] }));
+
+    const stats = await h.sweep.run();
+
+    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5']);
+    expect(stats.recovered).toBe(1);
+    // Nobody played, so nobody forfeited a card.
+    const { buildSettleAbandonedArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
+    expect(vi.mocked(buildSettleAbandonedArgs).mock.calls[0][0]).toMatchObject({ claimedCardId: 0 });
+  });
+
   it('refuses a full 9-move chain — that is a normal settlement, not an abandonment', async () => {
     const h = harness(GAME_STATUS.active);
     h.journal.write(record({ moveProofs: Array(9).fill(PROOF) }));
