@@ -86,23 +86,16 @@ export async function prepareConnection(options?: {
     saltFr = Fr.random();
   }
 
+  // Must run BEFORE any store is opened — see drainPendingStoreReset.
+  await drainPendingStoreReset(log);
+
   log('Creating EmbeddedWallet...');
-  // Store the rollup address so the "Clear All State" button can
-  // delete the correct IndexedDB databases (Safari can't enumerate them).
-  try {
-    const l1Contracts = await node.getL1ContractAddresses();
-    const rollupAddr = l1Contracts.rollupAddress?.toString();
-    if (rollupAddr) {
-      const prev = JSON.parse(localStorage.getItem('aztec_idb_names') ?? '[]') as string[];
-      // The SDK creates IDB databases with directory-style names:
-      // "pxe_data_0x.../pxe_data" and "wallet_data_0x.../wallet_data"
-      const pxeBase = `pxe_data_${rollupAddr}`;
-      const walletBase = `wallet_data_${rollupAddr}`;
-      const names = [pxeBase, walletBase, `${pxeBase}/pxe_data`, `${walletBase}/wallet_data`];
-      const merged = [...new Set([...prev, ...names])];
-      localStorage.setItem('aztec_idb_names', JSON.stringify(merged));
-    }
-  } catch { /* best effort */ }
+  // NOTE: we deliberately no longer append to `aztec_idb_names`. It existed so
+  // "Clear All State" could name the SDK's IndexedDB databases on Safari, which
+  // cannot enumerate them — but as of 5.2 the stores are SQLite-OPFS, which
+  // `listStores()` enumerates on every browser. Recording IDB names here would
+  // only add entries that can never match anything. Any pre-5.2 entries already
+  // in localStorage are still read and cleaned up by clearAllState.
 
   const wallet = await EmbeddedWallet.create(node, {
     ephemeral: false,
@@ -396,10 +389,89 @@ export async function connectToAztec(options?: {
  * state. This is an explicit user/harness action, never an automatic
  * fallback.
  */
+/**
+ * localStorage flag naming what the next boot must delete: 'pxe' (chain-sync
+ * repair, keeps the wallet stores) or 'all' (full wipe).
+ */
+const PENDING_STORE_RESET_KEY = 'aztec_pending_store_reset';
+
+function queueStoreReset(scope: 'pxe' | 'all'): void {
+  localStorage.setItem(PENDING_STORE_RESET_KEY, scope);
+}
+
+/**
+ * Delete the OPFS-backed kv stores queued by repairChainSync / clearAllState.
+ *
+ * Deferred to the next boot on purpose. As of 5.2 the PXE keeps its state in a
+ * SQLite-OPFS SAH pool (one OPFS directory per store, `.aztec-kv-<storeName>`),
+ * and `deleteStore` takes that directory's Web Lock — an OPEN store rejects with
+ * SqlitePoolBusyError. The wedged-PXE case is exactly when the store is open and
+ * unresponsive, so deleting in-place cannot work; queue a flag, reload, and
+ * delete here, before EmbeddedWallet.create reopens anything.
+ *
+ * Store names are enumerated rather than reconstructed: they carry a chain id,
+ * rollup address and schema version (pxe_data_11155111-0x...-v13), so a
+ * hand-built name silently misses after any re-genesis or schema bump — the bug
+ * this replaces, which matched pre-5.2 IndexedDB names that no longer exist.
+ */
+async function drainPendingStoreReset(log: LogFn): Promise<void> {
+  const scope = localStorage.getItem(PENDING_STORE_RESET_KEY);
+  if (!scope) return;
+  // Clear first: a store we cannot delete must not wedge every future boot.
+  localStorage.removeItem(PENDING_STORE_RESET_KEY);
+  try {
+    const { listStores, deleteStore } = await import('@aztec/kv-store/sqlite-opfs');
+    const stores = await listStores();
+    const targets = scope === 'all' ? stores : stores.filter(n => n.startsWith('pxe_data_'));
+    if (targets.length === 0) {
+      log(`Store reset (${scope}): nothing to delete`);
+      return;
+    }
+    for (const name of targets) {
+      try {
+        await deleteStore(name);
+        log(`Store reset: deleted ${name}`);
+      } catch (err) {
+        // Keep going: one locked store must not block the others.
+        log(`Store reset: could not delete ${name} — ${String(err)}`);
+      }
+    }
+  } catch (err) {
+    log(`Store reset failed: ${String(err)}`);
+  }
+}
+
 export function repairChainSync(): void {
+  queueStoreReset('pxe');
+  window.location.reload();
+}
+
+/**
+ * Wipe every trace of local state: the queued OPFS store deletion, all
+ * localStorage/sessionStorage, and any IndexedDB left over from before 5.2.
+ * Unlike repairChainSync this drops the wallet stores too, so the account is
+ * re-derived from scratch on the next boot.
+ */
+export function clearAllState(): void {
+  // Read the legacy IDB names BEFORE clearing localStorage, then re-queue the
+  // reset flag (localStorage.clear() would otherwise drop it).
   const idbNames = JSON.parse(localStorage.getItem('aztec_idb_names') ?? '[]') as string[];
-  for (const name of idbNames) {
-    if (name.startsWith('pxe_data_')) indexedDB.deleteDatabase(name);
+  localStorage.clear();
+  sessionStorage.clear();
+  queueStoreReset('all');
+  deleteLegacyIdb(idbNames);
+  if (typeof indexedDB.databases === 'function') {
+    void indexedDB
+      .databases()
+      .then(dbs => { for (const db of dbs) if (db.name) indexedDB.deleteDatabase(db.name); })
+      .catch(() => { /* Safari lacks databases(); the named list above covers it */ })
+      .finally(() => window.location.reload());
+    return;
   }
   window.location.reload();
+}
+
+/** Pre-5.2 the stores were IndexedDB. Harmless no-op once nothing is left. */
+function deleteLegacyIdb(names: string[]): void {
+  for (const name of names) indexedDB.deleteDatabase(name);
 }

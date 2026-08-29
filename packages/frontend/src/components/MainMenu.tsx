@@ -131,28 +131,8 @@ export function MainMenu({
       <button
         className="main-menu__btn-clear"
         onClick={async () => {
-          // Read stored IDB names BEFORE clearing localStorage
-          const idbNames = JSON.parse(localStorage.getItem('aztec_idb_names') ?? '[]') as string[];
-          localStorage.clear();
-          sessionStorage.clear();
-
-          // Delete known Aztec IndexedDB databases by name (works in Safari
-          // which lacks indexedDB.databases())
-          for (const name of idbNames) {
-            indexedDB.deleteDatabase(name);
-          }
-
-          // Chrome/Firefox: enumerate and delete ALL IndexedDB databases
-          if (typeof indexedDB.databases === 'function') {
-            try {
-              const dbs = await indexedDB.databases();
-              for (const db of dbs) {
-                if (db.name) indexedDB.deleteDatabase(db.name);
-              }
-            } catch { /* ignore */ }
-          }
-
-          window.location.reload();
+          const { clearAllState } = await import('../aztec/connectToAztec');
+          clearAllState();
         }}
       >
         Clear All State
