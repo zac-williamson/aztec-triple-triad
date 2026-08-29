@@ -48,6 +48,8 @@ export interface ArenaBotConfig {
    * it takes no further players AND its five committed cards stay stranded.
    */
   gameTimeoutMs: number;
+  /** Port for the bot's own health/metrics endpoint. 0 disables it. */
+  healthPort: number;
 }
 
 const int = (v: string | undefined, dflt: number): number => {
@@ -85,5 +87,6 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ArenaBotCon
     chainTxTimeoutMs: int(env.ARENA_BOT_CHAIN_TX_TIMEOUT_MS, 600_000),
     settleWaitMs: int(env.ARENA_BOT_SETTLE_WAIT_MS, 300_000),
     gameTimeoutMs: int(env.ARENA_BOT_GAME_TIMEOUT_MS, 1_800_000),
+    healthPort: Number(env.ARENA_BOT_HEALTH_PORT ?? 5175) || 0,
   };
 }

@@ -30,6 +30,7 @@ function makeConfig(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     // Unit tests assert the IMMEDIATE verdict on an incomplete transcript.
     settleWaitMs: 0,
     gameTimeoutMs: 1_800_000,
+    healthPort: 0,
     ...over,
   };
 }

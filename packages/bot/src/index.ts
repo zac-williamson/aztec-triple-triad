@@ -15,6 +15,7 @@ import { configFromEnv } from './config.js';
 import { ArenaBot } from './ArenaBot.js';
 import { BotChain } from './BotChain.js';
 import { BotProofs } from './BotProofs.js';
+import { startHealthServer } from './health.js';
 
 const cfg = configFromEnv();
 const chainMode = process.env.ARENA_BOT_CHAIN === '1';
@@ -58,11 +59,16 @@ async function main(): Promise<void> {
   );
   bot.start();
 
+  // The relay's /metrics cannot see inside this process — proving failures, a
+  // card shortage, the watchdog abandoning games. Serve those here.
+  const health = cfg.healthPort > 0 ? startHealthServer(bot, cfg.healthPort, m => console.log(`[arena-bot] ${m}`)) : null;
+
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     process.on(sig, () => {
       console.log(`[arena-bot] ${sig} — shutting down`);
       bot.stop();
-      process.exit(0);
+      void health?.close().finally(() => process.exit(0));
+      if (!health) process.exit(0);
     });
   }
 }
