@@ -135,7 +135,7 @@ export type ServerMessage =
   | { type: 'OPPONENT_SETTLING'; gameId: string; selectedCardId: number }
   // Matchmaking
   | { type: 'MATCHMAKING_QUEUED'; position: number }
-  | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState }
+  | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState; opponentIsBot?: boolean }
   | { type: 'MATCHMAKING_CANCELLED' }
   | { type: 'PONG' }
   // Session management
@@ -161,6 +161,6 @@ export type MatchmakingClientMessage =
 
 export type MatchmakingServerMessage =
   | { type: 'MATCHMAKING_QUEUED'; position: number }
-  | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState }
+  | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState; opponentIsBot?: boolean }
   | { type: 'MATCHMAKING_CANCELLED' }
   | { type: 'PONG' };

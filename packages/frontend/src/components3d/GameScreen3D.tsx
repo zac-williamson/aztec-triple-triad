@@ -17,6 +17,8 @@ export type ProofStatusInfo = {
 export type SettleTxStatus = 'idle' | 'preparing' | 'proving' | 'sending' | 'confirmed' | 'error';
 
 interface GameScreenProps {
+  /** Disclosed when the opponent is the arena bot. */
+  opponentIsBot?: boolean;
   gameState: GameState;
   playerNumber: 1 | 2;
   gameId: string;
@@ -77,6 +79,7 @@ export function GameScreen3D({
   tutorialHighlightCells,
   tutorialPulseHandIndex,
   xochitlRevealCount,
+  opponentIsBot = false,
 }: GameScreenProps) {
   const [selectedCardIndex, setSelectedCardIndex] = useState<number | null>(null);
   const { flyingCard, startFlyAnimation, completeFlyAnimation, isAnimatingCell } = useCardAnimation();
@@ -285,6 +288,7 @@ export function GameScreen3D({
         myPlayer={myPlayer}
         myScore={myScore}
         opponentScore={opponentScore}
+        opponentIsBot={opponentIsBot}
         onBackToLobby={onBackToLobby}
         aztecStatus={aztecStatus}
         proofStatus={proofStatus}

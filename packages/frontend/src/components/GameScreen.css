@@ -33,6 +33,22 @@
   color: rgba(232, 228, 216, 0.5);
 }
 
+/* Arena Bot disclosure. Deliberately legible rather than subtle: the player is
+   wagering a real card, so they are told who they are playing. Styled as a
+   sibling of the turn pill so it reads as status, not as an error. */
+.game-screen__bot-badge {
+  font-family: 'Cinzel', serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 6px 14px;
+  border-radius: 20px;
+  background: rgba(138, 180, 248, 0.1);
+  border: 1px solid rgba(138, 180, 248, 0.3);
+  color: #8ab4f8;
+  cursor: help;
+}
+
 .game-screen__turn--yours {
   background: rgba(123, 198, 126, 0.1);
   border-color: rgba(123, 198, 126, 0.3);

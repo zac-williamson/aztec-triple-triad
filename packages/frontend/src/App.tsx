@@ -156,6 +156,7 @@ function AppInner() {
           lastCaptures={game.ws.lastCaptures}
           gameOver={game.ws.gameOver}
           opponentDisconnected={game.ws.opponentDisconnected}
+          opponentIsBot={game.ws.opponentIsBot}
           onPlaceCard={game.handlePlaceCard}
           onBackToLobby={game.handleBackToMenu}
           aztecStatus={aztec.status}

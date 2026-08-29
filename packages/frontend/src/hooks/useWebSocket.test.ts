@@ -386,6 +386,25 @@ describe('useWebSocket', () => {
       expect(result.current.playerNumber).toBe(1);
     });
 
+    it('MATCH_FOUND discloses a bot opponent', async () => {
+      const { result, ws } = await setupConnectedHook();
+      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
+      act(() => {
+        ws.simulateMessage({ type: 'MATCH_FOUND', gameId: 'm', playerNumber: 1, gameState: state, opponentIsBot: true });
+      });
+      expect(result.current.opponentIsBot).toBe(true);
+    });
+
+    it('MATCH_FOUND treats a missing/false disclosure flag as a human opponent', async () => {
+      const { result, ws } = await setupConnectedHook();
+      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
+      // A server that predates the flag must not make players think they face a bot.
+      act(() => {
+        ws.simulateMessage({ type: 'MATCH_FOUND', gameId: 'm', playerNumber: 1, gameState: state });
+      });
+      expect(result.current.opponentIsBot).toBe(false);
+    });
+
     it('MATCHMAKING_CANCELLED resets matchmaking state', async () => {
       const { result, ws } = await setupConnectedHook();
       act(() => { ws.simulateMessage({ type: 'MATCHMAKING_QUEUED', position: 1 }); });

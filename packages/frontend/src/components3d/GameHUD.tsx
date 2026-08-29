@@ -18,6 +18,8 @@ interface GameHUDProps {
   myPlayer: Player;
   myScore: number;
   opponentScore: number;
+  /** Disclosed when the opponent is the arena bot — never hidden from the player. */
+  opponentIsBot?: boolean;
   onBackToLobby: () => void;
   aztecStatus?: string;
   proofStatus?: ProofStatusInfo;
@@ -78,6 +80,7 @@ export function GameHUD({
   myPlayer,
   myScore,
   opponentScore,
+  opponentIsBot = false,
   onBackToLobby,
   aztecStatus,
   proofStatus,
@@ -149,6 +152,15 @@ export function GameHUD({
         <div className={`game-screen__turn ${isMyTurn ? 'game-screen__turn--yours' : ''}`}>
           {isFinished ? 'Game Over' : isMyTurn ? 'Your Turn' : "Opponent's Turn"}
         </div>
+        {opponentIsBot && (
+          <div
+            className="game-screen__bot-badge"
+            data-testid="opponent-is-bot"
+            title="Nobody else was queuing, so the Arena Bot took the game. It plays by the same rules, with real proofs and real on-chain settlement."
+          >
+            ⬡ Arena Bot
+          </div>
+        )}
       </div>
 
       {chainViewOpen && chainView && (
