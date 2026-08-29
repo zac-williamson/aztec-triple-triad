@@ -43,11 +43,14 @@ card, which is a one-time setup, not a per-game cost. Avoiding the contract chan
 also avoids a redeploy — which, given the testnet re-genesises roughly quarterly and
 each recovery costs a day, is worth real money.
 
-*Open risk to verify:* cards are identified by `token_id` drawn from a 257-card
-database, so a big collection means **duplicate** token_ids. `commit_five_nfts` has a
-test named `commit_five_nfts_with_duplicate_leaves_one`, which suggests duplicates
-collapse somewhere. If they do, the bot needs distinct ids and the collection is
-capped at 257 — still plenty for one game at a time. **Verify before minting in bulk.**
+*Open risk, narrowed:* cards are `token_id`s drawn from a 257-card database, so a
+collection larger than 257 needs **duplicate** ids. `mint_to_private` does not check
+`nft_exists` (only `mint_to_public` does), so duplicates are mintable — but their
+behaviour under `commit_five_nfts` is untested. The similarly-named
+`commit_five_nfts_with_duplicate_leaves_one` test is NOT about this: it mints six
+DISTINCT cards (1..6) and commits five, leaving one. So: **stay ≤257 distinct cards
+until a TXE test proves duplicates commit correctly.** `provision-arena-bot.ts`
+enforces that limit rather than trusting it. 257 is ample for phase 1 anyway.
 
 **b) "One game at a time" makes the queue worse, not better.**
 The stated goal is to avoid long queue waits. But if the bot plays one game at a
