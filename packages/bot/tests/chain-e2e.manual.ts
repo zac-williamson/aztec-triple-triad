@@ -219,6 +219,17 @@ async function main(): Promise<void> {
   const timeout = new Promise<number>(r => setTimeout(() => r(-1), 30 * 60_000));
   const code = await Promise.race([childExit, timeout]);
 
+  // The child exits at GAME_OVER, but the winner's settlement runs AFTER that —
+  // gathering the last relayed move proof, building the transcript, then a slow
+  // process_game. Killing the bot here would abort a settlement in flight, which
+  // is exactly what the harness is meant to observe.
+  const settleDeadline = Date.now() + 10 * 60_000;
+  while (Date.now() < settleDeadline) {
+    const st = bot.getStats();
+    if (st.settlements > 0 || st.settleFailures > 0 || st.state === 'idle') break;
+    await new Promise(r => setTimeout(r, 2_000));
+  }
+
   const stats = bot.getStats();
   console.log('\n=== RESULT ===');
   console.log('  opponent exit  :', code === -1 ? 'TIMED OUT' : code);
