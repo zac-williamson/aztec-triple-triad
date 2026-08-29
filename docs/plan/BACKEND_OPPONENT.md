@@ -150,6 +150,34 @@ answer for "I want to learn the game". The bot addresses a different problem (an
 empty queue on a live chain). Removing it trades a good free feature for a costly one.
 I have left it in place; say the word if you disagree.
 
+## 5a. Constraints found by actually running it on-chain
+
+Each of these was invisible to typechecking and unit tests, and each changes how
+the feature must be operated.
+
+1. **One identity per PROCESS.** `pxe.ts` binds the wallet in a module-level
+   global (`setPxeWallet`), so two `BotChain`s in one process silently share the
+   last-connected wallet. The pool in §5 is therefore N processes, not one
+   process with N identities — better for CPU isolation anyway, since proving is
+   the bottleneck. `BotChain` now throws rather than letting them merge.
+2. **`token_id`s are globally unique** (`finalize_mint` asserts `!nft_exists`).
+   The whole pool shares ONE 257-id budget and each identity needs a disjoint
+   slice. That budget is the pool's combined loss ceiling.
+3. **The bot must onboard like a player.** `note_nonce` is initialised only by
+   `get_cards_for_new_player`; minting does not touch it, so a purely-minted bot
+   could never commit a hand ("Note nonce not found").
+4. **P2 must wait for P1's create to CONFIRM, not merely to be shared.** P1
+   shares its game id early so P2 can prepare; joining on the share races the
+   chain and fails "Game not in created state".
+5. **Committed cards vanish from the PXE until settlement.** So "held" ≠
+   "minted": provisioning must reason about what was minted (the manifest), and a
+   bot with a game in flight legitimately holds fewer cards than it owns. A
+   game that never settles strands its five cards indefinitely — which is the
+   real operational risk behind the loss budget, and an argument for an
+   abandonment sweep before the pool runs unattended.
+6. **Every send needs the node** in its options (`getCurrentMinFees` fee
+   headroom), or it fails with an unhelpful undefined-property error.
+
 ## 6. Execution phases
 
 | Phase | Deliverable | Chain? |
