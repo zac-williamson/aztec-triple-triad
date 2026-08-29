@@ -18,6 +18,7 @@ import txManager from './txManager';
 import type { TxType, TxPhase } from './txManager';
 import { toFr, toHexString } from './fieldUtils';
 import { gasSettingsWithHeadroom, type BaseFeeNode } from './feeSettings';
+import { CARDS_PER_HAND } from './gameConstants';
 import type { NoteToImport, TxEffectData } from './noteImporter';
 
 type Schedule = <T>(fn: () => Promise<T>) => Promise<T>;
@@ -226,6 +227,26 @@ function makeOps(schedule: Schedule) {
      */
     sendProcessGame: (owner: string, args: unknown[], opts: SendOpts): Promise<string> =>
       schedule(() => sendGameMethod('process_game', owner, args, opts)),
+    /**
+     * Cancel a game nobody joined, re-minting the creator's five cards.
+     *
+     * The contract has supported this since launch but nothing called it, so a
+     * player whose game was never joined had five cards committed with NO
+     * in-app way to get them back — they are nullified out of the PXE until the
+     * game resolves, and a created-but-unjoined game never does. Only the
+     * creator can cancel, and only while the game is still in `created` state.
+     */
+    sendCancelGame: (owner: string, gameId: string, cardIds: number[], opts: SendOpts): Promise<string> =>
+      schedule(async () => {
+        const { Fr } = await resolveContracts();
+        if (cardIds.length !== CARDS_PER_HAND) {
+          throw new Error(`cancel_game needs exactly ${CARDS_PER_HAND} card ids, got ${cardIds.length}`);
+        }
+        return sendGameMethod('cancel_game', owner, [
+          toFr(Fr, gameId),
+          cardIds.map(id => new Fr(BigInt(id))),
+        ], opts);
+      }),
     sendClaimAbandonedGame: (owner: string, args: unknown[], opts: SendOpts): Promise<string> =>
       schedule(() => sendGameMethod('claim_abandoned_game', owner, args, opts)),
     sendSettleAbandonedGame: (owner: string, args: unknown[], opts: SendOpts): Promise<string> =>

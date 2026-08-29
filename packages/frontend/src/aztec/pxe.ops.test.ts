@@ -77,6 +77,28 @@ describe('pxe send ops — enqueue + base-fee headroom, contract stays inside', 
     expect(txHash).toBe('0xPG');
   });
 
+  it('sendCancelGame recovers a creator\'s cards from an unjoined game', async () => {
+    const send = vi.fn().mockResolvedValue({ receipt: { txHash: { toString: () => '0xCG' } } });
+    const cancel_game = vi.fn(() => ({ send }));
+    h.ensureContracts.mockResolvedValue({ gameContract: { methods: { cancel_game } }, Fr: FakeFr, AztecAddress });
+
+    const txHash = await pxe.sendCancelGame('0xME', '0xGAME', [1, 2, 3, 4, 5], { node: {}, timeoutMs: 9 });
+
+    expect(cancel_game).toHaveBeenCalledTimes(1);
+    const [gameId, ids] = cancel_game.mock.calls[0] as any[];
+    expect(String(gameId)).toContain('0xGAME');
+    expect(ids).toHaveLength(5);
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ fee: { gasSettings: { maxFeesPerGas: 'HEADROOM' } } }));
+    expect(txHash).toBe('0xCG');
+  });
+
+  it('sendCancelGame refuses a hand that is not five cards', async () => {
+    h.ensureContracts.mockResolvedValue({ gameContract: { methods: {} }, Fr: FakeFr, AztecAddress });
+    // A short list would commit to the wrong hand and revert on-chain.
+    await expect(pxe.sendCancelGame('0xME', '0xG', [1, 2], { node: {}, timeoutMs: 1 }))
+      .rejects.toThrow(/exactly 5 card ids/);
+  });
+
   it('throws (no silent null) when a send returns no txHash', async () => {
     const send = vi.fn().mockResolvedValue({ receipt: { txHash: null } });
     h.ensureContracts.mockResolvedValue({ gameContract: { methods: { create_game: () => ({ send }) } }, Fr: FakeFr, AztecAddress });
