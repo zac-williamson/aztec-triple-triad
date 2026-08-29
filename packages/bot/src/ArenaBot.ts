@@ -58,6 +58,9 @@ export interface BotStats {
   settlements: number;
   /** On-chain id of the game just played, so callers can verify it independently. */
   lastOnChainGameId: string | null;
+  /** Games abandoned by the watchdog, and cards clawed back by cancel_game. */
+  abandonedGames: number;
+  cardsRecovered: number;
   lastError: string | null;
 }
 
@@ -104,6 +107,8 @@ export class ArenaBot {
   private handProofSent = false;
   /** Suppresses repeat logging of a persistent card shortage. */
   private handShortageLogged = false;
+  /** When the current game started, for the stuck-game watchdog. */
+  private gameStartedAt = 0;
   /** True once OUR cards are committed on-chain. Gates play in chain mode. */
   private committed = false;
   /**
@@ -134,7 +139,7 @@ export class ArenaBot {
   private readonly stats: BotStats = {
     state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
     joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0, settleFailures: 0, settlements: 0,
-    lastOnChainGameId: null, lastError: null,
+    lastOnChainGameId: null, abandonedGames: 0, cardsRecovered: 0, lastError: null,
   };
 
   private readonly chain: BotChainLike | null;
@@ -201,6 +206,21 @@ export class ArenaBot {
   /** One poll: decide whether to offer ourselves as an opponent. */
   private async tick(): Promise<void> {
     if (this.stopped || !this.registered) return;
+
+    // Stuck-game watchdog. An opponent who never joins, or vanishes mid-game,
+    // would otherwise park us in `playing` forever — taking no further players
+    // and leaving our five committed cards stranded.
+    if (this.state === 'playing' && this.gameStartedAt > 0
+        && this.now() - this.gameStartedAt > this.cfg.gameTimeoutMs) {
+      this.log(`game exceeded ${Math.round(this.cfg.gameTimeoutMs / 60_000)}min — abandoning`);
+      this.stats.abandonedGames += 1;
+      const toRecover = this.recoverableCommit();
+      this.resetToIdle();
+      if (toRecover) {
+        void this.recoverCards(toRecover).catch(err => this.recordError('recover-cards', err as Error));
+      }
+      return;
+    }
 
     if (this.state === 'queued' && this.now() - this.queuedAt > this.cfg.queueTimeoutMs) {
       this.log('queue timeout; leaving the queue');
@@ -269,6 +289,7 @@ export class ArenaBot {
         this.gameId = msg.gameId;
         this.myPlayer = msg.playerNumber === 1 ? 'player1' : 'player2';
         this.state = 'playing';
+        this.gameStartedAt = this.now();
         this.log(`matched into ${msg.gameId} as ${this.myPlayer}`);
         // Chain commit runs detached: it takes minutes (proving + inclusion) and
         // must not block the message loop, which still has to answer the relay.
@@ -394,6 +415,10 @@ export class ArenaBot {
     const { gameId, randomness, blindingFactor, status } = await chain.pxe.previewCreateGame(chain.address);
     this.blindingFactor = blindingFactor;
     this.myRandomness = randomness;
+    // P1 must record its OWN game id: settlement needs it, and so does
+    // cancel_game recovery. Only the P2 path was setting it.
+    this.onChainGameId = String(gameId);
+    this.stats.lastOnChainGameId = this.onChainGameId;
     if (status !== 0) {
       throw new Error(`on-chain game ${gameId} already has status ${status} — stale note nonce`);
     }
@@ -605,6 +630,30 @@ export class ArenaBot {
     this.log(`settled on-chain: ${String(txHash).slice(0, 18)}…`);
   }
 
+  /**
+   * If we created a game nobody joined, its five cards are recoverable by
+   * cancel_game. Captured BEFORE resetToIdle clears the state.
+   *
+   * Only the creator can cancel, and only while the game is still `created` —
+   * a game the opponent DID join needs the abandonment-claim path instead, so
+   * we do not attempt it here.
+   */
+  private recoverableCommit(): { gameId: string; cardIds: number[] } | null {
+    if (!this.chain || this.myPlayer !== 'player1' || !this.committed) return null;
+    if (!this.onChainGameId || this.hand.length !== 5) return null;
+    return { gameId: this.onChainGameId, cardIds: [...this.hand] };
+  }
+
+  private async recoverCards(what: { gameId: string; cardIds: number[] }): Promise<void> {
+    const chain = this.chain!;
+    this.log(`cancelling unjoined game ${what.gameId.slice(0, 18)}… to recover ${what.cardIds.join(',')}`);
+    await chain.pxe.sendCancelGame(chain.address, what.gameId, what.cardIds, {
+      node: chain.nodeClient, timeoutMs: this.cfg.chainTxTimeoutMs,
+    });
+    this.stats.cardsRecovered += what.cardIds.length;
+    this.log(`recovered ${what.cardIds.length} cards`);
+  }
+
   /** Play if, and only if, it is our turn in a live game. */
   private maybeMove(state: GameState | undefined): void {
     if (state) this.lastState = state;
@@ -649,6 +698,7 @@ export class ArenaBot {
     this.gameId = null;
     this.myPlayer = null;
     this.queuedAt = 0;
+    this.gameStartedAt = 0;
     // Per-game proof inputs MUST NOT leak into the next game: a stale blinding
     // factor or opponent randomness would produce a proof that verifies against
     // the wrong commitment and be rejected at settlement.

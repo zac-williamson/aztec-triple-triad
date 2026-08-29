@@ -29,6 +29,7 @@ function makeConfig(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     chainTxTimeoutMs: 600_000,
     // Unit tests assert the IMMEDIATE verdict on an incomplete transcript.
     settleWaitMs: 0,
+    gameTimeoutMs: 1_800_000,
     ...over,
   };
 }
@@ -261,6 +262,7 @@ function fakeChain(over: Partial<Record<string, any>> = {}) {
         sendCreateGame: over.sendCreateGame ?? (async (...a: any[]) => { calls.push(['create', ...a]); return '0xtxcreate'; }),
         sendJoinGame: over.sendJoinGame ?? (async (...a: any[]) => { calls.push(['join', ...a]); return '0xtxjoin'; }),
         sendProcessGame: over.sendProcessGame ?? (async (...a: any[]) => { calls.push(['settle', ...a]); return '0xtxsettle'; }),
+        sendCancelGame: over.sendCancelGame ?? (async (...a: any[]) => { calls.push(['cancel', ...a]); return '0xtxcancel'; }),
       },
     },
   };
@@ -742,6 +744,75 @@ describe('ArenaBot move proof staleness', () => {
     socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: late });
     await vi.advanceTimersByTimeAsync(50);
     expect(proved).toHaveLength(0);
+    bot.stop();
+  });
+});
+
+describe('ArenaBot stuck-game watchdog', () => {
+  it('abandons a game that never finishes and recovers its cards', async () => {
+    const socket = new FakeSocket();
+    const f = fakeChain();
+    const cancels: any[] = [];
+    f.chain.pxe.sendCancelGame = async (...a: any[]) => { cancels.push(a); return '0xcancel'; };
+    let clock = 1_000_000;
+    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 50, gameTimeoutMs: 10_000 }), {
+      connect: () => socket as unknown as any,
+      // A waiting player, so the bot QUEUES and thereby selects its hand —
+      // without that there is no wagered hand to recover.
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, log: () => { /* quiet */ }, now: () => clock,
+    });
+    bot.start();
+    socket.emit('open');
+    socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Matched as creator, commits, and the opponent then never joins.
+    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(bot.getStats().state).toBe('playing');
+
+    clock += 11_000;
+    await vi.advanceTimersByTimeAsync(200);
+
+    // Without this the bot would sit in `playing` forever, taking no further
+    // players, with its five committed cards stranded. Back in service means
+    // idle OR already re-queued for the next waiting player.
+    expect(['idle', 'queued']).toContain(bot.getStats().state);
+    expect(bot.getStats().abandonedGames).toBe(1);
+    expect(cancels).toHaveLength(1);
+    expect(cancels[0][2]).toHaveLength(5);       // the wagered hand
+    expect(bot.getStats().cardsRecovered).toBe(5);
+    bot.stop();
+  });
+
+  it('does not try to cancel a game the opponent actually joined', async () => {
+    const socket = new FakeSocket();
+    const f = fakeChain();
+    const cancels: any[] = [];
+    f.chain.pxe.sendCancelGame = async (...a: any[]) => { cancels.push(a); return '0xcancel'; };
+    let clock = 1_000_000;
+    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 50, gameTimeoutMs: 10_000 }), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 0, oldestWaitMs: 0, entries: [] }),
+      chain: f.chain as any, log: () => {}, now: () => clock,
+    });
+    bot.start();
+    socket.emit('open');
+    socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(100);
+    // As player2 we are the joiner — cancel_game is creator-only, and a joined
+    // game needs the abandonment-claim path instead.
+    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    await vi.advanceTimersByTimeAsync(100);
+    clock += 11_000;
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(['idle', 'queued']).toContain(bot.getStats().state);
+    expect(bot.getStats().abandonedGames).toBe(1);
+    expect(cancels).toHaveLength(0);
     bot.stop();
   });
 });

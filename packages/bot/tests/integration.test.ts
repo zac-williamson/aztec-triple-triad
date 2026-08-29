@@ -36,6 +36,7 @@ function cfg(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     maxConcurrentGames: 1,
     chainTxTimeoutMs: 600_000,
     settleWaitMs: 1_000,
+    gameTimeoutMs: 1_800_000,
     ...over,
   };
 }
