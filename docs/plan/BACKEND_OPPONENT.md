@@ -285,9 +285,10 @@ remaining provisioned accounts, and must not happen while nobody is watching.
   sandbox by port — `kill -9 $(lsof -tiTCP:8080 -sTCP:LISTEN)` — and verify the
   port is free before starting another.** No Aztec defect involved; the two early
   successes were simply the first, un-stale instance.
-- Still open: phase 5 (identity pool, as N processes — the per-identity store
-  above is its prerequisite and is now in place); phase 6 (testnet, which needs a
-  deliberate, watched redeploy); and the abandonment sweep below.
+- Still open: **phase 6 (testnet)**, which needs a deliberate, watched redeploy
+  and a provisioning budget decision — the bot's cards come out of the same
+  257-id global space as players'. Phases 1-5 are done and verified on a
+  sandbox.
 
 - 2026-08-29 (later): **a full chain game SETTLES, in both directions.** Three
   defects stood between the previous entry and this one, and all three were
@@ -339,6 +340,31 @@ remaining provisioned accounts, and must not happen while nobody is watching.
 - 2026-08-29: the harness now **fails fast on a card shortage**. The bot logs it
   and correctly stays idle, but the harness sat out its full 30-minute deadline
   waiting for a game that could never start.
+
+- 2026-08-29 (phase 5): **identity pool built, and it exposed a matchmaking bug
+  that had nothing to do with the pool supervisor.** `tryMatch` popped the first
+  two queue entries, so N bots watching one queue would get paired with EACH
+  OTHER — ten real cards wagered, one transferred, for nothing, and the waiting
+  human loses the slot. It had **no test coverage at all**, which is why it
+  survived this long. Selection is now deliberate (oldest human creates, a human
+  joiner is preferred, an all-bot queue matches nobody) and the ten new tests
+  fail against the old implementation.
+  Two further races, both found by running three real bots against a real relay:
+  the bot-side "am I needed?" check reads `/queue` and then acts, so all N still
+  offered — the decision moved to the SERVER, which is the only party that sees
+  the queue at the moment of the decision; and the server's own handler was not
+  atomic either, because Node interleaves socket messages across every `await`,
+  so the matchmaking critical section now runs under a lock.
+  Verified on the sandbox with three provisioned identities holding real cards:
+  two bots idle against an empty queue create **0** games; a human then gets
+  **exactly one** bot, as player 1; the second stands down; nobody is left
+  queued. `packages/bot/tests/pool-e2e.manual.ts`.
+- 2026-08-29: a ~1-in-6 hang in the bot integration tests was the **harness**,
+  not the server: the test client attached its message listener inside `ready()`,
+  and nothing replays a WebSocket message, so a client constructed early had its
+  `SESSION_ESTABLISHED` delivered and dropped before anyone was listening. Worth
+  recording because the first fix (checking `readyState` for `open`) only made it
+  rarer, which is the classic sign of having fixed one instance of a class.
 
 **Operational note from testing, now measured.** Every incomplete game strands
 its five committed cards. After a session of debugging, each identity showed

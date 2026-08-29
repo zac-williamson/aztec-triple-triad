@@ -61,6 +61,37 @@ commit its cards is worse than one that never starts.
 `ARENA_BOT_DIFFICULTY=lookahead` is a poor choice here: it wants the opponent's
 hand, and the server hides it. `greedy` is beatable but not random.
 
+## Running a pool
+
+```bash
+npx tsx scripts/provision-arena-bot.ts --index 0 --cards 30 --offset 0
+npx tsx scripts/provision-arena-bot.ts --index 1 --cards 30 --offset 30   # DISJOINT
+ARENA_BOT_POOL_SIZE=2 ARENA_BOT_CHAIN=1 npm run pool -w packages/bot
+```
+
+**N processes, one identity each** — never one process with N identities.
+`pxe.ts` binds its wallet in a module-level global, so a second identity in the
+same process silently rebinds both to the last wallet connected; `BotChain`
+throws rather than allow it. Each child gets its own manifest, PXE store and
+health port (base + index). The supervisor restarts a dead child — a crashed bot
+is holding five committed cards, and only a live process runs the sweep that
+gets them back — but gives up on one that dies instantly and repeatedly, rather
+than burying the real error under a scroll of restarts. Missing identities fail
+before anything spawns.
+
+Two rules keep a pool from being worse than a single bot, and both are enforced
+by the **relay**, not here — only the server sees the queue at the moment of the
+decision:
+
+- **No bot-vs-bot.** Matchmaking picks the oldest HUMAN as creator and prefers a
+  human joiner, and an all-bot queue matches nobody. Two bots playing each other
+  would wager ten real cards and transfer one for nothing.
+- **One bot per waiting human.** Bots decide to offer by polling `/queue`, so
+  without this they all offer for the same person and the extras sit in the
+  queue holding five committed cards until they time out. A redundant offer gets
+  `QUEUE_DECLINED` (not `ERROR` — standing down is correct, and the error path
+  would make a healthy pool look broken).
+
 ## Monitoring
 
 Two endpoints, and they answer different questions:
@@ -129,13 +160,18 @@ E2E_ABANDON_AFTER_MOVES=2 ARENA_BOT_GAME_TIMEOUT_MS=120000 \
 ## Tests
 
 ```bash
-npm test -w packages/bot          # 91: unit + a real backend/bot/human game
+npm test -w packages/bot          # 107: unit + real backend/bot/human games
 ```
 
 Proof tests generate REAL proofs against the compiled circuits — a mocked proof
 asserts nothing about the thing that matters, which is that the bot's witness
 encoding is accepted by the same circuits players use.
 
-`tests/chain-e2e.manual.ts` runs a full chain game against a local sandbox. It
-is excluded from `npm test` (needs a sandbox, contracts and two provisioned
-identities); its header carries the recipe.
+Two manual harnesses are excluded from `npm test` (each needs a sandbox,
+deployed contracts and provisioned identities); their headers carry the recipes:
+
+- `tests/chain-e2e.manual.ts` — a full chain game, commit through settlement.
+  `E2E_ABANDON_AFTER_MOVES=2` makes the opponent walk out instead, exercising
+  the journal and the recovery sweep.
+- `tests/pool-e2e.manual.ts` — two chain bots and one human: asserts no
+  bot-vs-bot game forms, the human is the creator, and no bot is left queued.
