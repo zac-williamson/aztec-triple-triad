@@ -39,11 +39,27 @@ export async function fundAccountOnDevnet(
     ANVIL_MNEMONIC,
   );
 
-  const portalManager = await L1FeeJuicePortalManager.new(
-    node,
-    l1Client,
-    { info: log, warn: log, error: log, debug: () => {}, verbose: () => {} } as any,
-  );
+  // Same shape as scripts/lib/feeJuiceBridge.ts: derive from a real logger so a
+  // level method the SDK adds later (5.2 added logger.trace() inside
+  // L1TxUtils.estimateGas) cannot crash the bridge.
+  const { createLogger } = await import('@aztec/foundation/log');
+  const baseLogger: any = createLogger('frontend:fundDevnet');
+  const bridgeLogger: any = {};
+  for (const key in baseLogger) {
+    const value = baseLogger[key];
+    bridgeLogger[key] = typeof value === 'function' ? value.bind(baseLogger) : value;
+  }
+  const noop = () => {};
+  Object.assign(bridgeLogger, {
+    info: log,
+    warn: log,
+    error: log,
+    debug: noop,
+    verbose: noop,
+    trace: noop,
+  });
+
+  const portalManager = await L1FeeJuicePortalManager.new(node, l1Client, bridgeLogger);
 
   log(`Bridging Fee Juice to ${accountAddress.slice(0, 18)}...`);
   const result = await portalManager.bridgeTokensPublic(l2Address, undefined, true);

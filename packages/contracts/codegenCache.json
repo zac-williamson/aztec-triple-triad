@@ -1,14 +1,14 @@
 {
   "triple_triad_game-TripleTriadGame.json": {
     "contractName": "TripleTriadGame",
-    "hash": "b77850daf86a9114c664adcd73004ee69ce7b10600feee8748d4f3db10096d74"
+    "hash": "da126ba3ef994dca91d9f374d85e0490d5e3096add875402006982a18ec03d67"
   },
   "triple_triad_nft-TripleTriadNFT.json": {
     "contractName": "TripleTriadNFT",
-    "hash": "ece659a64825cc923994ae93dbd0936bf5738afc316b6830d3cc4d6685b03f33"
+    "hash": "8e1b666eb6dc0610caba806be4b0919f2f5869c1fe9be85e878d95b98e215beb"
   },
   "arena_token-ArenaToken.json": {
     "contractName": "ArenaToken",
-    "hash": "583093a38a860b769d72afb53df59abfb9a130f50f95dc9119329b4aa7700740"
+    "hash": "3335c6d2958e1bf7e586d4b7d0503312763e2c4f28f6713e35c6132c5423111e"
   }
 }

@@ -9,13 +9,14 @@ join, settle — and settlement recursively verifies the full proof transcript
 the wagered card. See `README.md` for setup as a user; this file is for people
 (and agents) changing the code.
 
-## Current state (July 2026)
+## Current state (August 2026)
 
-The app runs on the **Aztec v5 testnet** (5.0.0-rc.2). Beware: the rc-series
-testnet **re-genesises on protocol upgrades** (it did on 2026-06-17 for v5 and
-again on 2026-06-30 for rc.2), silently orphaning deployed contracts — run
-`npx tsx scripts/check-testnet-state.ts` when anything on-chain looks dead,
-and expect one more redeploy when stable v5 ships. The June-2026 lane-based
+The app runs on the **Aztec v5 testnet** (5.2.0-nightly.20260815). Beware: the
+testnet **re-genesises on protocol upgrades** — three times so far (2026-06-17
+for v5, 2026-06-30 for rc.2, and again by 2026-08-28 onto the 5.2 line), each
+time silently orphaning deployed contracts. Run
+`npx tsx scripts/check-testnet-state.ts` when anything on-chain looks dead, and
+expect to repeat this whenever the testnet moves. The June-2026 lane-based
 revival (docs/plan/MASTER_PLAN.md) is finished; those docs are history, not
 current process. `docs/history/V5_MIGRATION_REPORT.md` records the v4→v5
 migration and its lessons (rate-limiter detour, idle-joiner anchor wedge).
@@ -48,29 +49,47 @@ is the wishlist.
 
 | What | Pin |
 |------|-----|
-| Aztec CLI / sandbox install | `5.0.0-rc.2` (worktree `.aztecrc` pins it) |
-| npm `@aztec/*` packages | `5.0.0-rc.2` |
-| aztec-nr git tags in `Nargo.toml` (contracts) | `v5.0.0-rc.2` |
-| nargo / `@noir-lang/noir_js` | `1.0.0-beta.22` |
+| Aztec CLI / sandbox install | `5.2.0-nightly.20260815` (worktree `.aztecrc` pins it) |
+| npm `@aztec/*` packages | `5.2.0-nightly.20260815` |
+| aztec-nr git tags in `Nargo.toml` (contracts) | `v5.2.0-nightly.20260815` |
+| nargo / `@noir-lang/noir_js` | `1.0.0-beta.25` |
 | poseidon git tag (circuits) | `v0.3.0` |
 | Node.js | >= 22 |
 
-One uniform set on **5.0.0-rc.2** (July 2026; the testnet re-genesis'd onto it
-2026-06-30). Treat it as one set — never bump one without the others, never mix
+One uniform set on **5.2.0-nightly.20260815** (August 2026), chosen to match
+the live testnet node's `nodeVersion` EXACTLY — protocol compatibility is what
+matters, so pin to the node, not to whatever npm calls `latest`. Treat it as
+one set — never bump one without the others, never mix
 versions across packages. The standalone circuits carry no aztec-nr deps (only
 poseidon); the three contracts carry the aztec-nr tags.
 
 ```bash
-aztec-up install 5.0.0-rc.2   # then switch the active toolchain:
-aztec-up use 5.0.0-rc.2
+aztec-up install 5.2.0-nightly.20260815   # then switch the active toolchain:
+aztec-up use 5.2.0-nightly.20260815
 ```
 
 The committed `.aztecrc` pins the toolchain for this checkout, but run
-contract/circuit commands with `~/.aztec/current` actually on 5.0.0-rc.2
-(`aztec --version` to confirm). Install footgun: `aztec-up install` aborts
-mid-way if anything (like a leftover sandbox `anvil`) blocks its bundled
-foundryup — a "completed" install with an empty `versions/<v>/bin/` is a
-broken one; re-run it.
+contract/circuit commands with `~/.aztec/current` actually on
+5.2.0-nightly.20260815 (`aztec --version` to confirm).
+
+**Install footgun (bites every time on the 5.2 line, re-running does NOT fix
+it).** `aztec-up install` exits 0 while leaving `versions/<v>/bin/` empty and
+printing `expected bundled binary 'forge' missing from .../internal-bin`. Cause
+is upstream: the version installer `mv`s foundryup's `bin/<tool>` — which are
+symlinks into its temp dir — into `internal-bin`, then `rm -rf`s that temp dir,
+so every foundry binary lands dangling; the next step's `-e` test then fails.
+Workaround, until upstream fixes it:
+
+```bash
+curl -fsSL https://install.aztec-labs.com/<VERSION>/install -o /tmp/install.sh
+sed -i '' 's|mv "$temp_foundry_dir/bin/$binary"|cp -L "$temp_foundry_dir/bin/$binary"|' /tmp/install.sh
+rm -rf ~/.aztec/versions/<VERSION>
+VERSION=<VERSION> bash /tmp/install.sh
+aztec-up use <VERSION>
+```
+
+Always verify a "successful" install with a non-empty `~/.aztec/versions/<v>/bin/`
+and a present `node_modules/` — an empty either way means it aborted.
 
 ## Build, run, test
 

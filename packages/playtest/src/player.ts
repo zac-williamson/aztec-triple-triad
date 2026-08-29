@@ -265,7 +265,16 @@ export class PlayerDriver {
     // Two headless browsers prove on ONE machine: at full hardwareConcurrency
     // each, whichever proves first starves the other's timers and PXE sync
     // (an aggravator of the stale-anchor wedge). Cap each at half the cores.
-    const proofThreads = Math.max(2, Math.floor(cpus().length / 2));
+    // PLAYTEST_PROOF_THREADS overrides the cap. Each thread carries its own
+    // barretenberg WASM heap, so 2 browsers x cores/2 is the peak-memory driver:
+    // on a 12-core machine that is 12 heaps, which exhausted swap and got the
+    // run SIGKILLed mid-campaign (twice) with no error in the log. Lower it on
+    // a memory-constrained box; proving is slower but the run survives.
+    const threadsOverride = Number(process.env.PLAYTEST_PROOF_THREADS);
+    const proofThreads =
+      Number.isFinite(threadsOverride) && threadsOverride > 0
+        ? Math.floor(threadsOverride)
+        : Math.max(2, Math.floor(cpus().length / 2));
     await this.page.addInitScript((threads: number) => {
       localStorage.setItem('triad_proof_threads', String(threads));
     }, proofThreads);

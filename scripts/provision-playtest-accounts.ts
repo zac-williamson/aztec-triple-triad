@@ -294,7 +294,7 @@ async function provisionOne(index: number, opts: ProvisionOpts): Promise<Manifes
   //    NOT a reliable deployment check for claim-deployed account contracts
   //    (it returns falsy even when the account is on-chain), so we detect via
   //    the deploy itself. The bridged claim stays for reuse on the next run.
-  const claim = await obtainClaim(node, addressStr, opts.minFeeJuice);
+  let claim = await obtainClaim(node, addressStr, opts.minFeeJuice);
   console.log('  deploying account (claim paid in-tx)...');
   let freshlyDeployed = false;
   // Testnet prunes block history fast: after a long obtainClaim (the L1->L2 bridge
@@ -327,6 +327,18 @@ async function provisionOne(index: number, opts: ProvisionOpts): Promise<Manifes
       if (/Existing nullifier|Nullifier conflict/i.test(msg)) {
         console.log('  account already deployed (nullifier already on-chain) — proceeding to mint');
         break;
+      }
+      // The persisted claim was already spent on-chain. markClaimConsumed runs only
+      // AFTER send().wait() returns, so a run interrupted between "tx landed" and
+      // "receipt awaited" leaves a `pending` entry whose L1->L2 message is in fact
+      // nullified; the next run then reuses it and dies here. Retire the dead entry
+      // and bridge a fresh claim. (The deploy that follows will hit "Existing
+      // nullifier" above, since the interrupted run's deploy is what spent it.)
+      if (/No non-nullified L1 to L2 message found/i.test(msg) && attempt < 6) {
+        console.log('  persisted claim already spent on-chain — retiring it, bridging a fresh one...');
+        markClaimConsumed(claimStorePath(), addressStr);
+        claim = await obtainClaim(node, addressStr, opts.minFeeJuice);
+        continue;
       }
       // Block header not found / Invalid tx: the anchor block was pruned during the
       // long L1->L2 bridge wait — a fresh build re-anchors to a current block.
