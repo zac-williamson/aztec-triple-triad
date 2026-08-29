@@ -520,6 +520,18 @@ export class ArenaBot {
     this.settling = true;
     const chain = this.chain!, proofs = this.proofs!;
 
+    // Wait for the transcript to complete before judging it. Moves are relayed
+    // on PLACE_CARD, but proving each one is slow, so GAME_OVER routinely
+    // arrives with our own move proofs still generating. The browser waits for
+    // `canSettle` for exactly this reason; failing immediately here would call
+    // a merely-slow transcript a broken one.
+    const deadline = this.now() + this.cfg.settleWaitMs;
+    while (this.now() < deadline) {
+      const complete = this.myHandProof && this.opponentHandProof && this.moveProofs.size >= 9;
+      if (complete) break;
+      await new Promise(r => setTimeout(r, 500));
+    }
+
     const missing: string[] = [];
     if (!this.myHandProof) missing.push('own hand proof');
     if (!this.opponentHandProof) missing.push('opponent hand proof');

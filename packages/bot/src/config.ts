@@ -40,6 +40,8 @@ export interface ArenaBotConfig {
   maxConcurrentGames: number;
   /** Timeout for an on-chain tx (create_game/join_game). Proving dominates. */
   chainTxTimeoutMs: number;
+  /** How long to wait after GAME_OVER for the 11-proof transcript to complete. */
+  settleWaitMs: number;
 }
 
 const int = (v: string | undefined, dflt: number): number => {
@@ -75,5 +77,6 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ArenaBotCon
     moveDelayMs: int(env.ARENA_BOT_MOVE_DELAY_MS, 1_200),
     maxConcurrentGames: int(env.ARENA_BOT_MAX_CONCURRENT_GAMES, 1),
     chainTxTimeoutMs: int(env.ARENA_BOT_CHAIN_TX_TIMEOUT_MS, 600_000),
+    settleWaitMs: int(env.ARENA_BOT_SETTLE_WAIT_MS, 300_000),
   };
 }

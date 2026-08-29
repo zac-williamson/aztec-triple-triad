@@ -26,7 +26,10 @@ function makeConfig(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     joinThresholdMs: 20_000, pollIntervalMs: 1_000, queueTimeoutMs: 60_000,
     handCardIds: CARDS, difficulty: 'greedy', moveDelayMs: 0,
     maxConcurrentGames: 1,
-    chainTxTimeoutMs: 600_000, ...over,
+    chainTxTimeoutMs: 600_000,
+    // Unit tests assert the IMMEDIATE verdict on an incomplete transcript.
+    settleWaitMs: 0,
+    ...over,
   };
 }
 
@@ -518,10 +521,10 @@ describe('ArenaBot settlement', () => {
       proveHand: async () => ({ proof: fakeProofB64(), publicInputs: ['0x1', '0x2'], cardCommit: hex(0x111) }),
       proveMove: async () => ({ proof: fakeProofB64(), publicInputs: [], startStateHash: 'unused', endStateHash: '0x0' }),
     };
-    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 20 }), {
+    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 20, settleWaitMs: 300 }), {
       connect: () => socket as unknown as any,
       fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
-      chain: f.chain as any, proofs: proofs as any, log: (m: string) => logs.push(m), now: () => 1_000_000,
+      chain: f.chain as any, proofs: proofs as any, log: (m: string) => logs.push(m), now: () => Date.now(),
     });
     return { bot, socket, sent, logs, async run() {
       const settle = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -544,7 +547,8 @@ describe('ArenaBot settlement', () => {
         }
       }
       socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner, gameState: freshState(), player1CardIds: [1,2,3,4,5], player2CardIds: [6,7,8,9,10] });
-      await settle(400);
+      // Long enough for the settle wait (300ms) plus its 500ms poll tick.
+      await settle(1200);
       bot.stop();
     } };
   }
