@@ -113,7 +113,7 @@ export class TripleTriadNFTContract extends ContractBase {
   }
   
 
-  public static get storage(): ContractStorageLayout<'name' | 'symbol' | 'minter' | 'token_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'card_game_lock' | 'game_contract' | 'note_nonce' | 'arena_bot'> {
+  public static get storage(): ContractStorageLayout<'name' | 'symbol' | 'minter' | 'token_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'card_game_lock' | 'game_contract' | 'note_nonce' | 'arena_bots'> {
       return {
         name: {
       slot: new Fr(1n),
@@ -148,10 +148,10 @@ game_contract: {
 note_nonce: {
       slot: new Fr(16n),
     },
-arena_bot: {
+arena_bots: {
       slot: new Fr(17n),
     }
-      } as ContractStorageLayout<'name' | 'symbol' | 'minter' | 'token_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'card_game_lock' | 'game_contract' | 'note_nonce' | 'arena_bot'>;
+      } as ContractStorageLayout<'name' | 'symbol' | 'minter' | 'token_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'card_game_lock' | 'game_contract' | 'note_nonce' | 'arena_bots'>;
     }
     
 
@@ -194,8 +194,8 @@ arena_bot: {
     /** import_note(owner: struct, value: field, randomness: field, tx_hash: field, unique_note_hashes: array, num_note_hashes: integer, first_nullifier: field, recipient: struct) */
     import_note: ((owner: AztecAddressLike, value: FieldLike, randomness: FieldLike, tx_hash: FieldLike, unique_note_hashes: FieldLike[], num_note_hashes: (bigint | number), first_nullifier: FieldLike, recipient: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** mint_bot_cards(token_ids: array, packed_ranks: array, count: integer) */
-    mint_bot_cards: ((token_ids: FieldLike[], packed_ranks: FieldLike[], count: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** mint_bot_cards(slot: field, token_ids: array, packed_ranks: array, count: integer) */
+    mint_bot_cards: ((slot: FieldLike, token_ids: FieldLike[], packed_ranks: FieldLike[], count: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** mint_for_game_draw(token_ids: array, to: struct) */
     mint_for_game_draw: ((token_ids: FieldLike[], to: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -254,8 +254,8 @@ arena_bot: {
     /** reclaim_card(token_id: field) */
     reclaim_card: ((token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** set_arena_bot(bot: struct) */
-    set_arena_bot: ((bot: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** set_arena_bot(slot: field, bot: struct) */
+    set_arena_bot: ((slot: FieldLike, bot: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** set_game_contract(game_address: struct) */
     set_game_contract: ((game_address: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;

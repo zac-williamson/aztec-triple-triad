@@ -20722,7 +20722,7 @@
                       }
                     },
                     {
-                      "name": "arena_bot",
+                      "name": "arena_bots",
                       "value": {
                         "fields": [
                           {

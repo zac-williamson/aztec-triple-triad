@@ -166,10 +166,13 @@ pub contract TripleTriadNFT {
 
         // Note nonce: a single FieldNote per user tracking nonce counter for deterministic randomness
         note_nonce: Owned<PrivateSet<FieldNote, Context>, Context>,
-        /// The arena bot's address. The ONLY account that may hold duplicate
-        /// cards (see mint_bot_cards). PublicImmutable so a private function can
-        /// read it and so it can never be repointed at a player once set.
-        arena_bot: PublicImmutable<AztecAddress, Context>,
+        /// Arena bot addresses by pool slot. These are the ONLY accounts that
+        /// may hold duplicate cards (see mint_bot_cards). A Map because the bot
+        /// runs as a POOL of independent identities — one process each, since
+        /// the PXE binds one wallet per process. Each slot is PublicImmutable so
+        /// a private function can read it and so a slot can never be repointed
+        /// at a player once set.
+        arena_bots: Map<Field, PublicImmutable<AztecAddress, Context>, Context>,
     }
 
     // --- Constructor ---
@@ -201,10 +204,10 @@ pub contract TripleTriadNFT {
     /// player, the exemption would become an unlimited card faucet for whoever
     /// held it.
     #[external("public")]
-    fn set_arena_bot(bot: AztecAddress) {
+    fn set_arena_bot(slot: Field, bot: AztecAddress) {
         let minter = self.storage.minter.read();
         assert(self.msg_sender() == minter, "Only minter can set arena bot");
-        self.storage.arena_bot.initialize(bot);
+        self.storage.arena_bots.at(slot).initialize(bot);
     }
 
     /// Set the Arena Token contract address. Admin only.
@@ -619,13 +622,13 @@ pub contract TripleTriadNFT {
     /// read from immutable storage rather than passed in, so it cannot be aimed
     /// at a player even by the minter.
     #[external("private")]
-    fn mint_bot_cards(token_ids: [Field; 10], packed_ranks: [Field; 10], count: u32) {
+    fn mint_bot_cards(slot: Field, token_ids: [Field; 10], packed_ranks: [Field; 10], count: u32) {
         let minter = self.storage.minter.read();
         assert(self.msg_sender() == minter, "Only minter can mint");
         assert(count <= 10, "count exceeds batch size");
 
-        let bot = self.storage.arena_bot.read();
-        assert(!bot.is_zero(), "Arena bot not registered");
+        let bot = self.storage.arena_bots.at(slot).read();
+        assert(!bot.is_zero(), "Arena bot slot not registered");
 
         for i in 0..10 {
             if (i as u32) < count {

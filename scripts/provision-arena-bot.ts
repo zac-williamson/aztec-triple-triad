@@ -95,29 +95,45 @@ function readEnvAddress(key: string): string {
 }
 
 /**
- * Cards for one identity, taken from a DISJOINT slice of the database.
+ * How many distinct card TYPES the bot's stock is drawn from.
  *
- * token_ids are GLOBALLY unique: mint_to_private enqueues finalize_mint, which
- * asserts against a contract-wide `nft_exists` map. So two identities cannot
- * hold the same id, duplicates are impossible (not merely untested), and the
- * whole pool shares one 257-card budget. `offset` keeps each identity's slice
- * clear of the others.
+ * Not one: a bot holding a thousand copies of a single card plays the same hand
+ * every game and is trivially readable. Not many either — the bot should be
+ * beatable, and its collection is what players win off it.
  */
-function collectionFor(count: number, offset = 0): { id: number; packed: string }[] {
-  if (offset + count > CARD_DATABASE.length) {
-    throw new Error(
-      `offset ${offset} + --cards ${count} exceeds the ${CARD_DATABASE.length}-card database. ` +
-      `token_ids are globally unique (finalize_mint asserts !nft_exists), so every identity in the ` +
-      `pool draws from the SAME budget — there is no way to mint past it.`,
-    );
-  }
+const BOT_CARD_TYPES = 12;
+
+/**
+ * The bot's stock: `count` cards drawn from the WEAKEST types in the database.
+ *
+ * Two deliberate choices.
+ *
+ * **Weak.** Every player who beats the bot permanently takes one of these, so
+ * the collection is a payout schedule as much as a wager. Weak cards keep that
+ * payout modest and keep the bot beatable, which is the point of having it.
+ *
+ * **Duplicated.** `mint_bot_cards` lets the bot — and only the bot — hold many
+ * cards of one token_id, so its stock is no longer capped by the size of the
+ * card database and no longer competes with players for ids. Which INSTANCE the
+ * bot holds is meaningless; how many it has is not.
+ */
+function collectionFor(count: number): { id: number; packed: string }[] {
+  const weakest = [...CARD_DATABASE]
+    .sort((a, b) =>
+      (a.ranks.top + a.ranks.right + a.ranks.bottom + a.ranks.left) -
+      (b.ranks.top + b.ranks.right + b.ranks.bottom + b.ranks.left))
+    .slice(0, BOT_CARD_TYPES);
+
   // packRanks takes the four ranks POSITIONALLY, not the ranks object — passing
   // the object produced "[object Object]NaNNaNNaN" and a BigInt conversion error
   // at mint time rather than a type error, because the packing is arithmetic.
-  return CARD_DATABASE.slice(offset, offset + count).map(c => ({
-    id: c.id,
-    packed: packRanks(c.ranks.top, c.ranks.right, c.ranks.bottom, c.ranks.left).toString(),
-  }));
+  return Array.from({ length: count }, (_, i) => {
+    const c = weakest[i % weakest.length];
+    return {
+      id: c.id,
+      packed: packRanks(c.ranks.top, c.ranks.right, c.ranks.bottom, c.ranks.left).toString(),
+    };
+  });
 }
 
 /**
@@ -173,22 +189,33 @@ async function obtainClaim(node: any, address: string, l1ChainId: number): Promi
   return claim;
 }
 
+/**
+ * How many cards this identity has been minted in total, from its manifest.
+ * With duplicates the manifest is a MULTISET, so length is the count that
+ * matters — not the number of distinct ids.
+ */
+function previousMintedTotal(index: number): number {
+  const p = manifestPath(index);
+  if (!existsSync(p)) return 0;
+  return ((JSON.parse(readFileSync(p, 'utf-8')) as BotManifest).cardIds ?? []).length;
+}
+
 async function main(): Promise<number> {
   const index = arg('index', 0, true);   // 0 is the default identity
   const cardCount = arg('cards', 40);
   const dryRun = process.argv.includes('--dry-run');
 
   const keys = arenaBotAccount(index);
-  // Default assumes a UNIFORM --cards across the pool. Pass --offset explicitly
-  // when identities have different sizes, or slices will overlap and the second
-  // mint will fail "Token already exists" (token_ids are globally unique).
-  const offset = arg('offset', index * cardCount, true);
-  const collection = collectionFor(cardCount, offset);
+  // No --offset any more. Identities no longer need disjoint id slices: the bot
+  // mints DUPLICATES, so every identity draws from the same small set of weak
+  // card types and none of them compete with players for ids.
+  const collection = collectionFor(cardCount);
+  const distinct = new Set(collection.map(c => c.id));
 
   console.log('=== Arena bot provisioning ===');
   console.log(`  PXE:    ${PXE_URL}`);
-  console.log(`  Index:  ${index}`);
-  console.log(`  Cards:  ${cardCount} (ids ${collection[0].id}..${collection[collection.length - 1].id}, offset ${offset})`);
+  console.log(`  Index:  ${index} (arena bot slot ${index})`);
+  console.log(`  Cards:  ${cardCount} across ${distinct.size} weak type(s): ${[...distinct].join(',')}`);
 
   // --dry-run must not need a chain: it exists to check the derivation and the
   // collection plan before anyone spends gas.
@@ -322,54 +349,58 @@ async function main(): Promise<number> {
   }
 
 
-  // What must NOT be re-minted is what was already MINTED, which is not the same
-  // as what is currently HELD: cards committed to a game are nullified out of the
-  // PXE until settlement, so a held-only check would try to re-mint them and hit
-  // "Token already exists" (token_ids are globally unique). The manifest is the
-  // record of what this identity was minted; union it with what is held now.
-  const heldNow = new Set(await readCollection(nft, botAccount.address));
-  const previouslyMinted = new Set(
-    existsSync(manifestPath(index))
-      ? (JSON.parse(readFileSync(manifestPath(index), 'utf-8')) as BotManifest).cardIds ?? []
-      : [],
+  // Top up to the requested SIZE, rather than minting ids that are missing.
+  // With duplicates the identity of a card carries no information — ten copies
+  // of card 3 are ten cards — so the only meaningful question is how many the
+  // bot can field. Cards committed to an unsettled game are nullified out of the
+  // PXE and reappear on settlement, so count them as present: minting to cover
+  // them would inflate the stock every time a game is in flight.
+  const heldNow = await readCollection(nft, botAccount.address);
+  const committedElsewhere = Math.max(0, (previousMintedTotal(index)) - heldNow.length);
+  const have = heldNow.length + committedElsewhere;
+  const toMint = Math.max(0, cardCount - have);
+  console.log(
+    `  holding ${heldNow.length} spendable` +
+    (committedElsewhere > 0 ? ` + ${committedElsewhere} committed to a game` : '') +
+    ` — minting ${toMint} more to reach ${cardCount}`,
   );
-  const alreadyHeld = new Set<number>([...heldNow, ...previouslyMinted]);
-  if (alreadyHeld.size > 0) {
-    console.log(
-      `  already minted ${alreadyHeld.size} card(s) (${heldNow.size} currently spendable, ` +
-      `${alreadyHeld.size - heldNow.size} committed to a game) — minting only what is missing`,
-    );
-  }
 
-  // 4. Mint the collection.
-  const minted: number[] = [...alreadyHeld];
-  for (const card of collection) {
-    if (alreadyHeld.has(card.id)) continue;
+  // 4. Mint, in batches of 10 (the contract's array width). One tx per batch
+  //    rather than per card: at a thousand cards that is the difference between
+  //    a hundred transactions and a thousand.
+  const BATCH = 10;
+  const plan = collection.slice(0, toMint);
+  for (let i = 0; i < plan.length; i += BATCH) {
+    const batch = plan.slice(i, i + BATCH);
+    const ids = Array.from({ length: BATCH }, (_, k) => new Fr(BigInt(batch[k]?.id ?? 0)));
+    const ranks = Array.from({ length: BATCH }, (_, k) => new Fr(BigInt(batch[k]?.packed ?? 0)));
     try {
-      await nft.methods.mint_to_private(botAccount.address, new Fr(BigInt(card.id)), new Fr(BigInt(card.packed))).send({
+      await nft.methods.mint_bot_cards(new Fr(BigInt(index)), ids, ranks, batch.length).send({
         from: deployer.address,
         fee: { gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) } },
         wait: { timeout: TX_TIMEOUT },
       });
-      minted.push(card.id);
-      console.log(`  minted card ${card.id} (${minted.length}/${collection.length})`);
+      console.log(`  minted ${Math.min(i + BATCH, plan.length)}/${plan.length}`);
     } catch (err: any) {
       // Do not silently continue: a partial collection that reports success is
       // worse than a loud stop, because the bot would then commit hands it
       // cannot back.
-      throw new Error(`mint of card ${card.id} failed after ${minted.length} cards: ${String(err?.message ?? err)}`);
+      throw new Error(`bot mint failed after ${i} cards: ${String(err?.message ?? err)}`);
     }
   }
+  const minted = [...heldNow, ...plan.map(c => c.id)];
 
   // 5. VERIFY through the same paginated reader the app itself uses.
   const held = (await readCollection(nft, botAccount.address)).sort((a, b) => a - b);
-  const mintedSet = new Set(minted);
-  // Held must be a SUBSET of minted, not equal to it: cards committed to an
-  // unsettled game are nullified out of the PXE and reappear only on settlement.
-  // Asserting equality would fail every time the bot has a game in flight.
-  const unexpected = held.filter(id => !mintedSet.has(id));
+  // With duplicates the check is on COUNT, not on which ids came back: the bot
+  // holds a multiset, and "did every id I minted reappear" is not a question
+  // that means anything when it holds forty copies of card 3.
+  const allowedTypes = new Set(minted);
+  const unexpected = held.filter(id => !allowedTypes.has(id));
   if (unexpected.length) {
-    throw new Error(`verification failed: bot holds cards it was never minted: ${unexpected.join(',')}`);
+    throw new Error(
+      `verification failed: bot holds card types it was never minted: ${[...new Set(unexpected)].join(',')}`,
+    );
   }
   const committed = minted.length - held.length;
   if (held.length < HAND_SIZE) {
