@@ -24,7 +24,14 @@ export interface MetricsSnapshot {
   botWins: number;
   botLosses: number;
   botDraws: number;
-  /** Net cards the bot has gained (+) or lost (-) through settlement. */
+  /**
+   * Net cards the bot has gained (+) or lost (-) through settlement.
+   *
+   * NOT YET WIRED — settlement is on-chain (phase 3), so the relay cannot see
+   * it. Reads 0 until then. Called out explicitly because this is the counter
+   * that answers "is the bot being farmed?", and a silent zero would read as
+   * "healthy" rather than "not measured".
+   */
   botCardNetFlow: number;
   /** Failures, split so a spike points at the right subsystem. */
   botJoinFailures: number;

@@ -581,6 +581,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       case 'CREATE_GAME': {
         try {
           const room = await gameManager.createGame(playerId, msg.cardIds);
+          metrics.increment('gamesCreated');
           send(ws, { type: 'GAME_CREATED', gameId: room.id, playerNumber: 1 }, playerId);
         } catch (err: any) {
           send(ws, { type: 'ERROR', message: err.message }, playerId);
@@ -631,6 +632,22 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
           }
 
           if (result.newState.status === 'finished') {
+            metrics.increment('gamesCompleted');
+            // Bot outcome accounting, from the BOT's point of view. Recorded
+            // server-side so /metrics stays truthful even if the bot process is
+            // restarted or replaced — a monitoring counter that silently reads
+            // zero is worse than no counter at all.
+            if (room) {
+              const botIsP1 = isBotPlayerId(room.player1Id);
+              const botIsP2 = room.player2Id ? isBotPlayerId(room.player2Id) : false;
+              if (botIsP1 || botIsP2) {
+                const botSide = botIsP1 ? 'player1' : 'player2';
+                const w = result.newState.winner;
+                if (w === 'draw') metrics.increment('botDraws');
+                else if (w === botSide) metrics.increment('botWins');
+                else metrics.increment('botLosses');
+              }
+            }
             const overMsg: ServerMessage = {
               type: 'GAME_OVER',
               gameId: msg.gameId,

@@ -186,9 +186,18 @@ describe('arena bot end-to-end', () => {
     expect(stats.state).toBe('idle');
 
     // The bot must free itself for the next player.
-    const metrics = await (await fetch(`http://localhost:${port}/metrics`)).json() as any;
-    expect(metrics.matchesFormed).toBe(1);
-    expect(metrics.botMatchesFormed).toBe(1);
+    const m = await (await fetch(`http://localhost:${port}/metrics`)).json() as any;
+    expect(m.matchesFormed).toBe(1);
+    expect(m.botMatchesFormed).toBe(1);
+    expect(m.gamesCompleted).toBe(1);
+    // The bot outcome counters must actually MOVE — a monitoring counter stuck
+    // at zero reads as "healthy" when it means "not measured".
+    expect(m.botWins + m.botLosses + m.botDraws).toBe(1);
+    // ...and agree with the bot's own view of the same game.
+    expect(m.botWins).toBe(stats.wins);
+    expect(m.botLosses).toBe(stats.losses);
+    expect(m.botDraws).toBe(stats.draws);
+    expect(m.meanMatchWaitMs).toBeGreaterThanOrEqual(0);
     human.close();
   }, 60_000);
 

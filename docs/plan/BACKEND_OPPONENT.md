@@ -153,4 +153,20 @@ remaining provisioned accounts, and must not happen while nobody is watching.
 
 ## 7. Session log
 
-- 2026-08-29: plan written. Findings above recorded. Starting phase 1.
+- 2026-08-29: plan written; findings above recorded.
+- 2026-08-29: **phases 1, 2 and 4 done and green.** `packages/bot` (21 tests,
+  incl. a real backend + real bot + simulated human playing a full game),
+  `GET /queue`, `GET /metrics`, token-gated `REGISTER_BOT`, and the "⬡ Arena Bot"
+  disclosure badge wired backend → hook → HUD (376 frontend tests).
+  Bot outcome counters are recorded SERVER-side so they survive a bot restart.
+  `botCardNetFlow` is documented as not-yet-wired rather than silently reading 0.
+- 2026-08-29: **phase 3 groundwork**: `scripts/lib/arenaBotAccount.ts`
+  (deterministic identity, 6 tests) and `scripts/provision-arena-bot.ts`
+  (deploy + mint a collection via minter-gated `mint_to_private`, verified
+  through the paginated reader). `--dry-run` works with no chain. **Not yet run
+  against a chain** — that needs a sandbox, and is the next step.
+- Still open: phase 3 proper (the bot generating hand/move proofs and settling
+  on-chain — `circuitLoader.ts` fetches `/circuits/*.json` over HTTP and needs a
+  Node file-reading equivalent; `proofBackend.ts` already guards `navigator`/
+  `localStorage` so it looks portable), phase 5 (identity pool), phase 6
+  (testnet).
