@@ -100,6 +100,8 @@ export class ArenaBot {
   private myCardCommit: string | null = null;
   private opponentCardCommit: string | null = null;
   private handProofSent = false;
+  /** Suppresses repeat logging of a persistent card shortage. */
+  private handShortageLogged = false;
   /** True once OUR cards are committed on-chain. Gates play in chain mode. */
   private committed = false;
   /**
@@ -217,9 +219,19 @@ export class ArenaBot {
     if (this.chain) {
       try {
         hand = await this.chain.selectHand(5);
+        this.handShortageLogged = false;
       } catch (err) {
+        // This condition persists until someone re-provisions, and tick() runs
+        // every pollIntervalMs — so log it ONCE per episode rather than several
+        // times a second. The stat still counts every occurrence.
         this.stats.joinFailures += 1;
-        return this.recordError('select-hand', err as Error);
+        if (!this.handShortageLogged) {
+          this.handShortageLogged = true;
+          this.recordError('select-hand', err as Error);
+        } else {
+          this.stats.lastError = `select-hand: ${(err as Error).message}`;
+        }
+        return;
       }
     }
 

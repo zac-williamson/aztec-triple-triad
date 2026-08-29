@@ -652,3 +652,28 @@ describe('ArenaBot commit gate', () => {
     bot.stop();
   });
 });
+
+describe('ArenaBot card shortage', () => {
+  it('logs a persistent shortage once, but counts every occurrence', async () => {
+    const socket = new FakeSocket();
+    const logs: string[] = [];
+    const f = fakeChain({ selectHand: async () => { throw new Error('holds only 2 card(s)'); } });
+    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 50 }), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, log: m => logs.push(m), now: () => 1_000_000,
+    });
+    bot.start();
+    socket.emit('open');
+    socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    // The shortage persists until someone re-provisions; tick() runs constantly.
+    const shortageLogs = logs.filter(l => l.includes('select-hand'));
+    expect(shortageLogs).toHaveLength(1);
+    expect(bot.getStats().joinFailures).toBeGreaterThan(1);
+    expect(bot.getStats().lastError).toMatch(/holds only 2/);
+    bot.stop();
+  });
+});
