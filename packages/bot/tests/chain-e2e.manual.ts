@@ -175,7 +175,9 @@ class ScriptedOpponent {
   private async maybeProveMove(after: GameState | undefined): Promise<void> {
     const p = this.pending;
     if (!p || !after || !this.me || !this.myCommit || !this.oppCommit) return;
-    if (after.board.flat().filter(c => c.card !== null).length <= p.moveNumber) return;
+    // Exactly the state our move produced — see the bot's note: a later state
+    // may show our card captured, failing "Owner not set correctly".
+    if (after.board.flat().filter(c => c.card !== null).length !== p.moveNumber + 1) return;
     this.pending = null;
     const cur: 1 | 2 = this.me === 'player1' ? 1 : 2;
     const ended = after.status === 'finished';

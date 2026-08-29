@@ -705,3 +705,43 @@ describe('ArenaBot queue race', () => {
     bot.stop();
   });
 });
+
+describe('ArenaBot move proof staleness', () => {
+  it('will not prove against a LATER board than the one its move produced', async () => {
+    const socket = new FakeSocket();
+    const f = fakeChain();
+    const proved: any[] = [];
+    const proofs = {
+      cardCommitHash: async () => FIELD(0x1),
+      verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
+      proveHand: async () => ({ proof: 'p', publicInputs: ['a', 'b'], cardCommit: FIELD(0x1) }),
+      proveMove: async (a: any) => { proved.push(a); return { proof: 'p', publicInputs: [], startStateHash: 's' }; },
+    };
+    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 20 }), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, proofs: proofs as any, log: () => {}, now: () => 1_000_000,
+    });
+    bot.start();
+    socket.emit('open');
+    socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xh', onChainGameId: FIELD(0xc), gameRandomness: SIX_RANDOM });
+    socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 2, handProof: { proof: 'q', publicInputs: [], cardCommit: FIELD(0x2) } });
+    socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: freshState() });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(socket.countOfType('PLACE_CARD')).toBe(1);
+
+    // A state TWO moves on: our card may have been captured, so its owner would
+    // no longer be us and the circuit would reject the proof.
+    const late: any = freshState();
+    late.board[0][0] = { card: { id: 1 }, owner: 'player2', originalOwner: 'player1' };
+    late.board[0][1] = { card: { id: 6 }, owner: 'player2', originalOwner: 'player2' };
+    socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: late });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(proved).toHaveLength(0);
+    bot.stop();
+  });
+});

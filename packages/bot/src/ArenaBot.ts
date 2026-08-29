@@ -484,9 +484,13 @@ export class ArenaBot {
   private async maybeProveMove(after: GameState | undefined): Promise<void> {
     const pending = this.pendingMove;
     if (!this.chain || !this.proofs || !pending || !after || !this.myPlayer) return;
-    // The echoed state must actually contain our move.
+    // The echoed state must be EXACTLY the one produced by our move. A later
+    // state is not merely redundant — the circuit asserts
+    // board_after[cell].owner == current_player, and by a later move our card
+    // may already have been captured, so the owner reads as the opponent and
+    // the proof fails "Owner not set correctly".
     const occupied = after.board.flat().filter(c => c.card !== null).length;
-    if (occupied <= pending.moveNumber) return;
+    if (occupied !== pending.moveNumber + 1) return;
     if (!this.myCardCommit || !this.opponentCardCommit) return;
 
     this.pendingMove = null;
