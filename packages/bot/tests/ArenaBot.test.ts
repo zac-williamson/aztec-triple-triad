@@ -356,3 +356,93 @@ describe('ArenaBot chain mode', () => {
     expect(h.f.calls.some(c => c[0] === 'create')).toBe(false);
   });
 });
+
+describe('ArenaBot proof flow', () => {
+  function fakeProofs() {
+    const calls: any[] = [];
+    return {
+      calls,
+      proofs: {
+        cardCommitHash: async (ids: number[]) => `0xcommit-${ids.join('')}`,
+        proveHand: async (i: any) => { calls.push(['hand', i]); return { proof: 'p', publicInputs: ['a', 'b'], cardCommit: `0xcommit-${i.cardIds.join('')}` }; },
+        proveMove: async (a: any) => { calls.push(['move', a]); return { proof: 'p', publicInputs: new Array(6).fill('x') }; },
+      },
+    };
+  }
+
+  const h2 = (over: any = {}) => {
+    const socket = new FakeSocket();
+    const f = fakeChain();
+    const p = fakeProofs();
+    const bot = new ArenaBot(makeConfig(over), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, proofs: p.proofs as any,
+      log: () => {}, now: () => 1_000_000,
+    });
+    return { bot, socket, f, p, async ready() {
+      bot.start(); socket.emit('open');
+      socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+      socket.deliver({ type: 'BOT_REGISTERED' });
+      await vi.advanceTimersByTimeAsync(1_000);
+    } };
+  };
+
+  it('waits for the opponent randomness before proving its hand', async () => {
+    const h = h2();
+    await h.ready();
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    await vi.advanceTimersByTimeAsync(50);
+    // Our own preview has landed, but the opponent has shared nothing yet.
+    expect(h.p.calls.some(c => c[0] === 'hand')).toBe(false);
+
+    h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xh', gameRandomness: ['r1', 'r2', 'r3', 'r4', 'r5', 'r6'] });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.p.calls.some(c => c[0] === 'hand')).toBe(true);
+    expect(h.socket.lastOfType('SUBMIT_HAND_PROOF')).toBeTruthy();
+  });
+
+  it('submits exactly one hand proof however many times inputs re-arrive', async () => {
+    const h = h2();
+    await h.ready();
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    for (let i = 0; i < 3; i++) {
+      h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xh', gameRandomness: ['r', 'r', 'r', 'r', 'r', 'r'] });
+      await vi.advanceTimersByTimeAsync(30);
+    }
+    expect(h.socket.countOfType('SUBMIT_HAND_PROOF')).toBe(1);
+  });
+
+  it('proves its own move only once both card commitments are known', async () => {
+    const h = h2();
+    await h.ready();
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xh', gameRandomness: ['r', 'r', 'r', 'r', 'r', 'r'] });
+    await vi.advanceTimersByTimeAsync(50);
+
+    // Bot placed a card; echo a state containing it. Opponent commit unknown yet.
+    const placed = h.socket.lastOfType('PLACE_CARD');
+    expect(placed).toBeTruthy();
+    const st: any = freshState();
+    st.board[placed.row][placed.col] = { card: { id: 1 }, owner: 'player1', originalOwner: 'player1' };
+    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: st });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.p.calls.some(c => c[0] === 'move')).toBe(false);
+  });
+
+  it('clears per-game proof inputs so they cannot leak into the next game', async () => {
+    const h = h2();
+    await h.ready();
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xh', gameRandomness: ['r', 'r', 'r', 'r', 'r', 'r'] });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.socket.countOfType('SUBMIT_HAND_PROOF')).toBe(1);
+
+    h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'player1', gameState: freshState() });
+    // A second game must prove its own hand afresh, not reuse the first's state.
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g2', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g2', aztecAddress: '0xh', gameRandomness: ['s', 's', 's', 's', 's', 's'] });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.socket.countOfType('SUBMIT_HAND_PROOF')).toBe(2);
+  });
+});

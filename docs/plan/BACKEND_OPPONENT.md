@@ -188,8 +188,19 @@ remaining provisioned accounts, and must not happen while nobody is watching.
   - Guards that fail at startup rather than per game: manifest rollupVersion vs
     the live node (re-genesis orphans the bot exactly as it does the playtest
     pool), derived address vs manifest, and a refusal to start half-configured.
-- Still open: **hand/move proof generation and settlement** in the bot (the
-  orchestration lives in React hooks — `useGameSession`/`useProofGeneration` —
-  and needs extracting or reimplementing headlessly); phase 5 (identity pool);
-  phase 6 (testnet). The bot currently commits cards but does not yet produce
-  the 11-proof transcript, so a chain-mode game will not settle.
+- 2026-08-29: **proof generation done.** `BotProofs` calls the frontend's own
+  proofWorker, so the bot proves with the SAME circuits and witness encoding a
+  player does. Verified in Node against the compiled circuits: `prove_hand`
+  (2 public inputs, 458 fields, commitment bound as the first public input) and
+  `game_move` (6 public inputs, state hash advances). 458 = the
+  `RECURSIVE_ZK_PROOF_LENGTH` checked during the 5.2 migration, so the shapes
+  are what settlement expects. Proving is serialised and survives a rejection.
+  `ArenaBot` submits the hand proof once BOTH its own preview and the
+  opponent's randomness exist, and a move proof after each of its own moves.
+  Per-game proof inputs are cleared on game end so a stale blinding factor
+  cannot leak into the next game. 45 bot tests.
+- Still open: **settlement** (the winner's recursive 11-proof `process_game`
+  call — orchestration lives in `useGameSettlement`, 871 lines of React);
+  an end-to-end chain-mode game on the sandbox; phase 5 (identity pool);
+  phase 6 (testnet). The bot commits, proves its hand and proves its moves, but
+  does not yet settle, so a chain-mode game will stall at settlement.

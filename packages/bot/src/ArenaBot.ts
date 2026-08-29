@@ -23,6 +23,13 @@ import { chooseBotMove } from '@axolotl-arena/game-logic';
 import type { GameState, Player } from '@axolotl-arena/game-logic';
 import type { ArenaBotConfig } from './config.js';
 
+/** The slice of BotProofs the bot uses — narrowed so tests can fake it. */
+export interface BotProofsLike {
+  cardCommitHash(cardIds: number[], blindingFactor: string): Promise<string>;
+  proveHand(inputs: { cardIds: number[]; blindingFactor: string; opponentRandomness: string[] }): Promise<any>;
+  proveMove(args: any): Promise<any>;
+}
+
 /** The slice of BotChain the bot uses — narrowed so tests can fake it. */
 export interface BotChainLike {
   readonly address: string;
@@ -42,6 +49,8 @@ export interface BotStats {
   moveFailures: number;
   /** Card-commit (create_game/join_game) failures. Chain mode only. */
   commitFailures: number;
+  /** Proof-generation failures. Chain mode only. */
+  proofFailures: number;
   lastError: string | null;
 }
 
@@ -60,6 +69,8 @@ export interface ArenaBotDeps {
    * commits its cards on-chain like any player.
    */
   chain?: BotChainLike;
+  /** Proof generator. Required alongside `chain`; ignored without it. */
+  proofs?: BotProofsLike;
   /** Injected for tests; defaults to a real ws client. */
   connect?: (url: string) => WebSocket;
   /** Injected for tests; defaults to fetch. */
@@ -77,16 +88,29 @@ export class ArenaBot {
   private hand: number[] = [];
   /** on-chain game ids already committed, so a repeated relay message cannot double-send. */
   private readonly committedGameIds = new Set<string>();
+  /** Preview data for the current game — needed as private proof inputs. */
+  private blindingFactor: string | null = null;
+  private myRandomness: string[] | null = null;
+  private opponentRandomness: string[] | null = null;
+  private myCardCommit: string | null = null;
+  private opponentCardCommit: string | null = null;
+  private handProofSent = false;
+  /** Our in-flight move, kept so the proof can bind the before/after transition. */
+  private pendingMove: {
+    moveNumber: number; cardId: number; row: number; col: number;
+    boardBefore: GameState['board']; scoresBefore: [number, number];
+  } | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
   private stopped = false;
   private registered = false;
 
   private readonly stats: BotStats = {
     state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
-    joinFailures: 0, moveFailures: 0, commitFailures: 0, lastError: null,
+    joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0, lastError: null,
   };
 
   private readonly chain: BotChainLike | null;
+  private readonly proofs: BotProofsLike | null;
   private readonly connect: (url: string) => WebSocket;
   private readonly fetchQueue: (httpUrl: string) => Promise<QueueSnapshot>;
   private readonly log: Logger;
@@ -94,6 +118,7 @@ export class ArenaBot {
 
   constructor(private readonly cfg: ArenaBotConfig, deps: ArenaBotDeps = {}) {
     this.chain = deps.chain ?? null;
+    this.proofs = deps.proofs ?? null;
     this.connect = deps.connect ?? ((url: string) => new WebSocket(url));
     this.fetchQueue = deps.fetchQueue ?? defaultFetchQueue;
     this.log = deps.log ?? ((m: string) => console.log(`[arena-bot] ${m}`));
@@ -211,6 +236,15 @@ export class ArenaBot {
         break;
 
       case 'OPPONENT_AZTEC_INFO':
+        if (this.chain && msg.gameId === this.gameId && Array.isArray(msg.gameRandomness)) {
+          this.opponentRandomness = msg.gameRandomness as string[];
+          // The hand proof binds the OPPONENT's randomness, so it cannot run
+          // until they have shared it.
+          void this.maybeProveHand().catch(err => {
+            this.stats.proofFailures += 1;
+            this.recordError('prove-hand', err as Error);
+          });
+        }
         // P2 can only join once P1 has told it the on-chain game id.
         if (this.chain && this.myPlayer === 'player2' && msg.gameId === this.gameId && msg.onChainGameId) {
           void this.commitAsPlayer2(msg.gameId, String(msg.onChainGameId)).catch(err => {
@@ -222,7 +256,14 @@ export class ArenaBot {
 
       case 'GAME_START':
       case 'GAME_STATE':
-        if (msg.gameId === this.gameId) this.maybeMove(msg.gameState);
+        if (msg.gameId === this.gameId) {
+          // Prove OUR move first: the state that just arrived is its `after`.
+          void this.maybeProveMove(msg.gameState).catch(err => {
+            this.stats.proofFailures += 1;
+            this.recordError('prove-move', err as Error);
+          });
+          this.maybeMove(msg.gameState);
+        }
         break;
 
       case 'GAME_OVER': {
@@ -235,6 +276,14 @@ export class ArenaBot {
         this.resetToIdle();
         break;
       }
+
+      case 'HAND_PROOF':
+        // The opponent's hand proof carries their card commitment, which our
+        // move proofs must bind.
+        if (msg.gameId === this.gameId && msg.handProof?.cardCommit) {
+          this.opponentCardCommit = String(msg.handProof.cardCommit);
+        }
+        break;
 
       case 'ERROR':
         // A queue rejection must not strand us in 'queued'.
@@ -258,18 +307,25 @@ export class ArenaBot {
    */
   private async commitAsPlayer1(wsGameId: string): Promise<void> {
     const chain = this.chain!;
-    const { gameId, randomness, status } = await chain.pxe.previewCreateGame(chain.address);
+    const { gameId, randomness, blindingFactor, status } = await chain.pxe.previewCreateGame(chain.address);
+    this.blindingFactor = blindingFactor;
+    this.myRandomness = randomness;
     if (status !== 0) {
       throw new Error(`on-chain game ${gameId} already has status ${status} — stale note nonce`);
     }
     // Share BEFORE the slow tx so P2 can prepare while create_game mines.
     this.send({ type: 'SHARE_AZTEC_INFO', gameId: wsGameId, aztecAddress: chain.address, onChainGameId: gameId, gameRandomness: randomness });
+    void this.maybeProveHand().catch(() => undefined);
     this.log(`create_game: committing ${this.hand.join(',')} for on-chain game ${String(gameId).slice(0, 18)}…`);
 
     const txHash = await chain.pxe.sendCreateGame(chain.address, this.hand, { timeoutMs: this.cfg.chainTxTimeoutMs });
     if (this.gameId !== wsGameId) return; // game moved on while we were mining
     this.send({ type: 'TX_CONFIRMED', gameId: wsGameId, txType: 'create_game', txHash });
     this.log(`create_game mined: ${txHash.slice(0, 18)}…`);
+    void this.maybeProveHand().catch(err => {
+      this.stats.proofFailures += 1;
+      this.recordError('prove-hand', err as Error);
+    });
   }
 
   /** P2's on-chain commit: join the game id P1 shared. */
@@ -277,7 +333,9 @@ export class ArenaBot {
     if (this.committedGameIds.has(onChainGameId)) return; // OPPONENT_AZTEC_INFO can repeat
     this.committedGameIds.add(onChainGameId);
     const chain = this.chain!;
-    const { randomness } = await chain.pxe.previewJoinGame(chain.address, onChainGameId);
+    const { randomness, blindingFactor } = await chain.pxe.previewJoinGame(chain.address, onChainGameId);
+    this.blindingFactor = blindingFactor;
+    this.myRandomness = randomness;
     this.send({ type: 'SHARE_AZTEC_INFO', gameId: wsGameId, aztecAddress: chain.address, onChainGameId, gameRandomness: randomness });
     this.log(`join_game: committing ${this.hand.join(',')} into ${onChainGameId.slice(0, 18)}…`);
 
@@ -285,6 +343,79 @@ export class ArenaBot {
     if (this.gameId !== wsGameId) return;
     this.send({ type: 'TX_CONFIRMED', gameId: wsGameId, txType: 'join_game', txHash });
     this.log(`join_game mined: ${txHash.slice(0, 18)}…`);
+    void this.maybeProveHand().catch(err => {
+      this.stats.proofFailures += 1;
+      this.recordError('prove-hand', err as Error);
+    });
+  }
+
+  /**
+   * Generate and submit the hand proof, once every input exists.
+   *
+   * Inputs arrive out of order — our own preview lands when our commit runs, the
+   * opponent's randomness when they share it — so this is called from both paths
+   * and simply no-ops until it has everything. Guarded by handProofSent so the
+   * two callers cannot each submit one.
+   */
+  private async maybeProveHand(): Promise<void> {
+    if (!this.chain || !this.proofs) return;
+    if (this.handProofSent) return;
+    if (!this.blindingFactor || !this.opponentRandomness || this.hand.length !== 5) return;
+
+    const gameId = this.gameId;
+    if (!gameId) return;
+    this.handProofSent = true;
+
+    this.myCardCommit = await this.proofs.cardCommitHash(this.hand, this.blindingFactor);
+    const handProof = await this.proofs.proveHand({
+      cardIds: this.hand,
+      blindingFactor: this.blindingFactor,
+      opponentRandomness: this.opponentRandomness,
+    });
+    if (this.gameId !== gameId) return; // game ended while proving
+    this.send({ type: 'SUBMIT_HAND_PROOF', gameId, handProof });
+    this.log('hand proof submitted');
+  }
+
+  /**
+   * Prove the move we just made, using the snapshot taken before we sent it and
+   * the state the relay echoed back.
+   *
+   * Only runs for OUR move: the opponent proves their own. Requires both card
+   * commitments, since the circuit binds them — ours from our preview, theirs
+   * from the hand proof they submitted.
+   */
+  private async maybeProveMove(after: GameState | undefined): Promise<void> {
+    const pending = this.pendingMove;
+    if (!this.chain || !this.proofs || !pending || !after || !this.myPlayer) return;
+    // The echoed state must actually contain our move.
+    const occupied = after.board.flat().filter(c => c.card !== null).length;
+    if (occupied <= pending.moveNumber) return;
+    if (!this.myCardCommit || !this.opponentCardCommit) return;
+
+    this.pendingMove = null;
+    const gameId = this.gameId;
+    const currentPlayer: 1 | 2 = this.myPlayer === 'player1' ? 1 : 2;
+    const ended = after.status === 'finished';
+    const winnerId = !ended ? 0 : after.winner === 'player1' ? 1 : after.winner === 'player2' ? 2 : 3;
+
+    const moveProof = await this.proofs.proveMove({
+      cardId: pending.cardId, row: pending.row, col: pending.col, currentPlayer,
+      boardBefore: pending.boardBefore, boardAfter: after.board,
+      scoresBefore: pending.scoresBefore,
+      scoresAfter: [after.player1Score, after.player2Score],
+      cardCommit1: currentPlayer === 1 ? this.myCardCommit : this.opponentCardCommit,
+      cardCommit2: currentPlayer === 1 ? this.opponentCardCommit : this.myCardCommit,
+      gameEnded: ended, winnerId,
+      playerHandData: { cardIds: this.hand, blindingFactor: this.blindingFactor, handIndex: 0 },
+    });
+    if (this.gameId !== gameId || !gameId) return;
+    this.send({
+      type: 'SUBMIT_MOVE_PROOF', gameId,
+      handIndex: 0, row: pending.row, col: pending.col,
+      moveNumber: pending.moveNumber, moveProof,
+    });
+    this.log(`move proof ${pending.moveNumber} submitted`);
   }
 
   /** Play if, and only if, it is our turn in a live game. */
@@ -305,11 +436,18 @@ export class ArenaBot {
 
     const moveNumber = state.board.flat().filter(c => c.card !== null).length;
     const gameId = this.gameId!;
+    const card = (this.myPlayer === 'player1' ? state.player1Hand : state.player2Hand)[move.handIndex];
     setTimeout(() => {
       // Re-check: the game may have ended or moved on during the pacing delay.
-      if (this.state === 'playing' && this.gameId === gameId) {
-        this.send({ type: 'PLACE_CARD', gameId, handIndex: move.handIndex, row: move.row, col: move.col, moveNumber });
-      }
+      if (this.state !== 'playing' || this.gameId !== gameId) return;
+      // Snapshot the pre-move board NOW: the move proof needs the transition,
+      // and once GAME_STATE arrives the `before` side is gone.
+      this.pendingMove = {
+        moveNumber, cardId: card?.id ?? 0, row: move.row, col: move.col,
+        boardBefore: state.board,
+        scoresBefore: [state.player1Score, state.player2Score],
+      };
+      this.send({ type: 'PLACE_CARD', gameId, handIndex: move.handIndex, row: move.row, col: move.col, moveNumber });
     }, this.cfg.moveDelayMs);
   }
 
@@ -318,6 +456,16 @@ export class ArenaBot {
     this.gameId = null;
     this.myPlayer = null;
     this.queuedAt = 0;
+    // Per-game proof inputs MUST NOT leak into the next game: a stale blinding
+    // factor or opponent randomness would produce a proof that verifies against
+    // the wrong commitment and be rejected at settlement.
+    this.blindingFactor = null;
+    this.myRandomness = null;
+    this.opponentRandomness = null;
+    this.myCardCommit = null;
+    this.opponentCardCommit = null;
+    this.handProofSent = false;
+    this.pendingMove = null;
   }
 
   private send(msg: unknown): void {

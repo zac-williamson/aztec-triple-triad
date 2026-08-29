@@ -14,6 +14,7 @@ import { resolve } from 'path';
 import { configFromEnv } from './config.js';
 import { ArenaBot } from './ArenaBot.js';
 import { BotChain } from './BotChain.js';
+import { BotProofs } from './BotProofs.js';
 
 const cfg = configFromEnv();
 const chainMode = process.env.ARENA_BOT_CHAIN === '1';
@@ -45,7 +46,9 @@ async function main(): Promise<void> {
     await chain.connect();
   }
 
-  const bot = new ArenaBot(cfg, { chain });
+  // Proofs only matter alongside a chain — off-chain mode never submits any.
+  const proofs = chain ? new BotProofs(m => console.log(`[arena-bot:proofs] ${m}`)) : undefined;
+  const bot = new ArenaBot(cfg, { chain, proofs });
 
   console.log(
     `[arena-bot] starting: ws=${cfg.wsUrl} threshold=${cfg.joinThresholdMs}ms ` +
