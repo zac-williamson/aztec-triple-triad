@@ -326,27 +326,43 @@ describe('ArenaBot chain mode', () => {
     expect(h.bot.getStats().lastError).toMatch(/status 2/);
   });
 
-  it('as player2: joins only once the opponent shares the on-chain id', async () => {
+  it('as player2: does NOT join on the shared id alone — that races the chain', async () => {
     const h = chainHarness();
     await h.ready();
     await vi.advanceTimersByTimeAsync(1_000);
     h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
     await vi.advanceTimersByTimeAsync(50);
-    expect(h.f.calls.some(c => c[0] === 'join')).toBe(false);
 
-    h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xhuman', onChainGameId: '0xchain1' });
+    // P1 shares its id EARLY, before its create_game has mined.
+    h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xhuman', onChainGameId: FIELD(0xc1) });
+    await vi.advanceTimersByTimeAsync(50);
+    // join_game asserts the game is in `created` state, so joining now would
+    // fail "Game not in created state".
+    expect(h.f.calls.some(c => c[0] === 'join')).toBe(false);
+  });
+
+  it('as player2: joins once the opponent\'s create_game is confirmed', async () => {
+    const h = chainHarness();
+    await h.ready();
+    await vi.advanceTimersByTimeAsync(1_000);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xhuman', onChainGameId: FIELD(0xc1) });
+    await vi.advanceTimersByTimeAsync(50);
+
+    h.socket.deliver({ type: 'ON_CHAIN_STATUS', gameId: 'g1', status: { player1Tx: 'confirmed', player2Tx: 'pending' } });
     await vi.advanceTimersByTimeAsync(50);
     expect(h.f.calls.some(c => c[0] === 'join')).toBe(true);
     expect(h.socket.lastOfType('TX_CONFIRMED')).toMatchObject({ txType: 'join_game' });
   });
 
-  it('as player2: a repeated opponent-info message does not double-join', async () => {
+  it('as player2: a repeated confirmation does not double-join', async () => {
     const h = chainHarness();
     await h.ready();
     await vi.advanceTimersByTimeAsync(1_000);
     h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xhuman', onChainGameId: FIELD(0xc1) });
     for (let i = 0; i < 3; i++) {
-      h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xhuman', onChainGameId: '0xchain1' });
+      h.socket.deliver({ type: 'ON_CHAIN_STATUS', gameId: 'g1', status: { player1Tx: 'confirmed', player2Tx: 'pending' } });
       await vi.advanceTimersByTimeAsync(20);
     }
     expect(h.f.calls.filter(c => c[0] === 'join')).toHaveLength(1);

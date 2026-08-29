@@ -249,20 +249,34 @@ export class ArenaBot {
         break;
 
       case 'OPPONENT_AZTEC_INFO':
-        if (this.chain && msg.gameId === this.gameId && Array.isArray(msg.gameRandomness)) {
-          this.opponentRandomness = msg.gameRandomness as string[];
+        if (this.chain && msg.gameId === this.gameId) {
+          // Record each field independently: they are optional on the wire, and
+          // coupling the id to the randomness meant a share without randomness
+          // left P2 with no game to join.
           if (msg.aztecAddress) this.opponentAddress = String(msg.aztecAddress);
           if (msg.onChainGameId) this.onChainGameId = String(msg.onChainGameId);
-          // The hand proof binds the OPPONENT's randomness, so it cannot run
-          // until they have shared it.
-          void this.maybeProveHand().catch(err => {
-            this.stats.proofFailures += 1;
-            this.recordError('prove-hand', err as Error);
-          });
+          if (Array.isArray(msg.gameRandomness)) {
+            this.opponentRandomness = msg.gameRandomness as string[];
+            // The hand proof binds the OPPONENT's randomness, so it cannot run
+            // until they have shared it.
+            void this.maybeProveHand().catch(err => {
+              this.stats.proofFailures += 1;
+              this.recordError('prove-hand', err as Error);
+            });
+          }
         }
-        // P2 can only join once P1 has told it the on-chain game id.
-        if (this.chain && this.myPlayer === 'player2' && msg.gameId === this.gameId && msg.onChainGameId) {
-          void this.commitAsPlayer2(msg.gameId, String(msg.onChainGameId)).catch(err => {
+        // P2 records the id here but does NOT join yet — see ON_CHAIN_STATUS.
+        break;
+
+      case 'ON_CHAIN_STATUS':
+        // join_game asserts the game is in `created` state, so P2 must wait for
+        // P1's create_game to be CONFIRMED — not merely for the id to be shared.
+        // P1 shares the id EARLY (before its tx mines) so P2 can prepare, and
+        // joining on that share alone races the chain and fails
+        // "Game not in created state".
+        if (this.chain && this.myPlayer === 'player2' && msg.gameId === this.gameId
+            && msg.status?.player1Tx === 'confirmed' && this.onChainGameId) {
+          void this.commitAsPlayer2(msg.gameId, this.onChainGameId).catch(err => {
             this.stats.commitFailures += 1;
             this.recordError('commit-join', err as Error);
           });
