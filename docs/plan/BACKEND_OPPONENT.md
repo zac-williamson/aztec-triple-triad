@@ -366,6 +366,29 @@ remaining provisioned accounts, and must not happen while nobody is watching.
   recording because the first fix (checking `readyState` for `open`) only made it
   rarer, which is the classic sign of having fixed one instance of a class.
 
+- 2026-08-29 (draws): **the join-only rule created a card-stranding gap and it
+  is now closed.** Draws are single-settler, player 1 by convention — and the bot
+  is always player 2. So a draw against the bot settled only if the human stayed
+  to do it, and a human who closed the tab locked BOTH hands permanently: the
+  abandonment sweep cannot rescue a completed draw, because the claim requires
+  1..8 move proofs and a draw has all nine. The bot now settles draws as a
+  FALLBACK — wait `ARENA_BOT_DRAW_FALLBACK_MS`, re-read the on-chain status,
+  stand down if player 1 got there first. The contract has always allowed this;
+  `settle_game_draw` reads *"For draws, caller could be either player"* and
+  asserts the two state hashes in either order, and the private half re-mints by
+  caller/opponent rather than by player number. Unit-tested four ways; **not
+  chain-verified as player 2** (see below).
+- **Why the draw path is not chain-verified**, recorded so nobody repeats the
+  attempt: forcing a draw needs a hand pair that ends 5-5, and ranks are fixed
+  per token_id, so it cannot be arranged by difficulty or by seeding alone. A
+  search over 90,000 seed pairs found no draw for the hands the identities could
+  actually field, and pinning arbitrary hands fails on-chain with **"Could not
+  find all 5 cards"** — `readPrivateCards` (`get_nfts_for_user`, an unconstrained
+  `view_notes`) reports ids that the constrained `pop_notes` in
+  `commit_five_nfts_join` cannot then find. `selectHand`'s lowest-five choice has
+  worked in every chain run so far, but it trusts that same reader, so this is a
+  live risk to commit reliability and not merely a testing inconvenience.
+
 **Operational note from testing, now measured.** Every incomplete game strands
 its five committed cards. After a session of debugging, each identity showed
 **25 cards committed to unsettled games** — five aborted runs apiece — on top of
