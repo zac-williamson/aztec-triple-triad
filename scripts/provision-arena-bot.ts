@@ -59,6 +59,8 @@ const ENV_PATH = resolve(ROOT_DIR, 'packages/frontend/.env');
 const manifestPath = (index: number) =>
   resolve(ROOT_DIR, `packages/bot/.artifacts/arena-bot-${index}.json`);
 const TX_TIMEOUT = 600;
+/** A wagered hand. The bot must always be able to field one. */
+const HAND_SIZE = 5;
 
 interface BotManifest {
   index: number;
@@ -295,13 +297,23 @@ async function main(): Promise<number> {
   }
 
 
-  // Read what the bot ALREADY holds so a re-run tops up instead of double-minting.
-  // mint_to_private does not check nft_exists, so a naive re-run would silently
-  // give the bot duplicate token_ids — whose behaviour under commit_five_nfts is
-  // untested (docs/plan/BACKEND_OPPONENT.md §2a).
-  const alreadyHeld = new Set(await readCollection(nft, botAccount.address));
+  // What must NOT be re-minted is what was already MINTED, which is not the same
+  // as what is currently HELD: cards committed to a game are nullified out of the
+  // PXE until settlement, so a held-only check would try to re-mint them and hit
+  // "Token already exists" (token_ids are globally unique). The manifest is the
+  // record of what this identity was minted; union it with what is held now.
+  const heldNow = new Set(await readCollection(nft, botAccount.address));
+  const previouslyMinted = new Set(
+    existsSync(manifestPath(index))
+      ? (JSON.parse(readFileSync(manifestPath(index), 'utf-8')) as BotManifest).cardIds ?? []
+      : [],
+  );
+  const alreadyHeld = new Set<number>([...heldNow, ...previouslyMinted]);
   if (alreadyHeld.size > 0) {
-    console.log(`  bot already holds ${alreadyHeld.size} card(s) — minting only what is missing`);
+    console.log(
+      `  already minted ${alreadyHeld.size} card(s) (${heldNow.size} currently spendable, ` +
+      `${alreadyHeld.size - heldNow.size} committed to a game) — minting only what is missing`,
+    );
   }
 
   // 4. Mint the collection.
@@ -326,11 +338,25 @@ async function main(): Promise<number> {
 
   // 5. VERIFY through the same paginated reader the app itself uses.
   const held = (await readCollection(nft, botAccount.address)).sort((a, b) => a - b);
-  const expected = [...minted].sort((a, b) => a - b);
-  if (held.length !== expected.length || held.some((v, i) => v !== expected[i])) {
-    throw new Error(`verification failed: bot holds ${held.length} cards, expected ${expected.length}`);
+  const mintedSet = new Set(minted);
+  // Held must be a SUBSET of minted, not equal to it: cards committed to an
+  // unsettled game are nullified out of the PXE and reappear only on settlement.
+  // Asserting equality would fail every time the bot has a game in flight.
+  const unexpected = held.filter(id => !mintedSet.has(id));
+  if (unexpected.length) {
+    throw new Error(`verification failed: bot holds cards it was never minted: ${unexpected.join(',')}`);
   }
-  console.log(`  ✓ verified: bot holds ${held.length} cards`);
+  const committed = minted.length - held.length;
+  if (held.length < HAND_SIZE) {
+    throw new Error(
+      `verification failed: only ${held.length} spendable card(s) — the bot needs at least ${HAND_SIZE} ` +
+      `to field a hand (${committed} committed to unsettled game(s)).`,
+    );
+  }
+  console.log(
+    `  ✓ verified: ${held.length} spendable of ${minted.length} minted` +
+    (committed > 0 ? ` (${committed} committed to unsettled game(s))` : ''),
+  );
 
   const manifest: BotManifest = {
     index, address: botAddress, ...keys,
