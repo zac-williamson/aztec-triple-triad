@@ -367,6 +367,22 @@ async function main(): Promise<void> {
   // gathering the last relayed move proof, building the transcript, then a slow
   // process_game. Killing the bot here would abort a settlement in flight, which
   // is exactly what the harness is meant to observe.
+  // Fail fast on a card shortage. The bot logs it and correctly stays idle, but
+  // the harness would then sit out its full 30-minute deadline waiting for a
+  // game that can never start — a seven-minute stare at an empty log before you
+  // find the one line that explains it. The bot's collection is a LOSS BUDGET
+  // and repeated runs drain it, so this is the ordinary way a run session ends.
+  const shortage = setInterval(() => {
+    const e = bot.getStats().lastError;
+    if (e && /holds only/.test(e)) {
+      console.error(`\nE2E ABORTED: ${e}\n` +
+        `Top the identities up:\n` +
+        `  npx tsx scripts/provision-arena-bot.ts --index 0 --cards 30 --offset <next free id>`);
+      process.exit(2);
+    }
+  }, 2_000);
+  shortage.unref?.();
+
   const settleDeadline = Date.now() + 10 * 60_000;
   while (Date.now() < settleDeadline) {
     const st = bot.getStats();

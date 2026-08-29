@@ -320,7 +320,34 @@ remaining provisioned accounts, and must not happen while nobody is watching.
   only the NFT failed the starter claim with "No contract instance found" —
   raised from a call the script never makes directly, so it reads as an NFT bug.
 
-**Operational note from testing:** every incomplete game strands its five
-committed cards permanently. About ten aborted runs consumed ~90 of the 257
-global card ids. That is the loss-budget risk in miniature, and a strong
-argument for an abandonment sweep before the pool ever runs unattended.
+- 2026-08-29 (final): **six settled chain games, and a fourth defect.** After
+  the three fixes above, a repeat run deadlocked — both processes at 0% CPU, no
+  L2 blocks, fourteen minutes. Cause was one of those fixes: releasing a held
+  turn gave `maybeMove` three callers, and two firing for the same turn
+  scheduled two `PLACE_CARD`s. Under `difficulty: 'random'` the second picks a
+  DIFFERENT cell, so the relay applies the first while `pendingMove` describes
+  the second — no echoed board matches it again, and the bot stops proving AND
+  stops playing. Guarded with a monotonic `moveScheduledFor`, checked BEFORE
+  choosing the move (the non-determinism is what makes the duplicate harmful
+  rather than merely redundant). **The first regression test I wrote for this
+  passed without the guard** — it never reached the duplicate path; reverting
+  the fix to watch the test fail is the only thing that caught that.
+  Final tally on the sandbox: **6 settled games, 3 consecutive green at the end,
+  zero move/commit/proof/settle failures.**
+- 2026-08-29: the harness now **fails fast on a card shortage**. The bot logs it
+  and correctly stays idle, but the harness sat out its full 30-minute deadline
+  waiting for a game that could never start.
+
+**Operational note from testing, now measured.** Every incomplete game strands
+its five committed cards. After a session of debugging, each identity showed
+**25 cards committed to unsettled games** — five aborted runs apiece — on top of
+the cards genuinely lost to settlements. The bot ran itself down to ONE spendable
+card and stopped queueing.
+
+That is the loss budget in miniature, and it makes two things concrete:
+- an **abandonment sweep is a prerequisite** for running the pool unattended,
+  not a nice-to-have. The bot cannot cancel (it only joins), so stranding is its
+  only failure mode and it is monotonic.
+- `cardsStranded` and the spendable count are the metrics to alert on. A bot
+  that is out of cards fails *quietly and correctly* — it stays idle — which is
+  precisely why nobody would notice.
