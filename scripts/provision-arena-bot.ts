@@ -70,6 +70,16 @@ interface BotManifest {
   signingKey: string;
   /** Card ids minted to this identity, in mint order. */
   cardIds: number[];
+  /**
+   * The note plaintexts the bot must IMPORT to see its cards.
+   *
+   * mint_bot_cards creates untagged notes (create_and_push_note), which the
+   * PXE cannot discover passively — the tagged path caps at ~84 notes per
+   * finalisation window, which a deep stock blows straight through. So the
+   * randomness lives here, and BotChain imports from it on connect. Without
+   * this the cards exist on-chain and the bot cannot see or spend one of them.
+   */
+  notes?: { tokenId: number; randomness: string; txHash: string }[];
   /** Chain this identity exists on — a re-genesis orphans it, exactly as it
    *  does the playtest pool, so the stamp is what makes staleness detectable. */
   rollupVersion: number;
@@ -374,6 +384,7 @@ async function main(): Promise<number> {
   //    delivery costs more than one slot. Eight is measured, not derived; the
   //    array stays 10 wide so the unused slots are simply skipped by `count`.
   const BATCH = 8;
+  const mintedNotes: { tokenId: number; randomness: string; txHash: string }[] = [];
   /** The contract's array width. Slots past `count` are zero and ignored. */
   const ARRAY_WIDTH = 10;
   const plan = collection.slice(0, toMint);
@@ -381,21 +392,24 @@ async function main(): Promise<number> {
     const batch = plan.slice(i, i + BATCH);
     const ids = Array.from({ length: ARRAY_WIDTH }, (_, k) => new Fr(BigInt(batch[k]?.id ?? 0)));
     const ranks = Array.from({ length: ARRAY_WIDTH }, (_, k) => new Fr(BigInt(batch[k]?.packed ?? 0)));
+    // Randomness per note. It must be unique — it is what distinguishes two
+    // notes of the same card id, and therefore what makes their nullifiers
+    // differ — and it must be RECORDED, because untagged notes are invisible
+    // to the bot until it imports them with exactly these values.
+    const rand = Array.from({ length: ARRAY_WIDTH }, () => Fr.random());
     try {
-      await nft.methods.mint_bot_cards(new Fr(BigInt(index)), ids, ranks, batch.length).send({
-        from: deployer.address,
-        fee: { gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) } },
-        wait: { timeout: TX_TIMEOUT },
-      });
+      const txHash = await nft.methods
+        .mint_bot_cards(new Fr(BigInt(index)), ids, ranks, rand, batch.length)
+        .send({
+          from: deployer.address,
+          fee: { gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) } },
+          wait: { timeout: TX_TIMEOUT },
+        });
+      const hash = String((txHash as any)?.txHash ?? (txHash as any)?.hash ?? txHash);
+      for (let k = 0; k < batch.length; k++) {
+        mintedNotes.push({ tokenId: batch[k].id, randomness: rand[k].toString(), txHash: hash });
+      }
       console.log(`  minted ${Math.min(i + BATCH, plan.length)}/${plan.length}`);
-
-      // Sync so the recipient's TAGGING WINDOW advances. Constrained delivery
-      // consumes a tagging index per note, and the window (84) only slides
-      // forward as the recipient discovers what was sent — so minting a large
-      // stock without syncing dies partway with "Highest used index N is at or
-      // past the window end". The bot account lives in this same PXE, so one
-      // sync here finalises its indices.
-      await (wallet as unknown as { pxe: { sync: () => Promise<unknown> } }).pxe.sync();
     } catch (err: any) {
       // Do not silently continue: a partial collection that reports success is
       // worse than a loud stop, because the bot would then commit hands it
@@ -403,35 +417,41 @@ async function main(): Promise<number> {
       throw new Error(`bot mint failed after ${i} cards: ${String(err?.message ?? err)}`);
     }
   }
-  const minted = [...heldNow, ...plan.map(c => c.id)];
+  // The full multiset this identity has been minted, for the manifest.
+  const minted = [
+    ...(existsSync(manifestPath(index))
+      ? (JSON.parse(readFileSync(manifestPath(index), 'utf-8')) as BotManifest).cardIds ?? []
+      : []),
+    ...plan.map(c => c.id),
+  ];
 
-  // 5. VERIFY through the same paginated reader the app itself uses.
-  const held = (await readCollection(nft, botAccount.address)).sort((a, b) => a - b);
-  // With duplicates the check is on COUNT, not on which ids came back: the bot
-  // holds a multiset, and "did every id I minted reappear" is not a question
-  // that means anything when it holds forty copies of card 3.
-  const allowedTypes = new Set(minted);
-  const unexpected = held.filter(id => !allowedTypes.has(id));
-  if (unexpected.length) {
+  // 5. VERIFY.
+  //
+  // NOT by reading the collection back: mint_bot_cards creates UNTAGGED notes,
+  // which this PXE cannot discover either — that is the whole point of using
+  // them. The provisioner's job ends at "the mints landed and their plaintexts
+  // are recorded"; whether the bot can SEE them is settled when BotChain imports
+  // from the manifest, which is where a real count is available.
+  const held = await readCollection(nft, botAccount.address);
+  const totalNotes = previousMintedTotal(index) + mintedNotes.length;
+  if (totalNotes < HAND_SIZE) {
     throw new Error(
-      `verification failed: bot holds card types it was never minted: ${[...new Set(unexpected)].join(',')}`,
-    );
-  }
-  const committed = minted.length - held.length;
-  if (held.length < HAND_SIZE) {
-    throw new Error(
-      `verification failed: only ${held.length} spendable card(s) — the bot needs at least ${HAND_SIZE} ` +
-      `to field a hand (${committed} committed to unsettled game(s)).`,
+      `verification failed: only ${totalNotes} note(s) recorded — the bot needs at least ` +
+      `${HAND_SIZE} to field a hand.`,
     );
   }
   console.log(
-    `  ✓ verified: ${held.length} spendable of ${minted.length} minted` +
-    (committed > 0 ? ` (${committed} committed to unsettled game(s))` : ''),
+    `  ✓ ${mintedNotes.length} card(s) minted this run, ${totalNotes} recorded in total ` +
+    `(${held.length} already discoverable in this PXE; the rest import from the manifest)`,
   );
 
+  const previousNotes = existsSync(manifestPath(index))
+    ? (JSON.parse(readFileSync(manifestPath(index), 'utf-8')) as BotManifest).notes ?? []
+    : [];
   const manifest: BotManifest = {
     index, address: botAddress, ...keys,
-    cardIds: minted, rollupVersion: Number(rollupVersion),
+    cardIds: minted, notes: [...previousNotes, ...mintedNotes],
+    rollupVersion: Number(rollupVersion),
     provisionedAt: new Date().toISOString(),
   };
   const outPath = manifestPath(index);

@@ -20,7 +20,7 @@
  * identities — which is also better for CPU isolation, since proving is the
  * bottleneck. Guarded below.
  */
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { installNodeArtifactSources } from './circuits.js';
 import { identityDataDirectory } from './dataDir.js';
 
@@ -32,6 +32,8 @@ export interface BotIdentity {
   signingKey: string;
   cardIds: number[];
   rollupVersion: number;
+  /** Note plaintexts to import — see importStock(). */
+  notes?: { tokenId: number; randomness: string; txHash: string }[];
 }
 
 export interface BotChainConfig {
@@ -159,7 +161,67 @@ export class BotChain {
     setPxeWallet(wallet);
     connectedIdentity = this.identity.address;
     this.ops = pxe;
-    this.log(`chain ready as ${this.identity.address.slice(0, 20)}… (${this.identity.cardIds.length} cards)`);
+    await this.importStock();
+    this.log(`chain ready as ${this.identity.address.slice(0, 20)}… (${(await this.readCards()).length} spendable)`);
+  }
+
+  /**
+   * Import the notes the provisioner minted for this identity.
+   *
+   * The bot's stock is minted UNTAGGED (create_and_push_note), because the
+   * tagged path caps at ~84 notes per finalisation window and a deep stock blows
+   * straight through it. Untagged notes are invisible to the PXE until imported,
+   * so without this the cards exist on-chain and the bot cannot spend a single
+   * one of them.
+   *
+   * Idempotent and incremental: already-imported notes are recorded next to the
+   * manifest, so a restart re-imports nothing. import_note itself tolerates a
+   * repeat, but a thousand redundant simulate calls on every boot would not be
+   * tolerable.
+   */
+  private async importStock(): Promise<void> {
+    const notes = this.identity?.notes ?? [];
+    if (notes.length === 0) return;
+
+    const markerPath = `${this.cfg.manifestPath}.imported.json`;
+    const done = new Set<string>(
+      existsSync(markerPath) ? (JSON.parse(readFileSync(markerPath, 'utf-8')) as string[]) : [],
+    );
+    const key = (n: { tokenId: number; randomness: string }) => `${n.tokenId}:${n.randomness}`;
+    const pending = notes.filter(n => !done.has(key(n)));
+    if (pending.length === 0) return;
+
+    this.log(`importing ${pending.length} card note(s) — untagged mints are invisible until imported`);
+    const { fetchTxEffectData } = await import('../../frontend/src/aztec/noteImporter.js');
+
+    // Group by tx: the TxEffect (note hashes + first nullifier) is one node read
+    // per transaction, not per note.
+    const byTx = new Map<string, typeof pending>();
+    for (const n of pending) byTx.set(n.txHash, [...(byTx.get(n.txHash) ?? []), n]);
+
+    let imported = 0;
+    for (const [txHash, group] of byTx) {
+      try {
+        const effect = await fetchTxEffectData(this.node, txHash);
+        if (!effect) {
+          this.log(`WARNING: no TxEffect for ${txHash.slice(0, 18)}… — ${group.length} note(s) not imported`);
+          continue;
+        }
+        await this.pxe.importCardNotes(
+          this.address, txHash,
+          group.map(n => ({ tokenId: n.tokenId, randomness: n.randomness })),
+          'bot stock', effect,
+        );
+        for (const n of group) { done.add(key(n)); imported += 1; }
+      } catch (err) {
+        // Not fatal: the rest of the stock may still import, and a later start
+        // retries this tx. Loud, because an unimported note is a card the bot
+        // owns and cannot play.
+        this.log(`WARNING: import of tx ${txHash.slice(0, 18)}… failed: ${(err as Error).message}`);
+      }
+    }
+    writeFileSync(markerPath, JSON.stringify([...done]));
+    this.log(`imported ${imported} card note(s)`);
   }
 
   /** The frontend's ops layer, bound to the bot's wallet. */
