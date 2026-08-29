@@ -235,7 +235,8 @@ async function main(): Promise<number> {
     }
   }
 
-  // 2. Mint the collection AS THE MINTER (the deployer), not as the bot.
+  // 2. Resolve the minter (the deployer) and the NFT contract. Only the minter
+  //    can mint; the bot pays for its own starter claim.
   //    Serial: all PXE operations are serial per wallet (CLAUDE.md ground rule 6).
   const deployerSecret = process.env.DEPLOYER_SECRET;
   const deployerSalt = process.env.DEPLOYER_SALT;
@@ -264,6 +265,36 @@ async function main(): Promise<number> {
   await wallet.registerSender(nftAddr, 'nft');
   const nft = await Contract.at(nftAddr, nftArtifact, wallet as never);
 
+  // 3. Claim starter cards AS THE BOT — this is what initialises its
+  //    `note_nonce`. Without it every create_game/join_game fails
+  //    "Note nonce not found": the nonce is pushed by get_cards_for_new_player
+  //    (main.nr:437), the real onboarding path, and mint_to_private does not
+  //    touch it. Claiming is one-per-account (nullifier-gated), so a re-run is
+  //    a no-op rather than an abuse.
+  //
+  //    Its 5 starter cards arrive via create_and_push_note and are NOT
+  //    auto-discovered, so they stay invisible to the bot's PXE unless imported.
+  //    That is fine and self-consistent: the bot's SPENDABLE collection is the
+  //    explicitly minted set, and selectHand() reads what the PXE can actually
+  //    see. Those ids also cost nothing from the global budget, since
+  //    create_and_push_note never touches nft_exists.
+  try {
+    await nft.methods.get_cards_for_new_player().send({
+      from: botAccount.address,
+      fee: { gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) } },
+      wait: { timeout: TX_TIMEOUT },
+    });
+    console.log('  starter claim done — note_nonce initialised');
+  } catch (err: any) {
+    const msg = String(err?.cause?.message ?? err?.message ?? err);
+    if (/nullifier|already|claimed/i.test(msg)) {
+      console.log('  starter already claimed — note_nonce present');
+    } else {
+      throw err;
+    }
+  }
+
+
   // Read what the bot ALREADY holds so a re-run tops up instead of double-minting.
   // mint_to_private does not check nft_exists, so a naive re-run would silently
   // give the bot duplicate token_ids — whose behaviour under commit_five_nfts is
@@ -273,6 +304,7 @@ async function main(): Promise<number> {
     console.log(`  bot already holds ${alreadyHeld.size} card(s) — minting only what is missing`);
   }
 
+  // 4. Mint the collection.
   const minted: number[] = [...alreadyHeld];
   for (const card of collection) {
     if (alreadyHeld.has(card.id)) continue;
@@ -292,7 +324,7 @@ async function main(): Promise<number> {
     }
   }
 
-  // 3. VERIFY through the same paginated reader the app itself uses.
+  // 5. VERIFY through the same paginated reader the app itself uses.
   const held = (await readCollection(nft, botAccount.address)).sort((a, b) => a - b);
   const expected = [...minted].sort((a, b) => a - b);
   if (held.length !== expected.length || held.some((v, i) => v !== expected[i])) {
