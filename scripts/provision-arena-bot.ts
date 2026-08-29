@@ -92,13 +92,45 @@ function collectionFor(count: number): { id: number; packed: string }[] {
       `commit_five_nfts — do not rely on them without a TXE test first.`,
     );
   }
+  // packRanks takes the four ranks POSITIONALLY, not the ranks object — passing
+  // the object produced "[object Object]NaNNaNNaN" and a BigInt conversion error
+  // at mint time rather than a type error, because the packing is arithmetic.
   return CARD_DATABASE.slice(0, count).map(c => ({
     id: c.id,
-    packed: packRanks(c.ranks).toString(),
+    packed: packRanks(c.ranks.top, c.ranks.right, c.ranks.bottom, c.ranks.left).toString(),
   }));
 }
 
-async function obtainClaim(node: any, address: string): Promise<FeeJuiceClaim> {
+/**
+ * Read an owner's full private card collection through `get_nfts_for_user`,
+ * page by page. Simulate returns `{ result: [page, hasMore] }` — the tuple is
+ * nested under `result`, not the top-level value.
+ */
+async function readCollection(nft: any, owner: any): Promise<number[]> {
+  const ids: number[] = [];
+  for (let page = 0; ; page++) {
+    const { result } = await nft.methods.get_nfts_for_user(owner, page).simulate({ from: owner });
+    for (const val of (result[0] ?? [])) {
+      const id = Number(BigInt(val));
+      if (id !== 0) ids.push(id);
+    }
+    if (result[1] !== true) break;
+    if (page > 500) throw new Error('get_nfts_for_user pagination did not terminate');
+  }
+  return ids;
+}
+
+async function obtainClaim(node: any, address: string, l1ChainId: number): Promise<FeeJuiceClaim> {
+  // Local sandbox funds from the well-known anvil account, not the Sepolia
+  // treasury, and needs the mineBlock nudge (v5's automine sequencer builds a
+  // block only on tx activity, so a freshly-bridged L1->L2 message would have
+  // no block to land in). fundDevnet.ts already encapsulates both.
+  if (l1ChainId === 31337) {
+    console.log('  local sandbox — bridging Fee Juice from the anvil funder...');
+    const { fundAccountOnDevnet } = await import('../packages/frontend/src/aztec/fundDevnet');
+    return await fundAccountOnDevnet(node, address, (m: string) => console.log(`    ${m}`)) as FeeJuiceClaim;
+  }
+
   const storePath = claimStorePath();
   const stored = getStoredClaim(loadClaimStore(storePath), address);
   if (stored && stored.status === 'pending') {
@@ -144,8 +176,8 @@ async function main(): Promise<number> {
   }
 
   const node = createAztecNodeClient(PXE_URL);
-  const { rollupVersion } = await node.getNodeInfo();
-  console.log(`  Chain:  rollupVersion ${Number(rollupVersion)}`);
+  const { rollupVersion, l1ChainId } = await node.getNodeInfo();
+  console.log(`  Chain:  rollupVersion ${Number(rollupVersion)} l1ChainId ${Number(l1ChainId)}`);
 
   const wallet = await EmbeddedWallet.create(node, { ephemeral: false, pxeConfig: { proverEnabled: true } });
   const botAccount = await wallet.createSchnorrAccount(
@@ -159,7 +191,7 @@ async function main(): Promise<number> {
   const nftAddress = readEnvAddress('VITE_NFT_CONTRACT_ADDRESS');
 
   // 1. Deploy the bot account, paying with its bridged claim in-tx.
-  const claim = await obtainClaim(node, botAddress);
+  const claim = await obtainClaim(node, botAddress, Number(l1ChainId));
   console.log('  deploying bot account (claim paid in-tx)...');
   try {
     const deployMethod = await botAccount.getDeployMethod();
@@ -171,7 +203,7 @@ async function main(): Promise<number> {
       },
       wait: { timeout: TX_TIMEOUT },
     });
-    markClaimConsumed(claimStorePath(), botAddress);
+    if (Number(l1ChainId) !== 31337) markClaimConsumed(claimStorePath(), botAddress);
     console.log('  account deployed; claim consumed');
   } catch (err: any) {
     const msg = String(err?.cause?.message ?? err?.message ?? err);
@@ -201,10 +233,28 @@ async function main(): Promise<number> {
   const nftArtifact = loadContractArtifact(
     JSON.parse(readFileSync(resolve(ROOT_DIR, 'packages/contracts/target/triple_triad_nft-TripleTriadNFT.json'), 'utf-8')),
   );
-  const nft = await Contract.at(AztecAddress.fromStringUnsafe(nftAddress), nftArtifact, wallet as never);
+  // Contract.at alone does NOT register the class with the wallet — sends then
+  // fail "No artifact registered for contract class". Fetch the on-chain
+  // instance and register it first, exactly as provision-playtest-accounts does.
+  const nftAddr = AztecAddress.fromStringUnsafe(nftAddress);
+  const nftInstance = await node.getContract(nftAddr);
+  if (!nftInstance) throw new Error(`NFT contract ${nftAddress} not found on this chain`);
+  await wallet.registerContract(nftInstance, nftArtifact);
+  await wallet.registerSender(nftAddr, 'nft');
+  const nft = await Contract.at(nftAddr, nftArtifact, wallet as never);
 
-  const minted: number[] = [];
+  // Read what the bot ALREADY holds so a re-run tops up instead of double-minting.
+  // mint_to_private does not check nft_exists, so a naive re-run would silently
+  // give the bot duplicate token_ids — whose behaviour under commit_five_nfts is
+  // untested (docs/plan/BACKEND_OPPONENT.md §2a).
+  const alreadyHeld = new Set(await readCollection(nft, botAccount.address));
+  if (alreadyHeld.size > 0) {
+    console.log(`  bot already holds ${alreadyHeld.size} card(s) — minting only what is missing`);
+  }
+
+  const minted: number[] = [...alreadyHeld];
   for (const card of collection) {
+    if (alreadyHeld.has(card.id)) continue;
     try {
       await nft.methods.mint_to_private(botAccount.address, new Fr(BigInt(card.id)), new Fr(BigInt(card.packed))).send({
         from: deployer.address,
@@ -221,15 +271,8 @@ async function main(): Promise<number> {
     }
   }
 
-  // 3. VERIFY through the paginated reader the app itself uses.
-  const held: number[] = [];
-  for (let page = 0; ; page++) {
-    const [ids, hasMore] = await nft.methods.get_nfts_for_user(botAccount.address, page).simulate({ from: botAccount.address }) as [bigint[], boolean];
-    for (const id of ids) if (Number(id) !== 0) held.push(Number(id));
-    if (!hasMore) break;
-    if (page > 200) throw new Error('pagination did not terminate');
-  }
-  held.sort((a, b) => a - b);
+  // 3. VERIFY through the same paginated reader the app itself uses.
+  const held = (await readCollection(nft, botAccount.address)).sort((a, b) => a - b);
   const expected = [...minted].sort((a, b) => a - b);
   if (held.length !== expected.length || held.some((v, i) => v !== expected[i])) {
     throw new Error(`verification failed: bot holds ${held.length} cards, expected ${expected.length}`);

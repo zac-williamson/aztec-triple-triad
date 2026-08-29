@@ -42,3 +42,11 @@ test-results/
 # Vercel token — never commit
 vercel*.txt
 vercel.txt
+
+# Arena-bot identity manifest: deterministic throwaway keys (public seed), but
+# keys nonetheless — same treatment as the playtest pool manifest.
+packages/bot/.artifacts/
+
+# Node-side PXE/wallet LMDB stores, written by scripts that run a wallet
+# outside the browser (provision-arena-bot, deploy-contracts). Local state.
+aztec-wallet-data/

@@ -146,7 +146,15 @@ async function main() {
   // the sandbox's empty-block production (SEQ_MIN_TX_PER_BLOCK=0) for the
   // L1→L2 claim message — same constraint as start-sandbox.sh documents.
   console.log('Creating deployer account...');
-  const deployerAccount = await wallet.createSchnorrAccount(Fr.random(), Fr.random(), GrumpkinScalar.random());
+  // The deployer becomes the NFT contract's `minter`, which is a
+  // PublicImmutable — so if these keys are lost, NOTHING can ever mint on this
+  // deployment again (e.g. provision-arena-bot.ts, which mints the bot its
+  // collection). Keys stay random per deploy (fresh sandbox state each run) but
+  // are now PERSISTED alongside the addresses.
+  const deployerSecret = Fr.random();
+  const deployerSalt = Fr.random();
+  const deployerSigningKey = GrumpkinScalar.random();
+  const deployerAccount = await wallet.createSchnorrAccount(deployerSecret, deployerSalt, deployerSigningKey);
   const deployerAddress = deployerAccount.address;
 
   console.log('Bridging Fee Juice to deployer...');
@@ -319,6 +327,15 @@ VITE_GAME_CONTRACT_ADDRESS=${gameAddress.toString()}
 VITE_TOKEN_CONTRACT_ADDRESS=${tokenAddress.toString()}
 VITE_AZTEC_ENABLED=true
 VITE_WS_URL=ws://localhost:${wsPort}
+
+# Local-sandbox deployer = the NFT contract's immutable \`minter\`. Persisted so
+# post-deploy minting (scripts/provision-arena-bot.ts) is possible at all; a lost
+# key means this deployment can never mint again. Local throwaway keys only —
+# .env is gitignored and the sandbox is wiped on every restart.
+DEPLOYER_ADDRESS=${deployerAddress.toString()}
+DEPLOYER_SECRET=${deployerSecret.toString()}
+DEPLOYER_SALT=${deployerSalt.toString()}
+DEPLOYER_SIGNING_KEY=${deployerSigningKey.toString()}
 `;
 
   const envPath = resolve(ROOT_DIR, 'packages/frontend/.env');
