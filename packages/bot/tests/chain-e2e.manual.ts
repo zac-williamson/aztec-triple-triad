@@ -33,6 +33,7 @@ import { configFromEnv } from '../src/config.js';
 const PORT = 5399;
 const PXE_URL = process.env.AZTEC_PXE_URL ?? 'http://localhost:8080';
 const log = (who: string, m: string) => console.log(`[${who}] ${m}`);
+const OPPONENT_DIFFICULTY = (process.env.E2E_OPPONENT_DIFFICULTY ?? 'greedy') as 'random' | 'greedy' | 'lookahead';
 
 /** A chain-real opponent: queues first, plays greedily, commits/proves/settles. */
 class ScriptedOpponent {
@@ -58,6 +59,12 @@ class ScriptedOpponent {
     boardBefore: GameState['board']; scoresBefore: [number, number] } | null = null;
   over: string | null = null;
   settled = false;
+  /** Move proofs still generating. The last move's proof is produced AFTER
+   *  GAME_OVER, so exiting on `over` alone drops it — and the winner then waits
+   *  forever for a 9th link that nobody will ever send. */
+  private proving = 0;
+  /** True once every move we made has been proved and relayed. */
+  get transcriptFlushed(): boolean { return this.proving === 0 && this.pending === null; }
 
   constructor(private chain: BotChain, private proofs: BotProofs) {}
 
@@ -183,6 +190,20 @@ class ScriptedOpponent {
     // may show our card captured, failing "Owner not set correctly".
     if (after.board.flat().filter(c => c.card !== null).length !== p.moveNumber + 1) return;
     this.pending = null;
+    this.proving += 1;
+    try {
+      // Commits passed explicitly: the null checks above narrow them here, but
+      // that narrowing does not survive the call boundary.
+      await this.proveAndSend(p, after, this.myCommit, this.oppCommit);
+    } finally {
+      this.proving -= 1;
+    }
+  }
+
+  private async proveAndSend(
+    p: NonNullable<ScriptedOpponent['pending']>, after: GameState,
+    myCommit: string, oppCommit: string,
+  ): Promise<void> {
     const cur: 1 | 2 = this.me === 'player1' ? 1 : 2;
     const ended = after.status === 'finished';
     const winnerId = !ended ? 0 : after.winner === 'player1' ? 1 : after.winner === 'player2' ? 2 : 3;
@@ -190,8 +211,8 @@ class ScriptedOpponent {
       cardId: p.cardId, row: p.row, col: p.col, currentPlayer: cur,
       boardBefore: p.boardBefore, boardAfter: after.board,
       scoresBefore: p.scoresBefore, scoresAfter: [after.player1Score, after.player2Score],
-      cardCommit1: cur === 1 ? this.myCommit : this.oppCommit,
-      cardCommit2: cur === 1 ? this.oppCommit : this.myCommit,
+      cardCommit1: cur === 1 ? myCommit : oppCommit,
+      cardCommit2: cur === 1 ? oppCommit : myCommit,
       gameEnded: ended, winnerId,
       playerHandData: { cardIds: this.hand, blindingFactor: this.blinding, handIndex: 0 },
     });
@@ -211,7 +232,10 @@ class ScriptedOpponent {
     if (!this.committed) return;
     if (!this.myCommit || !this.oppCommit) return;
     if (!state || state.status !== 'playing' || state.currentTurn !== this.me) return;
-    const m = chooseBotMove(state, { difficulty: 'greedy' });
+    // Overridable so a run can force a BOT win: the bot settling is a distinct
+    // on-chain path from the opponent settling (it is the side that takes a
+    // card), and greedy-vs-greedy does not reliably produce one.
+    const m = chooseBotMove(state, { difficulty: OPPONENT_DIFFICULTY });
     const moveNumber = state.board.flat().filter(c => c.card !== null).length;
     const card = (this.me === 'player1' ? state.player1Hand : state.player2Hand)[m.handIndex];
     // Paced like the bot, so proving can keep up with the relay.
@@ -294,7 +318,18 @@ async function main(): Promise<void> {
     await opponent.run();
     const deadline = Date.now() + 30 * 60_000;
     while (Date.now() < deadline && !opponent.over) await new Promise(r => setTimeout(r, 1000));
-    console.log(`[opponent] finished: ${opponent.over ?? 'TIMED OUT'}`);
+
+    // GAME_OVER is not the end of our work. The final move's proof is generated
+    // AFTER the relay declares the game over, so exiting here drops it — and if
+    // the BOT won, the bot is the one settling, and it will wait out its whole
+    // settle window for a 9th link that nobody is ever going to send. Cost a
+    // full run: "transcript incomplete: 1 move proof(s)".
+    const flushBy = Date.now() + 120_000;
+    while (Date.now() < flushBy && !opponent.transcriptFlushed) await new Promise(r => setTimeout(r, 500));
+    if (!opponent.transcriptFlushed) log('opponent', 'WARNING: exiting with proofs still in flight');
+    // And a moment for the relay to fan the last one out to the bot.
+    await new Promise(r => setTimeout(r, 2_000));
+    console.log(`[opponent] finished: ${opponent.over ?? 'TIMED OUT'} (transcript flushed)`);
     opponent.close();
     process.exit(opponent.over ? 0 : 1);
   }
