@@ -146,45 +146,15 @@ export async function deployAndRegister(
   // Register contracts (must happen before deploy+mint batch so NFT contract is available)
   const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
 
-  let nftArtifact: any = null;
-  if (AZTEC_CONFIG.nftContractAddress) {
-    const nftAddress = AztecAddress.fromStringUnsafe(AZTEC_CONFIG.nftContractAddress);
-    await wallet.registerSender(nftAddress, 'nft-contract');
-    try {
-      const nftInstance = await node.getContract(nftAddress);
-      if (nftInstance) {
-        nftArtifact = await getNftArtifact();
-        await wallet.registerContract(nftInstance, nftArtifact);
-        log('NFT contract registered');
-      }
-    } catch (e) { log(`Failed to register NFT: ${e}`); }
-  }
-
-  if (AZTEC_CONFIG.gameContractAddress) {
-    const gameAddress = AztecAddress.fromStringUnsafe(AZTEC_CONFIG.gameContractAddress);
-    await wallet.registerSender(gameAddress, 'game-contract');
-    try {
-      const gameInstance = await node.getContract(gameAddress);
-      if (gameInstance) {
-        const resp = await fetch('/contracts/triple_triad_game-TripleTriadGame.json');
-        await wallet.registerContract(gameInstance, loadContractArtifact(await resp.json()));
-        log('Game contract registered');
-      }
-    } catch (e) { log(`Failed to register Game: ${e}`); }
-  }
-
-  if (AZTEC_CONFIG.tokenContractAddress) {
-    const tokenAddress = AztecAddress.fromStringUnsafe(AZTEC_CONFIG.tokenContractAddress);
-    await wallet.registerSender(tokenAddress, 'token-contract');
-    try {
-      const tokenInstance = await node.getContract(tokenAddress);
-      if (tokenInstance) {
-        const resp = await fetch('/contracts/arena_token-ArenaToken.json');
-        await wallet.registerContract(tokenInstance, loadContractArtifact(await resp.json()));
-        log('Token contract registered');
-      }
-    } catch (e) { log(`Failed to register Token: ${e}`); }
-  }
+  // One registration path, shared with the arena bot (contractArtifacts.ts), so
+  // browser and bot register the same contracts the same way.
+  const { registerGameContracts } = await import('./contractArtifacts');
+  await registerGameContracts(wallet, node, {
+    nft: AZTEC_CONFIG.nftContractAddress,
+    game: AZTEC_CONFIG.gameContractAddress,
+    token: AZTEC_CONFIG.tokenContractAddress,
+  }, log);
+  const nftArtifact: any = AZTEC_CONFIG.nftContractAddress ? await getNftArtifact() : null;
 
   // Check deployment status — on-chain first (localStorage flag may be stale)
   let deployed = alreadyDeployed;

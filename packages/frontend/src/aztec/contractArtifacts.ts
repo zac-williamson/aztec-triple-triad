@@ -55,3 +55,43 @@ export async function loadRawArtifact(name: ArtifactName): Promise<unknown> {
   cache.set(file, artifact);
   return artifact;
 }
+
+/**
+ * Register the three game contracts with a wallet so its PXE can decode their
+ * notes. `Contract.at` alone is NOT enough — without registration, PXE sync
+ * fails with "No artifact registered for contract class".
+ *
+ * Shared by the browser bootstrap (connectToAztec) and the arena bot, so both
+ * register the same set the same way. Each contract is independent: a failure to
+ * register one is logged and skipped rather than aborting the others, matching
+ * the browser's original per-contract try/catch.
+ */
+export async function registerGameContracts(
+  wallet: any,
+  node: any,
+  addresses: { nft?: string; game?: string; token?: string },
+  log: (msg: string) => void = () => {},
+): Promise<void> {
+  const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+  const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
+
+  const entries: { name: ArtifactName; address?: string; alias: string }[] = [
+    { name: 'nft', address: addresses.nft, alias: 'nft-contract' },
+    { name: 'game', address: addresses.game, alias: 'game-contract' },
+    { name: 'token', address: addresses.token, alias: 'token-contract' },
+  ];
+
+  for (const { name, address, alias } of entries) {
+    if (!address) continue;
+    const addr = AztecAddress.fromStringUnsafe(address);
+    await wallet.registerSender(addr, alias);
+    try {
+      const instance = await node.getContract(addr);
+      if (!instance) { log(`${name} contract not found on chain at ${address}`); continue; }
+      await wallet.registerContract(instance, loadContractArtifact(await loadRawArtifact(name) as never));
+      log(`${name} contract registered`);
+    } catch (e) {
+      log(`Failed to register ${name}: ${e}`);
+    }
+  }
+}
