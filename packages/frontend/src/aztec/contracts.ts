@@ -11,6 +11,7 @@
 
 import { AZTEC_CONFIG } from './config';
 import { getNftArtifact } from './noteImporter';
+import { loadRawArtifact } from './contractArtifacts';
 
 // Fees: every game tx is paid natively in Fee Juice by the sending account
 // (funded during onboarding — bridge claim on devnet, manual bridge on
@@ -65,9 +66,7 @@ export async function ensureContracts(wallet: unknown) {
   if (!contractCache.gameContract) {
     if (!AZTEC_CONFIG.gameContractAddress) throw new Error('gameContractAddress not configured');
     const gameAddr = AztecAddress.fromStringUnsafe(AZTEC_CONFIG.gameContractAddress);
-    const gameResp = await fetch('/contracts/triple_triad_game-TripleTriadGame.json');
-    if (!gameResp.ok) throw new Error('Failed to load game contract artifact');
-    const gameArtifact = loadContractArtifact(await gameResp.json());
+    const gameArtifact = loadContractArtifact(await loadRawArtifact('game') as never);
     console.log(`[PXE-TRACE] ${Date.now()} Contract.at(Game, ${gameAddr})`);
     contractCache.gameContract = await Contract.at(gameAddr, gameArtifact, wallet as never);
   }
@@ -82,11 +81,11 @@ export async function ensureContracts(wallet: unknown) {
 
   if (!contractCache.tokenContract && AZTEC_CONFIG.tokenContractAddress) {
     const tokenAddr = AztecAddress.fromStringUnsafe(AZTEC_CONFIG.tokenContractAddress);
-    const tokenResp = await fetch('/contracts/arena_token-ArenaToken.json');
-    if (tokenResp.ok) {
-      const tokenArtifact = loadContractArtifact(await tokenResp.json());
+    // The token contract is optional: a deployment without one still plays.
+    try {
+      const tokenArtifact = loadContractArtifact(await loadRawArtifact('token') as never);
       contractCache.tokenContract = await Contract.at(tokenAddr, tokenArtifact, wallet as never);
-    }
+    } catch { /* no token artifact available — leave it unset */ }
   }
 
   return { gameContract: contractCache.gameContract, nftContract: contractCache.nftContract, tokenContract: contractCache.tokenContract, Fr, AztecAddress };

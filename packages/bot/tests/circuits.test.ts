@@ -19,3 +19,22 @@ describe('fileCircuitSource', () => {
     await expect(src('prove_hand')).rejects.toThrow(/Circuit artifact not found.*nargo compile/s);
   });
 });
+
+describe('fileContractArtifactSource', () => {
+  it('reads a compiled contract artifact from disk', async () => {
+    const { fileContractArtifactSource, DEFAULT_CONTRACTS_DIR } = await import('../src/circuits.js');
+    const src = fileContractArtifactSource();
+    if (!existsSync(`${DEFAULT_CONTRACTS_DIR}/triple_triad_nft-TripleTriadNFT.json`)) {
+      throw new Error(`contracts not compiled at ${DEFAULT_CONTRACTS_DIR} — run: cd packages/contracts && aztec compile`);
+    }
+    const artifact = await src('triple_triad_nft-TripleTriadNFT') as any;
+    expect(artifact).toBeTruthy();
+    expect(artifact.name ?? artifact.functions).toBeTruthy();
+  });
+
+  it('names the fix when the artifact is missing', async () => {
+    const { fileContractArtifactSource } = await import('../src/circuits.js');
+    const src = fileContractArtifactSource('/nonexistent/contracts');
+    await expect(src('triple_triad_nft-TripleTriadNFT')).rejects.toThrow(/Contract artifact not found.*aztec compile/s);
+  });
+});

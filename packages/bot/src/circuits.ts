@@ -11,6 +11,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 import type { CircuitArtifact, CircuitSource } from '../../frontend/src/aztec/circuitLoader.js';
+import type { ContractArtifactSource } from '../../frontend/src/aztec/contractArtifacts.js';
 
 /** Default: the repo's compiled circuit output. */
 export const DEFAULT_CIRCUITS_DIR = resolve(
@@ -28,4 +29,38 @@ export function fileCircuitSource(dir: string = DEFAULT_CIRCUITS_DIR): CircuitSo
     }
     return JSON.parse(readFileSync(path, 'utf-8')) as CircuitArtifact;
   };
+}
+
+/** Compiled contract artifacts, as emitted by `aztec compile`. */
+export const DEFAULT_CONTRACTS_DIR = resolve(
+  import.meta.dirname ?? __dirname, '../../contracts/target',
+);
+
+export function fileContractArtifactSource(dir: string = DEFAULT_CONTRACTS_DIR): ContractArtifactSource {
+  return async (file: string): Promise<unknown> => {
+    const path = resolve(dir, `${file}.json`);
+    if (!existsSync(path)) {
+      throw new Error(
+        `Contract artifact not found: ${path}. Compile the contracts first ` +
+        `(cd packages/contracts && aztec compile), or pass a different directory.`,
+      );
+    }
+    return JSON.parse(readFileSync(path, 'utf-8'));
+  };
+}
+
+/**
+ * Point the shared frontend loaders at the filesystem. Call ONCE at bot startup,
+ * before any chain op — after that the bot runs the same proving and contract
+ * code the browser does, which is what keeps its games genuinely
+ * indistinguishable from a player's rather than a parallel implementation.
+ */
+export async function installNodeArtifactSources(opts: {
+  circuitsDir?: string;
+  contractsDir?: string;
+} = {}): Promise<void> {
+  const { setCircuitSource } = await import('../../frontend/src/aztec/circuitLoader.js');
+  const { setContractArtifactSource } = await import('../../frontend/src/aztec/contractArtifacts.js');
+  setCircuitSource(fileCircuitSource(opts.circuitsDir));
+  setContractArtifactSource(fileContractArtifactSource(opts.contractsDir));
 }

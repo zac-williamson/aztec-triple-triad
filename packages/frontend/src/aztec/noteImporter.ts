@@ -32,9 +32,8 @@ let _cachedNftArtifact: any = null;
 export async function getNftArtifact(): Promise<any> {
   if (_cachedNftArtifact) return _cachedNftArtifact;
   const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
-  const resp = await fetch('/contracts/triple_triad_nft-TripleTriadNFT.json');
-  if (!resp.ok) throw new Error('Failed to load NFT contract artifact');
-  _cachedNftArtifact = loadContractArtifact(await resp.json());
+  const { loadRawArtifact } = await import('./contractArtifacts');
+  _cachedNftArtifact = loadContractArtifact(await loadRawArtifact('nft') as never);
   return _cachedNftArtifact;
 }
 
