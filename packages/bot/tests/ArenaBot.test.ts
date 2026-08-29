@@ -617,4 +617,34 @@ describe('ArenaBot commit gate', () => {
     expect(h.socket.countOfType('PLACE_CARD')).toBe(1);
     h.bot.stop();
   });
+
+
+  it('plays once committed, even if its turn arrived DURING the commit', async () => {
+    const socket = new FakeSocket();
+    let releaseCommit: (v: string) => void = () => {};
+    const f = fakeChain({ sendCreateGame: () => new Promise<string>(r => { releaseCommit = r; }) });
+    const bot = new ArenaBot(makeConfig(), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, log: () => {}, now: () => 1_000_000,
+    });
+    bot.start();
+    socket.emit('open');
+    socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    // Our turn arrives while the commit is still in flight — and is dropped.
+    socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: freshState() });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(socket.countOfType('PLACE_CARD')).toBe(0);
+
+    // The relay sends a new state only when somebody MOVES, so nothing further
+    // will arrive. Committing must replay the last state or the bot deadlocks.
+    releaseCommit('0xtx');
+    await vi.advanceTimersByTimeAsync(50);
+    expect(socket.countOfType('PLACE_CARD')).toBe(1);
+    bot.stop();
+  });
 });

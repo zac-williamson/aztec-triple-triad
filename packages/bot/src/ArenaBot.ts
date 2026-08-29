@@ -102,6 +102,14 @@ export class ArenaBot {
   private handProofSent = false;
   /** True once OUR cards are committed on-chain. Gates play in chain mode. */
   private committed = false;
+  /**
+   * Latest state seen for the current game. The commit gate drops states that
+   * arrive before we are committed, and the relay sends a new one only when
+   * somebody MOVES — so without replaying the last state after committing, a
+   * bot whose turn arrived during its commit waits forever for a message that
+   * will never come. That deadlock cost a 30-minute sandbox run.
+   */
+  private lastState: GameState | null = null;
   /** Our in-flight move, kept so the proof can bind the before/after transition. */
   private pendingMove: {
     moveNumber: number; cardId: number; row: number; col: number;
@@ -373,6 +381,8 @@ export class ArenaBot {
     this.send({ type: 'TX_CONFIRMED', gameId: wsGameId, txType: 'create_game', txHash });
     this.committed = true;
     this.log(`create_game mined: ${txHash.slice(0, 18)}…`);
+    // Our turn may have arrived while we were committing.
+    this.maybeMove(this.lastState ?? undefined);
     void this.maybeProveHand().catch(err => {
       this.stats.proofFailures += 1;
       this.recordError('prove-hand', err as Error);
@@ -395,6 +405,8 @@ export class ArenaBot {
     this.send({ type: 'TX_CONFIRMED', gameId: wsGameId, txType: 'join_game', txHash });
     this.committed = true;
     this.log(`join_game mined: ${txHash.slice(0, 18)}…`);
+    // Our turn may have arrived while we were committing.
+    this.maybeMove(this.lastState ?? undefined);
     void this.maybeProveHand().catch(err => {
       this.stats.proofFailures += 1;
       this.recordError('prove-hand', err as Error);
@@ -544,6 +556,7 @@ export class ArenaBot {
 
   /** Play if, and only if, it is our turn in a live game. */
   private maybeMove(state: GameState | undefined): void {
+    if (state) this.lastState = state;
     if (!state || this.state !== 'playing' || !this.myPlayer) return;
     if (state.status !== 'playing') return;
     if (state.currentTurn !== this.myPlayer) return;
@@ -595,6 +608,7 @@ export class ArenaBot {
     this.opponentCardCommit = null;
     this.handProofSent = false;
     this.committed = false;
+    this.lastState = null;
     this.pendingMove = null;
     this.myHandProof = null;
     this.opponentHandProof = null;
