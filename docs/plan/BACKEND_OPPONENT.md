@@ -278,8 +278,8 @@ remaining provisioned accounts, and must not happen while nobody is watching.
   `deploy-contracts.ts` fails "No L1 to L2 message found" because
   `aztecDebug_mineBlock` now answers `buildEmptyBlock: runBuild returned
   undefined`, even with SEQ_MIN_TX_PER_BLOCK=0 and AZTEC_NODE_DEBUG=true
-  confirmed on the process and a clean restart. Intermittent — the same deploy
-  succeeded twice earlier the same night. Recorded in
+  confirmed on the process and a clean restart. Succeeded twice early that night, then failed on
+  every attempt after, including three clean restarts — not a flake. Recorded in
   [[v5-sandbox-playtest-gotchas]]. Testnet is unaffected.
 - Still open: re-verify the move-proof fix and see a settled game once the
   sandbox cooperates; phase 5 (identity pool, as N processes); phase 6 (testnet).
