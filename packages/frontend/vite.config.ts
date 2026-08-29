@@ -25,7 +25,9 @@ export default defineConfig({
   plugins: [
     react(),
     nodePolyfillsFix({
-      include: ['buffer', 'path', 'process', 'net', 'tty'],
+      // 'util' since 5.2: the unbundled sqlite-opfs store reaches @aztec/foundation,
+      // which imports util.inspect; nothing else supplies the CJS->ESM interop for it.
+      include: ['buffer', 'path', 'process', 'net', 'tty', 'util'],
     }),
   ],
   server: {
@@ -63,10 +65,36 @@ export default defineConfig({
     esbuildOptions: {
       target: 'esnext',
     },
-    // Force pre-bundle CJS packages so they work as ESM imports
-    include: ['pino', 'pino/browser'],
-    // Only exclude WASM-containing packages that esbuild corrupts
-    exclude: ['@aztec/noir-noirc_abi', '@aztec/noir-acvm_js', '@aztec/bb.js', '@noir-lang/noir_js'],
+    // Force pre-bundle CJS packages so they work as ESM imports. The sqlite-opfs
+    // subpath below is excluded, so anything IT reaches must be pre-bundled here or
+    // the browser gets raw CJS with no named exports (msgpackr, sha3, ...).
+    // kv-store's browser build imports '#msgpackr' -> 'msgpackr/index-no-eval'
+    // (the no-eval CJS bundle, chosen for CSP). Name that exact specifier: a bare
+    // 'msgpackr' include resolves to the ESM entry and leaves the .cjs unbundled,
+    // so the browser gets no named 'Encoder' export.
+    include: ['pino', 'pino/browser', 'msgpackr', 'msgpackr/index-no-eval', 'sha3'],
+    // WASM-containing packages that esbuild corrupts, plus the SQLite-OPFS store.
+    //
+    // As of 5.2 the browser PXE keeps state in SQLite-OPFS, and that store spawns a
+    // worker via `new Worker(new URL('./worker.js', import.meta.url))`. Pre-bundling
+    // rewrites import.meta.url to the .vite/deps chunk, where no worker.js exists, so
+    // the worker dies on load ("SQLite worker crashed: undefined") and onboarding ends
+    // in aztecStatus='error'. Only the dev optimizer is affected -- the rollup
+    // production build emits the worker correctly.
+    //
+    // Exclude the ./sqlite-opfs SUBPATH, not all of @aztec/kv-store: the package's
+    // full closure is ~326 deps (AWS SDK, Koa, Google Cloud) and unbundling it just
+    // trades this for an endless run of CJS named-export failures (util.inspect,
+    // sha3.Keccak, ...). The subpath's own imports are narrow, so this is the
+    // smallest cut that lets the worker URL resolve.
+    exclude: [
+      '@aztec/noir-noirc_abi',
+      '@aztec/noir-acvm_js',
+      '@aztec/bb.js',
+      '@noir-lang/noir_js',
+      '@aztec/kv-store/sqlite-opfs',
+      '@aztec/sqlite3mc-wasm',
+    ],
   },
   worker: {
     format: 'es',
