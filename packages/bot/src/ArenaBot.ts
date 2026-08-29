@@ -430,7 +430,9 @@ export class ArenaBot {
         // normal outcome of a pool, not a failure: go back to idle WITHOUT
         // touching joinFailures, or a healthy pool would report itself broken.
         if (this.state === 'queued') {
-          this.log(`stood down: ${msg.botsQueued} bot(s) already cover ${msg.humansWaiting} waiting player(s)`);
+          this.log(msg.reason === 'nobody-waiting'
+            ? 'stood down: the waiting player was matched before we got there'
+            : `stood down: ${msg.botsQueued} bot(s) already cover ${msg.humansWaiting} waiting player(s)`);
           this.resetToIdle();
         }
         break;

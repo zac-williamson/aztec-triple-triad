@@ -108,6 +108,27 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
    * that disclosure by claiming to be the bot.
    */
   const botPlayerIds = new Set<string>();
+
+  /**
+   * Serialises the matchmaking critical section (admission check → queue →
+   * match).
+   *
+   * Node processes another socket message during any `await`, so the handler
+   * below is NOT atomic just because the server is single-threaded. Two bots
+   * arriving together could each read "no bot has queued yet", both pass the
+   * admission check, and both queue — leaving one parked with five committed
+   * cards after the other is matched. Observed as a ~1-in-5 flake in the
+   * three-bot integration test, which is exactly what a race looks like from
+   * the outside.
+   */
+  let matchmakingLock: Promise<unknown> = Promise.resolve();
+  const withMatchmakingLock = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = matchmakingLock.then(fn, fn);
+    // Keep the chain alive when a link rejects, or one failed queue attempt
+    // would wedge matchmaking for everyone behind it.
+    matchmakingLock = run.catch(() => undefined);
+    return run;
+  };
   const isBotPlayerId = (id: string): boolean => botPlayerIds.has(id);
   // playerId → disconnect timeout (for reconnection window)
   const disconnectTimeouts = new Map<string, NodeJS.Timeout>();
@@ -864,6 +885,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       }
 
       case 'QUEUE_MATCHMAKING': {
+        await withMatchmakingLock(async () => {
         try {
           // A bot decides to offer by POLLING /queue, so N bots read the same
           // state before any of their queue messages arrive and all of them
@@ -879,13 +901,17 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
           if (isBotPlayerId(playerId)) {
             const snap = await gameManager.queueSnapshot(Date.now(), isBotPlayerId);
             if (snap.botsQueued >= snap.humansWaiting) {
+              // Two different situations, and conflating them makes the logs
+              // lie: a bot that arrives just after the waiting player was
+              // matched is told "0 bots already cover 0 players", which reads
+              // like a bug rather than the ordinary end of a race.
               send(ws, {
                 type: 'QUEUE_DECLINED',
-                reason: 'already-covered',
+                reason: snap.humansWaiting === 0 ? 'nobody-waiting' : 'already-covered',
                 humansWaiting: snap.humansWaiting,
                 botsQueued: snap.botsQueued,
               }, playerId);
-              break;
+              return;   // inside the lock callback — `break` cannot cross it
             }
           }
           const position = await gameManager.queuePlayer(playerId, msg.cardIds);
@@ -922,6 +948,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         } catch (err: any) {
           send(ws, { type: 'ERROR', message: err.message }, playerId);
         }
+        });
         break;
       }
 

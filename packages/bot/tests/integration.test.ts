@@ -51,27 +51,32 @@ class HumanClient {
   over: { winner: string } | null = null;
   opponentIsBot: boolean | null = null;
 
-  constructor(url: string) { this.ws = new WebSocket(url); openSockets.push(this.ws); }
+  private established = false;
+  private onEstablished: (() => void) | null = null;
+
+  constructor(url: string) {
+    this.ws = new WebSocket(url);
+    openSockets.push(this.ws);
+    // Listen from CONSTRUCTION, not from ready(). Attaching later loses any
+    // message that already arrived, and nothing replays it: constructing two
+    // clients and awaiting them in turn lets the second one's
+    // SESSION_ESTABLISHED land while we are still awaiting the first, after
+    // which ready() waits forever for an event that has been and gone. That was
+    // a real ~1-in-6 hang in these tests, and it looked like a server fault.
+    this.ws.on('message', raw => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'SESSION_ESTABLISHED') {
+        this.established = true;
+        this.onEstablished?.();
+      }
+      this.handle(msg);
+    });
+  }
 
   /** Resolves once the server has established our session (not merely on open). */
   async ready(): Promise<void> {
-    // Check readyState first: constructing several clients and awaiting them in
-    // turn lets a later socket OPEN before its ready() runs, and once('open')
-    // then waits forever for an event that has already fired.
-    if (this.ws.readyState !== WebSocket.OPEN) {
-      await new Promise<void>(res => this.ws.once('open', () => res()));
-    }
-    const established = new Promise<void>(res => {
-      const onMsg = (raw: any) => {
-        if (JSON.parse(raw.toString()).type === 'SESSION_ESTABLISHED') {
-          this.ws.off('message', onMsg);
-          res();
-        }
-      };
-      this.ws.on('message', onMsg);
-    });
-    this.ws.on('message', raw => this.handle(JSON.parse(raw.toString())));
-    await established;
+    if (this.established) return;
+    await new Promise<void>(res => { this.onEstablished = res; });
   }
 
   private handle(msg: any) {
@@ -260,8 +265,17 @@ describe('a pool of arena bots', () => {
     human.queue();
 
     await waitFor(() => human.gameId !== null, 15_000, 'the human to be matched');
-    // Give the others a chance to pile in behind it.
-    await new Promise(r => setTimeout(r, 1_500));
+    // Wait for the losers of the race to be TOLD to stand down rather than
+    // sleeping a guessed interval: a bot briefly holds state 'queued' between
+    // sending its offer and receiving QUEUE_DECLINED, and a fixed sleep landing
+    // inside that window fails for no real reason.
+    await waitFor(
+      () => pool.filter(b => b.getStats().state === 'queued').length === 0,
+      10_000, 'the other bots to stand down',
+    );
+    // …then leave room for anything wrong to actually happen before asserting
+    // that it did not.
+    await new Promise(r => setTimeout(r, 1_000));
 
     expect(human.opponentIsBot).toBe(true);
     // The extras must not be parked in the queue holding five committed cards
