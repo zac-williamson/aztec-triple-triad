@@ -166,7 +166,10 @@ pub contract TripleTriadNFT {
 
         // Note nonce: a single FieldNote per user tracking nonce counter for deterministic randomness
         note_nonce: Owned<PrivateSet<FieldNote, Context>, Context>,
-        // Arena Token contract address
+        /// The arena bot's address. The ONLY account that may hold duplicate
+        /// cards (see mint_bot_cards). PublicImmutable so a private function can
+        /// read it and so it can never be repointed at a player once set.
+        arena_bot: PublicImmutable<AztecAddress, Context>,
     }
 
     // --- Constructor ---
@@ -190,6 +193,18 @@ pub contract TripleTriadNFT {
         let minter = self.storage.minter.read();
         assert(self.msg_sender() == minter, "Only minter can set game contract");
         self.storage.game_contract.initialize(game_address);
+    }
+
+    /// Register the arena bot. Admin only, and settable exactly ONCE —
+    /// PublicImmutable — because this address is the sole exemption from the
+    /// one-NFT-per-token_id rule. If it could be changed, or pointed at a
+    /// player, the exemption would become an unlimited card faucet for whoever
+    /// held it.
+    #[external("public")]
+    fn set_arena_bot(bot: AztecAddress) {
+        let minter = self.storage.minter.read();
+        assert(self.msg_sender() == minter, "Only minter can set arena bot");
+        self.storage.arena_bot.initialize(bot);
     }
 
     /// Set the Arena Token contract address. Admin only.
@@ -293,6 +308,37 @@ pub contract TripleTriadNFT {
     // --- Nullifier Debug Logging ---
 
     /// Peek at card notes via get_notes, compute their nullifiers, and log them.
+    /// Pop exactly one note per requested token_id, selecting in the ORACLE.
+    ///
+    /// NOT `NoteGetterOptions::with_filter`, which is what this replaced.
+    /// `with_filter` sets the read limit to MAX_NOTE_HASH_READ_REQUESTS_PER_CALL
+    /// (16) and applies its predicate CLIENT-SIDE to whatever 16 notes the
+    /// oracle happened to return. So an owner holding more than 16 cards could
+    /// fail to commit a hand of cards they demonstrably own — "Could not find
+    /// all 5 cards" — purely because those cards fell outside that window. It is
+    /// silent and looks like a flake, it gets likelier the more cards you own,
+    /// and it makes a large collection (the arena bot's) impossible.
+    ///
+    /// Selecting per card pushes the match into the oracle, so it holds for a
+    /// collection of ANY size, and it issues 5 read requests instead of 16.
+    /// Duplicate ids in `token_ids` are handled correctly: each pop nullifies
+    /// the note it took, so the next select for the same id finds a different
+    /// one.
+    #[contract_library_method]
+    fn pop_cards_by_id(
+        storage: Storage<&mut aztec::context::PrivateContext>,
+        owner: AztecAddress,
+        token_ids: [Field; 5],
+    ) {
+        for i in 0..5 {
+            let options: NoteGetterOptions<FieldNote, 1, Field, Field> = NoteGetterOptions::new()
+                .select(FieldNote::properties().value, Comparator.EQ, token_ids[i])
+                .set_limit(1);
+            let popped = storage.private_nfts.at(owner).pop_notes(options);
+            assert(popped.len() == 1, "Could not find all 5 cards");
+        }
+    }
+
     /// Called BEFORE pop_notes so the code path under test is unchanged.
     #[contract_library_method]
     fn log_card_nullifiers(
@@ -301,15 +347,17 @@ pub contract TripleTriadNFT {
         token_ids: [Field; 5],
         nhk_app_secret: Field,
     ) {
-        let options = NoteGetterOptions::with_filter(filter_by_token_ids, token_ids);
-        let peeked = storage.private_nfts.at(owner).get_notes(options);
-        debug_log_format(
-            "[NFT] log_card_nullifiers: found {0} notes for owner={1}",
-            [peeked.len() as Field, owner.to_field()],
-        );
+        // Per-card oracle select, for the same reason as pop_cards_by_id: the
+        // old batch filter only ever saw the first 16 notes, so for a large
+        // collection this logged nullifiers for the WRONG cards (or none) —
+        // diagnostics that mislead precisely when you need them.
         for i in 0..5 {
-            if i < peeked.len() {
-                let cn = peeked.get(i);
+            let options: NoteGetterOptions<FieldNote, 1, Field, Field> = NoteGetterOptions::new()
+                .select(FieldNote::properties().value, Comparator.EQ, token_ids[i])
+                .set_limit(1);
+            let peeked = storage.private_nfts.at(owner).get_notes(options);
+            if peeked.len() == 1 {
+                let cn = peeked.get(0);
                 let note_hash_for_nul = compute_confirmed_note_hash_for_nullification(cn);
                 let nullifier = poseidon2_hash_with_separator(
                     [note_hash_for_nul, nhk_app_secret],
@@ -318,6 +366,11 @@ pub contract TripleTriadNFT {
                 debug_log_format(
                     "[NFT] card_nullifier[{0}]: value={1} note_hash={2} nullifier={3}",
                     [i as Field, cn.note.value, note_hash_for_nul, nullifier],
+                );
+            } else {
+                debug_log_format(
+                    "[NFT] card_nullifier[{0}]: NO NOTE for token_id={1}",
+                    [i as Field, token_ids[i]],
                 );
             }
         }
@@ -547,6 +600,45 @@ pub contract TripleTriadNFT {
         self.enqueue_self.finalize_mint(to, token_id, packed_ranks);
     }
 
+    /// Mint cards to the ARENA BOT, allowing DUPLICATES of a token_id.
+    ///
+    /// Every other mint path registers `nft_exists[token_id]` and refuses a
+    /// second card with the same id, which makes a token_id a globally unique
+    /// instance. That is right for players — a card someone owns should be the
+    /// only one — but it caps the bot's collection at the size of the card
+    /// database and forces it to compete with players for ids.
+    ///
+    /// The bot is not a collector: it needs a deep stock of ordinary cards to
+    /// wager, and which INSTANCE it holds is meaningless. So for the bot, and
+    /// only the bot, a token_id is a card TYPE and it may hold many. The notes
+    /// are ordinary FieldNotes, so nothing downstream changes: nullifiers come
+    /// from note randomness, not from the id, and ranks are already registered
+    /// per id.
+    ///
+    /// Restricted twice over: only the minter may call it, and the recipient is
+    /// read from immutable storage rather than passed in, so it cannot be aimed
+    /// at a player even by the minter.
+    #[external("private")]
+    fn mint_bot_cards(token_ids: [Field; 10], packed_ranks: [Field; 10], count: u32) {
+        let minter = self.storage.minter.read();
+        assert(self.msg_sender() == minter, "Only minter can mint");
+        assert(count <= 10, "count exceeds batch size");
+
+        let bot = self.storage.arena_bot.read();
+        assert(!bot.is_zero(), "Arena bot not registered");
+
+        for i in 0..10 {
+            if (i as u32) < count {
+                let note = FieldNote { value: token_ids[i] };
+                self.storage.private_nfts.at(bot).insert(note).deliver(
+                    MessageDelivery::onchain_constrained(),
+                );
+            }
+        }
+
+        self.enqueue_self.finalize_bot_mint(token_ids, packed_ranks, count);
+    }
+
     #[external("public")]
     fn mint_to_public(to: AztecAddress, token_id: Field, packed_ranks: Field) {
         let minter = self.storage.minter.read();
@@ -602,9 +694,7 @@ pub contract TripleTriadNFT {
         log_card_nullifiers(self.storage, owner, token_ids, nhk_app_secret);
 
         // Pop the 5 card notes (unchanged code path)
-        let options = NoteGetterOptions::with_filter(filter_by_token_ids, token_ids);
-        let notes = self.storage.private_nfts.at(owner).pop_notes(options);
-        assert(notes.len() == 5, "Could not find all 5 cards");
+        pop_cards_by_id(self.storage, owner, token_ids);
 
         // card_commit_hash = poseidon2([card_ids[0..5], blinding_factor])
         let mut to_hash: [Field; 6] = [0; 6];
@@ -667,16 +757,7 @@ pub contract TripleTriadNFT {
         log_card_nullifiers(self.storage, owner, token_ids, nhk_app_secret);
 
         // Pop the 5 card notes (unchanged code path)
-        let options = NoteGetterOptions::with_filter(filter_by_token_ids, token_ids);
-        let notes = self.storage.private_nfts.at(owner).pop_notes(options);
-        assert(notes.len() == 5, "Could not find all 5 cards");
-
-        for i in 0..5 {
-            debug_log_format(
-                "[NFT] commit_join: popped note[{0}] value={1}",
-                [i as Field, notes.get(i).value],
-            );
-        }
+        pop_cards_by_id(self.storage, owner, token_ids);
 
         // card_commit_hash = poseidon2([card_ids[0..5], blinding_factor])
         let mut to_hash: [Field; 6] = [0; 6];
@@ -931,6 +1012,25 @@ pub contract TripleTriadNFT {
         self.storage.nft_exists.at(token_id).write(true);
         self.storage.card_ranks.at(token_id).initialize(packed_ranks);
         self.emit(CardMinted { token_id, to });
+    }
+
+    /// Register ranks for any id the bot's mint introduced that nobody has minted
+    /// before. Unlike finalize_mint this does NOT assert uniqueness — duplicates
+    /// are the entire point — and it skips ids already registered, whose ranks
+    /// are by definition the same ones.
+    #[external("public")]
+    #[only_self]
+    fn finalize_bot_mint(token_ids: [Field; 10], packed_ranks: [Field; 10], count: u32) {
+        for i in 0..10 {
+            if (i as u32) < count {
+                let token_id = token_ids[i];
+                let exists = self.storage.nft_exists.at(token_id).read();
+                if !exists {
+                    self.storage.nft_exists.at(token_id).write(true);
+                    self.storage.card_ranks.at(token_id).initialize(packed_ranks[i]);
+                }
+            }
+        }
     }
 
     #[external("public")]

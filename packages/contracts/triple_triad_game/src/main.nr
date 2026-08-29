@@ -293,7 +293,12 @@ pub contract TripleTriadGame {
 
         // Bounds check
         let n = num_valid_moves as u32;
-        assert(n >= 1, "At least one move must have been played");
+        // n == 0 IS allowed: a player can abandon between joining and their
+        // first move, and refusing that claim left BOTH hands locked forever
+        // with no route back — the one outcome this whole path exists to
+        // prevent. Every per-move check below is already guarded on `n`, and
+        // section 8 requires it to be the opponent's turn, which at n == 0 means
+        // only player 2 may claim (player 1 is the one who failed to move).
         assert(n <= 8, "Use process_game for complete games");
 
         // ===== 1. Verify both hand proofs =====
@@ -342,6 +347,13 @@ pub contract TripleTriadGame {
         let card_commit_1 = hand_proof_1_inputs[0];
         let card_commit_2 = hand_proof_2_inputs[0];
 
+        // These are bound to the on-chain commitments in the public half below
+        // (game_card_commit_* is PublicMutable, so a private function cannot
+        // read it). Without that binding the hand proofs prove only that SOME
+        // hand was known, not THIS game's hand — and at n == 0 there are no move
+        // proofs to constrain them, which is what makes the zero-move claim
+        // safe. It is a strengthening at every n, not only at zero.
+
         // ===== 4. Validate card_commit consistency for valid moves =====
         let move_inputs: [[Field; 6]; 9] = [
             move_inputs_1, move_inputs_2, move_inputs_3,
@@ -367,11 +379,14 @@ pub contract TripleTriadGame {
         }
 
         // ===== 6. Validate initial state =====
-        let canonical_initial = crate::compute_initial_state_hash();
-        assert(
-            move_inputs[0][2] == canonical_initial,
-            "First move start_state does not match initial state",
-        );
+        // Only when there IS a first move: at n == 0 move_inputs[0] is a dummy.
+        if n > 0 {
+            let canonical_initial = crate::compute_initial_state_hash();
+            assert(
+                move_inputs[0][2] == canonical_initial,
+                "First move start_state does not match initial state",
+            );
+        }
 
         // ===== 7. Validate game NOT ended for all valid moves =====
         for i in 0..9 {
@@ -395,14 +410,33 @@ pub contract TripleTriadGame {
 
         // ===== 9. Enqueue public claim =====
         let caller = self.msg_sender();
-        self.enqueue_self.claim_abandoned_game_public(game_id, caller, num_valid_moves);
+        self.enqueue_self.claim_abandoned_game_public(
+            game_id, caller, num_valid_moves, card_commit_1, card_commit_2,
+        );
     }
 
     #[external("public")]
     #[only_self]
-    fn claim_abandoned_game_public(game_id: Field, claimant: AztecAddress, num_valid_moves: Field) {
+    fn claim_abandoned_game_public(
+        game_id: Field,
+        claimant: AztecAddress,
+        num_valid_moves: Field,
+        card_commit_1: Field,
+        card_commit_2: Field,
+    ) {
         let status = self.storage.game_status.at(game_id).read();
         assert(status == 2, "Game must be in active state to claim abandonment");
+
+        // Bind the claim's hand proofs to the hands actually committed to THIS
+        // game. See the note in the private half.
+        assert(
+            card_commit_1 == self.storage.game_card_commit_1.at(game_id).read(),
+            "Hand proof 1 card_commit mismatch",
+        );
+        assert(
+            card_commit_2 == self.storage.game_card_commit_2.at(game_id).read(),
+            "Hand proof 2 card_commit mismatch",
+        );
 
         let p1 = self.storage.game_player1.at(game_id).read();
         let p2 = self.storage.game_player2.at(game_id).read();
