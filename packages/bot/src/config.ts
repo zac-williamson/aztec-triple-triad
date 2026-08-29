@@ -47,6 +47,8 @@ export interface ArenaBotConfig {
    * it takes no further players AND its five committed cards stay stranded.
    */
   gameTimeoutMs: number;
+  /** How often to sweep the journal for games whose cards need reclaiming. */
+  sweepIntervalMs: number;
   /** Port for the bot's own health/metrics endpoint. 0 disables it. */
   healthPort: number;
 }
@@ -86,6 +88,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ArenaBotCon
     chainTxTimeoutMs: int(env.ARENA_BOT_CHAIN_TX_TIMEOUT_MS, 600_000),
     settleWaitMs: int(env.ARENA_BOT_SETTLE_WAIT_MS, 300_000),
     gameTimeoutMs: int(env.ARENA_BOT_GAME_TIMEOUT_MS, 1_800_000),
+    // Recovery is not urgent — the cards are not going anywhere — and each pass
+    // may prove and wait out a dispute window, so a slow cadence is correct.
+    sweepIntervalMs: int(env.ARENA_BOT_SWEEP_INTERVAL_MS, 900_000),
     healthPort: Number(env.ARENA_BOT_HEALTH_PORT ?? 5175) || 0,
   };
 }

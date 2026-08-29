@@ -106,3 +106,144 @@ export async function buildProcessGameArgs(inputs: ProcessGameInputs): Promise<u
     inputs.opponentRandomness.map(v => toFr(Fr, v)),
   ];
 }
+
+// ---------------------------------------------------------------------------
+// Abandoned-game recovery
+//
+// The escape hatch when the other side never completes the transcript: a player
+// whose opponent walked away claims the game with a PARTIAL chain padded with
+// dummy proofs, waits out a dispute window, and settles. It is the only way
+// committed cards ever come back from a game that cannot be settled normally,
+// which makes it load-bearing for anything running unattended — a bot cannot
+// cancel (cancel is creator-only) and will otherwise strand five cards per
+// abandoned game, permanently and monotonically.
+//
+// Shared with the browser for the same reason as process_game: one flat,
+// order-critical argument list, rejected only on-chain if it is wrong.
+// ---------------------------------------------------------------------------
+
+/** Blocks that must elapse between claim and settle (contract-enforced). */
+export const DISPUTE_BLOCKS = 5;
+
+export interface ClaimAbandonedInputs {
+  Fr: any;
+  onChainGameId: string;
+  callerIsPlayer1: boolean;
+  handVk: Uint8Array;
+  moveVk: Uint8Array;
+  dummyVk: Uint8Array;
+  handProof1: { proof: string; publicInputs: string[] };
+  handProof2: { proof: string; publicInputs: string[] };
+  /** The moves that DID complete — 1..8 of them, in any order. */
+  validMoveProofs: { proof: string; publicInputs: string[]; startStateHash: string; endStateHash: string }[];
+  /** Generates one dummy proof, base64-encoded, to pad the chain. */
+  makeDummyProof: () => Promise<string>;
+}
+
+/**
+ * Build the ordered `claim_abandoned_game` argument list.
+ *
+ * The real moves are chained exactly as in `process_game` and the remaining
+ * slots are filled with dummy proofs carrying all-zero public inputs; the
+ * contract verifies the first `num_valid_moves` against the move VK and the
+ * rest against the dummy VK. `num_valid_moves` must therefore match the number
+ * of real proofs exactly.
+ */
+export async function buildClaimAbandonedArgs(inputs: ClaimAbandonedInputs): Promise<unknown[]> {
+  const { toFr, bytesToFrArray, base64ToFrArray, hexToFr } = await import('./fieldUtils');
+  const { Fr } = inputs;
+  const toFrArr = (b64: string) => base64ToFrArray(Fr, b64);
+  const toFrHex = (hex: string) => hexToFr(Fr, hex);
+
+  const numValid = inputs.validMoveProofs.length;
+  if (numValid < 1 || numValid >= TOTAL_MOVES) {
+    // A complete chain is a normal settlement, not an abandonment; an empty one
+    // cannot show whose turn it was, which is what the claim rests on.
+    throw new Error(
+      `claim_abandoned_game needs 1..${TOTAL_MOVES - 1} valid move proofs, got ${numValid}`,
+    );
+  }
+
+  const sorted = sortProofChain(inputs.validMoveProofs, numValid, await computeCanonicalInitialHash());
+  const allProofs: unknown[] = sorted.map(m => toFrArr(m.proof));
+  const allInputs: unknown[] = sorted.map(m => m.publicInputs.map(toFrHex));
+  const zeroInputs = ['0x0', '0x0', '0x0', '0x0', '0x0', '0x0'];
+  for (let i = numValid; i < TOTAL_MOVES; i++) {
+    allProofs.push(toFrArr(await inputs.makeDummyProof()));
+    allInputs.push(zeroInputs.map(toFrHex));
+  }
+
+  return [
+    toFr(Fr, inputs.onChainGameId),
+    new Fr(BigInt(numValid)),
+    inputs.callerIsPlayer1,
+    bytesToFrArray(Fr, inputs.handVk),
+    bytesToFrArray(Fr, inputs.moveVk),
+    bytesToFrArray(Fr, inputs.dummyVk),
+    toFrArr(inputs.handProof1.proof), inputs.handProof1.publicInputs.map(toFrHex),
+    toFrArr(inputs.handProof2.proof), inputs.handProof2.publicInputs.map(toFrHex),
+    allProofs[0], allInputs[0], allProofs[1], allInputs[1], allProofs[2], allInputs[2],
+    allProofs[3], allInputs[3], allProofs[4], allInputs[4], allProofs[5], allInputs[5],
+    allProofs[6], allInputs[6], allProofs[7], allInputs[7], allProofs[8], allInputs[8],
+  ];
+}
+
+export interface SettleAbandonedInputs {
+  Fr: any;
+  AztecAddress: any;
+  onChainGameId: string;
+  myCardIds: number[];
+  myRandomness: string[];
+  opponentCardIds: number[];
+  /** 0 to return all five opponent cards; otherwise the one card we claim. */
+  claimedCardId: number;
+  opponentAddress: string;
+}
+
+/** Build the ordered `settle_abandoned_game` argument list. */
+export function buildSettleAbandonedArgs(inputs: SettleAbandonedInputs): Promise<unknown[]> {
+  return (async () => {
+    const { toFr } = await import('./fieldUtils');
+    const { Fr, AztecAddress } = inputs;
+    return [
+      toFr(Fr, inputs.onChainGameId),
+      padToHand(Fr, inputs.myCardIds),
+      inputs.myRandomness.map(v => toFr(Fr, v)),
+      padToHand(Fr, inputs.opponentCardIds),
+      new Fr(BigInt(inputs.claimedCardId)),
+      AztecAddress.fromStringUnsafe(inputs.opponentAddress),
+    ];
+  })();
+}
+
+/**
+ * Block-height wait for the dispute window.
+ *
+ * Deliberately NOT a wall-clock sleep: block time varies from instant (sandbox)
+ * to ~40s (testnet), and a fixed wait settles EARLY on a slow chain — the tx
+ * then reverts "Dispute window not elapsed" after all the proving work. Fails
+ * loudly at the ceiling rather than waiting forever.
+ */
+export async function waitForDisputeWindow(
+  node: { getBlockNumber: () => Promise<number | bigint> },
+  opts: { maxMs?: number; pollMs?: number; onProgress?: (blocks: number) => void } = {},
+): Promise<void> {
+  const maxMs = opts.maxMs ?? 20 * 60 * 1000;
+  const pollMs = opts.pollMs ?? 3000;
+  const baseline = Number(await node.getBlockNumber());
+  const started = Date.now();
+  let elapsed = 0;
+  while (elapsed < DISPUTE_BLOCKS) {
+    if (Date.now() - started > maxMs) {
+      throw new Error(
+        `Dispute window did not open: ${elapsed}/${DISPUTE_BLOCKS} blocks in ` +
+        `${Math.round((Date.now() - started) / 1000)}s (baseline block ${baseline}). ` +
+        `Refusing to settle early or wait indefinitely.`,
+      );
+    }
+    await new Promise(r => setTimeout(r, pollMs));
+    const current = Number(await Promise.resolve(node.getBlockNumber()).catch(() => baseline + elapsed));
+    elapsed = Math.max(0, current - baseline);
+    opts.onProgress?.(elapsed);
+  }
+}

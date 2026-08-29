@@ -79,6 +79,12 @@ export interface ArenaBotDeps {
    * commits its cards on-chain like any player.
    */
   chain?: BotChainLike;
+  /**
+   * Persists each committed game's transcript so it can be recovered if this
+   * process dies. Optional: without it the bot plays identically but a wedged
+   * game strands its five cards for good.
+   */
+  journal?: { read(id: string): any; write(rec: any): void; forget(id: string): void };
   /** Proof generator. Required alongside `chain`; ignored without it. */
   proofs?: BotProofsLike;
   /** Injected for tests; defaults to a real ws client. */
@@ -151,6 +157,7 @@ export class ArenaBot {
 
   constructor(private readonly cfg: ArenaBotConfig, deps: ArenaBotDeps = {}) {
     this.chain = deps.chain ?? null;
+    this.journal = deps.journal ?? null;
     this.proofs = deps.proofs ?? null;
     this.connect = deps.connect ?? ((url: string) => new WebSocket(url));
     this.fetchQueue = deps.fetchQueue ?? defaultFetchQueue;
@@ -369,6 +376,7 @@ export class ArenaBot {
         this.log(`game over: ${msg.winner} (bot was ${this.myPlayer})`);
         if (Array.isArray(msg.player1CardIds) && Array.isArray(msg.player2CardIds)) {
           this.opponentCardIds = this.myPlayer === 'player1' ? msg.player2CardIds : msg.player1CardIds;
+          this.journalGame();
         }
         if (this.chain && this.proofs && this.shouldSettle(msg.winner)) {
           // Settle BEFORE resetting: the transcript lives in this game's state.
@@ -388,6 +396,7 @@ export class ArenaBot {
         if (msg.gameId === this.gameId && msg.handProof?.cardCommit) {
           this.opponentCardCommit = String(msg.handProof.cardCommit);
           this.opponentHandProof = msg.handProof;
+          this.journalGame();
           // We may have been holding our turn waiting for exactly this (see
           // maybeMove). Nothing else will re-trigger us: the relay only pushes
           // GAME_STATE on a move, and it is our move that is missing.
@@ -399,6 +408,7 @@ export class ArenaBot {
         // The opponent's move proofs complete the 9-link chain.
         if (msg.gameId === this.gameId && msg.moveProof?.startStateHash) {
           this.moveProofs.set(String(msg.moveProof.startStateHash), msg.moveProof);
+          this.journalGame();
         }
         break;
 
@@ -432,6 +442,9 @@ export class ArenaBot {
     this.send({ type: 'TX_CONFIRMED', gameId: wsGameId, txType: 'join_game', txHash });
     this.committed = true;
     this.log(`join_game mined: ${txHash.slice(0, 18)}…`);
+    // Our cards are locked from THIS moment. Journal before anything else can
+    // fail, or a crash in the next few seconds strands them unrecoverably.
+    this.journalGame();
     // Our turn may have arrived while we were committing.
     this.maybeMove(this.lastState ?? undefined);
     void this.maybeProveHand().catch(err => {
@@ -472,6 +485,7 @@ export class ArenaBot {
     this.myHandProof = handProof;
     this.send({ type: 'SUBMIT_HAND_PROOF', gameId, handProof });
     this.log('hand proof submitted');
+    this.journalGame();
     // Symmetric with the HAND_PROOF handler: maybeMove holds our turn until
     // BOTH commitments are known, and either one can be the last to arrive.
     // Whichever completes second has to release the held turn, because the
@@ -538,6 +552,7 @@ export class ArenaBot {
     // Key by the chain link, not the move number: sortProofChain orders the
     // transcript by state hash, and duplicates from a relay replay must collapse.
     this.moveProofs.set(String(moveProof.startStateHash), moveProof);
+    this.journalGame();
     this.send({
       type: 'SUBMIT_MOVE_PROOF', gameId,
       handIndex: 0, row: pending.row, col: pending.col,
@@ -624,6 +639,9 @@ export class ArenaBot {
     const txHash = await chain.pxe.sendProcessGame(chain.address, args, { node: chain.nodeClient, timeoutMs: this.cfg.chainTxTimeoutMs });
     this.stats.settlements += 1;
     this.log(`settled on-chain: ${String(txHash).slice(0, 18)}…`);
+    // Cards are back (or fairly lost). The journal entry exists purely to mark
+    // cards as locked, so leaving it would make the sweep chase a settled game.
+    if (this.onChainGameId) this.journal?.forget(this.onChainGameId);
   }
 
   /** Play if, and only if, it is our turn in a live game. */
@@ -692,6 +710,43 @@ export class ArenaBot {
    * between turns and cannot wedge us if a proof is lost.
    */
   private moveScheduledFor: number | null = null;
+  private readonly journal: ArenaBotDeps['journal'] | null;
+
+  /**
+   * Record this game to the journal, if one is configured.
+   *
+   * Called at every point the transcript grows, not once at the end: the
+   * failures this protects against — a crash, a kill, a machine reboot — happen
+   * MID-game by definition, and a game whose journal entry never got written is
+   * a game whose five cards can never be recovered. Cheap enough (one small
+   * atomic file write) that doing it eagerly is the obvious trade.
+   */
+  private journalGame(): void {
+    const j = this.journal;
+    if (!j || !this.chain || !this.onChainGameId || !this.committed) return;
+    try {
+      const existing = j.read(this.onChainGameId);
+      j.write({
+        onChainGameId: this.onChainGameId,
+        relayGameId: this.gameId,
+        botAddress: this.chain.address,
+        opponentAddress: this.opponentAddress,
+        botIsPlayer1: this.myPlayer === 'player1',
+        cardIds: [...this.hand],
+        randomness: this.myRandomness ? [...this.myRandomness] : [],
+        opponentCardIds: [...this.opponentCardIds],
+        myHandProof: this.myHandProof ?? null,
+        opponentHandProof: this.opponentHandProof ?? null,
+        moveProofs: [...this.moveProofs.values()] as any,
+        committedAt: existing?.committedAt ?? this.now(),
+        updatedAt: this.now(),
+      });
+    } catch (err) {
+      // Never let bookkeeping take down a live game — but do say so, because a
+      // silent journal failure means silent card loss later.
+      this.log(`WARNING: could not journal game: ${(err as Error).message}`);
+    }
+  }
 
   private resetToIdle(): void {
     this.state = 'idle';

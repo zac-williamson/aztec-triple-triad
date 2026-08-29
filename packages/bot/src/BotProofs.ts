@@ -35,6 +35,7 @@ export class BotProofs {
   private queue: Promise<unknown> = Promise.resolve();
   /** Cached: deriving a VK is expensive and they never change for a build. */
   private vks: { handVk: Uint8Array; moveVk: Uint8Array } | null = null;
+  private dummyVkCache: Uint8Array | null = null;
 
   constructor(private readonly log: (msg: string) => void = () => {}) {}
 
@@ -74,6 +75,45 @@ export class BotProofs {
     ]);
     this.vks = { handVk, moveVk };
     return this.vks;
+  }
+
+  /**
+   * Dummy-circuit VK, needed only by the abandoned-game claim: that call pads a
+   * partial move chain up to nine slots, and the contract verifies the padding
+   * against this VK rather than the move VK.
+   */
+  async dummyVerificationKey(): Promise<Uint8Array> {
+    if (this.dummyVkCache) return this.dummyVkCache;
+    const { UltraHonkBackend } = await import('@aztec/bb.js');
+    const { getBarretenberg } = await import('../../frontend/src/aztec/proofBackend.js');
+    const { loadDummyMoveCircuit } = await import('../../frontend/src/aztec/circuitLoader.js');
+    const api = await getBarretenberg();
+    const artifact = await loadDummyMoveCircuit();
+    this.dummyVkCache = await new UltraHonkBackend(artifact.bytecode, api).getVerificationKey();
+    return this.dummyVkCache;
+  }
+
+  /**
+   * One padding proof for the abandoned-game claim, base64-encoded to match the
+   * transport the rest of the transcript uses. Serialised with every other
+   * proof: concurrent proving is what the whole queue exists to prevent.
+   */
+  proveDummy(): Promise<string> {
+    return this.serialise('dummy proof', async () => {
+      const { UltraHonkBackend } = await import('@aztec/bb.js');
+      const { Noir } = await import('@noir-lang/noir_js');
+      const { getBarretenberg } = await import('../../frontend/src/aztec/proofBackend.js');
+      const { loadDummyMoveCircuit } = await import('../../frontend/src/aztec/circuitLoader.js');
+      const api = await getBarretenberg();
+      const artifact = await loadDummyMoveCircuit();
+      const { witness } = await new Noir(artifact as any).execute({
+        card_commit_1: '0', card_commit_2: '0',
+        start_state_hash: '0', end_state_hash: '0',
+        game_ended: '0', winner_id: '0',
+      });
+      const { proof } = await new UltraHonkBackend(artifact.bytecode, api).generateProof(witness);
+      return Buffer.from(proof).toString('base64');
+    });
   }
 
   /** poseidon2 commitment to the bot's five cards. */

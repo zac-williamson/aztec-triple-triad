@@ -122,6 +122,19 @@ function makeOps(schedule: Schedule) {
         return { randomness, blindingFactor: toHexString(blinding) };
       }),
 
+    /**
+     * On-chain status of a game: 0 none, 1 created, 2 active, 3 settled,
+     * 4 cancelled, 5 abandoned_claimed. The authority on whether committed
+     * cards are still locked — a local record can be stale in either direction.
+     */
+    readGameStatus: (owner: string, gameId: string): Promise<number> =>
+      schedule(async () => {
+        const { gameContract, Fr, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromStringUnsafe(owner);
+        const { result } = await gameContract.methods.get_game_status(toFr(Fr, gameId)).simulate({ from: addr });
+        return Number(result);
+      }),
+
     /** All non-zero card IDs the PXE holds for `owner` (paged get_nfts_for_user). */
     readPrivateCards: (owner: string): Promise<number[]> =>
       schedule(async () => {

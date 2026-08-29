@@ -16,6 +16,8 @@ import { ArenaBot } from './ArenaBot.js';
 import { BotChain } from './BotChain.js';
 import { BotProofs } from './BotProofs.js';
 import { startHealthServer } from './health.js';
+import { GameJournal } from './GameJournal.js';
+import { AbandonmentSweep } from './AbandonmentSweep.js';
 
 const cfg = configFromEnv();
 const chainMode = process.env.ARENA_BOT_CHAIN === '1';
@@ -50,7 +52,13 @@ async function main(): Promise<void> {
 
   // Proofs only matter alongside a chain — off-chain mode never submits any.
   const proofs = chain ? new BotProofs(m => console.log(`[arena-bot:proofs] ${m}`)) : undefined;
-  const bot = new ArenaBot(cfg, { chain, proofs });
+
+  // Off-chain mode wagers nothing, so there is nothing to journal or recover.
+  const journal = chain
+    ? new GameJournal(resolve(import.meta.dirname ?? __dirname,
+        `../.artifacts/games-${process.env.ARENA_BOT_INDEX ?? '0'}`))
+    : undefined;
+  const bot = new ArenaBot(cfg, { chain, proofs, journal });
 
   console.log(
     `[arena-bot] starting: ws=${cfg.wsUrl} threshold=${cfg.joinThresholdMs}ms ` +
@@ -63,10 +71,35 @@ async function main(): Promise<void> {
   // card shortage, the watchdog abandoning games. Serve those here.
   const health = cfg.healthPort > 0 ? startHealthServer(bot, cfg.healthPort, m => console.log(`[arena-bot] ${m}`)) : null;
 
+  // Reclaim cards from games that will never settle. The bot only joins, and
+  // cancel is creator-only, so without this every wedged game costs five cards
+  // permanently — and it fails quietly, by going idle, once it runs out.
+  //
+  // Runs on a timer AND at startup: a crash mid-game is the common case, and the
+  // restarted process is the only thing that will ever look at that journal
+  // again. The first pass is deliberately not awaited — recovery involves
+  // proving and a dispute window, and holding up matchmaking behind it would
+  // trade a slow leak for an outage.
+  let sweep: AbandonmentSweep | null = null;
+  let sweepTimer: NodeJS.Timeout | null = null;
+  if (chain && proofs && journal) {
+    sweep = new AbandonmentSweep({
+      journal, chain, proofs,
+      log: m => console.log(`[arena-bot:sweep] ${m}`),
+      minAgeMs: cfg.gameTimeoutMs,
+    });
+    const pass = () => void sweep!.run().catch(err =>
+      console.error(`[arena-bot:sweep] pass failed: ${err?.message ?? err}`));
+    pass();
+    sweepTimer = setInterval(pass, cfg.sweepIntervalMs);
+    sweepTimer.unref?.();
+  }
+
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     process.on(sig, () => {
       console.log(`[arena-bot] ${sig} — shutting down`);
       bot.stop();
+      if (sweepTimer) clearInterval(sweepTimer);
       void health?.close().finally(() => process.exit(0));
       if (!health) process.exit(0);
     });

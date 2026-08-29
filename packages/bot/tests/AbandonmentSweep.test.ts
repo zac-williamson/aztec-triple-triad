@@ -1,0 +1,202 @@
+/**
+ * The sweep is the ONLY route back from a wedged game: the bot only joins, and
+ * cancel is creator-only. Every branch here is "do five cards come back, or
+ * not", so the tests are about what it refuses to do as much as what it does.
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { GameJournal, type GameRecord } from '../src/GameJournal.js';
+import { AbandonmentSweep, GAME_STATUS } from '../src/AbandonmentSweep.js';
+
+vi.mock('../../frontend/src/aztec/settlementArgs.js', () => ({
+  buildClaimAbandonedArgs: vi.fn(async () => ['claim-args']),
+  buildSettleAbandonedArgs: vi.fn(async () => ['settle-args']),
+  waitForDisputeWindow: vi.fn(async () => {}),
+  DISPUTE_BLOCKS: 5,
+}));
+vi.mock('@aztec/aztec.js/fields', () => ({ Fr: class {} }));
+vi.mock('@aztec/aztec.js/addresses', () => ({ AztecAddress: { fromStringUnsafe: (s: string) => s } }));
+
+let dir: string;
+beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'sweep-')); });
+afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.clearAllMocks(); });
+
+const PROOF = { proof: 'p', publicInputs: ['0x0'], startStateHash: 's', endStateHash: 'e' };
+
+function record(over: Partial<GameRecord> = {}): GameRecord {
+  return {
+    onChainGameId: '0xgame1',
+    relayGameId: 'g1',
+    botAddress: '0xbot',
+    opponentAddress: '0xopp',
+    botIsPlayer1: false,
+    cardIds: [1, 2, 3, 4, 5],
+    randomness: ['0x1', '0x2', '0x3', '0x4', '0x5', '0x6'],
+    opponentCardIds: [10, 11, 12, 13, 14],
+    myHandProof: { proof: 'h', publicInputs: ['0x1', '0x0'] },
+    opponentHandProof: { proof: 'oh', publicInputs: ['0x2', '0x0'] },
+    moveProofs: [PROOF, PROOF, PROOF],
+    committedAt: 0,
+    updatedAt: 0,
+    ...over,
+  };
+}
+
+function harness(status: number, over: Record<string, any> = {}) {
+  const calls: string[] = [];
+  const journal = new GameJournal(dir);
+  const chain = {
+    address: '0xbot',
+    nodeClient: { getBlockNumber: async () => 100 },
+    pxe: {
+      readGameStatus: over.readGameStatus ?? (async () => status),
+      sendClaimAbandonedGame: async () => { calls.push('claim'); return '0xclaimtx'; },
+      sendSettleAbandonedGame: async () => { calls.push('settle'); return '0xsettletx'; },
+      ...over.pxe,
+    },
+  };
+  const proofs = {
+    verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
+    dummyVerificationKey: async () => new Uint8Array([3]),
+    proveDummy: async () => 'ZHVtbXk=',
+  };
+  const sweep = new AbandonmentSweep({
+    journal, chain: chain as any, proofs: proofs as any,
+    log: () => {}, now: () => 10_000_000, minAgeMs: 1_000, ...over.sweepOpts,
+  });
+  return { sweep, journal, calls, chain };
+}
+
+describe('AbandonmentSweep', () => {
+  it('claims and settles a genuinely abandoned game, then forgets it', async () => {
+    const h = harness(GAME_STATUS.active);
+    h.journal.write(record());
+
+    const stats = await h.sweep.run();
+
+    expect(h.calls).toEqual(['claim', 'settle']);
+    expect(stats.recovered).toBe(1);
+    expect(stats.cardsRecovered).toBe(5);
+    // Forgotten, or the next pass chases a game that is already resolved.
+    expect(h.journal.outstanding()).toHaveLength(0);
+  });
+
+  it('does NOT touch a game that is still young — it may simply be slow', async () => {
+    const h = harness(GAME_STATUS.active, { sweepOpts: { minAgeMs: 60 * 60_000 } });
+    h.journal.write(record({ committedAt: 9_999_000 }));
+
+    const stats = await h.sweep.run();
+
+    // Claiming a LIVE game is both wrong and rejected on-chain.
+    expect(h.calls).toEqual([]);
+    expect(stats.skipped).toBe(1);
+    expect(h.journal.outstanding()).toHaveLength(1);
+  });
+
+  it('forgets a game that settled normally without claiming anything', async () => {
+    const h = harness(GAME_STATUS.settled);
+    h.journal.write(record());
+
+    await h.sweep.run();
+
+    expect(h.calls).toEqual([]);
+    expect(h.journal.outstanding()).toHaveLength(0);
+  });
+
+  it('finishes the job when a claim already landed but settle did not', async () => {
+    const h = harness(GAME_STATUS.abandoned_claimed);
+    h.journal.write(record());
+
+    await h.sweep.run();
+
+    // Re-claiming would revert; settling is what is actually outstanding.
+    expect(h.calls).toEqual(['settle']);
+  });
+
+  it('keeps the record when recovery FAILS, so the cards are not forgotten', async () => {
+    const h = harness(GAME_STATUS.active, {
+      pxe: { sendClaimAbandonedGame: async () => { throw new Error('node down'); } },
+    });
+    h.journal.write(record());
+
+    const stats = await h.sweep.run();
+
+    expect(stats.failed).toBe(1);
+    expect(stats.lastError).toMatch(/node down/);
+    expect(h.journal.outstanding()).toHaveLength(1);
+  });
+
+  it('reports a transcript it cannot claim with, rather than retrying forever in silence', async () => {
+    const h = harness(GAME_STATUS.active);
+    h.journal.write(record({ myHandProof: null }));
+
+    const stats = await h.sweep.run();
+
+    expect(h.calls).toEqual([]);
+    expect(stats.skipped).toBe(1);
+  });
+
+  it('refuses a full 9-move chain — that is a normal settlement, not an abandonment', async () => {
+    const h = harness(GAME_STATUS.active);
+    h.journal.write(record({ moveProofs: Array(9).fill(PROOF) }));
+
+    const stats = await h.sweep.run();
+
+    expect(h.calls).toEqual([]);
+    expect(stats.skipped).toBe(1);
+  });
+
+  it('takes no opponent card when the opponent barely played', async () => {
+    const { buildSettleAbandonedArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
+    const h = harness(GAME_STATUS.active);
+    h.journal.write(record({ moveProofs: [PROOF] }));   // only OUR move
+
+    await h.sweep.run();
+
+    // Getting our stake back is the point; an opponent whose client died on
+    // move one has not forfeited a card.
+    expect(vi.mocked(buildSettleAbandonedArgs).mock.calls[0][0]).toMatchObject({ claimedCardId: 0 });
+  });
+
+  it('claims one opponent card once the opponent has played', async () => {
+    const { buildSettleAbandonedArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
+    const h = harness(GAME_STATUS.active);
+    h.journal.write(record({ moveProofs: [PROOF, PROOF] }));
+
+    await h.sweep.run();
+
+    expect(vi.mocked(buildSettleAbandonedArgs).mock.calls[0][0]).toMatchObject({ claimedCardId: 10 });
+  });
+
+  it('does not run concurrently with itself', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const h = harness(GAME_STATUS.active, {
+      readGameStatus: async () => { await gate; return GAME_STATUS.active; },
+    });
+    h.journal.write(record());
+
+    const first = h.sweep.run();
+    // A second claim on the same game wastes a whole proving run and reverts.
+    await h.sweep.run();
+    expect(h.calls).toEqual([]);
+    release();
+    await first;
+    expect(h.calls).toEqual(['claim', 'settle']);
+  });
+
+  it('survives a corrupt journal entry without discarding it', async () => {
+    const h = harness(GAME_STATUS.active);
+    writeFileSync(join(dir, 'broken.json'), '{ not json');
+    h.journal.write(record());
+
+    await h.sweep.run();
+
+    // The good one recovers; the corrupt file stays on disk, because deleting it
+    // would silently throw away the only record that five cards are locked.
+    expect(h.calls).toEqual(['claim', 'settle']);
+    expect(readdirSync(dir)).toContain('broken.json');
+  });
+});

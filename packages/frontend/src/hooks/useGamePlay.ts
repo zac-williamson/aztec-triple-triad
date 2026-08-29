@@ -31,6 +31,8 @@ export interface UseGamePlayReturn {
   myHandProof: HandProofData | null;
   opponentHandProof: HandProofData | null;
   collectedMoveProofs: MoveProofData[];
+  /** Moves played whose proof the opponent has not received yet. */
+  owedMoveProofs: number;
   handProofStatus: ProofStatus;
   moveProofStatus: ProofStatus;
   canSettle: boolean;
@@ -83,6 +85,18 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
   const [collectedMoveProofs, setCollectedMoveProofs] = useState<MoveProofData[]>([]);
   const [handProofStatus, setHandProofStatus] = useState<ProofStatus>('idle');
   const [moveProofStatus, setMoveProofStatus] = useState<ProofStatus>('idle');
+  /**
+   * Moves we have PLAYED but whose proof the opponent has not received yet —
+   * still generating, or queued behind the hand proofs.
+   *
+   * This is the opponent's problem, not ours, which is exactly why it needs
+   * tracking. The 9-link transcript is shared: if we close the tab while owing
+   * a proof, the WINNER can never settle and both hands stay locked. The last
+   * move is the dangerous one — its proof is generated AFTER the relay declares
+   * the game over, i.e. precisely when a losing player closes the tab.
+   */
+  const [owedMoveProofs, setOwedMoveProofs] = useState(0);
+  const owe = useCallback((n: number) => setOwedMoveProofs(v => Math.max(0, v + n)), []);
 
   // Derived
   const myCardCommit = myHandProof?.cardCommit ?? null;
@@ -318,6 +332,8 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
           }
         } catch (err) {
           console.warn('[useGamePlay] Deferred move proof failed:', err);
+        } finally {
+          owe(-1);
         }
       }
     })();
@@ -374,18 +390,27 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
         const winnerId = mapWinnerId(result.newState.winner);
 
         if (myHandProof && opponentHandProof) {
-          const moveProof = await generateMoveProofForPlacement(
-            card.id, row, col, ws.playerNumber,
-            boardBefore, boardAfter,
-            scoresBefore, scoresAfter,
-            gameEnded, winnerId,
-          );
-          ws.submitMoveProof(ws.gameId, handIndex, row, col, moveProof, moveNumber);
+          owe(+1);
+          try {
+            const moveProof = await generateMoveProofForPlacement(
+              card.id, row, col, ws.playerNumber,
+              boardBefore, boardAfter,
+              scoresBefore, scoresAfter,
+              gameEnded, winnerId,
+            );
+            ws.submitMoveProof(ws.gameId, handIndex, row, col, moveProof, moveNumber);
+          } finally {
+            // Cleared even on failure: the proof is not coming, so holding the
+            // unload guard up forever would only trap the player in a tab that
+            // can no longer help anybody.
+            owe(-1);
+          }
         } else {
           // Queue the full pre-move state (the board is already a deep clone)
           // so the deferred processor replays against the exact board, hands,
           // scores, and turn the player acted on — independent of later
           // ws.gameState changes. Original owners are re-derived from `board`.
+          owe(+1);
           pendingMovesRef.current.push({
             card,
             board: preMoveState.board,
@@ -464,6 +489,7 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
     myHandProof,
     opponentHandProof,
     collectedMoveProofs,
+    owedMoveProofs,
     handProofStatus,
     moveProofStatus,
     canSettle,

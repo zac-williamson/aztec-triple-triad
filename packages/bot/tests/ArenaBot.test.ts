@@ -29,6 +29,7 @@ function makeConfig(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     chainTxTimeoutMs: 600_000,
     // Unit tests assert the IMMEDIATE verdict on an incomplete transcript.
     settleWaitMs: 0,
+    sweepIntervalMs: 900_000,
     gameTimeoutMs: 1_800_000,
     healthPort: 0,
     ...over,
@@ -945,6 +946,108 @@ describe('ArenaBot one move per turn', () => {
     h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: later });
     await vi.advanceTimersByTimeAsync(3_000);
     expect(h.socket.countOfType('PLACE_CARD')).toBe(2);
+    h.bot.stop();
+  });
+});
+
+describe('ArenaBot journals committed games', () => {
+  function journalSpy() {
+    const written: any[] = [];
+    const forgotten: string[] = [];
+    const store = new Map<string, any>();
+    return {
+      written, forgotten,
+      journal: {
+        read: (id: string) => store.get(id) ?? null,
+        write: (rec: any) => { store.set(rec.onChainGameId, rec); written.push(rec); },
+        forget: (id: string) => { store.delete(id); forgotten.push(id); },
+      },
+    };
+  }
+
+  const mk = (over: any = {}) => {
+    const socket = new FakeSocket();
+    const f = fakeChain();
+    const j = journalSpy();
+    const proofs = {
+      cardCommitHash: async () => FIELD(0x1),
+      verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
+      proveHand: async () => ({ proof: 'p', publicInputs: ['a', 'b'], cardCommit: FIELD(0x1) }),
+      proveMove: async () => ({ proof: 'p', publicInputs: [], startStateHash: 's' }),
+    };
+    const bot = new ArenaBot(makeConfig(over), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, proofs: proofs as any, journal: j.journal,
+      log: () => {}, now: () => 1_000_000,
+    });
+    return { bot, socket, f, j };
+  };
+
+  it('records the game the moment its cards are committed', async () => {
+    const h = mk();
+    h.bot.start();
+    h.socket.emit('open');
+    h.socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    h.socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
+    await vi.advanceTimersByTimeAsync(50);
+
+    // The cards are locked from the join onward; a crash a second later must
+    // still leave a record, or they can never be recovered.
+    expect(h.j.written.length).toBeGreaterThan(0);
+    expect(h.j.written[0]).toMatchObject({
+      onChainGameId: FIELD(0xc1),
+      botIsPlayer1: false,
+      cardIds: [7, 8, 9, 10, 11],
+    });
+    h.bot.stop();
+  });
+
+  it('grows the record as the transcript arrives', async () => {
+    const h = mk();
+    h.bot.start();
+    h.socket.emit('open');
+    h.socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    h.socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
+    await vi.advanceTimersByTimeAsync(50);
+
+    h.socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 1, handProof: { proof: 'q', publicInputs: [], cardCommit: FIELD(0x2) } });
+    h.socket.deliver({ type: 'MOVE_PROVEN', gameId: 'g1', moveProof: { proof: 'm', publicInputs: [], startStateHash: 'x' } });
+    await vi.advanceTimersByTimeAsync(50);
+
+    const last = h.j.written[h.j.written.length - 1];
+    expect(last.opponentHandProof).toBeTruthy();
+    expect(last.myHandProof).toBeTruthy();
+    expect(last.moveProofs.length).toBeGreaterThan(0);
+    h.bot.stop();
+  });
+
+  it('does NOT forget a game whose settlement FAILED — the cards are still locked', async () => {
+    const h = mk({ settleWaitMs: 0 });
+    h.bot.start();
+    h.socket.emit('open');
+    h.socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    h.socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
+    await vi.advanceTimersByTimeAsync(50);
+
+    h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'player2', gameState: freshState() });
+    await vi.advanceTimersByTimeAsync(200);
+
+    // The transcript was incomplete, so the settle failed. Forgetting here
+    // would delete the only record that five cards are committed, and the
+    // sweep would never come back for them.
+    expect(h.bot.getStats().settleFailures).toBe(1);
+    expect(h.bot.getStats().settlements).toBe(0);
+    expect(h.j.forgotten).toEqual([]);
     h.bot.stop();
   });
 });

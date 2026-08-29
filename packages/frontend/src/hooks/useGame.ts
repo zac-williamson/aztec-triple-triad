@@ -5,6 +5,7 @@ import { useGameStorage, type PersistedGameState } from './useGameStorage';
 import { useGameSession } from './useGameSession';
 import { useGamePlay } from './useGamePlay';
 import { useGameSettlement, type TxStatus } from './useGameSettlement';
+import { useUnloadGuard } from './useUnloadGuard';
 import { useAztecContext } from '../aztec/AztecContext';
 import type { Screen, HandProofData, MoveProofData } from '../types';
 
@@ -252,6 +253,17 @@ export function useGame(wsUrl: string): UseGameReturn {
   const canGoBack = screen === 'main-menu'
     || phase === 'settling'   // winner: settlement in progress, can leave
     || phase === 'idle';      // no lifecycle active
+
+  // Closing the tab now costs somebody real cards — us if our own settlement is
+  // in flight, the OPPONENT if we still owe them a move proof they need to
+  // settle. See useUnloadGuard for why the last move is the dangerous one.
+  useUnloadGuard(
+    play.owedMoveProofs > 0
+      || (['preparing', 'proving', 'sending'] as TxStatus[]).includes(settlement.settleTxStatus),
+    play.owedMoveProofs > 0
+      ? 'A move proof is still being sent. Leaving now prevents your opponent from settling the game.'
+      : 'Your settlement transaction is still in flight. Leaving now may leave the game unsettled.',
+  );
 
   const handleBackToMenu = useCallback(() => {
     const currentPhase = session.getPhase();
