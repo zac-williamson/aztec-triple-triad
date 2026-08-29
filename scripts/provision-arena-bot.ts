@@ -405,7 +405,11 @@ async function main(): Promise<number> {
           fee: { gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) } },
           wait: { timeout: TX_TIMEOUT },
         });
-      const hash = String((txHash as any)?.txHash ?? (txHash as any)?.hash ?? txHash);
+      // receipt.txHash is a TxHash OBJECT — String()ing the receipt yields
+      // "[object Object]", which then fails at import time as "invalid string",
+      // a thousand notes later. Same shape as requireTxHash in pxe.ts.
+      const hash = (txHash as any)?.txHash?.toString();
+      if (!hash) throw new Error('mint_bot_cards returned no txHash');
       for (let k = 0; k < batch.length; k++) {
         mintedNotes.push({ tokenId: batch[k].id, randomness: rand[k].toString(), txHash: hash });
       }
