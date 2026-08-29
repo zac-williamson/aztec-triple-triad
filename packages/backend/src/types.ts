@@ -108,6 +108,12 @@ export type ServerMessage =
   | { type: 'OPPONENT_SETTLING'; gameId: string; selectedCardId: number }
   // Matchmaking
   | { type: 'MATCHMAKING_QUEUED'; position: number }
+  /**
+   * A bot asked to queue while the waiting players are already covered by other
+   * bots. Not an error — standing down is the correct outcome, and routing it
+   * through ERROR would inflate the bot's failure counters.
+   */
+  | { type: 'QUEUE_DECLINED'; reason: 'already-covered'; humansWaiting: number; botsQueued: number }
   /** `opponentIsBot` is the disclosure flag: the UI labels the opponent. */
   | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState; opponentIsBot: boolean }
   | { type: 'BOT_REGISTERED' }

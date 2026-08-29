@@ -425,6 +425,16 @@ export class ArenaBot {
         }
         break;
 
+      case 'QUEUE_DECLINED':
+        // The relay says other bots already cover everyone waiting. This is a
+        // normal outcome of a pool, not a failure: go back to idle WITHOUT
+        // touching joinFailures, or a healthy pool would report itself broken.
+        if (this.state === 'queued') {
+          this.log(`stood down: ${msg.botsQueued} bot(s) already cover ${msg.humansWaiting} waiting player(s)`);
+          this.resetToIdle();
+        }
+        break;
+
       case 'ERROR':
         // A queue rejection must not strand us in 'queued'.
         this.recordError('server', new Error(String(msg.message)));

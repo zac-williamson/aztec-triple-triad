@@ -115,3 +115,36 @@ describe('GameManager.tryMatch', () => {
     expect(m?.entry1.playerId).toBe('a');
   });
 });
+
+describe('server declines a redundant bot offer', () => {
+  it('reports botsQueued and humansWaiting, counting oldestWaitMs over humans only', async () => {
+    const manager = new GameManager(new MemoryGameStore());
+    const bots = new Set(['bot-0']);
+    await manager.queuePlayer('bot-0', CARDS_B);
+    await manager.queuePlayer('human-1', CARDS_A);
+    // Read from 10s in the future: waitMs clamps at 0, so a `now` in the past
+    // would make every wait zero and the assertion vacuous.
+    const now = Date.now() + 10_000;
+
+    const snap = await manager.queueSnapshot(now, id => bots.has(id));
+
+    expect(snap.humansWaiting).toBe(1);
+    expect(snap.botsQueued).toBe(1);
+    expect(snap.entries.find(e => e.playerId === 'bot-0')!.isBot).toBe(true);
+    // A bot sitting in the queue must never be what makes ANOTHER bot offer:
+    // oldestWaitMs is "how long has the person I would rescue been waiting".
+    const human = snap.entries.find(e => e.playerId === 'human-1')!;
+    expect(snap.oldestWaitMs).toBe(now - human.queuedAt);
+    // …and strictly less than the bot's wait, which is older and must not count.
+    const bot = snap.entries.find(e => e.playerId === 'bot-0')!;
+    expect(snap.oldestWaitMs).toBeLessThanOrEqual(bot.waitMs);
+  });
+
+  it('reports zero wait when only bots are queued', async () => {
+    const manager = new GameManager(new MemoryGameStore());
+    await manager.queuePlayer('bot-0', CARDS_B);
+    const snap = await manager.queueSnapshot(Date.now(), () => true);
+    expect(snap.oldestWaitMs).toBe(0);
+    expect(snap.humansWaiting).toBe(0);
+  });
+});

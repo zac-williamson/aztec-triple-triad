@@ -865,6 +865,29 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
 
       case 'QUEUE_MATCHMAKING': {
         try {
+          // A bot decides to offer by POLLING /queue, so N bots read the same
+          // state before any of their queue messages arrive and all of them
+          // offer for one waiting player. The extras then sit in the queue
+          // holding five committed cards each until they time out. The bot-side
+          // check cannot close that window — only the server sees the queue at
+          // the moment of the decision, and it is single-threaded, so this is
+          // where the rule has to be enforced.
+          //
+          // Declined, not an ERROR: standing down is correct behaviour, and
+          // routing it through the error path would inflate the bot's failure
+          // counters and make a healthy pool look broken.
+          if (isBotPlayerId(playerId)) {
+            const snap = await gameManager.queueSnapshot(Date.now(), isBotPlayerId);
+            if (snap.botsQueued >= snap.humansWaiting) {
+              send(ws, {
+                type: 'QUEUE_DECLINED',
+                reason: 'already-covered',
+                humansWaiting: snap.humansWaiting,
+                botsQueued: snap.botsQueued,
+              }, playerId);
+              break;
+            }
+          }
           const position = await gameManager.queuePlayer(playerId, msg.cardIds);
           send(ws, { type: 'MATCHMAKING_QUEUED', position }, playerId);
 

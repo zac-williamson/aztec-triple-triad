@@ -55,7 +55,12 @@ class HumanClient {
 
   /** Resolves once the server has established our session (not merely on open). */
   async ready(): Promise<void> {
-    await new Promise<void>(res => this.ws.once('open', () => res()));
+    // Check readyState first: constructing several clients and awaiting them in
+    // turn lets a later socket OPEN before its ready() runs, and once('open')
+    // then waits forever for an event that has already fired.
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      await new Promise<void>(res => this.ws.once('open', () => res()));
+    }
     const established = new Promise<void>(res => {
       const onMsg = (raw: any) => {
         if (JSON.parse(raw.toString()).type === 'SESSION_ESTABLISHED') {
@@ -212,4 +217,104 @@ describe('arena bot end-to-end', () => {
     expect(m.queueLength).toBe(0);
     expect(typeof m.uptimeMs).toBe('number');
   });
+});
+
+/**
+ * The pool. These run a REAL relay with several real bots on it, because the
+ * failure they cover is an interaction between the two: N bots each polling the
+ * same queue, and a matcher that will happily pair the first two entries it
+ * finds. Neither side can see the problem alone.
+ */
+describe('a pool of arena bots', () => {
+  const pool: ArenaBot[] = [];
+
+  afterEach(() => {
+    for (const b of pool) b.stop();
+    pool.length = 0;
+  });
+
+  function startPool(n: number, over: Partial<ArenaBotConfig> = {}): ArenaBot[] {
+    for (let i = 0; i < n; i++) {
+      const b = new ArenaBot(cfg({ handCardIds: [1 + i * 5, 2 + i * 5, 3 + i * 5, 4 + i * 5, 5 + i * 5], ...over }));
+      pool.push(b);
+      b.start();
+    }
+    return pool;
+  }
+
+  it('never matches two bots against each other, however long they idle', async () => {
+    startPool(3);
+    // No human anywhere. Three bots polling a queue that only ever contains
+    // other bots must produce no games at all — a bot exists to give a HUMAN an
+    // opponent, and two of them playing each other burns ten committed cards.
+    await new Promise(r => setTimeout(r, 2_000));
+
+    expect(pool.every(b => b.getStats().gamesPlayed === 0)).toBe(true);
+    expect(await server.gameManager.getGameCount()).toBe(0);
+  }, 20_000);
+
+  it('sends exactly ONE bot to a waiting human, not the whole pool', async () => {
+    const human = new HumanClient(`ws://localhost:${port}`);
+    await human.ready();
+    startPool(3);
+    human.queue();
+
+    await waitFor(() => human.gameId !== null, 15_000, 'the human to be matched');
+    // Give the others a chance to pile in behind it.
+    await new Promise(r => setTimeout(r, 1_500));
+
+    expect(human.opponentIsBot).toBe(true);
+    // The extras must not be parked in the queue holding five committed cards
+    // each, waiting to time out.
+    // "Engaged" rather than "playing": with moveDelayMs 0 the nine relay moves
+    // fly through in milliseconds, so the bot may already be back to idle with
+    // the game recorded.
+    const engaged = pool.filter(b => {
+      const st = b.getStats();
+      return st.state === 'playing' || st.gamesPlayed > 0;
+    }).length;
+    const queued = pool.filter(b => b.getStats().state === 'queued').length;
+    expect(engaged).toBe(1);
+    // The extras must not be parked in the queue holding five committed cards.
+    expect(queued).toBe(0);
+    expect(await server.gameManager.getGameCount()).toBe(1);
+
+    human.close();
+  }, 30_000);
+
+  it('puts the human in the creator slot even against a pool', async () => {
+    startPool(2);
+    // Bots are already polling; the human arrives after them.
+    await new Promise(r => setTimeout(r, 500));
+    const human = new HumanClient(`ws://localhost:${port}`);
+    await human.ready();
+    human.queue();
+
+    await waitFor(() => human.me !== null, 15_000, 'a match');
+    // Creating wagers five cards on a game nobody may join — never the bot.
+    expect(human.me).toBe('player1');
+
+    human.close();
+  }, 30_000);
+
+  it('two humans play EACH OTHER rather than each taking a bot', async () => {
+    // A realistic threshold matters here: the whole point of making the bot wait
+    // is to leave a window for a second human to arrive. With the 50ms the other
+    // tests use, a bot claims the first human before the second even queues.
+    startPool(2, { joinThresholdMs: 3_000 });
+    const h1 = new HumanClient(`ws://localhost:${port}`);
+    const h2 = new HumanClient(`ws://localhost:${port}`);
+    await h1.ready(); await h2.ready();
+    h1.queue(); h2.queue();
+
+    await waitFor(() => h1.gameId !== null && h2.gameId !== null, 15_000, 'both humans matched');
+
+    // The bot is a fallback for an empty queue, not a competitor for players.
+    expect(h1.gameId).toBe(h2.gameId);
+    expect(h1.opponentIsBot).toBe(false);
+    expect(h2.opponentIsBot).toBe(false);
+    expect(pool.every(b => b.getStats().gamesPlayed === 0)).toBe(true);
+
+    h1.close(); h2.close();
+  }, 30_000);
 });
