@@ -185,9 +185,23 @@ async function main(): Promise<void> {
   console.log('\n=== RESULT ===');
   console.log('  opponent exit  :', code === -1 ? 'TIMED OUT' : code);
   console.log('  bot stats      :', JSON.stringify(stats));
-  const ok = code === 0 && stats.gamesPlayed === 1 && stats.moveFailures === 0
-    && stats.commitFailures === 0 && stats.proofFailures === 0;
-  console.log(ok ? '\n  ✓ FULL CHAIN GAME COMPLETED' : '\n  ✗ see stats above');
+  // A game that merely FINISHED off-chain proves nothing about the chain path.
+  // Require the on-chain work to have actually happened, or this harness would
+  // pass while the relay game outran every commit — which is exactly what it
+  // did the first time it was run.
+  const noFailures = stats.moveFailures === 0 && stats.commitFailures === 0
+    && stats.proofFailures === 0 && stats.settleFailures === 0;
+  const ok = code === 0 && stats.gamesPlayed === 1 && noFailures && stats.settlements >= 1;
+  if (!ok) {
+    console.log('  MISSING:', [
+      code !== 0 && 'opponent exited non-zero',
+      stats.gamesPlayed !== 1 && 'no completed game',
+      !noFailures && 'failures recorded',
+      stats.settlements < 1 && 'NO ON-CHAIN SETTLEMENT — the relay game likely outran the commits',
+    ].filter(Boolean).join('; '));
+  }
+  console.log(ok ? '\n  ✓ FULL CHAIN GAME COMPLETED (committed, proved, settled)'
+                 : '\n  ✗ chain path incomplete — see MISSING above');
 
   bot.stop();
   if (child.exitCode === null) child.kill();

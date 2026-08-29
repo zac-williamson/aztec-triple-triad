@@ -100,6 +100,8 @@ export class ArenaBot {
   private myCardCommit: string | null = null;
   private opponentCardCommit: string | null = null;
   private handProofSent = false;
+  /** True once OUR cards are committed on-chain. Gates play in chain mode. */
+  private committed = false;
   /** Our in-flight move, kept so the proof can bind the before/after transition. */
   private pendingMove: {
     moveNumber: number; cardId: number; row: number; col: number;
@@ -369,6 +371,7 @@ export class ArenaBot {
     const txHash = await chain.pxe.sendCreateGame(chain.address, this.hand, { node: chain.nodeClient, timeoutMs: this.cfg.chainTxTimeoutMs });
     if (this.gameId !== wsGameId) return; // game moved on while we were mining
     this.send({ type: 'TX_CONFIRMED', gameId: wsGameId, txType: 'create_game', txHash });
+    this.committed = true;
     this.log(`create_game mined: ${txHash.slice(0, 18)}…`);
     void this.maybeProveHand().catch(err => {
       this.stats.proofFailures += 1;
@@ -390,6 +393,7 @@ export class ArenaBot {
     const txHash = await chain.pxe.sendJoinGame(chain.address, onChainGameId, this.hand, { node: chain.nodeClient, timeoutMs: this.cfg.chainTxTimeoutMs });
     if (this.gameId !== wsGameId) return;
     this.send({ type: 'TX_CONFIRMED', gameId: wsGameId, txType: 'join_game', txHash });
+    this.committed = true;
     this.log(`join_game mined: ${txHash.slice(0, 18)}…`);
     void this.maybeProveHand().catch(err => {
       this.stats.proofFailures += 1;
@@ -543,6 +547,11 @@ export class ArenaBot {
     if (!state || this.state !== 'playing' || !this.myPlayer) return;
     if (state.status !== 'playing') return;
     if (state.currentTurn !== this.myPlayer) return;
+    // In chain mode, do not play until OUR cards are committed. A move proof
+    // binds the card commitment, so moving first would prove against a
+    // commitment that does not exist yet — and lets the relay game finish
+    // before the chain has caught up, leaving nothing to settle.
+    if (this.chain && !this.committed) return;
 
     let move;
     try {
@@ -585,6 +594,7 @@ export class ArenaBot {
     this.myCardCommit = null;
     this.opponentCardCommit = null;
     this.handProofSent = false;
+    this.committed = false;
     this.pendingMove = null;
     this.myHandProof = null;
     this.opponentHandProof = null;

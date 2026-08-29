@@ -442,9 +442,14 @@ describe('ArenaBot proof flow', () => {
     h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xh', gameRandomness: ['r', 'r', 'r', 'r', 'r', 'r'] });
     await vi.advanceTimersByTimeAsync(50);
 
-    // Bot placed a card; echo a state containing it. Opponent commit unknown yet.
+    // Play is gated on OUR commit, so the move only goes out on a later state.
+    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: freshState() });
+    await vi.advanceTimersByTimeAsync(50);
     const placed = h.socket.lastOfType('PLACE_CARD');
-    expect(placed).toBeTruthy();
+    expect(placed, 'moves once committed').toBeTruthy();
+
+    // Echo a state containing that move. The opponent's commitment is still
+    // unknown, and the move proof binds BOTH — so it must not prove yet.
     const st: any = freshState();
     st.board[placed.row][placed.col] = { card: { id: 1 }, owner: 'player1', originalOwner: 'player1' };
     h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: st });
@@ -574,5 +579,42 @@ describe('ArenaBot settlement', () => {
     expect(h.sent).toHaveLength(0);
     expect(h.bot.getStats().settleFailures).toBe(1);
     expect(h.bot.getStats().lastError).toMatch(/transcript incomplete.*move proof/s);
+  });
+});
+
+describe('ArenaBot commit gate', () => {
+  it('does not play before its own cards are committed on-chain', async () => {
+    const socket = new FakeSocket();
+    // A commit that never resolves — the bot must simply not move.
+    const f = fakeChain({ sendCreateGame: () => new Promise(() => {}) });
+    const bot = new ArenaBot(makeConfig(), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, log: () => {}, now: () => 1_000_000,
+    });
+    bot.start();
+    socket.emit('open');
+    socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    for (let i = 0; i < 5; i++) {
+      socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: freshState() });
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    // Moving here would prove against a commitment that does not exist yet, and
+    // would let the relay game finish before the chain caught up.
+    expect(socket.countOfType('PLACE_CARD')).toBe(0);
+    bot.stop();
+  });
+
+  it('plays normally with no chain — off-chain mode is unaffected', async () => {
+    const h = harness();
+    await h.ready();
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.socket.countOfType('PLACE_CARD')).toBe(1);
+    h.bot.stop();
   });
 });
