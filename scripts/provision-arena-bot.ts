@@ -51,7 +51,13 @@ import { CARD_DATABASE, packRanks } from '../packages/game-logic/src/cards';
 const ROOT_DIR = resolve(import.meta.dirname || __dirname, '..');
 const PXE_URL = process.env.AZTEC_PXE_URL || 'http://localhost:8080';
 const ENV_PATH = resolve(ROOT_DIR, 'packages/frontend/.env');
-const MANIFEST_PATH = resolve(ROOT_DIR, 'packages/bot/.artifacts/arena-bot.json');
+/**
+ * One manifest PER IDENTITY. A single shared file would let provisioning index 1
+ * silently overwrite index 0's keys and card list, which is precisely the pool
+ * the plan calls for (docs/plan/BACKEND_OPPONENT.md §2b) failing silently.
+ */
+const manifestPath = (index: number) =>
+  resolve(ROOT_DIR, `packages/bot/.artifacts/arena-bot-${index}.json`);
 const TX_TIMEOUT = 600;
 
 interface BotManifest {
@@ -68,11 +74,14 @@ interface BotManifest {
   provisionedAt: string;
 }
 
-const arg = (name: string, dflt: number): number => {
+const arg = (name: string, dflt: number, allowZero = false): number => {
   const i = process.argv.indexOf(`--${name}`);
   if (i === -1) return dflt;
   const n = Number(process.argv[i + 1]);
-  if (!Number.isInteger(n) || n <= 0) throw new Error(`--${name} needs a positive integer`);
+  const min = allowZero ? 0 : 1;
+  if (!Number.isInteger(n) || n < min) {
+    throw new Error(`--${name} needs an integer >= ${min}`);
+  }
   return n;
 };
 
@@ -83,19 +92,27 @@ function readEnvAddress(key: string): string {
   return m[1].trim();
 }
 
-/** Cards the bot gets: the first N of the database, so its hands are legible. */
-function collectionFor(count: number): { id: number; packed: string }[] {
-  if (count > CARD_DATABASE.length) {
+/**
+ * Cards for one identity, taken from a DISJOINT slice of the database.
+ *
+ * token_ids are GLOBALLY unique: mint_to_private enqueues finalize_mint, which
+ * asserts against a contract-wide `nft_exists` map. So two identities cannot
+ * hold the same id, duplicates are impossible (not merely untested), and the
+ * whole pool shares one 257-card budget. `offset` keeps each identity's slice
+ * clear of the others.
+ */
+function collectionFor(count: number, offset = 0): { id: number; packed: string }[] {
+  if (offset + count > CARD_DATABASE.length) {
     throw new Error(
-      `--cards ${count} exceeds the ${CARD_DATABASE.length}-card database. Duplicate token_ids ` +
-      `are possible via mint_to_private (it does not check nft_exists) but are UNTESTED against ` +
-      `commit_five_nfts — do not rely on them without a TXE test first.`,
+      `offset ${offset} + --cards ${count} exceeds the ${CARD_DATABASE.length}-card database. ` +
+      `token_ids are globally unique (finalize_mint asserts !nft_exists), so every identity in the ` +
+      `pool draws from the SAME budget — there is no way to mint past it.`,
     );
   }
   // packRanks takes the four ranks POSITIONALLY, not the ranks object — passing
   // the object produced "[object Object]NaNNaNNaN" and a BigInt conversion error
   // at mint time rather than a type error, because the packing is arithmetic.
-  return CARD_DATABASE.slice(0, count).map(c => ({
+  return CARD_DATABASE.slice(offset, offset + count).map(c => ({
     id: c.id,
     packed: packRanks(c.ranks.top, c.ranks.right, c.ranks.bottom, c.ranks.left).toString(),
   }));
@@ -155,17 +172,21 @@ async function obtainClaim(node: any, address: string, l1ChainId: number): Promi
 }
 
 async function main(): Promise<number> {
-  const index = arg('index', 0);
+  const index = arg('index', 0, true);   // 0 is the default identity
   const cardCount = arg('cards', 40);
   const dryRun = process.argv.includes('--dry-run');
 
   const keys = arenaBotAccount(index);
-  const collection = collectionFor(cardCount);
+  // Default assumes a UNIFORM --cards across the pool. Pass --offset explicitly
+  // when identities have different sizes, or slices will overlap and the second
+  // mint will fail "Token already exists" (token_ids are globally unique).
+  const offset = arg('offset', index * cardCount, true);
+  const collection = collectionFor(cardCount, offset);
 
   console.log('=== Arena bot provisioning ===');
   console.log(`  PXE:    ${PXE_URL}`);
   console.log(`  Index:  ${index}`);
-  console.log(`  Cards:  ${cardCount} (ids ${collection[0].id}..${collection[collection.length - 1].id})`);
+  console.log(`  Cards:  ${cardCount} (ids ${collection[0].id}..${collection[collection.length - 1].id}, offset ${offset})`);
 
   // --dry-run must not need a chain: it exists to check the derivation and the
   // collection plan before anyone spends gas.
@@ -284,9 +305,10 @@ async function main(): Promise<number> {
     cardIds: minted, rollupVersion: Number(rollupVersion),
     provisionedAt: new Date().toISOString(),
   };
-  mkdirSync(dirname(MANIFEST_PATH), { recursive: true });
-  writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
-  console.log(`\n=== Done. Manifest: ${MANIFEST_PATH} ===`);
+  const outPath = manifestPath(index);
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath, JSON.stringify(manifest, null, 2));
+  console.log(`\n=== Done. Manifest: ${outPath} ===`);
   return 0;
 }
 

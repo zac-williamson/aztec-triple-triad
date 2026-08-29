@@ -39,7 +39,8 @@ async function main(): Promise<void> {
       gameAddress,
       tokenAddress: process.env.VITE_TOKEN_CONTRACT_ADDRESS,
       manifestPath: process.env.ARENA_BOT_MANIFEST
-        ?? resolve(import.meta.dirname ?? __dirname, '../.artifacts/arena-bot.json'),
+        ?? resolve(import.meta.dirname ?? __dirname,
+                   `../.artifacts/arena-bot-${process.env.ARENA_BOT_INDEX ?? '0'}.json`),
     }, m => console.log(`[arena-bot:chain] ${m}`));
     // Connect BEFORE serving: the chain-stamp and address checks in connect()
     // are exactly the ones that must fail at startup rather than per game.

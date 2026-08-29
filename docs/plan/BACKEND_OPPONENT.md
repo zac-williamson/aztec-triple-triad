@@ -43,14 +43,25 @@ card, which is a one-time setup, not a per-game cost. Avoiding the contract chan
 also avoids a redeploy — which, given the testnet re-genesises roughly quarterly and
 each recovery costs a day, is worth real money.
 
-*Open risk, narrowed:* cards are `token_id`s drawn from a 257-card database, so a
-collection larger than 257 needs **duplicate** ids. `mint_to_private` does not check
-`nft_exists` (only `mint_to_public` does), so duplicates are mintable — but their
-behaviour under `commit_five_nfts` is untested. The similarly-named
-`commit_five_nfts_with_duplicate_leaves_one` test is NOT about this: it mints six
-DISTINCT cards (1..6) and commits five, leaving one. So: **stay ≤257 distinct cards
-until a TXE test proves duplicates commit correctly.** `provision-arena-bot.ts`
-enforces that limit rather than trusting it. 257 is ample for phase 1 anyway.
+**RESOLVED on-chain (2026-08-29): `token_id`s are GLOBALLY UNIQUE.**
+`mint_to_private` itself does not check, but it enqueues `finalize_mint`, which
+asserts `!nft_exists` against a **contract-wide** map. Proven by a real mint failing
+`Assertion failed: Token already exists`. Consequences, and they matter:
+
+- Duplicates are **impossible**, not merely untested. The
+  `commit_five_nfts_with_duplicate_leaves_one` test never spoke to this (it mints six
+  DISTINCT cards and commits five).
+- **The whole bot pool shares ONE 257-card budget.** Every identity needs a disjoint
+  slice; `provision-arena-bot.ts` takes `--offset` and defaults to `index * cards`
+  (correct only for a uniform pool — pass it explicitly otherwise, or the second mint
+  fails).
+- That budget is a hard ceiling on the pool's combined LOSS BUDGET. With no re-mint
+  (the recommended default), total bot inventory across all identities can never
+  exceed 257 minus whatever the mint path has already consumed. Sizing the pool is
+  therefore a real economic decision, not a config knob.
+- Player starter/pack cards do NOT consume it: those go through
+  `get_cards_for_new_player` / `create_and_push_note`, which never touch
+  `nft_exists`. Only the `mint_to_*` path registers ids.
 
 **b) "One game at a time" makes the queue worse, not better.**
 The stated goal is to avoid long queue waits. But if the bot plays one game at a
