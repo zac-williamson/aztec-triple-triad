@@ -88,3 +88,22 @@ describe('BotProofs serialisation', () => {
     expect(typeof ok.proof).toBe('string');
   }, 180_000);
 });
+
+describe('BotProofs verification keys', () => {
+  it('derives both VKs from the same artifacts it proves with, and caches them', async () => {
+    const t0 = Date.now();
+    const a = await proofs.verificationKeys();
+    const firstMs = Date.now() - t0;
+    expect(a.handVk).toBeInstanceOf(Uint8Array);
+    expect(a.moveVk).toBeInstanceOf(Uint8Array);
+    expect(a.handVk.length).toBeGreaterThan(0);
+    expect(a.moveVk.length).toBeGreaterThan(0);
+    // The two circuits are different, so their keys must differ.
+    expect(Buffer.from(a.handVk).equals(Buffer.from(a.moveVk))).toBe(false);
+
+    const t1 = Date.now();
+    const b = await proofs.verificationKeys();
+    expect(b).toBe(a);              // same object — cached
+    expect(Date.now() - t1).toBeLessThan(Math.max(50, firstMs));
+  }, 180_000);
+});

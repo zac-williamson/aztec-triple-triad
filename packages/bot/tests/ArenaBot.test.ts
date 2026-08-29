@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
 import { EventEmitter } from 'events';
 import { ArenaBot, type QueueSnapshot } from '../src/ArenaBot.js';
 import type { ArenaBotConfig } from '../src/config.js';
@@ -238,6 +238,10 @@ describe('ArenaBot outcome accounting', () => {
   });
 });
 
+/** Well-formed field hex: the settlement args builder really parses these. */
+const FIELD = (n: number) => '0x' + n.toString(16).padStart(64, '0');
+const SIX_RANDOM = Array.from({ length: 6 }, (_, i) => FIELD(0x100 + i));
+
 /** Minimal fake of the chain adapter, recording what the bot asks of it. */
 function fakeChain(over: Partial<Record<string, any>> = {}) {
   const calls: any[] = [];
@@ -248,9 +252,9 @@ function fakeChain(over: Partial<Record<string, any>> = {}) {
       selectHand: over.selectHand ?? (async () => [7, 8, 9, 10, 11]),
       pxe: {
         previewCreateGame: over.previewCreateGame ?? (async () => ({
-          gameId: '0xgame', randomness: ['0xr1'], blindingFactor: '0xb', status: 0,
+          gameId: FIELD(0xabc), randomness: SIX_RANDOM, blindingFactor: FIELD(0xb), status: 0,
         })),
-        previewJoinGame: over.previewJoinGame ?? (async () => ({ randomness: ['0xr2'], blindingFactor: '0xb' })),
+        previewJoinGame: over.previewJoinGame ?? (async () => ({ randomness: SIX_RANDOM, blindingFactor: FIELD(0xb) })),
         sendCreateGame: over.sendCreateGame ?? (async (...a: any[]) => { calls.push(['create', ...a]); return '0xtxcreate'; }),
         sendJoinGame: over.sendJoinGame ?? (async (...a: any[]) => { calls.push(['join', ...a]); return '0xtxjoin'; }),
       },
@@ -305,7 +309,7 @@ describe('ArenaBot chain mode', () => {
     await vi.advanceTimersByTimeAsync(50);
 
     const shared = h.socket.lastOfType('SHARE_AZTEC_INFO');
-    expect(shared).toMatchObject({ gameId: 'g1', aztecAddress: '0xbot', onChainGameId: '0xgame' });
+    expect(shared).toMatchObject({ gameId: 'g1', aztecAddress: '0xbot', onChainGameId: FIELD(0xabc) });
     expect(h.f.calls.some(c => c[0] === 'create')).toBe(true);
     expect(h.socket.lastOfType('TX_CONFIRMED')).toMatchObject({ txType: 'create_game', txHash: '0xtxcreate' });
   });
@@ -364,6 +368,7 @@ describe('ArenaBot proof flow', () => {
       calls,
       proofs: {
         cardCommitHash: async (ids: number[]) => `0xcommit-${ids.join('')}`,
+        verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
         proveHand: async (i: any) => { calls.push(['hand', i]); return { proof: 'p', publicInputs: ['a', 'b'], cardCommit: `0xcommit-${i.cardIds.join('')}` }; },
         proveMove: async (a: any) => { calls.push(['move', a]); return { proof: 'p', publicInputs: new Array(6).fill('x') }; },
       },
@@ -438,11 +443,119 @@ describe('ArenaBot proof flow', () => {
     await vi.advanceTimersByTimeAsync(50);
     expect(h.socket.countOfType('SUBMIT_HAND_PROOF')).toBe(1);
 
+    // Bot is player1 and 'won', so it attempts to settle. The transcript is
+    // incomplete here, so that attempt fails — and only THEN does it reset.
     h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'player1', gameState: freshState() });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.bot.getStats().settleFailures).toBe(1);
+    expect(h.bot.getStats().lastError).toMatch(/transcript incomplete/);
+
     // A second game must prove its own hand afresh, not reuse the first's state.
     h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g2', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
     h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g2', aztecAddress: '0xh', gameRandomness: ['s', 's', 's', 's', 's', 's'] });
     await vi.advanceTimersByTimeAsync(50);
     expect(h.socket.countOfType('SUBMIT_HAND_PROOF')).toBe(2);
+  });
+});
+
+describe('ArenaBot settlement', () => {
+  // Real timers here: settle() awaits genuine dynamic imports of the Aztec SDK,
+  // which fake timers cannot advance through.
+  beforeEach(() => vi.useRealTimers());
+  afterEach(() => vi.useFakeTimers());
+
+  // The move-proof chain must start at the REAL canonical initial hash —
+  // sortProofChain walks from it, so a made-up starting hash is rejected at
+  // step 0 (which is the C2 replay guard doing its job).
+  let initialHash: string;
+  beforeAll(async () => {
+    const { installNodeArtifactSources } = await import('../src/circuits.js');
+    await installNodeArtifactSources();
+    const { computeCanonicalInitialHash } = await import('../../frontend/src/aztec/settlementArgs.js');
+    initialHash = await computeCanonicalInitialHash();
+  }, 120_000);
+
+  /** Well-formed field/address hex — buildProcessGameArgs really parses these. */
+  const hex = FIELD;
+  const CHAIN_GAME_ID = hex(0xabc);
+  const OPP_ADDRESS = hex(0xdef);
+  const RANDOMNESS = SIX_RANDOM;
+
+  /** Valid base64 for N 32-byte field elements — the args builder really decodes it. */
+  const fakeProofB64 = (fields = 4) => Buffer.alloc(32 * fields).toString('base64');
+
+  function settleHarness(winner: string, playerNumber: 1 | 2, seedTranscript: boolean) {
+    const socket = new FakeSocket();
+    const f = fakeChain();
+    const sent: any[] = [];
+    const logs: string[] = [];
+    f.chain.pxe.sendProcessGame = async (...a: any[]) => { sent.push(a); return '0xsettletx'; };
+    const proofs = {
+      cardCommitHash: async (ids: number[]) => `0xc-${ids.join('')}`,
+      verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
+      proveHand: async () => ({ proof: fakeProofB64(), publicInputs: ['0x1', '0x2'], cardCommit: hex(0x111) }),
+      proveMove: async () => ({ proof: fakeProofB64(), publicInputs: [], startStateHash: 'unused', endStateHash: '0x0' }),
+    };
+    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 20 }), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, proofs: proofs as any, log: (m: string) => logs.push(m), now: () => 1_000_000,
+    });
+    return { bot, socket, sent, logs, async run() {
+      const settle = (ms: number) => new Promise(r => setTimeout(r, ms));
+      bot.start(); socket.emit('open');
+      socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+      socket.deliver({ type: 'BOT_REGISTERED' });
+      // Let the bot QUEUE first — that is what selects and stores its hand.
+      // Skipping it leaves the hand empty and the hand proof never runs.
+      await settle(80);
+      socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber, gameState: freshState(), opponentIsBot: false });
+      socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: OPP_ADDRESS, onChainGameId: CHAIN_GAME_ID, gameRandomness: RANDOMNESS });
+      await settle(50);
+      if (seedTranscript) {
+        socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: playerNumber === 1 ? 2 : 1, handProof: { proof: fakeProofB64(), publicInputs: ['0x3', '0x4'], cardCommit: hex(0x222) } });
+        let start = initialHash;
+        for (let i = 0; i < 9; i++) {
+          const end = `0x${String(i + 1).padStart(64, '0')}`;
+          socket.deliver({ type: 'MOVE_PROVEN', gameId: 'g1', moveProof: { proof: fakeProofB64(), publicInputs: [], startStateHash: start, endStateHash: end } });
+          start = end;
+        }
+      }
+      socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner, gameState: freshState(), player1CardIds: [1,2,3,4,5], player2CardIds: [6,7,8,9,10] });
+      await settle(400);
+      bot.stop();
+    } };
+  }
+
+  it('settles when it wins', async () => {
+    const h = settleHarness('player1', 1, true);
+    await h.run();
+    expect(h.sent).toHaveLength(1);
+    expect(h.bot.getStats().settlements).toBe(1);
+  });
+
+  it('does not settle when it loses — the winner does that', async () => {
+    const h = settleHarness('player1', 2, true);
+    await h.run();
+    expect(h.sent).toHaveLength(0);
+    expect(h.bot.getStats().settlements).toBe(0);
+  });
+
+  it('settles a draw only as player 1 — a second settler would revert', async () => {
+    const asP1 = settleHarness('draw', 1, true);
+    await asP1.run();
+    expect(asP1.sent).toHaveLength(1);
+
+    const asP2 = settleHarness('draw', 2, true);
+    await asP2.run();
+    expect(asP2.sent).toHaveLength(0);
+  });
+
+  it('names what is missing rather than sending an incomplete transcript', async () => {
+    const h = settleHarness('player1', 1, false);
+    await h.run();
+    expect(h.sent).toHaveLength(0);
+    expect(h.bot.getStats().settleFailures).toBe(1);
+    expect(h.bot.getStats().lastError).toMatch(/transcript incomplete.*move proof/s);
   });
 });

@@ -26,6 +26,7 @@ import type { ArenaBotConfig } from './config.js';
 /** The slice of BotProofs the bot uses — narrowed so tests can fake it. */
 export interface BotProofsLike {
   cardCommitHash(cardIds: number[], blindingFactor: string): Promise<string>;
+  verificationKeys(): Promise<{ handVk: Uint8Array; moveVk: Uint8Array }>;
   proveHand(inputs: { cardIds: number[]; blindingFactor: string; opponentRandomness: string[] }): Promise<any>;
   proveMove(args: any): Promise<any>;
 }
@@ -51,6 +52,9 @@ export interface BotStats {
   commitFailures: number;
   /** Proof-generation failures. Chain mode only. */
   proofFailures: number;
+  /** Settlement failures, and successful settlements. Chain mode only. */
+  settleFailures: number;
+  settlements: number;
   lastError: string | null;
 }
 
@@ -100,13 +104,21 @@ export class ArenaBot {
     moveNumber: number; cardId: number; row: number; col: number;
     boardBefore: GameState['board']; scoresBefore: [number, number];
   } | null = null;
+  /** The settlement transcript, gathered from BOTH players over the relay. */
+  private myHandProof: any = null;
+  private opponentHandProof: any = null;
+  private readonly moveProofs = new Map<string, any>();
+  private opponentAddress: string | null = null;
+  private opponentCardIds: number[] = [];
+  private onChainGameId: string | null = null;
+  private settling = false;
   private pollTimer: NodeJS.Timeout | null = null;
   private stopped = false;
   private registered = false;
 
   private readonly stats: BotStats = {
     state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
-    joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0, lastError: null,
+    joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0, settleFailures: 0, settlements: 0, lastError: null,
   };
 
   private readonly chain: BotChainLike | null;
@@ -238,6 +250,8 @@ export class ArenaBot {
       case 'OPPONENT_AZTEC_INFO':
         if (this.chain && msg.gameId === this.gameId && Array.isArray(msg.gameRandomness)) {
           this.opponentRandomness = msg.gameRandomness as string[];
+          if (msg.aztecAddress) this.opponentAddress = String(msg.aztecAddress);
+          if (msg.onChainGameId) this.onChainGameId = String(msg.onChainGameId);
           // The hand proof binds the OPPONENT's randomness, so it cannot run
           // until they have shared it.
           void this.maybeProveHand().catch(err => {
@@ -273,15 +287,34 @@ export class ArenaBot {
         else if (msg.winner === this.myPlayer) this.stats.wins += 1;
         else this.stats.losses += 1;
         this.log(`game over: ${msg.winner} (bot was ${this.myPlayer})`);
-        this.resetToIdle();
+        if (Array.isArray(msg.player1CardIds) && Array.isArray(msg.player2CardIds)) {
+          this.opponentCardIds = this.myPlayer === 'player1' ? msg.player2CardIds : msg.player1CardIds;
+        }
+        if (this.chain && this.proofs && this.shouldSettle(msg.winner)) {
+          // Settle BEFORE resetting: the transcript lives in this game's state.
+          void this.settle(msg.winner).catch(err => {
+            this.stats.settleFailures += 1;
+            this.recordError('settle', err as Error);
+          }).finally(() => this.resetToIdle());
+        } else {
+          this.resetToIdle();
+        }
         break;
       }
 
       case 'HAND_PROOF':
         // The opponent's hand proof carries their card commitment, which our
-        // move proofs must bind.
+        // move proofs must bind — and it is half of the settlement transcript.
         if (msg.gameId === this.gameId && msg.handProof?.cardCommit) {
           this.opponentCardCommit = String(msg.handProof.cardCommit);
+          this.opponentHandProof = msg.handProof;
+        }
+        break;
+
+      case 'MOVE_PROVEN':
+        // The opponent's move proofs complete the 9-link chain.
+        if (msg.gameId === this.gameId && msg.moveProof?.startStateHash) {
+          this.moveProofs.set(String(msg.moveProof.startStateHash), msg.moveProof);
         }
         break;
 
@@ -373,6 +406,7 @@ export class ArenaBot {
       opponentRandomness: this.opponentRandomness,
     });
     if (this.gameId !== gameId) return; // game ended while proving
+    this.myHandProof = handProof;
     this.send({ type: 'SUBMIT_HAND_PROOF', gameId, handProof });
     this.log('hand proof submitted');
   }
@@ -410,12 +444,83 @@ export class ArenaBot {
       playerHandData: { cardIds: this.hand, blindingFactor: this.blindingFactor, handIndex: 0 },
     });
     if (this.gameId !== gameId || !gameId) return;
+    // Key by the chain link, not the move number: sortProofChain orders the
+    // transcript by state hash, and duplicates from a relay replay must collapse.
+    this.moveProofs.set(String(moveProof.startStateHash), moveProof);
     this.send({
       type: 'SUBMIT_MOVE_PROOF', gameId,
       handIndex: 0, row: pending.row, col: pending.col,
       moveNumber: pending.moveNumber, moveProof,
     });
     this.log(`move proof ${pending.moveNumber} submitted`);
+  }
+
+  /**
+   * Who sends process_game.
+   *
+   * A win: the winner settles, claiming a card. A DRAW is single-settler —
+   * player 1 alone fires process_game(winner_id=3), which re-mints both hands;
+   * player 2 must send nothing or its tx reverts (see the draw-settlement path
+   * in tests/draw-game.spec.ts). A loss: the winner settles, we just wait.
+   */
+  private shouldSettle(winner: string): boolean {
+    if (winner === 'draw') return this.myPlayer === 'player1';
+    return winner === this.myPlayer;
+  }
+
+  /**
+   * Assemble the 11-proof transcript and send process_game.
+   *
+   * Uses the SAME buildProcessGameArgs the browser uses: the argument list is
+   * flat and order-critical, and a wrong order is only rejected on-chain after
+   * the expensive recursive verification.
+   */
+  private async settle(winner: string): Promise<void> {
+    if (this.settling) return;
+    this.settling = true;
+    const chain = this.chain!, proofs = this.proofs!;
+
+    const missing: string[] = [];
+    if (!this.myHandProof) missing.push('own hand proof');
+    if (!this.opponentHandProof) missing.push('opponent hand proof');
+    if (!this.onChainGameId) missing.push('on-chain game id');
+    if (!this.opponentAddress) missing.push('opponent address');
+    if (!this.myRandomness || !this.opponentRandomness) missing.push('randomness');
+    if (this.moveProofs.size < 9) missing.push(`${9 - this.moveProofs.size} move proof(s)`);
+    if (missing.length) {
+      // Fail loudly with WHAT is missing: an incomplete transcript otherwise
+      // surfaces as an opaque on-chain revert.
+      throw new Error(`cannot settle — transcript incomplete: ${missing.join(', ')}`);
+    }
+
+    const { handVk, moveVk } = await proofs.verificationKeys();
+    const { Fr } = await import('@aztec/aztec.js/fields');
+    const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+    const { buildProcessGameArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
+
+    // On a draw no card changes hands (winner_id=3 re-mints both), so 0.
+    const selectedCardId = winner === 'draw' ? 0 : (this.opponentCardIds[0] ?? 0);
+    const iAmPlayer1 = this.myPlayer === 'player1';
+
+    const args = await buildProcessGameArgs({
+      Fr, AztecAddress,
+      onChainGameId: this.onChainGameId!,
+      handVk, moveVk,
+      handProof1: iAmPlayer1 ? this.myHandProof : this.opponentHandProof,
+      handProof2: iAmPlayer1 ? this.opponentHandProof : this.myHandProof,
+      moveProofs: [...this.moveProofs.values()],
+      opponentAddress: this.opponentAddress!,
+      selectedCardId,
+      myCardIds: this.hand,
+      opponentCardIds: this.opponentCardIds,
+      myRandomness: this.myRandomness!,
+      opponentRandomness: this.opponentRandomness!,
+    });
+
+    this.log(`settling ${winner === 'draw' ? '(draw, single settler)' : `(claiming card ${selectedCardId})`}…`);
+    const txHash = await chain.pxe.sendProcessGame(chain.address, args, { timeoutMs: this.cfg.chainTxTimeoutMs });
+    this.stats.settlements += 1;
+    this.log(`settled on-chain: ${String(txHash).slice(0, 18)}…`);
   }
 
   /** Play if, and only if, it is our turn in a live game. */
@@ -466,6 +571,13 @@ export class ArenaBot {
     this.opponentCardCommit = null;
     this.handProofSent = false;
     this.pendingMove = null;
+    this.myHandProof = null;
+    this.opponentHandProof = null;
+    this.moveProofs.clear();
+    this.opponentAddress = null;
+    this.opponentCardIds = [];
+    this.onChainGameId = null;
+    this.settling = false;
   }
 
   private send(msg: unknown): void {

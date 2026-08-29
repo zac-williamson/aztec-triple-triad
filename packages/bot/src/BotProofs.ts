@@ -33,6 +33,8 @@ export interface HandProofInputs {
 export class BotProofs {
   /** All proving runs through here, one at a time. */
   private queue: Promise<unknown> = Promise.resolve();
+  /** Cached: deriving a VK is expensive and they never change for a build. */
+  private vks: { handVk: Uint8Array; moveVk: Uint8Array } | null = null;
 
   constructor(private readonly log: (msg: string) => void = () => {}) {}
 
@@ -47,6 +49,31 @@ export class BotProofs {
     // permanently wedge every later proof behind a rejected promise.
     this.queue = run.catch(() => undefined);
     return run;
+  }
+
+  /**
+   * Verification keys for the two circuits, as settlement's process_game
+   * expects them. Derived from the same artifacts used to prove, so the VKs
+   * always match the proofs — deriving them from a different source is how a
+   * transcript ends up rejected on-chain for no visible reason.
+   */
+  async verificationKeys(): Promise<{ handVk: Uint8Array; moveVk: Uint8Array }> {
+    if (this.vks) return this.vks;
+    const { UltraHonkBackend } = await import('@aztec/bb.js');
+    const { getBarretenberg } = await import('../../frontend/src/aztec/proofBackend.js');
+    const { loadProveHandCircuit, loadGameMoveCircuit } =
+      await import('../../frontend/src/aztec/circuitLoader.js');
+
+    const api = await getBarretenberg();
+    const [handArtifact, moveArtifact] = await Promise.all([loadProveHandCircuit(), loadGameMoveCircuit()]);
+    const handBackend = new UltraHonkBackend(handArtifact.bytecode, api);
+    const moveBackend = new UltraHonkBackend(moveArtifact.bytecode, api);
+    const [handVk, moveVk] = await Promise.all([
+      handBackend.getVerificationKey(),
+      moveBackend.getVerificationKey(),
+    ]);
+    this.vks = { handVk, moveVk };
+    return this.vks;
   }
 
   /** poseidon2 commitment to the bot's five cards. */
