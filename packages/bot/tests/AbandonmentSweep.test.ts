@@ -16,6 +16,9 @@ vi.mock('../../frontend/src/aztec/settlementArgs.js', () => ({
   waitForDisputeWindow: vi.fn(async () => {}),
   DISPUTE_BLOCKS: 5,
 }));
+vi.mock('../../frontend/src/aztec/noteImporter.js', () => ({
+  fetchTxEffectData: vi.fn(async () => ({ noteHashes: ['0x1'], firstNullifier: '0x2' })),
+}));
 vi.mock('@aztec/aztec.js/fields', () => ({ Fr: class {} }));
 vi.mock('@aztec/aztec.js/addresses', () => ({ AztecAddress: { fromStringUnsafe: (s: string) => s } }));
 
@@ -54,6 +57,10 @@ function harness(status: number, over: Record<string, any> = {}) {
       readGameStatus: over.readGameStatus ?? (async () => status),
       sendClaimAbandonedGame: async () => { calls.push('claim'); return '0xclaimtx'; },
       sendSettleAbandonedGame: async () => { calls.push('settle'); return '0xsettletx'; },
+      importCardNotes: async (_o: string, _t: string, notes: any[]) => {
+        calls.push(`import:${notes.map(n => n.tokenId).join(',')}`);
+        return notes.map(n => n.tokenId);
+      },
       ...over.pxe,
     },
   };
@@ -76,7 +83,10 @@ describe('AbandonmentSweep', () => {
 
     const stats = await h.sweep.run();
 
-    expect(h.calls).toEqual(['claim', 'settle']);
+    // The import is not optional bookkeeping: settle_abandoned_game re-mints via
+    // create_and_push_note, which the PXE cannot discover, so without it the
+    // cards are ours on-chain and invisible in the wallet.
+    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5,10']);
     expect(stats.recovered).toBe(1);
     expect(stats.cardsRecovered).toBe(5);
     // Forgotten, or the next pass chases a game that is already resolved.
@@ -112,7 +122,7 @@ describe('AbandonmentSweep', () => {
     await h.sweep.run();
 
     // Re-claiming would revert; settling is what is actually outstanding.
-    expect(h.calls).toEqual(['settle']);
+    expect(h.calls).toEqual(['settle', 'import:1,2,3,4,5,10']);
   });
 
   it('keeps the record when recovery FAILS, so the cards are not forgotten', async () => {
@@ -184,7 +194,7 @@ describe('AbandonmentSweep', () => {
     expect(h.calls).toEqual([]);
     release();
     await first;
-    expect(h.calls).toEqual(['claim', 'settle']);
+    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5,10']);
   });
 
   it('survives a corrupt journal entry without discarding it', async () => {
@@ -196,7 +206,34 @@ describe('AbandonmentSweep', () => {
 
     // The good one recovers; the corrupt file stays on disk, because deleting it
     // would silently throw away the only record that five cards are locked.
-    expect(h.calls).toEqual(['claim', 'settle']);
+    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5,10']);
     expect(readdirSync(dir)).toContain('broken.json');
+  });
+});
+
+describe('AbandonmentSweep note import', () => {
+  it('imports the claimed opponent card too, using randomness slot 5', async () => {
+    const h = harness(GAME_STATUS.active);
+    h.journal.write(record({ moveProofs: [PROOF, PROOF] }));   // opponent played
+
+    await h.sweep.run();
+
+    // The contract mints the claimed card with caller_randomness[5]; missing it
+    // means winning the card on-chain and never receiving it.
+    expect(h.calls).toContain('import:1,2,3,4,5,10');
+  });
+
+  it('still counts the recovery when the note import fails', async () => {
+    const { fetchTxEffectData } = await import('../../frontend/src/aztec/noteImporter.js');
+    vi.mocked(fetchTxEffectData).mockResolvedValueOnce(null as any);
+    const h = harness(GAME_STATUS.active);
+    h.journal.write(record());
+
+    const stats = await h.sweep.run();
+
+    // The settle landed: the cards ARE ours on-chain. A later sweep or resync
+    // can surface them, so this is not a failed recovery.
+    expect(stats.recovered).toBe(1);
+    expect(h.calls).toEqual(['claim', 'settle']);
   });
 });

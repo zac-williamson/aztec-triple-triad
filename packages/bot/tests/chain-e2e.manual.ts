@@ -34,6 +34,13 @@ const PORT = 5399;
 const PXE_URL = process.env.AZTEC_PXE_URL ?? 'http://localhost:8080';
 const log = (who: string, m: string) => console.log(`[${who}] ${m}`);
 const OPPONENT_DIFFICULTY = (process.env.E2E_OPPONENT_DIFFICULTY ?? 'greedy') as 'random' | 'greedy' | 'lookahead';
+/**
+ * Number of the opponent's own move proofs after which it walks out without a
+ * word — the abandonment case. This is not a contrived failure: it is a player
+ * closing the tab, and it is the ONLY way the bot's cards get stranded, since
+ * the bot never creates and therefore can never cancel.
+ */
+const ABANDON_AFTER = Number(process.env.E2E_ABANDON_AFTER_MOVES ?? 0);
 
 /** A chain-real opponent: queues first, plays greedily, commits/proves/settles. */
 class ScriptedOpponent {
@@ -63,6 +70,8 @@ class ScriptedOpponent {
    *  GAME_OVER, so exiting on `over` alone drops it — and the winner then waits
    *  forever for a 9th link that nobody will ever send. */
   private proving = 0;
+  private myMoveProofs = 0;
+  abandoned = false;
   /** True once every move we made has been proved and relayed. */
   get transcriptFlushed(): boolean { return this.proving === 0 && this.pending === null; }
 
@@ -222,6 +231,12 @@ class ScriptedOpponent {
     this.moveProofs.set(String(moveProof.startStateHash), moveProof);
     this.send({ type: 'SUBMIT_MOVE_PROOF', gameId: this.gameId, handIndex: 0, row: p.row, col: p.col, moveNumber: p.moveNumber, moveProof });
     log('opponent', `move proof ${p.moveNumber} submitted`);
+    this.myMoveProofs += 1;
+    if (ABANDON_AFTER > 0 && this.myMoveProofs >= ABANDON_AFTER) {
+      log('opponent', `ABANDONING after ${this.myMoveProofs} move(s) — closing the socket`);
+      this.abandoned = true;
+      this.close();
+    }
   }
 
   private move(state: GameState | undefined): void {
@@ -322,7 +337,15 @@ async function main(): Promise<void> {
     const opponent = new ScriptedOpponent(oppChain, new BotProofs(m => log('opp:proofs', m)));
     await opponent.run();
     const deadline = Date.now() + 30 * 60_000;
-    while (Date.now() < deadline && !opponent.over) await new Promise(r => setTimeout(r, 1000));
+    while (Date.now() < deadline && !opponent.over && !opponent.abandoned) {
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    if (opponent.abandoned) {
+      // The whole point is to leave WITHOUT flushing. Exit 0: this is the
+      // scenario succeeding, not the harness failing.
+      console.log('[opponent] abandoned the game and exited');
+      process.exit(0);
+    }
 
     // GAME_OVER is not the end of our work. The final move's proof is generated
     // AFTER the relay declares the game over, so exiting here drops it — and if
@@ -340,6 +363,10 @@ async function main(): Promise<void> {
   }
 
   const botChain = mk(0); await botChain.connect();
+  const botProofs = new BotProofs(m => log('bot:proofs', m));
+  const { GameJournal } = await import('../src/GameJournal.js');
+  const { AbandonmentSweep } = await import('../src/AbandonmentSweep.js');
+  const journal = new GameJournal(`packages/bot/.artifacts/games-e2e`);
   const bot = new ArenaBot(
     { ...configFromEnv(), wsUrl: `ws://localhost:${PORT}`, httpUrl: `http://localhost:${PORT}`,
       joinThresholdMs: 1_000, pollIntervalMs: 500,
@@ -349,7 +376,7 @@ async function main(): Promise<void> {
       moveDelayMs: 2_000,
       settleWaitMs: 120_000,
       token: process.env.ARENA_BOT_TOKEN! },
-    { chain: botChain, proofs: new BotProofs(m => log('bot:proofs', m)), log: m => log('bot', m) },
+    { chain: botChain, proofs: botProofs, journal, log: m => log('bot', m) },
   );
   bot.start();
 
@@ -388,6 +415,52 @@ async function main(): Promise<void> {
     const st = bot.getStats();
     if (st.settlements > 0 || st.settleFailures > 0 || st.state === 'idle') break;
     await new Promise(r => setTimeout(r, 2_000));
+  }
+
+  // --- Abandonment mode: the opponent walked out, so nothing will ever settle
+  // this game normally. Prove the cards actually come BACK, which is the only
+  // thing that makes an unattended bot viable.
+  if (ABANDON_AFTER > 0) {
+    const before = await botChain.readCards();
+    const outstanding = journal.outstanding();
+    console.log('\n=== ABANDONMENT RECOVERY ===');
+    console.log('  journalled games:', outstanding.length,
+                outstanding.map(r => `${r.onChainGameId.slice(0, 12)}… ${r.moveProofs.length}/9 moves`));
+    console.log('  spendable before:', before.length);
+
+    // The sandbox's automine sequencer only builds a block on TX ACTIVITY, so
+    // the dispute window — measured in BLOCKS — never opens on its own while the
+    // sweep sits waiting for it. Nudge it. Testnet needs none of this; blocks
+    // arrive there whether or not we are doing anything.
+    const nudge = setInterval(() => {
+      void fetch(PXE_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'aztecDebug_mineBlock', params: [] }),
+      }).catch(() => {});
+    }, 4_000);
+    nudge.unref?.();
+
+    const sweep = new AbandonmentSweep({
+      journal, chain: botChain, proofs: botProofs,
+      log: m => log('sweep', m),
+      minAgeMs: 0,          // the game is known-dead here; no need to wait it out
+    });
+    const swept = await sweep.run();
+    clearInterval(nudge);
+    // The PXE needs a beat to surface the re-minted notes.
+    await new Promise(r => setTimeout(r, 5_000));
+    const after = await botChain.readCards();
+
+    console.log('  sweep stats     :', JSON.stringify(swept));
+    console.log('  spendable after :', after.length, `(+${after.length - before.length})`);
+    bot.stop();
+
+    const ok = swept.recovered === 1 && after.length > before.length;
+    console.log(ok
+      ? '\n  ✓ ABANDONED GAME RECOVERED — committed cards are back'
+      : '\n  ✗ recovery failed — cards are still stranded');
+    process.exit(ok ? 0 : 1);
   }
 
   const stats = bot.getStats();

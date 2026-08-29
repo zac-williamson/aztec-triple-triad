@@ -177,6 +177,33 @@ export class AbandonmentSweep {
     this.log(`sweep: ${short(rec.onChainGameId)} claimed ${String(tx).slice(0, 18)}…`);
   }
 
+  private async importRecoveredCards(rec: GameRecord, txHash: string, claimedCardId: number): Promise<void> {
+    try {
+      const { fetchTxEffectData } = await import('../../frontend/src/aztec/noteImporter.js');
+      const txEffect = await fetchTxEffectData(this.deps.chain.nodeClient as any, txHash);
+      if (!txEffect) {
+        this.log(`sweep: WARNING no TxEffect for ${txHash.slice(0, 18)}… — ` +
+                 `cards are on-chain but not yet visible to the PXE`);
+        return;
+      }
+      const notes = rec.cardIds.slice(0, 5).map((tokenId, i) => ({
+        tokenId, randomness: rec.randomness[i],
+      }));
+      // caller_randomness[5] is the slot the contract uses for the claimed card.
+      if (claimedCardId !== 0 && rec.randomness[5]) {
+        notes.push({ tokenId: claimedCardId, randomness: rec.randomness[5] });
+      }
+      await this.deps.chain.pxe.importCardNotes(
+        this.deps.chain.address, txHash, notes, 'abandoned-game recovery', txEffect,
+      );
+    } catch (err) {
+      // Not fatal: the cards ARE ours on-chain, and a later sweep or a PXE
+      // resync can still surface them. Loud, though — an unimported note looks
+      // exactly like a failed recovery from the outside.
+      this.log(`sweep: WARNING note import failed: ${(err as Error).message}`);
+    }
+  }
+
   private async settle(rec: GameRecord): Promise<void> {
     const { buildSettleAbandonedArgs, waitForDisputeWindow, DISPUTE_BLOCKS } =
       await import('../../frontend/src/aztec/settlementArgs.js');
@@ -210,6 +237,13 @@ export class AbandonmentSweep {
       node: this.deps.chain.nodeClient, timeoutMs: this.txTimeoutMs,
     });
 
+    // The cards are ours on-chain but INVISIBLE until imported: settle_abandoned_game
+    // re-mints them through create_and_push_note, which skips on-chain tagging, so
+    // the PXE cannot discover them (CLAUDE.md ground rule 9). Without this the
+    // sweep reports success while the bot's spendable count does not move — which
+    // is exactly what the first chain run of this code did.
+    await this.importRecoveredCards(rec, String(tx), claimedCardId);
+
     this.stats.recovered += 1;
     this.stats.cardsRecovered += rec.cardIds.length;
     this.deps.journal.forget(rec.onChainGameId);
@@ -220,6 +254,14 @@ export class AbandonmentSweep {
   }
 }
 
+/**
+ * Re-import the notes settle_abandoned_game minted back to us.
+ *
+ * The contract mints our five cards with caller_randomness[0..4], and — when we
+ * claimed one — the opponent's card with caller_randomness[5]. Note import is
+ * best-effort per note and idempotent, so a partial failure is recoverable by
+ * running the sweep again rather than fatal.
+ */
 function short(id: string): string {
   return id.length > 12 ? `${id.slice(0, 10)}…` : id;
 }
