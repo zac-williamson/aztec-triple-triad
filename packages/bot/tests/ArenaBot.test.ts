@@ -1051,3 +1051,36 @@ describe('ArenaBot journals committed games', () => {
     h.bot.stop();
   });
 });
+
+describe('ArenaBot pool behaviour', () => {
+  it('does not offer when another bot is already covering the waiting player', async () => {
+    const h = harness();
+    await h.ready();
+    // One human waiting, one bot already queued for them. A second offer just
+    // parks five more committed cards in the queue doing nothing.
+    h.setQueue({ length: 2, oldestWaitMs: 60_000, humansWaiting: 1, botsQueued: 1 });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(h.socket.countOfType('QUEUE_MATCHMAKING')).toBe(0);
+    h.bot.stop();
+  });
+
+  it('offers when there are more waiting humans than bots', async () => {
+    const h = harness();
+    await h.ready();
+    h.setQueue({ length: 3, oldestWaitMs: 60_000, humansWaiting: 2, botsQueued: 1 });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(h.socket.countOfType('QUEUE_MATCHMAKING')).toBe(1);
+    h.bot.stop();
+  });
+
+  it('offers against an older relay that reports no bot counts', async () => {
+    const h = harness();
+    await h.ready();
+    // Without the fields, a single-bot deployment is the right assumption —
+    // refusing to play would be a worse failure than a rare double-offer.
+    h.setQueue({ length: 1, oldestWaitMs: 60_000 });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(h.socket.countOfType('QUEUE_MATCHMAKING')).toBe(1);
+    h.bot.stop();
+  });
+});

@@ -156,7 +156,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       // Read-only queue view. The arena bot polls this to learn whether anyone
       // has waited past its join threshold; playerIds are already opaque
       // session ids, so nothing extra is exposed here.
-      const snap = await gameManager.queueSnapshot();
+      const snap = await gameManager.queueSnapshot(Date.now(), isBotPlayerId);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(snap));
       return;

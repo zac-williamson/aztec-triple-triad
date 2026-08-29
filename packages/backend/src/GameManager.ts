@@ -410,6 +410,22 @@ export class GameManager {
    * paired with a ghost entry, orphaning the game and leaving the other
    * live player stuck in the queue.
    */
+  /**
+   * Pair two waiting players and open a game for them.
+   *
+   * Selection is deliberate rather than "pop the first two", because with a pool
+   * of arena bots watching the queue that would pair two BOTS: both wager five
+   * real cards, play a full game, and one takes a card from the other. Pure
+   * waste, and it consumes the slot the waiting human was supposed to get.
+   *
+   * The rules, in order:
+   *   1. The CREATOR is the oldest human. A bot never creates — creating wagers
+   *      five cards on a game nobody may join.
+   *   2. The JOINER is the next player, preferring another human over a bot, so
+   *      two waiting humans always play each other rather than each taking a bot.
+   *   3. If the queue holds ONLY bots, nobody is matched. A bot exists to give a
+   *      human an opponent; two of them playing each other serves no one.
+   */
   async tryMatch(
     livePlayerIds: Set<string>,
     isBot: (playerId: string) => boolean = () => false,
@@ -417,31 +433,29 @@ export class GameManager {
     // Strip any stale entries before matching
     await this.store.removeDisconnectedQueueEntries(livePlayerIds);
 
-    const pair = await this.store.popQueuePair();
-    if (!pair) return null;
+    const queue = (await this.store.listQueue()).filter(e => livePlayerIds.has(e.playerId));
+    if (queue.length < 2) return null;
 
-    const [entry1, entry2] = pair;
+    const creator = queue.find(e => !isBot(e.playerId));
+    // Rule 3: an all-bot queue matches nobody.
+    if (!creator) return null;
 
-    // Defensive: verify both entries are still live (race with cleanup).
-    // If either is not, re-queue the live one(s) at the back of the queue
-    // so they can match with the next player who joins.
-    if (!livePlayerIds.has(entry1.playerId) || !livePlayerIds.has(entry2.playerId)) {
-      if (livePlayerIds.has(entry1.playerId)) {
-        await this.store.pushQueue(entry1);
-      }
-      if (livePlayerIds.has(entry2.playerId)) {
-        await this.store.pushQueue(entry2);
-      }
+    const rest = queue.filter(e => e.playerId !== creator.playerId);
+    const joiner = rest.find(e => !isBot(e.playerId)) ?? rest[0];
+    if (!joiner) return null;
+
+    // Claim both before creating anything: leaving them queued through an await
+    // lets a concurrent tryMatch select the same player twice.
+    const claimed = await Promise.all([
+      this.store.removeFromQueue(creator.playerId),
+      this.store.removeFromQueue(joiner.playerId),
+    ]);
+    if (!claimed[0] || !claimed[1]) {
+      // Someone else took one of them. Put back whichever we actually claimed
+      // rather than silently dropping a waiting player from the queue.
+      if (claimed[0]) await this.store.pushQueue(creator);
+      if (claimed[1]) await this.store.pushQueue(joiner);
       return null;
-    }
-
-    // The arena bot must NEVER create a game — it only ever joins one a human is
-    // already waiting in. Queue order usually gives that for free (the bot only
-    // queues once a human is ahead of it), but "usually" is not a guarantee: a
-    // requeue, a stale-entry sweep, or two bots would flip it. Order explicitly.
-    let [creator, joiner] = [entry1, entry2];
-    if (isBot(creator.playerId) && !isBot(joiner.playerId)) {
-      [creator, joiner] = [joiner, creator];
     }
 
     const room = await this.createGame(creator.playerId, creator.cardIds);
@@ -458,24 +472,37 @@ export class GameManager {
   }
 
   /**
-   * Read-only queue view for /queue and the arena bot. `oldestWaitMs` is the
-   * signal the bot joins on: it is the wait of the player who has been waiting
-   * longest, i.e. the person the bot would be rescuing.
+   * Read-only queue view for /queue and the arena bot.
+   *
+   * `oldestWaitMs` counts HUMANS only. It is the signal a bot joins on — "how
+   * long has the person I would be rescuing been waiting" — and a bot already
+   * sitting in the queue must never be what triggers another bot.
+   *
+   * `humansWaiting` / `botsQueued` exist so a POOL does not stampede: every bot
+   * polls the same endpoint and would otherwise all queue for the same lone
+   * player. Publishing which entries are bots costs nothing here — the bot is
+   * disclosed anyway, via `opponentIsBot` and the HUD badge.
    */
-  async queueSnapshot(now = Date.now()): Promise<{
+  async queueSnapshot(now = Date.now(), isBot: (playerId: string) => boolean = () => false): Promise<{
     length: number;
     oldestWaitMs: number;
-    entries: { playerId: string; queuedAt: number; waitMs: number }[];
+    humansWaiting: number;
+    botsQueued: number;
+    entries: { playerId: string; queuedAt: number; waitMs: number; isBot: boolean }[];
   }> {
     const entries = await this.store.listQueue();
     const mapped = entries.map(e => ({
       playerId: e.playerId,
       queuedAt: e.queuedAt,
       waitMs: Math.max(0, now - e.queuedAt),
+      isBot: isBot(e.playerId),
     }));
+    const humans = mapped.filter(e => !e.isBot);
     return {
       length: mapped.length,
-      oldestWaitMs: mapped.reduce((max, e) => (e.waitMs > max ? e.waitMs : max), 0),
+      oldestWaitMs: humans.reduce((max, e) => (e.waitMs > max ? e.waitMs : max), 0),
+      humansWaiting: humans.length,
+      botsQueued: mapped.length - humans.length,
       entries: mapped,
     };
   }

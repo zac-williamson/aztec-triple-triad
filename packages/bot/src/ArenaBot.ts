@@ -67,6 +67,9 @@ export interface BotStats {
 export interface QueueSnapshot {
   length: number;
   oldestWaitMs: number;
+  /** Humans waiting, and bots already offering. Absent on an older relay. */
+  humansWaiting?: number;
+  botsQueued?: number;
   entries: { playerId: string; queuedAt: number; waitMs: number }[];
 }
 
@@ -251,6 +254,16 @@ export class ArenaBot {
     // Only our own entry in the queue means there is nobody to rescue.
     if (snap.length === 0) return;
     if (snap.oldestWaitMs < this.cfg.joinThresholdMs) return;
+
+    // Do not stampede. Every bot in the pool polls this same endpoint and sees
+    // the same waiting player, so without this they ALL queue for one person:
+    // the extras then sit in the queue holding five committed cards each, doing
+    // nothing, until they time out. One bot per waiting human is the whole
+    // requirement. (Older relays omit these fields; then a single bot is
+    // assumed, which is what the pool-less deployment actually is.)
+    if (snap.botsQueued !== undefined && snap.humansWaiting !== undefined) {
+      if (snap.botsQueued >= snap.humansWaiting) return;
+    }
 
     // In chain mode the hand must come from what the bot ACTUALLY holds — its
     // collection shrinks every time a player beats it, so a configured static
