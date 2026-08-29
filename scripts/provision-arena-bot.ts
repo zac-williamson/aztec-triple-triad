@@ -202,7 +202,17 @@ async function main(): Promise<number> {
   const { rollupVersion, l1ChainId } = await node.getNodeInfo();
   console.log(`  Chain:  rollupVersion ${Number(rollupVersion)} l1ChainId ${Number(l1ChainId)}`);
 
-  const wallet = await EmbeddedWallet.create(node, { ephemeral: false, pxeConfig: { proverEnabled: true } });
+  // Per-identity store, matching what BotChain opens for this index — the bot
+  // spends exactly the notes minted here. Sharing one directory across
+  // identities wedges LMDB the moment two of them run at once; see
+  // packages/bot/src/dataDir.ts.
+  const { identityDataDirectory } = await import('../packages/bot/src/dataDir.js');
+  const dataDirectory = identityDataDirectory(index, ROOT_DIR);
+  console.log(`  Store:  ${dataDirectory}`);
+  const wallet = await EmbeddedWallet.create(node, {
+    ephemeral: false,
+    pxeConfig: { proverEnabled: true, dataDirectory },
+  });
   const botAccount = await wallet.createSchnorrAccount(
     Fr.fromHexString(keys.secret),
     Fr.fromHexString(keys.salt),

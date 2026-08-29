@@ -108,6 +108,9 @@ class ScriptedOpponent {
         if (msg.handProof?.cardCommit) {
           this.oppHandProof = msg.handProof;
           this.oppCommit = String(msg.handProof.cardCommit);
+          // We may have been holding our turn waiting for this; the relay will
+          // not push another GAME_STATE, because the missing move is ours.
+          this.move(this.lastState ?? undefined);
         }
         break;
       case 'MOVE_PROVEN':
@@ -169,6 +172,7 @@ class ScriptedOpponent {
     this.myCommit = String(handProof.cardCommit);
     this.send({ type: 'SUBMIT_HAND_PROOF', gameId: this.gameId, handProof });
     log('opponent', 'hand proof submitted');
+    this.move(this.lastState ?? undefined);
   }
 
   /** Prove OUR move once the relay echoes it back — the bot does the same. */
@@ -198,8 +202,14 @@ class ScriptedOpponent {
 
   private move(state: GameState | undefined): void {
     if (state) this.lastState = state;
-    // Same gate as the bot: do not outrun our own commit.
+    // Same gates as the bot: do not outrun our own commit, and do not play a
+    // card we could not prove. A move proof binds BOTH card commitments, and it
+    // needs the EXACT post-move board — so a card played before the opponent's
+    // hand proof arrives is unprovable forever, and one unprovable move makes
+    // the game unsettleable. As player 1 we move FIRST, so this is the normal
+    // case here, not an edge case: it cost a full chain run (moves 8/9).
     if (!this.committed) return;
+    if (!this.myCommit || !this.oppCommit) return;
     if (!state || state.status !== 'playing' || state.currentTurn !== this.me) return;
     const m = chooseBotMove(state, { difficulty: 'greedy' });
     const moveNumber = state.board.flat().filter(c => c.card !== null).length;

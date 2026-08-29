@@ -448,26 +448,52 @@ describe('ArenaBot proof flow', () => {
     expect(h.socket.countOfType('SUBMIT_HAND_PROOF')).toBe(1);
   });
 
-  it('proves its own move only once both card commitments are known', async () => {
+  it('will not even PLACE a card until both card commitments are known', async () => {
     const h = h2();
     await h.ready();
     h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
     deliverJoinHandshake(h.socket);
     await vi.advanceTimersByTimeAsync(50);
 
-    // Play is gated on OUR commit, so the move only goes out on a later state.
+    // Our turn, our cards committed, our own hand proof done — but the
+    // opponent's commitment has not arrived. A move proof binds BOTH, and it
+    // needs the EXACT post-move board, so a card played now could never be
+    // proved: not then, and not later once the board has moved on. One
+    // unprovable move makes the whole game unsettleable, so the bot must HOLD.
     h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
     await vi.advanceTimersByTimeAsync(50);
-    const placed = h.socket.lastOfType('PLACE_CARD');
-    expect(placed, 'moves once committed').toBeTruthy();
+    expect(h.socket.countOfType('PLACE_CARD')).toBe(0);
 
-    // Echo a state containing that move. The opponent's commitment is still
-    // unknown, and the move proof binds BOTH — so it must not prove yet.
-    const st: any = freshState();
-    st.board[placed.row][placed.col] = { card: { id: 1 }, owner: 'player1', originalOwner: 'player1' };
+    // The opponent's hand proof releases it. Nothing else can: the relay only
+    // pushes a state when somebody moves, and the missing move is ours.
+    h.socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 1, handProof: { proof: 'q', publicInputs: [], cardCommit: FIELD(0x2) } });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.socket.countOfType('PLACE_CARD')).toBe(1);
+
+    // …and that move is now provable.
+    const placed = h.socket.lastOfType('PLACE_CARD');
+    const st: any = botTurnState();
+    st.board[placed.row][placed.col] = { card: { id: 1 }, owner: 'player2', originalOwner: 'player2' };
     h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: st });
     await vi.advanceTimersByTimeAsync(50);
-    expect(h.p.calls.some(c => c[0] === 'move')).toBe(false);
+    expect(h.p.calls.some(c => c[0] === 'move')).toBe(true);
+  });
+
+  it('releases a held turn when OUR hand proof is the one that lands last', async () => {
+    const h = h2();
+    await h.ready();
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    // Opponent's commitment first, ours still in flight — the mirror image of
+    // the case above. Whichever lands second must release the turn; only
+    // covering one direction deadlocks the bot on the other.
+    h.socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 1, handProof: { proof: 'q', publicInputs: [], cardCommit: FIELD(0x2) } });
+    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.socket.countOfType('PLACE_CARD')).toBe(0);
+
+    deliverJoinHandshake(h.socket);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.socket.countOfType('PLACE_CARD')).toBe(1);
   });
 
   it('clears per-game proof inputs so they cannot leak into the next game', async () => {

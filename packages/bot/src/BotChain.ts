@@ -22,6 +22,7 @@
  */
 import { readFileSync, existsSync } from 'fs';
 import { installNodeArtifactSources } from './circuits.js';
+import { identityDataDirectory } from './dataDir.js';
 
 export interface BotIdentity {
   index: number;
@@ -122,7 +123,10 @@ export class BotChain {
 
     const wallet = await EmbeddedWallet.create(this.node, {
       ephemeral: false,
-      pxeConfig: { proverEnabled: true },
+      // Per-identity, NOT the default shared directory — see dataDir.ts. Must
+      // match what provision-arena-bot.ts used for this index, since that is
+      // the store its cards were minted into.
+      pxeConfig: { proverEnabled: true, dataDirectory: identityDataDirectory(this.identity.index) },
     });
     const account = await wallet.createSchnorrAccount(
       Fr.fromHexString(this.identity.secret),

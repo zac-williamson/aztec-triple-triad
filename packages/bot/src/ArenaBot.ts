@@ -388,6 +388,10 @@ export class ArenaBot {
         if (msg.gameId === this.gameId && msg.handProof?.cardCommit) {
           this.opponentCardCommit = String(msg.handProof.cardCommit);
           this.opponentHandProof = msg.handProof;
+          // We may have been holding our turn waiting for exactly this (see
+          // maybeMove). Nothing else will re-trigger us: the relay only pushes
+          // GAME_STATE on a move, and it is our move that is missing.
+          this.maybeMove(this.lastState ?? undefined);
         }
         break;
 
@@ -468,6 +472,13 @@ export class ArenaBot {
     this.myHandProof = handProof;
     this.send({ type: 'SUBMIT_HAND_PROOF', gameId, handProof });
     this.log('hand proof submitted');
+    // Symmetric with the HAND_PROOF handler: maybeMove holds our turn until
+    // BOTH commitments are known, and either one can be the last to arrive.
+    // Whichever completes second has to release the held turn, because the
+    // relay pushes a new state only when somebody moves — and the move it is
+    // waiting for is ours. Missing this half deadlocks the bot whenever the
+    // opponent's hand proof beats our own.
+    this.maybeMove(this.lastState ?? undefined);
   }
 
   /**
@@ -488,7 +499,20 @@ export class ArenaBot {
     // the proof fails "Owner not set correctly".
     const occupied = after.board.flat().filter(c => c.card !== null).length;
     if (occupied !== pending.moveNumber + 1) return;
-    if (!this.myCardCommit || !this.opponentCardCommit) return;
+    if (!this.myCardCommit || !this.opponentCardCommit) {
+      // Unreachable now that maybeMove holds the turn until both are known.
+      // If it ever happens the game is already unsettleable, so say so loudly
+      // rather than dropping the move proof in silence, which is how this cost
+      // a full chain run.
+      this.pendingMove = null;
+      this.stats.proofFailures += 1;
+      this.recordError('move-proof', new Error(
+        `move ${pending.moveNumber} cannot be proved: card commitments missing ` +
+        `(mine=${!!this.myCardCommit}, opponent=${!!this.opponentCardCommit}) — ` +
+        `the transcript is now permanently incomplete`,
+      ));
+      return;
+    }
 
     this.pendingMove = null;
     const gameId = this.gameId;
@@ -613,6 +637,16 @@ export class ArenaBot {
     // commitment that does not exist yet — and lets the relay game finish
     // before the chain has caught up, leaving nothing to settle.
     if (this.chain && !this.committed) return;
+    // Nor until we know BOTH card commitments. A move proof binds cardCommit1
+    // AND cardCommit2, so a card played before the opponent's hand proof
+    // arrives cannot be proved — and because the proof needs the EXACT
+    // post-move board, it can never be caught up afterwards either: by the next
+    // state our card may already be captured. ONE unprovable move makes the
+    // whole game unsettleable, so waiting is strictly better than moving.
+    // Gated on `proofs`, not `chain`: the constraint comes from the move proof
+    // that will have to bind these commitments, so a bot with no prover has
+    // nothing to invalidate by moving early.
+    if (this.chain && this.proofs && (!this.myCardCommit || !this.opponentCardCommit)) return;
 
     let move;
     try {
