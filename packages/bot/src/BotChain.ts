@@ -11,6 +11,14 @@
  * Deliberately NOT a second implementation of the game's chain flow. A parallel
  * one could drift from what players actually execute, and that drift would stay
  * invisible until a settlement proof was rejected on-chain.
+ *
+ * ONE IDENTITY PER PROCESS. pxe.ts binds the wallet in a module-level global
+ * (`currentWallet`, set by setPxeWallet), so a second BotChain in the same
+ * process silently rebinds the ops layer to the newer wallet and BOTH identities
+ * then act as the last one connected. The identity pool (docs/plan/
+ * BACKEND_OPPONENT.md §2b) therefore runs as N processes, not one process with N
+ * identities — which is also better for CPU isolation, since proving is the
+ * bottleneck. Guarded below.
  */
 import { readFileSync, existsSync } from 'fs';
 import { installNodeArtifactSources } from './circuits.js';
@@ -52,6 +60,9 @@ export function loadBotIdentity(manifestPath: string): BotIdentity {
   return m;
 }
 
+/** Process-wide guard: see the one-identity-per-process note above. */
+let connectedIdentity: string | null = null;
+
 export class BotChain {
   private wallet: unknown = null;
   private node: any = null;
@@ -63,6 +74,16 @@ export class BotChain {
   get address(): string {
     if (!this.identity) throw new Error('BotChain not connected');
     return this.identity.address;
+  }
+
+  /**
+   * The node client. Send options MUST carry it: pxe.ts estimates a fee headroom
+   * via node.getCurrentMinFees(), and omitting it fails the send with
+   * "Cannot read properties of undefined (reading 'getCurrentMinFees')".
+   */
+  get nodeClient(): any {
+    if (!this.node) throw new Error('BotChain not connected');
+    return this.node;
   }
 
   get cards(): number[] {
@@ -123,8 +144,16 @@ export class BotChain {
       token: this.cfg.tokenAddress,
     }, this.log);
 
+    if (connectedIdentity && connectedIdentity !== this.identity.address) {
+      throw new Error(
+        `A BotChain for ${connectedIdentity} is already connected in this process. pxe.ts binds ` +
+        `the wallet globally, so a second identity would silently rebind BOTH to the newer wallet. ` +
+        `Run one identity per process.`,
+      );
+    }
     const { setPxeWallet, pxe } = await import('../../frontend/src/aztec/pxe.js');
     setPxeWallet(wallet);
+    connectedIdentity = this.identity.address;
     this.ops = pxe;
     this.log(`chain ready as ${this.identity.address.slice(0, 20)}… (${this.identity.cardIds.length} cards)`);
   }

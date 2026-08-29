@@ -15,6 +15,11 @@
  *
  * The opponent is a SEPARATE driver rather than a second ArenaBot: testing the
  * bot against a copy of itself would hide any assumption both sides share.
+ *
+ * TWO PROCESSES, not one. pxe.ts binds the wallet in a module-level global, so
+ * two identities in one process would silently share the last-connected wallet.
+ * The parent runs the bot and spawns itself with --role=opponent for the other
+ * side. (BotChain enforces this too, and would throw.)
  */
 import WebSocket from 'ws';
 import { createServer } from '@axolotl-arena/backend/src/server.js';
@@ -94,7 +99,7 @@ class ScriptedOpponent {
     this.randomness = randomness;
     this.send({ type: 'SHARE_AZTEC_INFO', gameId: this.gameId, aztecAddress: this.chain.address, onChainGameId: gameId, gameRandomness: randomness });
     log('opponent', 'create_game…');
-    const tx = await this.chain.pxe.sendCreateGame(this.chain.address, this.hand, { timeoutMs: 600_000 });
+    const tx = await this.chain.pxe.sendCreateGame(this.chain.address, this.hand, { node: this.chain.nodeClient, timeoutMs: 600_000 });
     this.send({ type: 'TX_CONFIRMED', gameId: this.gameId, txType: 'create_game', txHash: tx });
     log('opponent', `create_game mined ${String(tx).slice(0, 16)}…`);
   }
@@ -106,7 +111,7 @@ class ScriptedOpponent {
     this.randomness = randomness;
     this.send({ type: 'SHARE_AZTEC_INFO', gameId: this.gameId, aztecAddress: this.chain.address, onChainGameId: this.onChainGameId, gameRandomness: randomness });
     log('opponent', 'join_game…');
-    const tx = await this.chain.pxe.sendJoinGame(this.chain.address, this.onChainGameId, this.hand, { timeoutMs: 600_000 });
+    const tx = await this.chain.pxe.sendJoinGame(this.chain.address, this.onChainGameId, this.hand, { node: this.chain.nodeClient, timeoutMs: 600_000 });
     this.send({ type: 'TX_CONFIRMED', gameId: this.gameId, txType: 'join_game', txHash: tx });
     log('opponent', `join_game mined ${String(tx).slice(0, 16)}…`);
   }
@@ -121,6 +126,8 @@ class ScriptedOpponent {
   close() { this.ws?.close(); }
 }
 
+const ROLE = process.argv.includes('--role=opponent') ? 'opponent' : 'bot';
+
 async function main(): Promise<void> {
   process.env.ARENA_BOT_TOKEN ??= 'e2e-token';
   const addresses = {
@@ -130,9 +137,12 @@ async function main(): Promise<void> {
   };
   if (!addresses.nft || !addresses.game) throw new Error('source packages/frontend/.env first');
 
-  const server = createServer({ port: PORT });
-  await new Promise<void>(r => server.httpServer.listen(PORT, () => r()));
-  log('stack', `relay on ${PORT}`);
+  let server: ReturnType<typeof createServer> | null = null;
+  if (ROLE === 'bot') {
+    server = createServer({ port: PORT });
+    await new Promise<void>(r => server!.httpServer.listen(PORT, () => r()));
+    log('stack', `relay on ${PORT}`);
+  }
 
   const mk = (index: number) => new BotChain({
     pxeUrl: PXE_URL,
@@ -142,10 +152,18 @@ async function main(): Promise<void> {
     manifestPath: `packages/bot/.artifacts/arena-bot-${index}.json`,
   }, m => log(`chain${index}`, m));
 
-  // SERIAL connect: all PXE work is serial per wallet.
-  const botChain = mk(0); await botChain.connect();
-  const oppChain = mk(1); await oppChain.connect();
+  if (ROLE === 'opponent') {
+    const oppChain = mk(1); await oppChain.connect();
+    const opponent = new ScriptedOpponent(oppChain, new BotProofs(m => log('opp:proofs', m)));
+    await opponent.run();
+    const deadline = Date.now() + 30 * 60_000;
+    while (Date.now() < deadline && !opponent.over) await new Promise(r => setTimeout(r, 1000));
+    console.log(`[opponent] finished: ${opponent.over ?? 'TIMED OUT'}`);
+    opponent.close();
+    process.exit(opponent.over ? 0 : 1);
+  }
 
+  const botChain = mk(0); await botChain.connect();
   const bot = new ArenaBot(
     { ...configFromEnv(), wsUrl: `ws://localhost:${PORT}`, httpUrl: `http://localhost:${PORT}`,
       joinThresholdMs: 1_000, pollIntervalMs: 500, moveDelayMs: 0, token: process.env.ARENA_BOT_TOKEN! },
@@ -153,22 +171,27 @@ async function main(): Promise<void> {
   );
   bot.start();
 
-  const opponent = new ScriptedOpponent(oppChain, new BotProofs(m => log('opp:proofs', m)));
-  await opponent.run();
+  // Spawn the opponent in its own process (see the header note on pxe.ts).
+  const { spawn } = await import('child_process');
+  const child = spawn('npx', ['tsx', process.argv[1], '--role=opponent'], {
+    env: process.env, stdio: 'inherit',
+  });
+  const childExit = new Promise<number>(r => child.on('exit', code => r(code ?? 1)));
 
-  const deadline = Date.now() + 30 * 60_000;
-  while (Date.now() < deadline && !opponent.over) await new Promise(r => setTimeout(r, 1000));
+  const timeout = new Promise<number>(r => setTimeout(() => r(-1), 30 * 60_000));
+  const code = await Promise.race([childExit, timeout]);
 
   const stats = bot.getStats();
   console.log('\n=== RESULT ===');
-  console.log('  outcome        :', opponent.over ?? 'TIMED OUT');
+  console.log('  opponent exit  :', code === -1 ? 'TIMED OUT' : code);
   console.log('  bot stats      :', JSON.stringify(stats));
-  const ok = !!opponent.over && stats.gamesPlayed === 1 && stats.moveFailures === 0
+  const ok = code === 0 && stats.gamesPlayed === 1 && stats.moveFailures === 0
     && stats.commitFailures === 0 && stats.proofFailures === 0;
   console.log(ok ? '\n  ✓ FULL CHAIN GAME COMPLETED' : '\n  ✗ see stats above');
 
-  bot.stop(); opponent.close();
-  await new Promise<void>(r => server.httpServer.close(() => r()));
+  bot.stop();
+  if (child.exitCode === null) child.kill();
+  await new Promise<void>(r => server!.httpServer.close(() => r()));
   process.exit(ok ? 0 : 1);
 }
 

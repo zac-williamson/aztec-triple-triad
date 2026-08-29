@@ -34,6 +34,7 @@ export interface BotProofsLike {
 /** The slice of BotChain the bot uses — narrowed so tests can fake it. */
 export interface BotChainLike {
   readonly address: string;
+  readonly nodeClient?: any;
   selectHand(size?: number): Promise<number[]>;
   pxe: any;
 }
@@ -351,7 +352,7 @@ export class ArenaBot {
     void this.maybeProveHand().catch(() => undefined);
     this.log(`create_game: committing ${this.hand.join(',')} for on-chain game ${String(gameId).slice(0, 18)}…`);
 
-    const txHash = await chain.pxe.sendCreateGame(chain.address, this.hand, { timeoutMs: this.cfg.chainTxTimeoutMs });
+    const txHash = await chain.pxe.sendCreateGame(chain.address, this.hand, { node: chain.nodeClient, timeoutMs: this.cfg.chainTxTimeoutMs });
     if (this.gameId !== wsGameId) return; // game moved on while we were mining
     this.send({ type: 'TX_CONFIRMED', gameId: wsGameId, txType: 'create_game', txHash });
     this.log(`create_game mined: ${txHash.slice(0, 18)}…`);
@@ -372,7 +373,7 @@ export class ArenaBot {
     this.send({ type: 'SHARE_AZTEC_INFO', gameId: wsGameId, aztecAddress: chain.address, onChainGameId, gameRandomness: randomness });
     this.log(`join_game: committing ${this.hand.join(',')} into ${onChainGameId.slice(0, 18)}…`);
 
-    const txHash = await chain.pxe.sendJoinGame(chain.address, onChainGameId, this.hand, { timeoutMs: this.cfg.chainTxTimeoutMs });
+    const txHash = await chain.pxe.sendJoinGame(chain.address, onChainGameId, this.hand, { node: chain.nodeClient, timeoutMs: this.cfg.chainTxTimeoutMs });
     if (this.gameId !== wsGameId) return;
     this.send({ type: 'TX_CONFIRMED', gameId: wsGameId, txType: 'join_game', txHash });
     this.log(`join_game mined: ${txHash.slice(0, 18)}…`);
@@ -518,7 +519,7 @@ export class ArenaBot {
     });
 
     this.log(`settling ${winner === 'draw' ? '(draw, single settler)' : `(claiming card ${selectedCardId})`}…`);
-    const txHash = await chain.pxe.sendProcessGame(chain.address, args, { timeoutMs: this.cfg.chainTxTimeoutMs });
+    const txHash = await chain.pxe.sendProcessGame(chain.address, args, { node: chain.nodeClient, timeoutMs: this.cfg.chainTxTimeoutMs });
     this.stats.settlements += 1;
     this.log(`settled on-chain: ${String(txHash).slice(0, 18)}…`);
   }
