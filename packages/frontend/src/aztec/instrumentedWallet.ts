@@ -248,7 +248,16 @@ export class InstrumentedWallet extends EmbeddedWalletBase {
           prodFeeOptions,
         );
         provenTx = await self.pxe.proveTx(txRequest, {
-          scopes: self.scopesFrom(opts.from, opts.additionalScopes),
+          // `?? []` mirrors the stock EmbeddedWallet (embedded_wallet.js:226,
+          // `this.scopesFrom(from, additionalScopes ?? [], sendMessagesAs)`).
+          // As of 5.2 scopesFrom iterates this argument, so passing undefined --
+          // the normal case for a plain send -- throws "additionalScopes is not
+          // iterable" and every pack purchase / game tx dies before proving.
+          scopes: self.scopesFrom(
+            opts.from,
+            opts.additionalScopes ?? [],
+            (opts as { sendMessagesAs?: unknown }).sendMessagesAs as never,
+          ),
           senderForTags: self.senderForTagsFrom(opts.from, (opts as { sendMessagesAs?: unknown }).sendMessagesAs),
         });
       } finally {
