@@ -56,6 +56,7 @@ commit its cards is worse than one that never starts.
 | `ARENA_BOT_SETTLE_WAIT_MS` | `300000` | wait for the 11-proof transcript |
 | `ARENA_BOT_HEALTH_PORT` | `5175` | `0` disables |
 | `ARENA_BOT_MAX_CONCURRENT_GAMES` | `1` | see the pool note below |
+| `ARENA_BOT_SWEEP_INTERVAL_MS` | `900000` | how often to reclaim cards from wedged games |
 
 `ARENA_BOT_DIFFICULTY=lookahead` is a poor choice here: it wants the opponent's
 hand, and the server hides it. `greedy` is beatable but not random.
@@ -86,8 +87,41 @@ Two endpoints, and they answer different questions:
 - **Committed cards vanish until the game settles.** So "spendable" is legitimately
   lower than "owned" while a game is in flight. Because the bot is always the
   joiner it cannot cancel a stuck game — cancel is creator-only — so its five
-  cards stay locked until the abandonment-claim path resolves it. The watchdog
-  counts these in `cardsStranded`; watch that number, it is a slow leak.
+  cards stay locked until the abandonment claim resolves it.
+
+## Recovering stranded cards
+
+A game can wedge: the opponent closes their tab mid-move, a proof never arrives,
+this process dies. The bot cannot cancel, so those five cards are locked until
+somebody claims the game as abandoned. Left alone the loss is monotonic and
+**silent** — the bot goes idle when it runs out, which is correct behaviour and
+therefore invisible. Measured on the sandbox: 25 cards per identity across five
+aborted runs.
+
+Two pieces handle it, and both run automatically in chain mode:
+
+- **`GameJournal`** (`.artifacts/games-<index>/`) persists each committed game's
+  transcript **as it grows**. Recovery needs the hand proofs and partial move
+  chain, which otherwise exist only in memory — and the crashes this protects
+  against happen mid-game by definition, so writing once at the end would
+  protect nothing.
+- **`AbandonmentSweep`** runs at startup and every `ARENA_BOT_SWEEP_INTERVAL_MS`:
+  claim → dispute window (5 blocks) → settle → import the re-minted notes. The
+  chain decides, never the journal; games younger than `ARENA_BOT_GAME_TIMEOUT_MS`
+  are left alone, since claiming a live game reverts. It takes an opponent card
+  only if the opponent actually played — getting our stake back is the point.
+
+A record survives a failed pass on purpose: deleting it would discard the only
+evidence that five cards are locked. `sweep: … UNRECOVERABLE` means the journal
+never captured enough transcript (needs both hand proofs and 1–8 move proofs) —
+those cards are gone.
+
+To exercise the whole path against a sandbox:
+
+```bash
+E2E_ABANDON_AFTER_MOVES=2 ARENA_BOT_GAME_TIMEOUT_MS=120000 \
+  npx tsx packages/bot/tests/chain-e2e.manual.ts
+```
 - **The bot is DISCLOSED**, via `opponentIsBot` on `MATCH_FOUND` and a badge in
   the HUD. `REGISTER_BOT` is token-gated precisely so a normal client cannot
   claim to be the bot and suppress that.
@@ -95,7 +129,7 @@ Two endpoints, and they answer different questions:
 ## Tests
 
 ```bash
-npm test -w packages/bot          # 64: unit + a real backend/bot/human game
+npm test -w packages/bot          # 91: unit + a real backend/bot/human game
 ```
 
 Proof tests generate REAL proofs against the compiled circuits — a mocked proof

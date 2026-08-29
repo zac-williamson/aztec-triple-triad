@@ -308,9 +308,11 @@ remaining provisioned accounts, and must not happen while nobody is watching.
      always going to break the N-process pool; it broke the harness first.
   3. **Leaving at GAME_OVER drops the last move proof**, which is generated
      *after* the relay ends the game. The winner then waits out its whole settle
-     window for a 9th link nobody will send. Applies to the real client too: a
-     human closing the tab at game over strands the winner's settlement the same
-     way. Worth fixing there; not fixed here.
+     window for a 9th link nobody will send. This applied to the real browser
+     client too — **now fixed there**: `useGamePlay` tracks `owedMoveProofs` and
+     `useUnloadGuard` prompts before unload while any move proof is unsent or a
+     settlement is in flight. It converts an accidental close into a deliberate
+     one; it cannot stop a crash, which is what the sweep is for.
   Verified on a local sandbox: player wins → player settles and takes a bot
   card; **bot wins → the BOT settles on-chain** and takes a player card
   (`settlements: 1`). That second path is the one with real consequences and it
@@ -347,7 +349,14 @@ card and stopped queueing.
 That is the loss budget in miniature, and it makes two things concrete:
 - an **abandonment sweep is a prerequisite** for running the pool unattended,
   not a nice-to-have. The bot cannot cancel (it only joins), so stranding is its
-  only failure mode and it is monotonic.
+  only failure mode and it is monotonic. **Built and verified on-chain**
+  (2026-08-29): `GameJournal` persists each game's transcript as it grows, and
+  `AbandonmentSweep` claims → waits the dispute window → settles → imports the
+  re-minted notes. Opponent walks out after 2 moves → spendable 6 → 11 (+5).
+  One defect it took a chain run to find: `settle_abandoned_game` re-mints via
+  `create_and_push_note`, so without an explicit `import_note` the cards are
+  ours on-chain and INVISIBLE — a recovery that reports success and returns
+  nothing.
 - `cardsStranded` and the spendable count are the metrics to alert on. A bot
   that is out of cards fails *quietly and correctly* — it stays idle — which is
   precisely why nobody would notice.
