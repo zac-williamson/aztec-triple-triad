@@ -266,8 +266,23 @@ remaining provisioned accounts, and must not happen while nobody is watching.
   process, globally-unique token ids, the missing `note_nonce`, joining before
   confirmation, held-vs-minted accounting, a commit/turn deadlock, reading proof
   inputs across an await, and re-queueing during the /queue fetch.
-- Still open: fix the harness opponent's move proof and see a settled game;
-  phase 5 (identity pool, as N processes); phase 6 (testnet).
+- 2026-08-29 (late): the "Owner not set correctly" failure was ROOT-CAUSED from
+  the circuit rather than another chain run. `game_move/main.nr:168` asserts
+  `board_after[cell].owner == current_player`, and both the bot and the harness
+  accepted ANY later board as the move's `after` — by which point our card may
+  already have been captured, so the owner reads as the opponent. Both now
+  require exactly `moveNumber + 1`. The bug was latent in the BOT too, not just
+  the harness; it had simply been lucky with message timing. Unit-tested; **not
+  yet verified on-chain** (see below).
+- **The local sandbox then broke**, blocking further chain verification:
+  `deploy-contracts.ts` fails "No L1 to L2 message found" because
+  `aztecDebug_mineBlock` now answers `buildEmptyBlock: runBuild returned
+  undefined`, even with SEQ_MIN_TX_PER_BLOCK=0 and AZTEC_NODE_DEBUG=true
+  confirmed on the process and a clean restart. Intermittent — the same deploy
+  succeeded twice earlier the same night. Recorded in
+  [[v5-sandbox-playtest-gotchas]]. Testnet is unaffected.
+- Still open: re-verify the move-proof fix and see a settled game once the
+  sandbox cooperates; phase 5 (identity pool, as N processes); phase 6 (testnet).
 
 **Operational note from testing:** every incomplete game strands its five
 committed cards permanently. About ten aborted runs consumed ~90 of the 257
