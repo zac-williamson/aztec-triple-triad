@@ -56,6 +56,8 @@ export interface BotStats {
   /** Settlement failures, and successful settlements. Chain mode only. */
   settleFailures: number;
   settlements: number;
+  /** On-chain id of the game just played, so callers can verify it independently. */
+  lastOnChainGameId: string | null;
   lastError: string | null;
 }
 
@@ -131,7 +133,8 @@ export class ArenaBot {
 
   private readonly stats: BotStats = {
     state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
-    joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0, settleFailures: 0, settlements: 0, lastError: null,
+    joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0, settleFailures: 0, settlements: 0,
+    lastOnChainGameId: null, lastError: null,
   };
 
   private readonly chain: BotChainLike | null;
@@ -284,7 +287,10 @@ export class ArenaBot {
           // coupling the id to the randomness meant a share without randomness
           // left P2 with no game to join.
           if (msg.aztecAddress) this.opponentAddress = String(msg.aztecAddress);
-          if (msg.onChainGameId) this.onChainGameId = String(msg.onChainGameId);
+          if (msg.onChainGameId) {
+            this.onChainGameId = String(msg.onChainGameId);
+            this.stats.lastOnChainGameId = this.onChainGameId;
+          }
           if (Array.isArray(msg.gameRandomness)) {
             this.opponentRandomness = msg.gameRandomness as string[];
             // The hand proof binds the OPPONENT's randomness, so it cannot run

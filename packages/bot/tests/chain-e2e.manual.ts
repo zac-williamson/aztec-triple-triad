@@ -149,7 +149,10 @@ class ScriptedOpponent {
     if (!state || state.status !== 'playing' || state.currentTurn !== this.me) return;
     const m = chooseBotMove(state, { difficulty: 'greedy' });
     const moveNumber = state.board.flat().filter(c => c.card !== null).length;
-    this.send({ type: 'PLACE_CARD', gameId: this.gameId, handIndex: m.handIndex, row: m.row, col: m.col, moveNumber });
+    // Paced like the bot, so proving can keep up with the relay.
+    setTimeout(() => {
+      this.send({ type: 'PLACE_CARD', gameId: this.gameId, handIndex: m.handIndex, row: m.row, col: m.col, moveNumber });
+    }, 2_000);
   }
 
   close() { this.ws?.close(); }
@@ -195,7 +198,13 @@ async function main(): Promise<void> {
   const botChain = mk(0); await botChain.connect();
   const bot = new ArenaBot(
     { ...configFromEnv(), wsUrl: `ws://localhost:${PORT}`, httpUrl: `http://localhost:${PORT}`,
-      joinThresholdMs: 1_000, pollIntervalMs: 500, moveDelayMs: 0, token: process.env.ARENA_BOT_TOKEN! },
+      joinThresholdMs: 1_000, pollIntervalMs: 500,
+      // Pace moves like a real player. With moveDelayMs 0 the nine relay moves
+      // fly through in milliseconds while each proof takes ~0.1-0.4s, so the
+      // game ends before any move proof lands and there is nothing to settle.
+      moveDelayMs: 2_000,
+      settleWaitMs: 120_000,
+      token: process.env.ARENA_BOT_TOKEN! },
     { chain: botChain, proofs: new BotProofs(m => log('bot:proofs', m)), log: m => log('bot', m) },
   );
   bot.start();
@@ -220,13 +229,25 @@ async function main(): Promise<void> {
   // did the first time it was run.
   const noFailures = stats.moveFailures === 0 && stats.commitFailures === 0
     && stats.proofFailures === 0 && stats.settleFailures === 0;
-  const ok = code === 0 && stats.gamesPlayed === 1 && noFailures && stats.settlements >= 1;
+  // Either side may settle — the winner does. So assert the GAME reached the
+  // settled state on-chain, read independently, rather than that the BOT settled.
+  let onChainSettled = false;
+  try {
+    if (!stats.lastOnChainGameId) throw new Error('bot never learned an on-chain game id');
+    const { ChainClient, GAME_STATUS } = await import('@axolotl-arena/playtest/src/chain.js');
+    const chainClient = await ChainClient.connect(addresses as never);
+    onChainSettled = await chainClient.gameStatus(stats.lastOnChainGameId!) === GAME_STATUS.settled;
+  } catch (e) {
+    console.log('  (could not read on-chain status:', (e as Error).message, ')');
+  }
+  console.log('  on-chain settled:', onChainSettled);
+  const ok = code === 0 && stats.gamesPlayed === 1 && noFailures && onChainSettled;
   if (!ok) {
     console.log('  MISSING:', [
       code !== 0 && 'opponent exited non-zero',
       stats.gamesPlayed !== 1 && 'no completed game',
       !noFailures && 'failures recorded',
-      stats.settlements < 1 && 'NO ON-CHAIN SETTLEMENT — the relay game likely outran the commits',
+      !onChainSettled && 'GAME NOT SETTLED ON-CHAIN — the relay game likely outran the proofs',
     ].filter(Boolean).join('; '));
   }
   console.log(ok ? '\n  ✓ FULL CHAIN GAME COMPLETED (committed, proved, settled)'
