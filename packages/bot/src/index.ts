@@ -1,26 +1,69 @@
 /**
  * Arena bot entry point.
  *
- * Run with the backend's ARENA_BOT_TOKEN in the environment:
+ * Off-chain (relay only — the bot plays but wagers nothing):
  *   ARENA_BOT_TOKEN=... npm run dev -w packages/bot
+ *
+ * Chain mode (the bot commits real cards like any player). Provision it first:
+ *   npx tsx scripts/provision-arena-bot.ts --cards 40
+ *   ARENA_BOT_TOKEN=... ARENA_BOT_CHAIN=1 \
+ *   AZTEC_PXE_URL=... VITE_NFT_CONTRACT_ADDRESS=... VITE_GAME_CONTRACT_ADDRESS=... \
+ *   npm run dev -w packages/bot
  */
+import { resolve } from 'path';
 import { configFromEnv } from './config.js';
 import { ArenaBot } from './ArenaBot.js';
+import { BotChain } from './BotChain.js';
 
 const cfg = configFromEnv();
-const bot = new ArenaBot(cfg);
+const chainMode = process.env.ARENA_BOT_CHAIN === '1';
 
-console.log(
-  `[arena-bot] starting: ws=${cfg.wsUrl} threshold=${cfg.joinThresholdMs}ms ` +
-  `difficulty=${cfg.difficulty} cards=[${cfg.handCardIds.join(',')}] ` +
-  `maxConcurrentGames=${cfg.maxConcurrentGames}`,
-);
-bot.start();
+async function main(): Promise<void> {
+  let chain: BotChain | undefined;
 
-for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(sig, () => {
-    console.log(`[arena-bot] ${sig} — shutting down`);
-    bot.stop();
-    process.exit(0);
-  });
+  if (chainMode) {
+    const pxeUrl = process.env.AZTEC_PXE_URL;
+    const nftAddress = process.env.VITE_NFT_CONTRACT_ADDRESS;
+    const gameAddress = process.env.VITE_GAME_CONTRACT_ADDRESS;
+    if (!pxeUrl || !nftAddress || !gameAddress) {
+      throw new Error(
+        'ARENA_BOT_CHAIN=1 needs AZTEC_PXE_URL, VITE_NFT_CONTRACT_ADDRESS and ' +
+        'VITE_GAME_CONTRACT_ADDRESS. Refusing to start half-configured: a bot that ' +
+        'matches players and then cannot commit its cards is worse than one that never starts.',
+      );
+    }
+    chain = new BotChain({
+      pxeUrl,
+      nftAddress,
+      gameAddress,
+      tokenAddress: process.env.VITE_TOKEN_CONTRACT_ADDRESS,
+      manifestPath: process.env.ARENA_BOT_MANIFEST
+        ?? resolve(import.meta.dirname ?? __dirname, '../.artifacts/arena-bot.json'),
+    }, m => console.log(`[arena-bot:chain] ${m}`));
+    // Connect BEFORE serving: the chain-stamp and address checks in connect()
+    // are exactly the ones that must fail at startup rather than per game.
+    await chain.connect();
+  }
+
+  const bot = new ArenaBot(cfg, { chain });
+
+  console.log(
+    `[arena-bot] starting: ws=${cfg.wsUrl} threshold=${cfg.joinThresholdMs}ms ` +
+    `difficulty=${cfg.difficulty} maxConcurrentGames=${cfg.maxConcurrentGames} ` +
+    `mode=${chainMode ? 'CHAIN (wagers real cards)' : 'off-chain (relay only)'}`,
+  );
+  bot.start();
+
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(sig, () => {
+      console.log(`[arena-bot] ${sig} — shutting down`);
+      bot.stop();
+      process.exit(0);
+    });
+  }
 }
+
+main().catch(err => {
+  console.error(`[arena-bot] failed to start: ${err?.message ?? err}`);
+  process.exit(1);
+});

@@ -168,8 +168,28 @@ remaining provisioned accounts, and must not happen while nobody is watching.
   (deploy + mint a collection via minter-gated `mint_to_private`, verified
   through the paginated reader). `--dry-run` works with no chain. **Not yet run
   against a chain** — that needs a sandbox, and is the next step.
-- Still open: phase 3 proper (the bot generating hand/move proofs and settling
-  on-chain — `circuitLoader.ts` fetches `/circuits/*.json` over HTTP and needs a
-  Node file-reading equivalent; `proofBackend.ts` already guards `navigator`/
-  `localStorage` so it looks portable), phase 5 (identity pool), phase 6
-  (testnet).
+- 2026-08-29: **phase 3 substantially done, validated on a local sandbox.**
+  - `scripts/provision-arena-bot.ts` RUN FOR REAL: bot account funded and
+    deployed, 12 cards minted via minter-gated `mint_to_private`, verified
+    through the app's own paginated reader. **§2a is now proven, not argued: no
+    contract change is needed.** Minting is idempotent (re-runs top up rather
+    than minting duplicate token_ids).
+  - The frontend's whole chain layer now RUNS IN NODE — `pxe.readPrivateCards`
+    returned the bot's 12 cards. Required removing the last browser assumptions:
+    pluggable circuit + contract artifact sources, a shared
+    `registerGameContracts`, and `config.ts` falling back to `process.env`
+    (the production bundle was rebuilt and asserted to still carry its
+    addresses). The bot therefore executes the SAME code players do rather than
+    a parallel implementation that could drift.
+  - `BotChain` (chain adapter) + `ArenaBot` chain mode: the bot selects a hand
+    from cards it ACTUALLY holds, commits via create_game as P1 / join_game as
+    P2, shares the in-circuit-derived game id, and confirms the tx over the
+    relay. 35 bot tests, 7 covering the commit paths.
+  - Guards that fail at startup rather than per game: manifest rollupVersion vs
+    the live node (re-genesis orphans the bot exactly as it does the playtest
+    pool), derived address vs manifest, and a refusal to start half-configured.
+- Still open: **hand/move proof generation and settlement** in the bot (the
+  orchestration lives in React hooks — `useGameSession`/`useProofGeneration` —
+  and needs extracting or reimplementing headlessly); phase 5 (identity pool);
+  phase 6 (testnet). The bot currently commits cards but does not yet produce
+  the 11-proof transcript, so a chain-mode game will not settle.

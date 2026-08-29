@@ -25,7 +25,8 @@ function makeConfig(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     wsUrl: 'ws://test', httpUrl: 'http://test', token: 'tok',
     joinThresholdMs: 20_000, pollIntervalMs: 1_000, queueTimeoutMs: 60_000,
     handCardIds: CARDS, difficulty: 'greedy', moveDelayMs: 0,
-    maxConcurrentGames: 1, ...over,
+    maxConcurrentGames: 1,
+    chainTxTimeoutMs: 600_000, ...over,
   };
 }
 
@@ -234,5 +235,124 @@ describe('ArenaBot outcome accounting', () => {
     h.socket.close();
     expect(h.bot.getStats().state).toBe('idle');
     h.bot.stop();
+  });
+});
+
+/** Minimal fake of the chain adapter, recording what the bot asks of it. */
+function fakeChain(over: Partial<Record<string, any>> = {}) {
+  const calls: any[] = [];
+  return {
+    calls,
+    chain: {
+      address: '0xbot',
+      selectHand: over.selectHand ?? (async () => [7, 8, 9, 10, 11]),
+      pxe: {
+        previewCreateGame: over.previewCreateGame ?? (async () => ({
+          gameId: '0xgame', randomness: ['0xr1'], blindingFactor: '0xb', status: 0,
+        })),
+        previewJoinGame: over.previewJoinGame ?? (async () => ({ randomness: ['0xr2'], blindingFactor: '0xb' })),
+        sendCreateGame: over.sendCreateGame ?? (async (...a: any[]) => { calls.push(['create', ...a]); return '0xtxcreate'; }),
+        sendJoinGame: over.sendJoinGame ?? (async (...a: any[]) => { calls.push(['join', ...a]); return '0xtxjoin'; }),
+      },
+    },
+  };
+}
+
+describe('ArenaBot chain mode', () => {
+  const chainHarness = (over: Partial<Record<string, any>> = {}, cfg = makeConfig()) => {
+    const socket = new FakeSocket();
+    const f = fakeChain(over);
+    let queue: QueueSnapshot = { length: 1, oldestWaitMs: 30_000, entries: [] };
+    const bot = new ArenaBot(cfg, {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => queue,
+      chain: f.chain as any,
+      log: () => {},
+      now: () => 1_000_000,
+    });
+    return { bot, socket, f, async ready() {
+      bot.start();
+      socket.emit('open');
+      socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'bot', sessionToken: 't' });
+      socket.deliver({ type: 'BOT_REGISTERED' });
+      await vi.advanceTimersByTimeAsync(0);
+    } };
+  };
+
+  it('wagers cards it actually holds, not a static configured hand', async () => {
+    const h = chainHarness();
+    await h.ready();
+    await vi.advanceTimersByTimeAsync(1_000);
+    // makeConfig's handCardIds are [1..5]; the chain says it holds [7..11].
+    expect(h.socket.lastOfType('QUEUE_MATCHMAKING').cardIds).toEqual([7, 8, 9, 10, 11]);
+  });
+
+  it('does not queue when it cannot field five cards', async () => {
+    const h = chainHarness({ selectHand: async () => { throw new Error('holds only 3 card(s)'); } });
+    await h.ready();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(h.socket.countOfType('QUEUE_MATCHMAKING')).toBe(0);
+    expect(h.bot.getStats().state).toBe('idle');
+    expect(h.bot.getStats().joinFailures).toBe(1);
+    expect(h.bot.getStats().lastError).toMatch(/holds only 3/);
+  });
+
+  it('as player1: shares the derived game id BEFORE the slow tx, then confirms', async () => {
+    const h = chainHarness();
+    await h.ready();
+    await vi.advanceTimersByTimeAsync(1_000);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    await vi.advanceTimersByTimeAsync(50);
+
+    const shared = h.socket.lastOfType('SHARE_AZTEC_INFO');
+    expect(shared).toMatchObject({ gameId: 'g1', aztecAddress: '0xbot', onChainGameId: '0xgame' });
+    expect(h.f.calls.some(c => c[0] === 'create')).toBe(true);
+    expect(h.socket.lastOfType('TX_CONFIRMED')).toMatchObject({ txType: 'create_game', txHash: '0xtxcreate' });
+  });
+
+  it('as player1: refuses to commit onto a stale note nonce', async () => {
+    const h = chainHarness({ previewCreateGame: async () => ({ gameId: '0xg', randomness: [], blindingFactor: '0x', status: 2 }) });
+    await h.ready();
+    await vi.advanceTimersByTimeAsync(1_000);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1, gameState: freshState(), opponentIsBot: false });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.f.calls.some(c => c[0] === 'create')).toBe(false);
+    expect(h.bot.getStats().commitFailures).toBe(1);
+    expect(h.bot.getStats().lastError).toMatch(/status 2/);
+  });
+
+  it('as player2: joins only once the opponent shares the on-chain id', async () => {
+    const h = chainHarness();
+    await h.ready();
+    await vi.advanceTimersByTimeAsync(1_000);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.f.calls.some(c => c[0] === 'join')).toBe(false);
+
+    h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xhuman', onChainGameId: '0xchain1' });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.f.calls.some(c => c[0] === 'join')).toBe(true);
+    expect(h.socket.lastOfType('TX_CONFIRMED')).toMatchObject({ txType: 'join_game' });
+  });
+
+  it('as player2: a repeated opponent-info message does not double-join', async () => {
+    const h = chainHarness();
+    await h.ready();
+    await vi.advanceTimersByTimeAsync(1_000);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    for (let i = 0; i < 3; i++) {
+      h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xhuman', onChainGameId: '0xchain1' });
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    expect(h.f.calls.filter(c => c[0] === 'join')).toHaveLength(1);
+  });
+
+  it('as player1: does not commit when it is player2, and vice versa', async () => {
+    const h = chainHarness();
+    await h.ready();
+    await vi.advanceTimersByTimeAsync(1_000);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.f.calls.some(c => c[0] === 'create')).toBe(false);
   });
 });

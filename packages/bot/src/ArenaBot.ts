@@ -23,6 +23,13 @@ import { chooseBotMove } from '@axolotl-arena/game-logic';
 import type { GameState, Player } from '@axolotl-arena/game-logic';
 import type { ArenaBotConfig } from './config.js';
 
+/** The slice of BotChain the bot uses — narrowed so tests can fake it. */
+export interface BotChainLike {
+  readonly address: string;
+  selectHand(size?: number): Promise<number[]>;
+  pxe: any;
+}
+
 export type BotState = 'idle' | 'queued' | 'playing';
 
 export interface BotStats {
@@ -33,6 +40,8 @@ export interface BotStats {
   draws: number;
   joinFailures: number;
   moveFailures: number;
+  /** Card-commit (create_game/join_game) failures. Chain mode only. */
+  commitFailures: number;
   lastError: string | null;
 }
 
@@ -45,6 +54,12 @@ export interface QueueSnapshot {
 type Logger = (msg: string) => void;
 
 export interface ArenaBotDeps {
+  /**
+   * Chain adapter. OPTIONAL: without it the bot plays the off-chain relay game
+   * only (what the unit and integration tests exercise). With it, the bot also
+   * commits its cards on-chain like any player.
+   */
+  chain?: BotChainLike;
   /** Injected for tests; defaults to a real ws client. */
   connect?: (url: string) => WebSocket;
   /** Injected for tests; defaults to fetch. */
@@ -59,21 +74,26 @@ export class ArenaBot {
   private gameId: string | null = null;
   private myPlayer: Player | null = null;
   private queuedAt = 0;
+  private hand: number[] = [];
+  /** on-chain game ids already committed, so a repeated relay message cannot double-send. */
+  private readonly committedGameIds = new Set<string>();
   private pollTimer: NodeJS.Timeout | null = null;
   private stopped = false;
   private registered = false;
 
   private readonly stats: BotStats = {
     state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
-    joinFailures: 0, moveFailures: 0, lastError: null,
+    joinFailures: 0, moveFailures: 0, commitFailures: 0, lastError: null,
   };
 
+  private readonly chain: BotChainLike | null;
   private readonly connect: (url: string) => WebSocket;
   private readonly fetchQueue: (httpUrl: string) => Promise<QueueSnapshot>;
   private readonly log: Logger;
   private readonly now: () => number;
 
   constructor(private readonly cfg: ArenaBotConfig, deps: ArenaBotDeps = {}) {
+    this.chain = deps.chain ?? null;
     this.connect = deps.connect ?? ((url: string) => new WebSocket(url));
     this.fetchQueue = deps.fetchQueue ?? defaultFetchQueue;
     this.log = deps.log ?? ((m: string) => console.log(`[arena-bot] ${m}`));
@@ -142,10 +162,24 @@ export class ArenaBot {
     if (snap.length === 0) return;
     if (snap.oldestWaitMs < this.cfg.joinThresholdMs) return;
 
+    // In chain mode the hand must come from what the bot ACTUALLY holds — its
+    // collection shrinks every time a player beats it, so a configured static
+    // hand would eventually name cards it no longer owns and fail at commit.
+    let hand = this.cfg.handCardIds;
+    if (this.chain) {
+      try {
+        hand = await this.chain.selectHand(5);
+      } catch (err) {
+        this.stats.joinFailures += 1;
+        return this.recordError('select-hand', err as Error);
+      }
+    }
+
     this.log(`human waiting ${Math.round(snap.oldestWaitMs / 1000)}s — offering a game`);
     this.state = 'queued';
     this.queuedAt = this.now();
-    this.send({ type: 'QUEUE_MATCHMAKING', cardIds: this.cfg.handCardIds });
+    this.hand = hand;
+    this.send({ type: 'QUEUE_MATCHMAKING', cardIds: hand });
   }
 
   private handle(msg: any): void {
@@ -165,7 +199,25 @@ export class ArenaBot {
         this.myPlayer = msg.playerNumber === 1 ? 'player1' : 'player2';
         this.state = 'playing';
         this.log(`matched into ${msg.gameId} as ${this.myPlayer}`);
+        // Chain commit runs detached: it takes minutes (proving + inclusion) and
+        // must not block the message loop, which still has to answer the relay.
+        if (this.chain && this.myPlayer === 'player1') {
+          void this.commitAsPlayer1(msg.gameId).catch(err => {
+            this.stats.commitFailures += 1;
+            this.recordError('commit-create', err as Error);
+          });
+        }
         this.maybeMove(msg.gameState);
+        break;
+
+      case 'OPPONENT_AZTEC_INFO':
+        // P2 can only join once P1 has told it the on-chain game id.
+        if (this.chain && this.myPlayer === 'player2' && msg.gameId === this.gameId && msg.onChainGameId) {
+          void this.commitAsPlayer2(msg.gameId, String(msg.onChainGameId)).catch(err => {
+            this.stats.commitFailures += 1;
+            this.recordError('commit-join', err as Error);
+          });
+        }
         break;
 
       case 'GAME_START':
@@ -196,6 +248,43 @@ export class ArenaBot {
       default:
         break;
     }
+  }
+
+  /**
+   * P1's on-chain commit: preview the derived game id + randomness, send
+   * create_game, then share the preview so P2 can join. Mirrors
+   * useGameSession's createGame pipeline; game_id and randomness are derived
+   * IN-CIRCUIT and must never be invented here.
+   */
+  private async commitAsPlayer1(wsGameId: string): Promise<void> {
+    const chain = this.chain!;
+    const { gameId, randomness, status } = await chain.pxe.previewCreateGame(chain.address);
+    if (status !== 0) {
+      throw new Error(`on-chain game ${gameId} already has status ${status} — stale note nonce`);
+    }
+    // Share BEFORE the slow tx so P2 can prepare while create_game mines.
+    this.send({ type: 'SHARE_AZTEC_INFO', gameId: wsGameId, aztecAddress: chain.address, onChainGameId: gameId, gameRandomness: randomness });
+    this.log(`create_game: committing ${this.hand.join(',')} for on-chain game ${String(gameId).slice(0, 18)}…`);
+
+    const txHash = await chain.pxe.sendCreateGame(chain.address, this.hand, { timeoutMs: this.cfg.chainTxTimeoutMs });
+    if (this.gameId !== wsGameId) return; // game moved on while we were mining
+    this.send({ type: 'TX_CONFIRMED', gameId: wsGameId, txType: 'create_game', txHash });
+    this.log(`create_game mined: ${txHash.slice(0, 18)}…`);
+  }
+
+  /** P2's on-chain commit: join the game id P1 shared. */
+  private async commitAsPlayer2(wsGameId: string, onChainGameId: string): Promise<void> {
+    if (this.committedGameIds.has(onChainGameId)) return; // OPPONENT_AZTEC_INFO can repeat
+    this.committedGameIds.add(onChainGameId);
+    const chain = this.chain!;
+    const { randomness } = await chain.pxe.previewJoinGame(chain.address, onChainGameId);
+    this.send({ type: 'SHARE_AZTEC_INFO', gameId: wsGameId, aztecAddress: chain.address, onChainGameId, gameRandomness: randomness });
+    this.log(`join_game: committing ${this.hand.join(',')} into ${onChainGameId.slice(0, 18)}…`);
+
+    const txHash = await chain.pxe.sendJoinGame(chain.address, onChainGameId, this.hand, { timeoutMs: this.cfg.chainTxTimeoutMs });
+    if (this.gameId !== wsGameId) return;
+    this.send({ type: 'TX_CONFIRMED', gameId: wsGameId, txType: 'join_game', txHash });
+    this.log(`join_game mined: ${txHash.slice(0, 18)}…`);
   }
 
   /** Play if, and only if, it is our turn in a live game. */

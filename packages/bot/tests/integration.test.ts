@@ -34,6 +34,7 @@ function cfg(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     difficulty: 'greedy',
     moveDelayMs: 0,
     maxConcurrentGames: 1,
+    chainTxTimeoutMs: 600_000,
     ...over,
   };
 }
