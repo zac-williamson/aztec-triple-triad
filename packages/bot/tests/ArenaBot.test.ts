@@ -879,3 +879,72 @@ describe('ArenaBot join-only policy', () => {
     h.bot.stop();
   });
 });
+
+describe('ArenaBot one move per turn', () => {
+  const mk = (over: any = {}) => {
+    const socket = new FakeSocket();
+    const f = fakeChain();
+    const proofs = {
+      cardCommitHash: async () => FIELD(0x1),
+      verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
+      proveHand: async () => ({ proof: 'p', publicInputs: ['a', 'b'], cardCommit: FIELD(0x1) }),
+      proveMove: async () => ({ proof: 'p', publicInputs: [], startStateHash: 's' }),
+    };
+    const bot = new ArenaBot(makeConfig({ difficulty: 'random', ...over }), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, proofs: proofs as any, log: () => {}, now: () => 1_000_000,
+    });
+    return { bot, socket, f };
+  };
+
+  /** start → registered → committed → both card commitments known. */
+  async function playing(h: ReturnType<typeof mk>) {
+    h.bot.start();
+    h.socket.emit('open');
+    h.socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    h.socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
+    h.socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 1, handProof: { proof: 'q', publicInputs: [], cardCommit: FIELD(0x2) } });
+    await vi.advanceTimersByTimeAsync(200);
+  }
+
+  it('schedules exactly one PLACE_CARD when a turn is signalled twice', async () => {
+    const h = mk();
+    await playing(h);
+
+    // Our turn, signalled twice. In production the second signal is any of the
+    // several callers of maybeMove — a re-broadcast state, our own hand proof
+    // completing, the opponent's arriving — landing inside the pacing delay.
+    // Without a guard both schedule, and under difficulty 'random' the second
+    // picks a DIFFERENT cell: the relay applies the first, `pendingMove`
+    // describes the second, and no echoed board ever matches it again. The bot
+    // then stops proving AND stops playing. That deadlock cost a chain run.
+    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
+    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(h.socket.countOfType('PLACE_CARD')).toBe(1);
+    h.bot.stop();
+  });
+
+  it('still plays the NEXT turn', async () => {
+    const h = mk();
+    await playing(h);
+    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(h.socket.countOfType('PLACE_CARD')).toBe(1);
+
+    // A board with 3 cards: our turn again, two moves later. The guard is
+    // monotonic, so it must not block this.
+    const later: any = botTurnState();
+    later.board[2][2] = { card: { id: 9 }, owner: 'player2', originalOwner: 'player2' };
+    later.board[2][1] = { card: { id: 10 }, owner: 'player1', originalOwner: 'player1' };
+    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: later });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(h.socket.countOfType('PLACE_CARD')).toBe(2);
+    h.bot.stop();
+  });
+});

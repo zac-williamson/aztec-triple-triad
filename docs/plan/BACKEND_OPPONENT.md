@@ -285,8 +285,40 @@ remaining provisioned accounts, and must not happen while nobody is watching.
   sandbox by port — `kill -9 $(lsof -tiTCP:8080 -sTCP:LISTEN)` — and verify the
   port is free before starting another.** No Aztec defect involved; the two early
   successes were simply the first, un-stale instance.
-- Still open: re-verify the move-proof fix and see a settled game once the
-  sandbox cooperates; phase 5 (identity pool, as N processes); phase 6 (testnet).
+- Still open: phase 5 (identity pool, as N processes — the per-identity store
+  above is its prerequisite and is now in place); phase 6 (testnet, which needs a
+  deliberate, watched redeploy); and the abandonment sweep below.
+
+- 2026-08-29 (later): **a full chain game SETTLES, in both directions.** Three
+  defects stood between the previous entry and this one, and all three were
+  invisible to typechecking and to 65 unit tests:
+  1. **An unprovable first move.** A move proof binds BOTH card commitments and
+     must be proved against the EXACT post-move board. Player 1 moves first, so
+     it routinely played before the opponent's hand proof arrived; the proof was
+     then impossible — not then (no commitment) and not later (the board has
+     moved on, and our card may be captured). The pending move was dropped in
+     silence and the transcript stuck at 8/9. Both sides now hold the turn until
+     both commitments are known, and **both** completions release it — covering
+     one direction only converts the dropped proof into a deadlock.
+  2. **Two identities sharing one LMDB store.** `EmbeddedWallet` defaults to
+     `aztec-wallet-data`, keyed only by chain id and rollup address, so the two
+     processes the design *requires* opened the same store and wedged it:
+     "New highest finalized index (1) must be higher than the current one (2)",
+     once per sync, forever. Now `aztec-wallet-data/identity-<n>`. This was
+     always going to break the N-process pool; it broke the harness first.
+  3. **Leaving at GAME_OVER drops the last move proof**, which is generated
+     *after* the relay ends the game. The winner then waits out its whole settle
+     window for a 9th link nobody will send. Applies to the real client too: a
+     human closing the tab at game over strands the winner's settlement the same
+     way. Worth fixing there; not fixed here.
+  Verified on a local sandbox: player wins → player settles and takes a bot
+  card; **bot wins → the BOT settles on-chain** and takes a player card
+  (`settlements: 1`). That second path is the one with real consequences and it
+  had never run before.
+- 2026-08-29: **provisioning also needed ArenaToken registered.**
+  `get_cards_for_new_player` calls `ArenaToken.mint_private`, so a PXE that knew
+  only the NFT failed the starter claim with "No contract instance found" —
+  raised from a call the script never makes directly, so it reads as an NFT bug.
 
 **Operational note from testing:** every incomplete game strands its five
 committed cards permanently. About ten aborted runs consumed ~90 of the 257

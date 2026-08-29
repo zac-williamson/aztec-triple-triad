@@ -200,6 +200,9 @@ class ScriptedOpponent {
     }
   }
 
+  /** Same one-move-per-turn guard as the bot; move() has three callers too. */
+  private scheduledFor: number | null = null;
+
   private async proveAndSend(
     p: NonNullable<ScriptedOpponent['pending']>, after: GameState,
     myCommit: string, oppCommit: string,
@@ -235,8 +238,10 @@ class ScriptedOpponent {
     // Overridable so a run can force a BOT win: the bot settling is a distinct
     // on-chain path from the opponent settling (it is the side that takes a
     // card), and greedy-vs-greedy does not reliably produce one.
-    const m = chooseBotMove(state, { difficulty: OPPONENT_DIFFICULTY });
     const moveNumber = state.board.flat().filter(c => c.card !== null).length;
+    if (this.scheduledFor !== null && this.scheduledFor >= moveNumber) return;
+    const m = chooseBotMove(state, { difficulty: OPPONENT_DIFFICULTY });
+    this.scheduledFor = moveNumber;
     const card = (this.me === 'player1' ? state.player1Hand : state.player2Hand)[m.handIndex];
     // Paced like the bot, so proving can keep up with the relay.
     setTimeout(() => {

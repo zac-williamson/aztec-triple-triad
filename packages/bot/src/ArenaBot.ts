@@ -648,6 +648,13 @@ export class ArenaBot {
     // nothing to invalidate by moving early.
     if (this.chain && this.proofs && (!this.myCardCommit || !this.opponentCardCommit)) return;
 
+    // One move per turn, however many callers reach here (see moveScheduledFor).
+    // Checked BEFORE choosing: chooseBotMove is not deterministic under
+    // difficulty 'random', so a duplicate call would pick a DIFFERENT cell and
+    // the divergence is what actually breaks the transcript.
+    const moveNumber = state.board.flat().filter(c => c.card !== null).length;
+    if (this.moveScheduledFor !== null && this.moveScheduledFor >= moveNumber) return;
+
     let move;
     try {
       // No seed: production play should not be predictable from the state.
@@ -657,8 +664,7 @@ export class ArenaBot {
       this.stats.moveFailures += 1;
       return this.recordError('choose-move', err as Error);
     }
-
-    const moveNumber = state.board.flat().filter(c => c.card !== null).length;
+    this.moveScheduledFor = moveNumber;
     const gameId = this.gameId!;
     const card = (this.myPlayer === 'player1' ? state.player1Hand : state.player2Hand)[move.handIndex];
     setTimeout(() => {
@@ -674,6 +680,18 @@ export class ArenaBot {
       this.send({ type: 'PLACE_CARD', gameId, handIndex: move.handIndex, row: move.row, col: move.col, moveNumber });
     }, this.cfg.moveDelayMs);
   }
+
+  /**
+   * The move number we have already committed to playing. maybeMove is called
+   * from several places — a relayed state, our own hand proof finishing, the
+   * opponent's arriving — and any of them can be the one that unblocks a held
+   * turn. Without this, two of them schedule two PLACE_CARDs for the SAME turn:
+   * the relay applies the first, the second overwrites `pendingMove` with a
+   * move that never happened, and no echoed board ever matches it again — the
+   * bot stops proving and stops playing. Monotonic, so it needs no clearing
+   * between turns and cannot wedge us if a proof is lost.
+   */
+  private moveScheduledFor: number | null = null;
 
   private resetToIdle(): void {
     this.state = 'idle';
@@ -693,6 +711,7 @@ export class ArenaBot {
     this.committed = false;
     this.lastState = null;
     this.pendingMove = null;
+    this.moveScheduledFor = null;
     this.myHandProof = null;
     this.opponentHandProof = null;
     this.moveProofs.clear();
