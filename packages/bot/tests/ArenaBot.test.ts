@@ -631,6 +631,41 @@ describe('ArenaBot settlement', () => {
     expect(h.sent).toHaveLength(1);
   });
 
+  it('sends the loser back the notes for their returned cards', async () => {
+    // process_game re-mints the loser's non-wagered cards as untagged notes
+    // their PXE cannot discover; only the settler can compute the randomness.
+    // Without this relay, losing to the bot costs a player their whole hand,
+    // and their client waits on "Opponent is settling…" forever.
+    const h = settleHarness('player2', 2, true);
+    await h.run();
+
+    const relay = h.socket.lastOfType('RELAY_NOTE_DATA');
+    expect(relay, 'the bot relays note data after settling').toBeTruthy();
+    expect(relay.gameId).toBe('g1');
+    expect(relay.txHash).toBe('0xsettletx');
+    // The bot claims opponentCardIds[0] (= 1); the other four go home.
+    expect(relay.notes.map((n: { tokenId: number }) => n.tokenId)).toEqual([2, 3, 4, 5]);
+    // Randomness must stay paired with its own slot, or the loser imports
+    // notes that do not exist.
+    expect(relay.notes.map((n: { randomness: string }) => n.randomness))
+      .toEqual([SIX_RANDOM[1], SIX_RANDOM[2], SIX_RANDOM[3], SIX_RANDOM[4]]);
+  });
+
+  it('returns all five on a draw, where no card is claimed', async () => {
+    const h = settleHarness('draw', 2, true, { drawFallbackMs: 0 });
+    await h.run();
+    const relay = h.socket.lastOfType('RELAY_NOTE_DATA');
+    expect(relay.notes.map((n: { tokenId: number }) => n.tokenId)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('relays nothing when it did not settle', async () => {
+    // The loser never owes anyone notes — sending them would import cards the
+    // winner is about to take.
+    const h = settleHarness('player1', 2, true);
+    await h.run();
+    expect(h.socket.lastOfType('RELAY_NOTE_DATA')).toBeUndefined();
+  });
+
   it('names what is missing rather than sending an incomplete transcript', async () => {
     const h = settleHarness('player2', 2, false);
     await h.run();

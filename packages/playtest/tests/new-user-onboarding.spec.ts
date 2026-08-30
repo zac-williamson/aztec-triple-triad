@@ -165,10 +165,19 @@ function countOccupied(board: { cardId: number | null }[][]): number {
   return board.flat().filter(c => c.cardId !== null).length;
 }
 
-/** A card the opponent still owns on the board — what a winner may claim. */
-function pickClaimableCard(board: { cardId: number | null; owner: string | null }[][]): number {
-  for (const cell of board.flat()) {
-    if (cell.cardId !== null && cell.owner === 'player2') return cell.cardId;
-  }
-  throw new Error('no opponent-owned card on the board to claim');
+/**
+ * A card the winner may claim: one the OPPONENT brought to the board.
+ *
+ * Not one they currently own — a decisive win flips every card on the board,
+ * and a run that won 9-0 then found nothing to claim. What is wagered is whose
+ * card it was, which capture does not change.
+ */
+function pickClaimableCard(
+  board: { cardId: number | null; originalOwner: string | null }[][],
+): number {
+  const theirs = board.flat()
+    .filter(c => c.cardId !== null && c.originalOwner === 'player2')
+    .map(c => c.cardId!);
+  if (theirs.length === 0) throw new Error('no opponent card on the board to claim');
+  return theirs[theirs.length - 1];
 }

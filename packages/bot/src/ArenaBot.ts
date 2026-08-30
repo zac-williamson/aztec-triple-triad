@@ -728,9 +728,57 @@ export class ArenaBot {
     const txHash = await chain.pxe.sendProcessGame(chain.address, args, { node: chain.nodeClient, timeoutMs: this.cfg.chainTxTimeoutMs });
     this.stats.settlements += 1;
     this.log(`settled on-chain: ${String(txHash).slice(0, 18)}…`);
+
+    // Hand the loser back the plaintexts for THEIR returned cards.
+    //
+    // process_game re-mints the loser's non-wagered cards, but as untagged
+    // notes their PXE cannot discover on its own (ground rule 9) — only the
+    // settler can compute the randomness, so only the settler can tell them.
+    // A human winner does this (useGameSettlement relayNoteData); the bot did
+    // not, so anyone who LOST to the bot watched "Opponent is settling…"
+    // forever and never got four of their five cards back. Losing one card is
+    // the game; losing the hand is a bug.
+    this.relayReturnedNotes(String(txHash), selectedCardId, winner);
     // Cards are back (or fairly lost). The journal entry exists purely to mark
     // cards as locked, so leaving it would make the sweep chase a settled game.
     if (this.onChainGameId) this.journal?.forget(this.onChainGameId);
+  }
+
+  /**
+   * Send the loser the notes for the cards coming back to them.
+   *
+   * Mirrors the frontend winner's payload exactly: every opponent card except
+   * the one claimed, paired with the randomness for that slot. On a draw
+   * nothing is claimed and all five go back.
+   *
+   * Best-effort by design — the settlement is already on-chain and must not be
+   * undone by a socket that closed. A failure here is logged, not thrown.
+   */
+  private relayReturnedNotes(txHash: string, selectedCardId: number, winner: string): void {
+    const gameId = this.gameId;
+    const randomness = this.opponentRandomness;
+    if (!gameId || !randomness) {
+      this.log('WARNING: cannot relay returned notes (no game id or opponent randomness) — ' +
+        'the loser will not be able to import their cards');
+      return;
+    }
+    try {
+      const notes: { tokenId: number; randomness: string }[] = [];
+      let removed = false;
+      for (let i = 0; i < this.opponentCardIds.length && i < 5; i++) {
+        // Skip exactly ONE copy of the claimed card: a hand may hold duplicates,
+        // and dropping both would keep a card the loser still owns.
+        if (winner !== 'draw' && this.opponentCardIds[i] === selectedCardId && !removed) {
+          removed = true;
+          continue;
+        }
+        notes.push({ tokenId: this.opponentCardIds[i], randomness: String(randomness[i]) });
+      }
+      this.send({ type: 'RELAY_NOTE_DATA', gameId, txHash, notes });
+      this.log(`relayed ${notes.length} returned card note(s) to the loser`);
+    } catch (err) {
+      this.log(`WARNING: failed to relay returned notes: ${(err as Error).message}`);
+    }
   }
 
   /** Play if, and only if, it is our turn in a live game. */
