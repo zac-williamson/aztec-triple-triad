@@ -428,6 +428,12 @@ async function main(): Promise<number> {
   //    array stays 10 wide so the unused slots are simply skipped by `count`.
   const BATCH = 8;
   const mintedNotes: { tokenId: number; randomness: string; txHash: string }[] = [];
+  // Captured BEFORE the loop: `minted` is declared after it, and referencing it
+  // from inside threw "Cannot access 'minted' before initialization" — at mint
+  // time, after the tx had already landed.
+  const priorCardIds: number[] = existsSync(manifestPath(index))
+    ? (JSON.parse(readFileSync(manifestPath(index), 'utf-8')) as BotManifest).cardIds ?? []
+    : [];
   /** The contract's array width. Slots past `count` are zero and ignored. */
   const ARRAY_WIDTH = 10;
   const plan = collection.slice(0, toMint);
@@ -464,8 +470,8 @@ async function main(): Promise<number> {
       // Persist the plaintexts NOW, not at the end of the run. They are the only
       // way these notes can ever be imported, so an interrupted or clobbered run
       // must not be able to lose more than the batch in flight.
-      persistNotes(index, botAddress, keys, Number(rollupVersion), mintedNotes, minted.concat(
-        plan.slice(0, i + batch.length).map(c => c.id)));
+      persistNotes(index, botAddress, keys, Number(rollupVersion), mintedNotes,
+        [...priorCardIds, ...plan.slice(0, i + batch.length).map(c => c.id)]);
       console.log(`  minted ${Math.min(i + BATCH, plan.length)}/${plan.length}`);
     } catch (err: any) {
       // Do not silently continue: a partial collection that reports success is
@@ -475,12 +481,7 @@ async function main(): Promise<number> {
     }
   }
   // The full multiset this identity has been minted, for the manifest.
-  const minted = [
-    ...(existsSync(manifestPath(index))
-      ? (JSON.parse(readFileSync(manifestPath(index), 'utf-8')) as BotManifest).cardIds ?? []
-      : []),
-    ...plan.map(c => c.id),
-  ];
+  const minted = [...priorCardIds, ...plan.map(c => c.id)];
 
   // 5. VERIFY.
   //
