@@ -30,14 +30,27 @@ function log(msg: string): void {
   console.log(`[stack] ${new Date().toISOString()} ${msg}`);
 }
 
+/**
+ * Both loopback families, because they are genuinely different listeners.
+ *
+ * A server bound only to [::1] is invisible to a 127.0.0.1 probe — while
+ * `localhost` in FRONTEND_URL resolves to ::1 first on macOS, so the readiness
+ * check reaches it. That mismatch let a stale `vite` from another session serve
+ * a whole testnet run: our own vite lost the port bind and died, the port guard
+ * saw "free", the readiness probe saw "ready", and every test then ran against
+ * the previous session's LOCAL SANDBOX build. Silent, and wrong in the one way
+ * that invalidates the entire run.
+ */
 async function portInUse(port: number): Promise<boolean> {
-  return new Promise(resolvePort => {
-    const sock = net.connect({ port, host: '127.0.0.1' });
+  const onHost = (host: string) => new Promise<boolean>(resolvePort => {
+    const sock = net.connect({ port, host });
     const done = (used: boolean) => { sock.destroy(); resolvePort(used); };
     sock.once('connect', () => done(true));
     sock.once('error', () => done(false));
     sock.setTimeout(1000, () => done(false));
   });
+  const [v4, v6] = await Promise.all([onHost('127.0.0.1'), onHost('::1')]);
+  return v4 || v6;
 }
 
 async function waitFor(
