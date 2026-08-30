@@ -13,6 +13,22 @@ import { RedisGameStore } from './store/RedisGameStore.js';
 const DEFAULT_PORT = 5174;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
+
+/**
+ * Abuse limits.
+ *
+ * There is one relay and no horizontal scaling, so a single script opening
+ * sockets or spraying messages can make the arena unavailable for everyone.
+ * The origin allowlist stops a browser page from doing it; it stops nothing
+ * else, because a non-browser client simply sends no Origin header.
+ *
+ * The message rate is a token bucket rather than a hard per-second cap: real
+ * play is bursty — a settlement fans out a hand proof and nine move proofs —
+ * and a flat cap would drop legitimate traffic at exactly the wrong moment.
+ */
+const MAX_CONNECTIONS_PER_IP = Number(process.env.WS_MAX_CONNECTIONS_PER_IP ?? '20');
+const MSG_BURST = Number(process.env.WS_MSG_BURST ?? '60');
+const MSG_REFILL_PER_SEC = Number(process.env.WS_MSG_REFILL_PER_SEC ?? '20');
 const DISCONNECT_TIMEOUT_MS = 60 * 1000; // 60 seconds reconnection window
 const SESSION_HANDSHAKE_MS = 2000; // 2 seconds to send RESUME before new session
 // How often the present-but-idle abandonment detector runs. Short relative to
@@ -226,18 +242,36 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     res.end(JSON.stringify({ error: 'Not found' }));
   });
 
+  /** Live connections per remote address, for the per-IP cap. */
+  const connectionsPerIp = new Map<string, number>();
+  const remoteIp = (req: { socket?: { remoteAddress?: string }; headers?: Record<string, unknown> }): string => {
+    // Behind nginx the socket address is the proxy's, so prefer the forwarded
+    // client. Only the FIRST entry is meaningful — the rest are attacker-supplied.
+    const fwd = req.headers?.['x-forwarded-for'];
+    const first = Array.isArray(fwd) ? fwd[0] : typeof fwd === 'string' ? fwd.split(',')[0] : undefined;
+    return (first?.trim() || req.socket?.remoteAddress || 'unknown');
+  };
+
   const wss = new WebSocketServer({
     server: httpServer,
     verifyClient: (info, done) => {
       const origin = info.origin;
       // Accept connections with no Origin header (e.g. non-browser clients
       // like tests) OR whose Origin is in the allowed set.
-      if (!origin || allowedOrigins.has(origin)) {
-        done(true);
-      } else {
+      if (origin && !allowedOrigins.has(origin)) {
         console.warn(`[WS] rejecting connection from disallowed origin: ${origin}`);
         done(false, 403, 'Origin not allowed');
+        return;
       }
+      // The origin check does nothing for a non-browser client, which sends no
+      // Origin at all — so cap concurrent connections per address as well.
+      const ip = remoteIp(info.req as never);
+      if ((connectionsPerIp.get(ip) ?? 0) >= MAX_CONNECTIONS_PER_IP) {
+        console.warn(`[WS] rejecting ${ip}: ${MAX_CONNECTIONS_PER_IP} concurrent connections`);
+        done(false, 429, 'Too many connections');
+        return;
+      }
+      done(true);
     },
   });
 
@@ -562,10 +596,30 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     });
   }
 
-  wss.on('connection', async (ws: WebSocket) => {
+  wss.on('connection', async (ws: WebSocket, req?: { socket?: { remoteAddress?: string }; headers?: Record<string, unknown> }) => {
+    const ip = req ? remoteIp(req) : 'unknown';
+    connectionsPerIp.set(ip, (connectionsPerIp.get(ip) ?? 0) + 1);
+
+    // Token bucket, per connection. Starts full so a client that opens and
+    // immediately submits a queued game is never punished for it.
+    let tokens = MSG_BURST;
+    let lastRefill = Date.now();
+
     const playerId = await establishSession(ws);
 
     ws.on('message', async (data: Buffer | string) => {
+      const now = Date.now();
+      tokens = Math.min(MSG_BURST, tokens + ((now - lastRefill) / 1000) * MSG_REFILL_PER_SEC);
+      lastRefill = now;
+      if (tokens < 1) {
+        // Closing rather than replying: an ERROR to a flooding client is just
+        // more traffic, and a well-behaved one never reaches this.
+        console.warn(`[WS] closing ${playerId} from ${ip}: message rate exceeded`);
+        ws.close(1008, 'Message rate exceeded');
+        return;
+      }
+      tokens -= 1;
+
       const rawData = data.toString();
       if (rawData.length > MAX_MESSAGE_SIZE) {
         send(ws, { type: 'ERROR', message: 'Message too large (max 1MB)' }, playerId);
@@ -594,6 +648,8 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     });
 
     ws.on('close', () => {
+      const left = (connectionsPerIp.get(ip) ?? 1) - 1;
+      if (left > 0) connectionsPerIp.set(ip, left); else connectionsPerIp.delete(ip);
       handleDisconnect(playerId);
     });
 

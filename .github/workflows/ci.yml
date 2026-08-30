@@ -5,7 +5,9 @@ name: CI
 
 on:
   push:
-    branches: [testnet]
+    # Feature branches too: gating only `testnet` meant work reached the
+    # deployed branch having never run in a clean environment once.
+    branches: [testnet, 'feat/**', 'fix/**']
   pull_request:
     branches: [testnet]
 
@@ -79,6 +81,17 @@ jobs:
       - name: Frontend tests
         run: npx vitest run
         working-directory: packages/frontend
+
+      - name: Bot type-check
+        run: npx tsc --noEmit
+        working-directory: packages/bot
+
+      # The bot's suite includes integration tests that stand up a real relay
+      # and play real games over a WebSocket — slower than the rest, and the
+      # part most likely to catch a regression in matchmaking or settlement.
+      - name: Bot tests
+        run: npx vitest run
+        working-directory: packages/bot
 
       # scripts/ isn't an npm workspace, so it's otherwise uncovered.
       # The one live bridge test self-skips without Sepolia creds (it.skipIf
