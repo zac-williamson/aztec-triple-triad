@@ -1086,12 +1086,18 @@ describe('ArenaBot journals committed games', () => {
     const written: any[] = [];
     const forgotten: string[] = [];
     const store = new Map<string, any>();
+    const settledIds: string[] = [];
     return {
-      written, forgotten,
+      written, forgotten, settledIds, store,
       journal: {
         read: (id: string) => store.get(id) ?? null,
         write: (rec: any) => { store.set(rec.onChainGameId, rec); written.push(rec); },
         forget: (id: string) => { store.delete(id); forgotten.push(id); },
+        markSettled: (id: string) => {
+          const rec = store.get(id);
+          if (rec) store.set(id, { ...rec, settled: true });
+          settledIds.push(id);
+        },
       },
     };
   }

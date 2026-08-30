@@ -109,7 +109,12 @@ export interface ArenaBotDeps {
    * process dies. Optional: without it the bot plays identically but a wedged
    * game strands its five cards for good.
    */
-  journal?: { read(id: string): any; write(rec: any): void; forget(id: string): void };
+  journal?: {
+    read(id: string): any;
+    write(rec: any): void;
+    forget(id: string): void;
+    markSettled(id: string): void;
+  };
   /** Proof generator. Required alongside `chain`; ignored without it. */
   proofs?: BotProofsLike;
   /** Injected for tests; defaults to a real ws client. */
@@ -782,9 +787,12 @@ export class ArenaBot {
     // passively (ground rule 9) — settling without this silently burned all
     // five every game, win or lose.
     await this.importOwnReturnedCards(chain, String(txHash), selectedCardId, winner);
-    // Cards are back (or fairly lost). The journal entry exists purely to mark
-    // cards as locked, so leaving it would make the sweep chase a settled game.
-    if (this.onChainGameId) this.journal?.forget(this.onChainGameId);
+    // Marked settled rather than deleted. The entry exists to mark cards as
+    // locked, and settled cards are not locked — but the record is also the
+    // only surviving copy of this game's randomness, which is what recovering
+    // a failed import needs. Deleting it is how forty cards became
+    // unrecoverable rather than merely unimported.
+    if (this.onChainGameId) this.journal?.markSettled(this.onChainGameId);
   }
 
   /**

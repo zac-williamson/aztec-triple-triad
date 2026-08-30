@@ -51,6 +51,9 @@ export interface SweepDeps {
   txTimeoutMs?: number;
 }
 
+/** How long a settled game's randomness is kept for manual recovery. */
+export const SETTLED_RETENTION_MS = 7 * 24 * 60 * 60_000;
+
 export class AbandonmentSweep {
   private readonly log: (m: string) => void;
   private readonly now: () => number;
@@ -81,6 +84,12 @@ export class AbandonmentSweep {
     if (this.running) return this.stats;
     this.running = true;
     try {
+      // Settled records are kept so a failed import stays recoverable, but not
+      // forever — a week is long enough to notice and act, short enough that
+      // this stays a journal.
+      const pruned = this.deps.journal.pruneSettled?.(SETTLED_RETENTION_MS) ?? 0;
+      if (pruned) this.log(`sweep: pruned ${pruned} settled record(s)`);
+
       const outstanding = this.deps.journal.outstanding();
       this.stats.scanned = outstanding.length;
       if (outstanding.length === 0) return this.stats;

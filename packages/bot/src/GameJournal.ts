@@ -100,6 +100,44 @@ export class GameJournal {
     return out.sort((a, b) => a.committedAt - b.committedAt);
   }
 
+  /**
+   * Mark a game settled, keeping the record.
+   *
+   * Deleting it was the obvious thing and it is what we used to do — the entry
+   * exists to mark cards as locked, and settled cards are not locked. But the
+   * record is also the only surviving copy of the per-game randomness, which is
+   * what an import of the returned cards needs. Once it is gone, a card that
+   * failed to import can never be recovered by anybody: the randomness is
+   * derivable only from the on-chain game id, and nothing else retains that.
+   * Forty cards were lost exactly this way.
+   */
+  markSettled(onChainGameId: string): void {
+    const rec = this.read(onChainGameId);
+    if (!rec) return;
+    this.write({ ...rec, settled: true });
+  }
+
+  /**
+   * Delete settled records older than `maxAgeMs`, so the directory does not
+   * grow without bound. Long enough that a failed import is still recoverable
+   * by hand; short enough that this stays a journal rather than an archive.
+   */
+  pruneSettled(maxAgeMs: number, now = Date.now()): number {
+    if (!existsSync(this.dir)) return 0;
+    let removed = 0;
+    for (const f of readdirSync(this.dir)) {
+      if (!f.endsWith('.json')) continue;
+      try {
+        const rec = JSON.parse(readFileSync(join(this.dir, f), 'utf-8')) as GameRecord;
+        if (rec.settled && now - rec.updatedAt > maxAgeMs) {
+          unlinkSync(join(this.dir, f));
+          removed += 1;
+        }
+      } catch { /* leave anything unreadable alone */ }
+    }
+    return removed;
+  }
+
   forget(onChainGameId: string): void {
     const p = this.path(onChainGameId);
     if (existsSync(p)) unlinkSync(p);
