@@ -56,8 +56,20 @@ const ENV_PATH = resolve(ROOT_DIR, 'packages/frontend/.env');
  * silently overwrite index 0's keys and card list, which is precisely the pool
  * the plan calls for (docs/plan/BACKEND_OPPONENT.md §2b) failing silently.
  */
+/**
+ * Where identity manifests live.
+ *
+ * Overridable so a sandbox and a testnet set can coexist. They must NOT share a
+ * directory: the manifest is the ONLY record of an untagged note's plaintext, so
+ * anything that moves, swaps or overwrites it orphans real on-chain cards. That
+ * is not hypothetical — swapping this directory between a sandbox run and a
+ * concurrent testnet mint cost 800 notes, permanently unimportable.
+ */
+const ARTIFACTS_DIR = process.env.ARENA_BOT_ARTIFACTS_DIR
+  ? resolve(process.env.ARENA_BOT_ARTIFACTS_DIR)
+  : resolve(ROOT_DIR, 'packages/bot/.artifacts');
 const manifestPath = (index: number) =>
-  resolve(ROOT_DIR, `packages/bot/.artifacts/arena-bot-${index}.json`);
+  resolve(ARTIFACTS_DIR, `arena-bot-${index}.json`);
 const TX_TIMEOUT = 600;
 /** A wagered hand. The bot must always be able to field one. */
 const HAND_SIZE = 5;
@@ -84,6 +96,7 @@ interface BotManifest {
    *  does the playtest pool, so the stamp is what makes staleness detectable. */
   rollupVersion: number;
   provisionedAt: string;
+  updatedAt?: string;
 }
 
 const arg = (name: string, dflt: number, allowZero = false): number => {
@@ -208,6 +221,36 @@ function previousMintedTotal(index: number): number {
   const p = manifestPath(index);
   if (!existsSync(p)) return 0;
   return ((JSON.parse(readFileSync(p, 'utf-8')) as BotManifest).cardIds ?? []).length;
+}
+
+/**
+ * Write the manifest, merging with whatever is already recorded.
+ *
+ * Called after EVERY mint batch: the manifest is the sole record of an untagged
+ * note's plaintext, and a note whose randomness is lost is a card nobody can
+ * ever import or spend.
+ */
+function persistNotes(
+  index: number,
+  address: string,
+  keys: { secret: string; salt: string; signingKey: string },
+  rollupVersion: number,
+  notes: { tokenId: number; randomness: string; txHash: string }[],
+  cardIds: number[],
+): void {
+  const p = manifestPath(index);
+  const prior: Partial<BotManifest> = existsSync(p)
+    ? JSON.parse(readFileSync(p, 'utf-8'))
+    : {};
+  const seen = new Set((prior.notes ?? []).map(n => `${n.tokenId}:${n.randomness}`));
+  const merged = [...(prior.notes ?? []), ...notes.filter(n => !seen.has(`${n.tokenId}:${n.randomness}`))];
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify({
+    ...prior, index, address, ...keys,
+    cardIds, notes: merged, rollupVersion,
+    provisionedAt: prior.provisionedAt ?? new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }, null, 2));
 }
 
 async function main(): Promise<number> {
@@ -418,6 +461,11 @@ async function main(): Promise<number> {
       for (let k = 0; k < batch.length; k++) {
         mintedNotes.push({ tokenId: batch[k].id, randomness: rand[k].toString(), txHash: hash });
       }
+      // Persist the plaintexts NOW, not at the end of the run. They are the only
+      // way these notes can ever be imported, so an interrupted or clobbered run
+      // must not be able to lose more than the batch in flight.
+      persistNotes(index, botAddress, keys, Number(rollupVersion), mintedNotes, minted.concat(
+        plan.slice(0, i + batch.length).map(c => c.id)));
       console.log(`  minted ${Math.min(i + BATCH, plan.length)}/${plan.length}`);
     } catch (err: any) {
       // Do not silently continue: a partial collection that reports success is

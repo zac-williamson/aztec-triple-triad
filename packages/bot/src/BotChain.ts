@@ -37,6 +37,8 @@ export interface BotIdentity {
 }
 
 export interface BotChainConfig {
+  /** Manifest location. Sandbox and testnet sets must not share a directory —
+   *  the manifest is the only record of an untagged note's plaintext. */
   pxeUrl: string;
   nftAddress: string;
   gameAddress: string;
