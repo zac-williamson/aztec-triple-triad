@@ -48,6 +48,9 @@ const ABANDON_AFTER = Number(process.env.E2E_ABANDON_AFTER_MOVES ?? 0);
  * accepts (and only from player 2, who is not the one who failed to move).
  */
 const ABANDON_BEFORE_MOVE = process.env.E2E_ABANDON_BEFORE_MOVE === '1';
+const TAMPER_CARDS = process.env.E2E_TAMPER_SETTLE_CARDS
+  ? JSON.parse(process.env.E2E_TAMPER_SETTLE_CARDS) as number[]
+  : null;
 /**
  * Fixed hands, to force a specific OUTCOME. A draw in particular cannot be
  * arranged by difficulty alone — ranks are per token_id from a fixed database,
@@ -325,7 +328,11 @@ class ScriptedOpponent {
       moveProofs: [...this.moveProofs.values()],
       opponentAddress: this.oppAddress!,
       selectedCardId: winner === 'draw' ? 0 : (this.oppCardIds[0] ?? 0),
-      myCardIds: this.hand,
+      // SECURITY PROBE (E2E_TAMPER_SETTLE_CARDS): settle naming card ids we
+      // never committed. The contract binds the hand PROOF's card_commit to the
+      // stored commitment, but nothing ties these ids to that commitment — so
+      // if this mints, a winner can name any cards they like.
+      myCardIds: TAMPER_CARDS ?? this.hand,
       opponentCardIds: this.oppCardIds,
       myRandomness: this.randomness!,
       opponentRandomness: this.oppRandomness!,
