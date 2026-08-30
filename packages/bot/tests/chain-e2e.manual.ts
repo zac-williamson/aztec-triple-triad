@@ -503,9 +503,14 @@ async function main(): Promise<void> {
   let onChainSettled = false;
   try {
     if (!stats.lastOnChainGameId) throw new Error('bot never learned an on-chain game id');
-    const { ChainClient, GAME_STATUS } = await import('@axolotl-arena/playtest/src/chain.js');
-    const chainClient = await ChainClient.connect(addresses as never);
-    onChainSettled = await chainClient.gameStatus(stats.lastOnChainGameId!) === GAME_STATUS.settled;
+    // Read through the ALREADY-CONNECTED bot chain, not a fresh ChainClient.
+    // A second client has to resolve the contracts from scratch, and on a
+    // rate-limited public node that fails — reporting "GAME NOT SETTLED" for a
+    // game that had in fact settled. A verifier that cries wolf is worse than
+    // no verifier.
+    const status = await botChain.pxe.readGameStatus(botChain.address, stats.lastOnChainGameId);
+    onChainSettled = Number(status) === 3;   // 3 = settled
+    console.log(`  on-chain status  : ${status}`);
   } catch (e) {
     console.log('  (could not read on-chain status:', (e as Error).message, ')');
   }
