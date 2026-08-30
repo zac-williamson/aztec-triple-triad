@@ -25,6 +25,9 @@ function makeConfig(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     wsUrl: 'ws://test', httpUrl: 'http://test', token: 'tok',
     joinThresholdMs: 20_000, pollIntervalMs: 1_000, queueTimeoutMs: 60_000,
     handCardIds: CARDS, difficulty: 'greedy', moveDelayMs: 0,
+    // Full strength by default in tests: a bot that blunders at random makes
+    // every move assertion flaky for reasons unrelated to what is being tested.
+    skillMin: 1, skillMax: 1,
     maxConcurrentGames: 1,
     chainTxTimeoutMs: 600_000,
     // Unit tests assert the IMMEDIATE verdict on an incomplete transcript.
@@ -1382,4 +1385,62 @@ describe('ArenaBot blinding factors', () => {
     await vi.advanceTimersByTimeAsync(200);
     expect(h.bot.getStats().lastError).toMatch(/opponent blinding factor/);
   });
+});
+
+describe('per-game skill', () => {
+  // Real timers: this drives the bot through actual awaits, and the file's
+  // default fake timers would leave every one of them pending forever.
+  beforeEach(() => vi.useRealTimers());
+  afterEach(() => vi.useFakeTimers());
+
+  /**
+   * A fixed-strength opponent is either always beatable or never worth
+   * beating. Skill is drawn once per game so a player meets a spread — and
+   * once per GAME, not per move, because a bot that alternates between
+   * brilliant and careless inside one game reads as broken.
+   */
+  async function matchOnce(over: Partial<Record<string, any>>, gameId: string): Promise<number | null> {
+    const socket = new FakeSocket();
+    const logs: string[] = [];
+    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 20, ...over }), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      log: (m: string) => logs.push(m), now: () => Date.now(),
+    });
+    bot.start();
+    socket.emit('open');
+    socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    socket.deliver({ type: 'BOT_REGISTERED' });
+    await new Promise(r => setTimeout(r, 60));
+    socket.deliver({
+      type: 'MATCH_FOUND', gameId, playerNumber: 2,
+      gameState: freshState(), opponentIsBot: false,
+    });
+    await new Promise(r => setTimeout(r, 30));
+    bot.stop();
+    const line = logs.find(l => /skill \d\.\d+/.test(l));
+    const m = line?.match(/skill (\d\.\d+)/);
+    return m ? Number(m[1]) : null;
+  }
+
+  it('draws a different skill for each game', async () => {
+    const skills: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      const s = await matchOnce({ skillMin: 0, skillMax: 1 }, `g${i}`);
+      if (s !== null) skills.push(s);
+    }
+    expect(skills.length, 'a skill is drawn and logged per match').toBeGreaterThanOrEqual(10);
+    expect(new Set(skills).size, 'and it is not the same every game').toBeGreaterThan(1);
+    for (const s of skills) {
+      expect(s).toBeGreaterThanOrEqual(0);
+      expect(s).toBeLessThanOrEqual(1);
+    }
+  }, 30_000);
+
+  it('respects a narrowed range, so the economy can be tuned', async () => {
+    for (let i = 0; i < 8; i++) {
+      const s = await matchOnce({ skillMin: 0.8, skillMax: 1 }, `n${i}`);
+      if (s !== null) expect(s).toBeGreaterThanOrEqual(0.8);
+    }
+  }, 30_000);
 });

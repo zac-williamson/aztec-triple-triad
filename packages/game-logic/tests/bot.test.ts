@@ -399,3 +399,73 @@ describe('self-play', () => {
     expect(lookaheadWins).toBeGreaterThan(randomWins);
   });
 });
+
+describe('skill', () => {
+  /**
+   * The dial between the fixed difficulty levels. What matters is that the ends
+   * are exact — a bot asked for full strength must never blunder, and one asked
+   * for none must never be accidentally good — and that the middle actually
+   * lands in between.
+   */
+  const board = () => createGame(getCardsByIds([1, 2, 3, 4, 5]), getCardsByIds([6, 7, 8, 9, 10]));
+
+  it('plays its best move every time at skill 1', () => {
+    const state = board();
+    const best = chooseBotMove(state, { difficulty: 'greedy', seed: 7 });
+    for (let i = 0; i < 50; i++) {
+      expect(chooseBotMove(state, { difficulty: 'greedy', skill: 1, seed: 7 })).toEqual(best);
+    }
+  });
+
+  it('defaults to full strength when skill is not given', () => {
+    const state = board();
+    expect(chooseBotMove(state, { difficulty: 'greedy', seed: 3 }))
+      .toEqual(chooseBotMove(state, { difficulty: 'greedy', skill: 1, seed: 3 }));
+  });
+
+  it('plays measurably worse as skill falls', () => {
+    // Comparing against "the best move" would measure tie-breaking, not skill:
+    // pickBest chooses randomly among equal-scoring moves, so even a
+    // full-strength bot disagrees with itself. Move QUALITY is the honest
+    // measure, and captures are the thing greedy is actually maximising.
+    // A mid-game position: on an empty board nothing is adjacent to anything,
+    // so every first move captures zero and the measure is blind.
+    const opening = board();
+    const afterTwo = placeCard(
+      placeCard(opening, 'player1', 0, 1, 1).newState, 'player2', 0, 1, 2,
+    ).newState;
+
+    const meanCaptures = (skill: number) => {
+      const state = afterTwo;
+      let total = 0;
+      const N = 600;
+      for (let i = 0; i < N; i++) {
+        const m = chooseBotMove(state, { difficulty: 'greedy', skill });
+        total += placeCard(state, state.currentTurn, m.handIndex, m.row, m.col).captures.length;
+      }
+      return total / N;
+    };
+    const full = meanCaptures(1);
+    const half = meanCaptures(0.5);
+    const none = meanCaptures(0);
+    expect(full).toBeGreaterThan(half);
+    expect(half).toBeGreaterThan(none);
+  });
+
+  it('is a genuine novice at skill 0', () => {
+    const state = board();
+    const seen = new Set<string>();
+    for (let i = 0; i < 400; i++) {
+      const m = chooseBotMove(state, { difficulty: 'lookahead', skill: 0 });
+      seen.add(`${m.handIndex}:${m.row}:${m.col}`);
+    }
+    // Full strength collapses to one move; random play spreads across the board.
+    expect(seen.size).toBeGreaterThan(10);
+  });
+
+  it('stays reproducible under a seed, so campaigns still replay', () => {
+    const state = board();
+    expect(chooseBotMove(state, { difficulty: 'greedy', skill: 0.3, seed: 42 }))
+      .toEqual(chooseBotMove(state, { difficulty: 'greedy', skill: 0.3, seed: 42 }));
+  });
+});

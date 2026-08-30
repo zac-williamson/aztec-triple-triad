@@ -32,6 +32,10 @@ function cfg(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     queueTimeoutMs: 30_000,
     handCardIds: BOT_CARDS,
     difficulty: 'greedy',
+    // Deterministic strength: blundering at random would make move assertions
+    // flaky for reasons unrelated to what is under test.
+    skillMin: 1,
+    skillMax: 1,
     moveDelayMs: 0,
     maxConcurrentGames: 1,
     chainTxTimeoutMs: 600_000,

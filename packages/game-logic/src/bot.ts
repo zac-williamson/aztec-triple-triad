@@ -13,6 +13,22 @@ export type BotDifficulty = 'random' | 'greedy' | 'lookahead';
 export interface ChooseBotMoveOptions {
   difficulty: BotDifficulty;
   /**
+   * How often the bot actually plays the move it judged best, in [0, 1].
+   *
+   * The three difficulty levels are three fixed strengths, and an opponent that
+   * is always exactly one of them is either always beatable or never worth
+   * beating. Skill is the dial between them: at 1 the bot plays its full
+   * strength, at 0 it plays uniformly at random, and in between it blunders
+   * that fraction of the time.
+   *
+   * Applied per move, but meant to be held constant for a whole game — a bot
+   * that alternates between genius and novice within one game reads as broken
+   * rather than as a weaker opponent. See ArenaBot, which samples it per game.
+   *
+   * Omitted means 1: play the best move found, which is the old behaviour.
+   */
+  skill?: number;
+  /**
    * Seeds move selection: same state + same options always yields the same
    * move (required by the playtest harness for reproducible campaigns).
    * Omitted: ties are broken with Math.random.
@@ -144,6 +160,14 @@ export function chooseBotMove(state: GameState, opts: ChooseBotMoveOptions): Mov
   const rng = opts.seed !== undefined ? createSeededRng(opts.seed) : Math.random;
 
   if (opts.difficulty === 'random') {
+    return moves[Math.floor(rng() * moves.length)];
+  }
+
+  // Blunder first, so the cost of a mistake is a genuinely arbitrary move
+  // rather than the second-best one — the difference between a novice and a
+  // slightly worse expert.
+  const skill = opts.skill ?? 1;
+  if (skill < 1 && rng() >= skill) {
     return moves[Math.floor(rng() * moves.length)];
   }
 

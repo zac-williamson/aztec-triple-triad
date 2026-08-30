@@ -371,7 +371,11 @@ export class ArenaBot {
         this.myPlayer = msg.playerNumber === 1 ? 'player1' : 'player2';
         this.state = 'playing';
         this.gameStartedAt = this.now();
-        this.log(`matched into ${msg.gameId} as ${this.myPlayer}`);
+        // One skill for the whole game. Re-rolling per move would make the bot
+        // alternate between brilliant and careless within a single game, which
+        // reads as broken rather than as a weaker opponent.
+        this.gameSkill = this.rollSkill();
+        this.log(`matched into ${msg.gameId} as ${this.myPlayer} (skill ${this.gameSkill.toFixed(2)})`);
         this.maybeMove(msg.gameState);
         break;
 
@@ -809,6 +813,18 @@ export class ArenaBot {
   }
 
   /**
+   * Skill for the current game, drawn at match time from the configured range.
+   * 1 until a game starts, so anything that plays outside a match plays well.
+   */
+  private gameSkill = 1;
+
+  /** Uniform in [skillMin, skillMax]. */
+  private rollSkill(): number {
+    const { skillMin, skillMax } = this.cfg;
+    return skillMin + Math.random() * (skillMax - skillMin);
+  }
+
+  /**
    * Games we lost (or drew and did not settle) whose returned cards are still
    * owed to us, mapped to when we stop waiting. Bounded and expiring, because
    * an opponent who never settles must not leak an entry per game forever.
@@ -1002,6 +1018,7 @@ export class ArenaBot {
       // The harness sets one when it needs a reproducible OUTCOME.
       move = chooseBotMove(state, {
         difficulty: this.cfg.difficulty,
+        skill: this.gameSkill,
         ...(this.cfg.moveSeed !== undefined ? { seed: this.cfg.moveSeed } : {}),
       });
     } catch (err) {

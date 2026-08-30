@@ -28,6 +28,32 @@ export interface ArenaBotConfig {
   handCardIds: number[];
   /** Bot strength. 'greedy' is a reasonable default: beatable but not random. */
   difficulty: BotDifficulty;
+  /**
+   * Skill is drawn per game from [skillMin, skillMax] — the fraction of moves
+   * played at full strength, the rest at random.
+   *
+   * A single fixed strength makes an opponent that is either always beatable or
+   * never worth beating; drawing per game means players meet a spread, from
+   * novice to the bot's best.
+   *
+   * It is also the dial on the card economy, because the transfer is zero-sum
+   * (winner +1, loser -1) and the bot always JOINS, so it always plays player
+   * 2 — the weaker seat. Measured against a greedy opponent
+   * (packages/game-logic/scripts/bot-strength.mts, 500 games per point):
+   *
+   *   skill 0.00   bot wins 14%   drift -0.64 cards/game
+   *   skill 0.25   bot wins 22%   drift -0.42
+   *   skill 0.50   bot wins 30%   drift -0.19
+   *   skill 0.75   bot wins 37%   drift -0.02   <- break-even
+   *   skill 1.00   bot wins 38%   drift +0.02
+   *
+   * The default [0, 1] averages about -0.25 cards a game, i.e. roughly 600
+   * games of runway from a 155-card collection. Narrow the range upward to
+   * trade variety for a longer runway. Real players are not greedy bots, so
+   * treat these as the shape of the curve rather than a forecast.
+   */
+  skillMin: number;
+  skillMax: number;
   /** Pause before playing a move, so the bot does not feel inhumanly instant. */
   moveDelayMs: number;
   /**
@@ -70,10 +96,27 @@ const int = (v: string | undefined, dflt: number): number => {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : dflt;
 };
 
+/** Parse a skill bound, rejecting anything outside [0, 1]. */
+function skillBound(raw: string | undefined, dflt: number, name: string): number {
+  if (raw === undefined || raw === '') return dflt;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 1) {
+    throw new Error(`${name} must be a number in [0, 1], got '${raw}'`);
+  }
+  return n;
+}
+
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ArenaBotConfig {
-  const difficulty = (env.ARENA_BOT_DIFFICULTY ?? 'greedy') as BotDifficulty;
+  const difficulty = (env.ARENA_BOT_DIFFICULTY ?? 'lookahead') as BotDifficulty;
   if (!['random', 'greedy', 'lookahead'].includes(difficulty)) {
     throw new Error(`ARENA_BOT_DIFFICULTY must be random|greedy|lookahead, got '${difficulty}'`);
+  }
+  // Skill is sampled per game from this range, so a player meets everything
+  // from a novice to the bot at full strength rather than one fixed opponent.
+  const skillMin = skillBound(env.ARENA_BOT_SKILL_MIN, 0, 'ARENA_BOT_SKILL_MIN');
+  const skillMax = skillBound(env.ARENA_BOT_SKILL_MAX, 1, 'ARENA_BOT_SKILL_MAX');
+  if (skillMin > skillMax) {
+    throw new Error(`ARENA_BOT_SKILL_MIN (${skillMin}) cannot exceed ARENA_BOT_SKILL_MAX (${skillMax})`);
   }
   const token = env.ARENA_BOT_TOKEN ?? '';
   if (!token) throw new Error('ARENA_BOT_TOKEN is required (must match the backend)');
@@ -95,6 +138,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ArenaBotCon
     queueTimeoutMs: int(env.ARENA_BOT_QUEUE_TIMEOUT_MS, 60_000),
     handCardIds,
     difficulty,
+    skillMin,
+    skillMax,
     moveDelayMs: int(env.ARENA_BOT_MOVE_DELAY_MS, 1_200),
     maxConcurrentGames: int(env.ARENA_BOT_MAX_CONCURRENT_GAMES, 1),
     chainTxTimeoutMs: int(env.ARENA_BOT_CHAIN_TX_TIMEOUT_MS, 600_000),
