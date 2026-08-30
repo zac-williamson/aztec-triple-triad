@@ -7,8 +7,8 @@
  * can, not losing the claim when the L1->L2 wait times out.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { encodeEventTopics, encodeAbiParameters, parseAbi, type Hex } from 'viem';
-import { fundAccountFromWallet } from '../l1Funding';
+import { encodeEventTopics, encodeAbiParameters, type Hex } from 'viem';
+import { fundAccountFromWallet, DEPOSIT_EVENT_ABI } from '../l1Funding';
 
 const PORTAL = '0x00000000000000000000000000000000000000aa';
 const ASSET = '0x00000000000000000000000000000000000000bb';
@@ -16,9 +16,11 @@ const HANDLER = '0x00000000000000000000000000000000000000cc';
 const USER = '0x00000000000000000000000000000000000000ee';
 const AZTEC_ADDR = `0x${'12'.repeat(32)}`;
 
-const PORTAL_ABI = parseAbi([
-  'event DepositToAztecPublic(bytes32 to, uint256 amount, bytes32 secretHash, bytes32 key, uint256 index)',
-]);
+// Deliberately the SAME abi the code decodes with. When this file kept its own
+// copy, the copy said `to` was non-indexed, the mock encoded that shape, and
+// every test passed against a log the real portal never emits — while the live
+// decode threw after a real deposit had been made. A fixture that defines its
+// own reality cannot fail.
 
 vi.mock('@aztec/aztec.js/ethereum', () => ({
   generateClaimSecret: async () => [
@@ -33,10 +35,13 @@ vi.mock('@aztec/aztec.js/fields', () => ({
 /** A receipt carrying a well-formed DepositToAztecPublic log. */
 function depositReceipt(secretHash: Hex) {
   const key = `0x${'dd'.repeat(32)}` as Hex;
-  const topics = encodeEventTopics({ abi: PORTAL_ABI, eventName: 'DepositToAztecPublic' });
+  const topics = encodeEventTopics({
+    abi: DEPOSIT_EVENT_ABI, eventName: 'DepositToAztecPublic',
+    args: { to: AZTEC_ADDR as Hex },   // indexed → a topic, not data
+  });
   const data = encodeAbiParameters(
-    [{ type: 'bytes32' }, { type: 'uint256' }, { type: 'bytes32' }, { type: 'bytes32' }, { type: 'uint256' }],
-    [AZTEC_ADDR as Hex, 1000n, secretHash, key, 7n],
+    [{ type: 'uint256' }, { type: 'bytes32' }, { type: 'bytes32' }, { type: 'uint256' }],
+    [1000n, secretHash, key, 7n],
   );
   // RPC shape, not viem's decoded shape: status is '0x1'/'0x0' on the wire and
   // viem is what turns it into 'success'. Returning the decoded form made every

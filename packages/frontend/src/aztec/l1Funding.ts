@@ -28,9 +28,17 @@ import {
 } from 'viem';
 
 /** The subset of the portal/ERC20/handler ABIs this flow touches. */
+/** Exported so a test can pin it against a log the real portal emitted. */
+export const DEPOSIT_EVENT_ABI = parseAbi([
+  // `to` is INDEXED. Declaring it as data made viem expect 160 bytes where the
+  // real log carries 128, so the decode threw AFTER the deposit was mined —
+  // the worst place to fail, since the money has moved and the claim is only
+  // recoverable from this event.
+  'event DepositToAztecPublic(bytes32 indexed to, uint256 amount, bytes32 secretHash, bytes32 key, uint256 index)',
+]);
+
 const PORTAL_ABI = parseAbi([
   'function depositToAztecPublic(bytes32 _to, uint256 _amount, bytes32 _secretHash) returns (bytes32, uint256)',
-  'event DepositToAztecPublic(bytes32 to, uint256 amount, bytes32 secretHash, bytes32 key, uint256 index)',
 ]);
 const ERC20_ABI = parseAbi([
   'function balanceOf(address) view returns (uint256)',
@@ -265,7 +273,7 @@ export async function fundAccountFromWallet(params: FundAccountParams): Promise<
   for (const logEntry of receipt.logs) {
     if (logEntry.address.toLowerCase() !== portal.toLowerCase()) continue;
     try {
-      const parsed = decodeEventLog({ abi: PORTAL_ABI, data: logEntry.data, topics: logEntry.topics });
+      const parsed = decodeEventLog({ abi: DEPOSIT_EVENT_ABI, data: logEntry.data, topics: logEntry.topics });
       if (parsed.eventName !== 'DepositToAztecPublic') continue;
       const a = parsed.args as unknown as { secretHash: Hex; key: Hex; index: bigint };
       if (a.secretHash.toLowerCase() !== wanted) continue;
@@ -275,7 +283,17 @@ export async function fundAccountFromWallet(params: FundAccountParams): Promise<
     } catch { /* not our event */ }
   }
   if (key === null || index === null) {
-    throw new Error('Bridge deposit mined but its DepositToAztecPublic event was not found');
+    // Name what was actually there. This failure costs a real deposit, so the
+    // next person to hit it should not need a second run to see why.
+    const seen = receipt.logs
+      .filter(l => l.address.toLowerCase() === portal.toLowerCase())
+      .map(l => `${l.topics[0]} (${l.topics.length} topics, ${(l.data.length - 2) / 2}B)`)
+      .join('; ') || 'none';
+    throw new Error(
+      `Bridge deposit ${depositHash} was mined but no DepositToAztecPublic event matched ` +
+      `secret hash ${wanted}. Portal logs seen: ${seen}. The deposit is on-chain — the ` +
+      `claim can still be recovered from that transaction.`,
+    );
   }
 
   // ---- 4. Wait for the message to reach L2 --------------------------------
