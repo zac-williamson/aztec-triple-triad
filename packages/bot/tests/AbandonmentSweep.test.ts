@@ -261,3 +261,25 @@ describe('AbandonmentSweep note import', () => {
     expect(h.calls).toEqual(['claim', 'settle']);
   });
 });
+
+describe('AbandonmentSweep with per-player recovery', () => {
+  it('forgets a game whose stake it has already recovered', async () => {
+    // Recovery is per player now, so a game sits at `abandoned_claimed` until
+    // BOTH sides take their cards back — and the absent one may never return.
+    // The status therefore cannot tell us whether WE are done; only trying can.
+    const h = harness(GAME_STATUS.abandoned_claimed, {
+      pxe: {
+        sendSettleAbandonedGame: async () => {
+          throw new Error('Assertion failed: Already recovered for this player');
+        },
+      },
+    });
+    h.journal.write(record());
+
+    const stats = await h.sweep.run();
+
+    // Kept, this record would be retried on every pass forever.
+    expect(h.journal.outstanding()).toHaveLength(0);
+    expect(stats.failed).toBe(0);
+  });
+});

@@ -3,6 +3,7 @@
  * one in PLAYTEST_REUSE_STACK=1 mode) and records it in .artifacts/stack.json
  * for the tests and globalTeardown.
  */
+import { startBlockNudge } from './src/blockNudge.js';
 import { mkdirSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import { buildSync } from 'esbuild';
@@ -72,8 +73,13 @@ export default async function globalSetup(): Promise<void> {
     info.addresses = readContractAddresses();
     writeFileSync(STACK_INFO_PATH, JSON.stringify(info, null, 2));
     console.log('[stack] attached to running stack (reuse mode)');
+    // Anything measured in BLOCKS (the abandoned-game dispute window is five)
+    // never elapses on a local sandbox while a test waits: its automine
+    // sequencer only builds on tx activity. Testnet needs no help.
+    if (!TESTNET) startBlockNudge(PXE_URL, (m: string) => console.log(`[stack] ${m}`));
     return;
   }
 
   await new Stack(TESTNET ? 'testnet' : 'run', STACK_INFO_PATH).bootAll();
+  if (!TESTNET) startBlockNudge(PXE_URL, (m: string) => console.log(`[stack] ${m}`));
 }

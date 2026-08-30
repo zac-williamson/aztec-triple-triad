@@ -181,11 +181,16 @@ test.describe.serial('present-but-idle abandonment', () => {
     // claim_abandoned_game lands on-chain → status 5 (abandoned_claimed).
     await waitGameStatus(chain, onChainGameId!, GAME_STATUS.abandoned_claimed, TIMEOUTS.settleTx, 'claim_abandoned_game');
 
-    // on-chain dispute window (>=5 blocks / ~65s) → settle_abandoned_game → 3.
-    await waitGameStatus(chain, onChainGameId!, GAME_STATUS.settled, TIMEOUTS.settleTx, 'settle_abandoned_game');
-
-    // ── Assert: settled VIA abandonment (status path 2 → 5 → 3 above) ───────
-    expect(await chain.gameStatus(onChainGameId!), 'on-chain settled via abandonment').toBe(GAME_STATUS.settled);
+    // The dispute window elapses (>=5 blocks) and P2 recovers ITS OWN stake.
+    //
+    // The game stays at `abandoned_claimed`, not `settled`: recovery is PER
+    // PLAYER now, and the status only advances to 3 once BOTH sides have taken
+    // their cards back. The abandoner here never returns, so it never does —
+    // and that is the point. Settlement used to mint the absent player's cards
+    // from a list nothing verified, which let a claimant name any card and have
+    // it minted to themselves.
+    expect(await chain.gameStatus(onChainGameId!), 'stays claimed until both recover')
+      .toBe(GAME_STATUS.abandoned_claimed);
     const players = await chain.gamePlayers(onChainGameId!);
     const onChain = [players.player1.toLowerCase(), players.player2.toLowerCase()].sort();
     const browsers = [
@@ -194,15 +199,16 @@ test.describe.serial('present-but-idle abandonment', () => {
     ].sort();
     expect(onChain, 'on-chain players match the two accounts').toEqual(browsers);
 
-    // ── Assert: P2 (claimant) GOT the claimed card ──────────────────────────
-    // settle_abandoned_game re-mints P2's 5 committed cards (frontend import) and
-    // mints the claimed card PRIVATELY to P2 (tagged → discovered by P2's PXE
-    // block scan; the frontend does not import it explicitly). So P2's private
-    // cards reach pre-game count + 1, with one extra copy of the claimed id.
-    await p2d.expectEventually(`P2 (claimant) card count = pre-game +1`,
-      async () => (await p2d.privateCards()).length, STARTER_CARDS.length + 1);
-    await p2d.expectEventually(`P2 multiset gained claimed #${claimedCard}`,
-      async () => (countMap(await p2d.privateCards()).get(claimedCard) ?? 0),
-      (countMap(STARTER_CARDS).get(claimedCard) ?? 0) + 1);
+    // ── Assert: P2 got ITS OWN five back, and nothing more ──────────────────
+    //
+    // No card is won from an opponent's disconnect. The absent player's ids
+    // cannot be verified — that binding needs their blinding factor and they
+    // are not here to reveal it — so minting anything on their behalf meant
+    // minting whatever the claimant asserted. P2 therefore returns to exactly
+    // its pre-game hand.
+    await p2d.expectEventually('P2 recovered its own stake, no more',
+      async () => (await p2d.privateCards()).length, STARTER_CARDS.length);
+    expect(await p2d.privateCards(), 'P2 holds exactly its starter cards')
+      .toEqual(expect.arrayContaining(STARTER_CARDS));
   });
 });

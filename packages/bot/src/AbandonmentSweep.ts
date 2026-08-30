@@ -115,9 +115,23 @@ export class AbandonmentSweep {
       return;
     }
     if (status === GAME_STATUS.abandoned_claimed) {
-      // Claimed but not settled — finish the job.
-      this.log(`sweep: ${id} already claimed; settling`);
-      await this.settle(rec);
+      // Claimed, but recovery is PER PLAYER now — the game only reaches
+      // `settled` once BOTH sides have taken their stake back, and the absent
+      // player may never return. So this status does not tell us whether WE
+      // have recovered; only trying does.
+      this.log(`sweep: ${id} already claimed; recovering our stake`);
+      try {
+        await this.settle(rec);
+      } catch (err) {
+        if (/Already recovered/i.test(String((err as Error).message))) {
+          // Our cards are already back. Without this the record is kept and
+          // retried on every pass, forever, against a game we are done with.
+          this.log(`sweep: ${id} already recovered — forgetting`);
+          this.deps.journal.forget(rec.onChainGameId);
+          return;
+        }
+        throw err;
+      }
       return;
     }
     if (status !== GAME_STATUS.active) {
