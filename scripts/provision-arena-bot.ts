@@ -405,11 +405,16 @@ async function main(): Promise<number> {
           fee: { gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) } },
           wait: { timeout: TX_TIMEOUT },
         });
-      // receipt.txHash is a TxHash OBJECT — String()ing the receipt yields
-      // "[object Object]", which then fails at import time as "invalid string",
-      // a thousand notes later. Same shape as requireTxHash in pxe.ts.
-      const hash = (txHash as any)?.txHash?.toString();
-      if (!hash) throw new Error('mint_bot_cards returned no txHash');
+      // send() here resolves to { receipt, offchainEffects, offchainMessages },
+      // and receipt.txHash is a TxHash OBJECT. String()ing the outer value gave
+      // "[object Object]" for every note, which only surfaced a thousand notes
+      // later at import time as "invalid string" — cards minted, recorded, and
+      // unimportable. Accept either shape and fail LOUDLY at mint time.
+      const r = txHash as any;
+      const hash = (r?.receipt?.txHash ?? r?.txHash)?.toString();
+      if (!hash || hash.startsWith('[object')) {
+        throw new Error(`mint_bot_cards returned no usable txHash (got ${String(hash)})`);
+      }
       for (let k = 0; k < batch.length; k++) {
         mintedNotes.push({ tokenId: batch[k].id, randomness: rand[k].toString(), txHash: hash });
       }
