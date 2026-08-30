@@ -25,7 +25,10 @@ const pool = new BotPool({
 // Identity checks BEFORE anything spawns: a half-started pool is much harder to
 // read than a refusal that names the missing manifest.
 try {
-  pool.verifyIdentities(resolve(here, '../.artifacts'));
+  // Same directory the bot itself reads — on a box the manifests live outside
+  // the checkout, so a hardcoded relative path would fail the check for
+  // identities that are present.
+  pool.verifyIdentities(process.env.ARENA_BOT_ARTIFACTS_DIR ?? resolve(here, '../.artifacts'));
 } catch (err) {
   console.error(`[arena-pool] ${(err as Error).message}`);
   process.exit(1);

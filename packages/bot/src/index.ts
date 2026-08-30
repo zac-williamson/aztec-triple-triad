@@ -22,6 +22,19 @@ import { AbandonmentSweep } from './AbandonmentSweep.js';
 const cfg = configFromEnv();
 const chainMode = process.env.ARENA_BOT_CHAIN === '1';
 
+function botIndex(): string {
+  return process.env.ARENA_BOT_INDEX ?? '0';
+}
+
+function artifactsDir(): string {
+  return process.env.ARENA_BOT_ARTIFACTS_DIR
+    ?? resolve(import.meta.dirname ?? __dirname, '../.artifacts');
+}
+
+function botManifestPath(): string {
+  return process.env.ARENA_BOT_MANIFEST ?? resolve(artifactsDir(), `arena-bot-${botIndex()}.json`);
+}
+
 async function main(): Promise<void> {
   let chain: BotChain | undefined;
 
@@ -41,9 +54,12 @@ async function main(): Promise<void> {
       nftAddress,
       gameAddress,
       tokenAddress: process.env.VITE_TOKEN_CONTRACT_ADDRESS,
-      manifestPath: process.env.ARENA_BOT_MANIFEST
-        ?? resolve(import.meta.dirname ?? __dirname,
-                   `../.artifacts/arena-bot-${process.env.ARENA_BOT_INDEX ?? '0'}.json`),
+      // ARENA_BOT_MANIFEST names one file; ARENA_BOT_ARTIFACTS_DIR names the
+      // directory and is what the provisioner, the harness and the deployed
+      // unit all use — on a real box the manifests live outside the checkout
+      // (they carry account keys and the note plaintexts), so the default
+      // relative path is only right in development.
+      manifestPath: botManifestPath(),
     }, m => console.log(`[arena-bot:chain] ${m}`));
     // Connect BEFORE serving: the chain-stamp and address checks in connect()
     // are exactly the ones that must fail at startup rather than per game.
@@ -55,8 +71,7 @@ async function main(): Promise<void> {
 
   // Off-chain mode wagers nothing, so there is nothing to journal or recover.
   const journal = chain
-    ? new GameJournal(resolve(import.meta.dirname ?? __dirname,
-        `../.artifacts/games-${process.env.ARENA_BOT_INDEX ?? '0'}`))
+    ? new GameJournal(resolve(artifactsDir(), `games-${botIndex()}`))
     : undefined;
   const bot = new ArenaBot(cfg, { chain, proofs, journal });
 
