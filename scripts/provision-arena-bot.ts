@@ -503,7 +503,9 @@ async function main(): Promise<number> {
   // are recorded"; whether the bot can SEE them is settled when BotChain imports
   // from the manifest, which is where a real count is available.
   const held = await readCollection(nft, botAccount.address);
-  const totalNotes = previousMintedTotal(index) + mintedNotes.length;
+  // Read from the manifest, which persistNotes has been maintaining as we
+  // minted — adding mintedNotes on top would count this run twice.
+  const totalNotes = previousMintedTotal(index);
   if (totalNotes < HAND_SIZE) {
     throw new Error(
       `verification failed: only ${totalNotes} note(s) recorded — the bot needs at least ` +
@@ -515,18 +517,12 @@ async function main(): Promise<number> {
     `(${held.length} already discoverable in this PXE; the rest import from the manifest)`,
   );
 
-  const previousNotes = existsSync(manifestPath(index))
-    ? (JSON.parse(readFileSync(manifestPath(index), 'utf-8')) as BotManifest).notes ?? []
-    : [];
-  const manifest: BotManifest = {
-    index, address: botAddress, ...keys,
-    cardIds: minted, notes: [...previousNotes, ...mintedNotes],
-    rollupVersion: Number(rollupVersion),
-    provisionedAt: new Date().toISOString(),
-  };
+  // Route the final write through persistNotes as well, rather than
+  // concatenating again. Reading the file back and appending mintedNotes on top
+  // double-counted every note this run had already written — 60 cards, 120 note
+  // records — which then doubles the bot's import work at every boot.
+  persistNotes(index, botAddress, keys, Number(rollupVersion), mintedNotes, minted);
   const outPath = manifestPath(index);
-  mkdirSync(dirname(outPath), { recursive: true });
-  writeFileSync(outPath, JSON.stringify(manifest, null, 2));
   console.log(`\n=== Done. Manifest: ${outPath} ===`);
   return 0;
 }
