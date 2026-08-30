@@ -37,6 +37,7 @@ function record(over: Partial<GameRecord> = {}): GameRecord {
     botIsPlayer1: false,
     cardIds: [1, 2, 3, 4, 5],
     randomness: ['0x1', '0x2', '0x3', '0x4', '0x5', '0x6'],
+    blindingFactor: '0xb1',
     opponentCardIds: [10, 11, 12, 13, 14],
     myHandProof: { proof: 'h', publicInputs: ['0x1', '0x0'] },
     opponentHandProof: { proof: 'oh', publicInputs: ['0x2', '0x0'] },
@@ -86,7 +87,7 @@ describe('AbandonmentSweep', () => {
     // The import is not optional bookkeeping: settle_abandoned_game re-mints via
     // create_and_push_note, which the PXE cannot discover, so without it the
     // cards are ours on-chain and invisible in the wallet.
-    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5,10']);
+    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5']);
     expect(stats.recovered).toBe(1);
     expect(stats.cardsRecovered).toBe(5);
     // Forgotten, or the next pass chases a game that is already resolved.
@@ -122,7 +123,7 @@ describe('AbandonmentSweep', () => {
     await h.sweep.run();
 
     // Re-claiming would revert; settling is what is actually outstanding.
-    expect(h.calls).toEqual(['settle', 'import:1,2,3,4,5,10']);
+    expect(h.calls).toEqual(['settle', 'import:1,2,3,4,5']);
   });
 
   it('keeps the record when recovery FAILS, so the cards are not forgotten', async () => {
@@ -158,9 +159,10 @@ describe('AbandonmentSweep', () => {
 
     expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5']);
     expect(stats.recovered).toBe(1);
-    // Nobody played, so nobody forfeited a card.
+    // Only our own five come back — nobody forfeits a card here either.
     const { buildSettleAbandonedArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
-    expect(vi.mocked(buildSettleAbandonedArgs).mock.calls[0][0]).toMatchObject({ claimedCardId: 0 });
+    expect(vi.mocked(buildSettleAbandonedArgs).mock.calls[0][0])
+      .toMatchObject({ myCardIds: [1, 2, 3, 4, 5] });
   });
 
   it('refuses a full 9-move chain — that is a normal settlement, not an abandonment', async () => {
@@ -173,26 +175,33 @@ describe('AbandonmentSweep', () => {
     expect(stats.skipped).toBe(1);
   });
 
-  it('takes no opponent card when the opponent barely played', async () => {
-    const { buildSettleAbandonedArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
+  it('never takes an opponent card, however much they played', async () => {
     const h = harness(GAME_STATUS.active);
-    h.journal.write(record({ moveProofs: [PROOF] }));   // only OUR move
+    h.journal.write(record({ moveProofs: [PROOF, PROOF, PROOF, PROOF] }));
 
     await h.sweep.run();
 
-    // Getting our stake back is the point; an opponent whose client died on
-    // move one has not forfeited a card.
-    expect(vi.mocked(buildSettleAbandonedArgs).mock.calls[0][0]).toMatchObject({ claimedCardId: 0 });
+    // Recovery returns OUR stake and nothing else. Taking one of the opponent's
+    // cards meant naming it from a list nothing verified — any card, minted to
+    // us. Nobody wins a card because an opponent disconnected.
+    const { buildSettleAbandonedArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
+    const call = vi.mocked(buildSettleAbandonedArgs).mock.calls[0][0] as Record<string, unknown>;
+    expect(call).not.toHaveProperty('claimedCardId');
+    expect(call).not.toHaveProperty('opponentCardIds');
+    expect(call).toMatchObject({ myCardIds: [1, 2, 3, 4, 5], myBlinding: '0xb1' });
+    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5']);
   });
 
-  it('claims one opponent card once the opponent has played', async () => {
-    const { buildSettleAbandonedArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
+  it('refuses a game journalled without a blinding factor', async () => {
     const h = harness(GAME_STATUS.active);
-    h.journal.write(record({ moveProofs: [PROOF, PROOF] }));
+    h.journal.write(record({ blindingFactor: null }));
 
-    await h.sweep.run();
+    const stats = await h.sweep.run();
 
-    expect(vi.mocked(buildSettleAbandonedArgs).mock.calls[0][0]).toMatchObject({ claimedCardId: 10 });
+    // Recovery must prove the ids it re-mints, and this is the only value that
+    // binds them. Better to say so than to burn a claim that cannot settle.
+    expect(h.calls).toEqual([]);
+    expect(stats.skipped).toBe(1);
   });
 
   it('does not run concurrently with itself', async () => {
@@ -209,7 +218,7 @@ describe('AbandonmentSweep', () => {
     expect(h.calls).toEqual([]);
     release();
     await first;
-    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5,10']);
+    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5']);
   });
 
   it('survives a corrupt journal entry without discarding it', async () => {
@@ -221,7 +230,7 @@ describe('AbandonmentSweep', () => {
 
     // The good one recovers; the corrupt file stays on disk, because deleting it
     // would silently throw away the only record that five cards are locked.
-    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5,10']);
+    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5']);
     expect(readdirSync(dir)).toContain('broken.json');
   });
 });
@@ -235,7 +244,7 @@ describe('AbandonmentSweep note import', () => {
 
     // The contract mints the claimed card with caller_randomness[5]; missing it
     // means winning the card on-chain and never receiving it.
-    expect(h.calls).toContain('import:1,2,3,4,5,10');
+    expect(h.calls).toContain('import:1,2,3,4,5');
   });
 
   it('still counts the recovery when the note import fails', async () => {

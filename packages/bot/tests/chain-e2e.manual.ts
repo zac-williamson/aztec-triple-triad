@@ -73,6 +73,7 @@ class ScriptedOpponent {
   private blinding: string | null = null;
   private randomness: string[] | null = null;
   private oppRandomness: string[] | null = null;
+  private oppBlinding: string | null = null;
   private handProofSent = false;
   private committed = false;
   private lastState: GameState | null = null;
@@ -150,11 +151,18 @@ class ScriptedOpponent {
           this.move(this.lastState ?? undefined);
         }
         break;
+      case 'OPPONENT_BLINDING':
+        if (typeof msg.blindingFactor === 'string') this.oppBlinding = msg.blindingFactor;
+        break;
       case 'MOVE_PROVEN':
         if (msg.moveProof?.startStateHash) this.moveProofs.set(String(msg.moveProof.startStateHash), msg.moveProof);
         break;
       case 'GAME_OVER':
         log('opponent', `game over: ${msg.winner}`);
+        // Whoever settles needs BOTH blinding factors to prove the card ids.
+        if (this.blinding && this.gameId) {
+          this.send({ type: 'SHARE_BLINDING', gameId: this.gameId, blindingFactor: this.blinding });
+        }
         if (Array.isArray(msg.player1CardIds) && Array.isArray(msg.player2CardIds)) {
           this.oppCardIds = this.me === 'player1' ? msg.player2CardIds : msg.player1CardIds;
         }
@@ -308,11 +316,14 @@ class ScriptedOpponent {
     // Wait for the transcript, as the bot does — proving trails the relay.
     const deadline = Date.now() + 120_000;
     while (Date.now() < deadline) {
-      if (this.myHandProof && this.oppHandProof && this.moveProofs.size >= 9) break;
+      if (this.myHandProof && this.oppHandProof && this.moveProofs.size >= 9 && this.oppBlinding) break;
       await new Promise(r => setTimeout(r, 500));
     }
-    if (!this.myHandProof || !this.oppHandProof || this.moveProofs.size < 9) {
-      throw new Error(`transcript incomplete (moves ${this.moveProofs.size}/9)`);
+    if (!this.myHandProof || !this.oppHandProof || this.moveProofs.size < 9 || !this.oppBlinding) {
+      throw new Error(
+        `transcript incomplete (moves ${this.moveProofs.size}/9` +
+        `${this.oppBlinding ? '' : ', no opponent blinding'})`,
+      );
     }
     const { handVk, moveVk } = await this.proofs.verificationKeys();
     const { Fr } = await import('@aztec/aztec.js/fields');
@@ -336,6 +347,8 @@ class ScriptedOpponent {
       opponentCardIds: this.oppCardIds,
       myRandomness: this.randomness!,
       opponentRandomness: this.oppRandomness!,
+      myBlinding: this.blinding!,
+      opponentBlinding: this.oppBlinding!,
     });
     log('opponent', 'settling…');
     const tx = await this.chain.pxe.sendProcessGame(this.chain.address, args, { node: this.chain.nodeClient, timeoutMs: 600_000 });

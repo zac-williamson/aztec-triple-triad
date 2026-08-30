@@ -134,6 +134,13 @@ export class AbandonmentSweep {
       return;
     }
 
+    if (!rec.blindingFactor) {
+      this.stats.skipped += 1;
+      // Journalled before blinding factors were recorded. Recovery must prove
+      // the ids it re-mints, and this is the only value that binds them.
+      this.log(`sweep: ${id} UNRECOVERABLE — no blinding factor in the journal`);
+      return;
+    }
     if (!rec.myHandProof || !rec.opponentHandProof) {
       this.stats.skipped += 1;
       // Not recoverable by us: the claim verifies BOTH hand proofs. Say so
@@ -182,7 +189,7 @@ export class AbandonmentSweep {
     this.log(`sweep: ${short(rec.onChainGameId)} claimed ${String(tx).slice(0, 18)}…`);
   }
 
-  private async importRecoveredCards(rec: GameRecord, txHash: string, claimedCardId: number): Promise<void> {
+  private async importRecoveredCards(rec: GameRecord, txHash: string): Promise<void> {
     try {
       const { fetchTxEffectData } = await import('../../frontend/src/aztec/noteImporter.js');
       const txEffect = await fetchTxEffectData(this.deps.chain.nodeClient as any, txHash);
@@ -191,13 +198,11 @@ export class AbandonmentSweep {
                  `cards are on-chain but not yet visible to the PXE`);
         return;
       }
+      // Our five, minted with caller_randomness[0..4]. There is no sixth card:
+      // recovery no longer takes anything from the opponent.
       const notes = rec.cardIds.slice(0, 5).map((tokenId, i) => ({
         tokenId, randomness: rec.randomness[i],
       }));
-      // caller_randomness[5] is the slot the contract uses for the claimed card.
-      if (claimedCardId !== 0 && rec.randomness[5]) {
-        notes.push({ tokenId: claimedCardId, randomness: rec.randomness[5] });
-      }
       await this.deps.chain.pxe.importCardNotes(
         this.deps.chain.address, txHash, notes, 'abandoned-game recovery', txEffect,
       );
@@ -213,29 +218,21 @@ export class AbandonmentSweep {
     const { buildSettleAbandonedArgs, waitForDisputeWindow, DISPUTE_BLOCKS } =
       await import('../../frontend/src/aztec/settlementArgs.js');
     const { Fr } = await import('@aztec/aztec.js/fields');
-    const { AztecAddress } = await import('@aztec/aztec.js/addresses');
 
     this.log(`sweep: waiting ${DISPUTE_BLOCKS} blocks for the dispute window`);
     await waitForDisputeWindow(this.deps.chain.nodeClient);
 
-    // Take a card only if the opponent actually played one — same rule as the
-    // browser. The point of the sweep is to get OUR stake back; an opponent
-    // whose client crashed on move one has not forfeited anything.
-    const opponentPlayed = rec.moveProofs.length >= 2;
-    const claimedCardId = opponentPlayed && rec.opponentCardIds.length > 0 ? rec.opponentCardIds[0] : 0;
-
-    if (!rec.opponentAddress) {
-      throw new Error('cannot settle abandoned game: opponent address missing from the journal');
-    }
-
+    // Recovery returns OUR stake and nothing else. It used to also take one of
+    // the opponent's cards, from a list nothing verified — which meant naming
+    // any card and having it minted to us. Nobody wins a card because an
+    // opponent disconnected, and the absent player recovers their own five
+    // whenever they come back.
     const args = await buildSettleAbandonedArgs({
-      Fr, AztecAddress,
+      Fr,
       onChainGameId: rec.onChainGameId,
       myCardIds: rec.cardIds,
       myRandomness: rec.randomness,
-      opponentCardIds: rec.opponentCardIds,
-      claimedCardId,
-      opponentAddress: rec.opponentAddress,
+      myBlinding: rec.blindingFactor!,
     });
 
     const tx = await this.deps.chain.pxe.sendSettleAbandonedGame(this.deps.chain.address, args, {
@@ -247,14 +244,13 @@ export class AbandonmentSweep {
     // the PXE cannot discover them (CLAUDE.md ground rule 9). Without this the
     // sweep reports success while the bot's spendable count does not move — which
     // is exactly what the first chain run of this code did.
-    await this.importRecoveredCards(rec, String(tx), claimedCardId);
+    await this.importRecoveredCards(rec, String(tx));
 
     this.stats.recovered += 1;
     this.stats.cardsRecovered += rec.cardIds.length;
     this.deps.journal.forget(rec.onChainGameId);
     this.log(
-      `sweep: ${short(rec.onChainGameId)} RECOVERED ${rec.cardIds.length} card(s)` +
-      `${claimedCardId ? ` + claimed card ${claimedCardId}` : ''} ${String(tx).slice(0, 18)}…`,
+      `sweep: ${short(rec.onChainGameId)} RECOVERED ${rec.cardIds.length} card(s) ${String(tx).slice(0, 18)}…`,
     );
   }
 }

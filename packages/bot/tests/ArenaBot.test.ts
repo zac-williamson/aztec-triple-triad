@@ -594,6 +594,10 @@ describe('ArenaBot settlement', () => {
           start = end;
         }
       }
+      // The opponent shares its blinding factor at game over — settlement
+      // cannot prove their card ids without it, so it is now part of the
+      // transcript just like a hand proof.
+      socket.deliver({ type: 'OPPONENT_BLINDING', gameId: 'g1', blindingFactor: hex(0xb2) });
       socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner, gameState: freshState(), player1CardIds: [1,2,3,4,5], player2CardIds: [6,7,8,9,10] });
       // Long enough for the settle wait (300ms) plus its 500ms poll tick.
       await settle(1200);
@@ -1175,5 +1179,84 @@ describe('ArenaBot draw settlement', () => {
     // No wait: winning is unambiguous, only draws have a second claimant.
     expect(h.bot.getStats().settleFailures).toBe(1);
     h.bot.stop();
+  });
+});
+
+describe('ArenaBot blinding factors', () => {
+  const h2 = (over: any = {}) => {
+    const socket = new FakeSocket();
+    const f = fakeChain();
+    const proofs = {
+      cardCommitHash: async () => FIELD(0x1),
+      verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
+      proveHand: async () => ({ proof: 'p', publicInputs: ['a', 'b'], cardCommit: FIELD(0x1) }),
+      proveMove: async () => ({ proof: 'p', publicInputs: [], startStateHash: 's' }),
+    };
+    const bot = new ArenaBot(makeConfig(over), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, proofs: proofs as any, log: () => {}, now: () => 1_000_000,
+    });
+    return { bot, socket, f, async ready() {
+      bot.start(); socket.emit('open');
+      socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+      socket.deliver({ type: 'BOT_REGISTERED' });
+      await vi.advanceTimersByTimeAsync(1_000);
+    } };
+  };
+
+  it('shares its own blinding at game over, even when it LOSES', async () => {
+    const h = h2();
+    await h.ready();
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
+    await vi.advanceTimersByTimeAsync(50);
+
+    // Losing, so we are not the one settling — but the WINNER cannot settle
+    // without our blinding factor, and a game nobody can settle locks both
+    // hands. Sharing is unconditional.
+    h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'player1', gameState: freshState() });
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(h.socket.lastOfType('SHARE_BLINDING')).toMatchObject({ gameId: 'g1', blindingFactor: FIELD(0xb) });
+  });
+
+  it('will not settle without the opponent\'s blinding, and says which is missing', async () => {
+    const h = h2({ settleWaitMs: 0 });
+    await h.ready();
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
+    h.socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 1, handProof: { proof: 'q', publicInputs: [], cardCommit: FIELD(0x2) } });
+    await vi.advanceTimersByTimeAsync(50);
+    for (let i = 0; i < 9; i++) {
+      h.socket.deliver({ type: 'MOVE_PROVEN', gameId: 'g1', moveProof: { proof: 'm', publicInputs: [], startStateHash: `s${i}` } });
+    }
+    // Winning, so we settle — but nobody sent us their blinding factor.
+    h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'player2', gameState: freshState() });
+    await vi.advanceTimersByTimeAsync(200);
+
+    // Naming what is missing matters: without it this reads as an opaque
+    // on-chain revert instead of "the other side never sent one thing".
+    expect(h.bot.getStats().settleFailures).toBe(1);
+    expect(h.bot.getStats().lastError).toMatch(/opponent blinding factor/);
+  });
+
+  it('does not carry a blinding factor into the next game', async () => {
+    const h = h2();
+    await h.ready();
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
+    h.socket.deliver({ type: 'OPPONENT_BLINDING', gameId: 'g1', blindingFactor: FIELD(0xdead) });
+    await vi.advanceTimersByTimeAsync(50);
+    h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'player1', gameState: freshState() });
+    await vi.advanceTimersByTimeAsync(50);
+
+    // A stale factor would prove the WRONG game's cards and revert on-chain
+    // after all the settlement work.
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g2', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket, 'g2', FIELD(0xc2));
+    h.socket.deliver({ type: 'GAME_OVER', gameId: 'g2', winner: 'player2', gameState: freshState() });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.bot.getStats().lastError).toMatch(/opponent blinding factor/);
   });
 });

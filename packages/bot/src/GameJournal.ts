@@ -34,6 +34,12 @@ export interface GameRecord {
   botIsPlayer1: boolean;
   cardIds: number[];
   randomness: string[];
+  /**
+   * Our blinding factor for this game. Recovery has to prove the card ids it
+   * re-mints are the ones we committed, and this is the only value that binds
+   * them — without it the five cards cannot be recovered at all.
+   */
+  blindingFactor: string | null;
   opponentCardIds: number[];
   myHandProof: JournalProof | null;
   opponentHandProof: JournalProof | null;

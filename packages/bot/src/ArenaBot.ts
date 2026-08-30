@@ -110,6 +110,9 @@ export class ArenaBot {
   /** Preview data for the current game — needed as private proof inputs. */
   private blindingFactor: string | null = null;
   private myRandomness: string[] | null = null;
+  /** The opponent's blinding factor, relayed at game over. Settlement cannot
+   *  prove their card ids without it. */
+  private opponentBlinding: string | null = null;
   private opponentRandomness: string[] | null = null;
   private myCardCommit: string | null = null;
   private opponentCardCommit: string | null = null;
@@ -387,6 +390,13 @@ export class ArenaBot {
         else if (msg.winner === this.myPlayer) this.stats.wins += 1;
         else this.stats.losses += 1;
         this.log(`game over: ${msg.winner} (bot was ${this.myPlayer})`);
+        // Share our blinding factor so whichever side settles can prove BOTH
+        // players' card ids. Sent unconditionally, including when we lose: the
+        // winner cannot settle without it, and a game nobody can settle leaves
+        // both hands locked.
+        if (this.blindingFactor && this.gameId) {
+          this.send({ type: 'SHARE_BLINDING', gameId: this.gameId, blindingFactor: this.blindingFactor });
+        }
         if (Array.isArray(msg.player1CardIds) && Array.isArray(msg.player2CardIds)) {
           this.opponentCardIds = this.myPlayer === 'player1' ? msg.player2CardIds : msg.player1CardIds;
           this.journalGame();
@@ -414,6 +424,12 @@ export class ArenaBot {
           // maybeMove). Nothing else will re-trigger us: the relay only pushes
           // GAME_STATE on a move, and it is our move that is missing.
           this.maybeMove(this.lastState ?? undefined);
+        }
+        break;
+
+      case 'OPPONENT_BLINDING':
+        if (msg.gameId === this.gameId && typeof msg.blindingFactor === 'string') {
+          this.opponentBlinding = msg.blindingFactor;
         }
         break;
 
@@ -666,6 +682,8 @@ export class ArenaBot {
     if (!this.onChainGameId) missing.push('on-chain game id');
     if (!this.opponentAddress) missing.push('opponent address');
     if (!this.myRandomness || !this.opponentRandomness) missing.push('randomness');
+    if (!this.blindingFactor) missing.push('own blinding factor');
+    if (!this.opponentBlinding) missing.push('opponent blinding factor');
     if (this.moveProofs.size < 9) missing.push(`${9 - this.moveProofs.size} move proof(s)`);
     if (missing.length) {
       // Fail loudly with WHAT is missing: an incomplete transcript otherwise
@@ -695,6 +713,8 @@ export class ArenaBot {
       opponentCardIds: this.opponentCardIds,
       myRandomness: this.myRandomness!,
       opponentRandomness: this.opponentRandomness!,
+      myBlinding: this.blindingFactor!,
+      opponentBlinding: this.opponentBlinding!,
     });
 
     this.log(`settling ${winner === 'draw' ? '(draw, single settler)' : `(claiming card ${selectedCardId})`}…`);
@@ -799,6 +819,7 @@ export class ArenaBot {
         botIsPlayer1: this.myPlayer === 'player1',
         cardIds: [...this.hand],
         randomness: this.myRandomness ? [...this.myRandomness] : [],
+        blindingFactor: this.blindingFactor,
         opponentCardIds: [...this.opponentCardIds],
         myHandProof: this.myHandProof ?? null,
         opponentHandProof: this.opponentHandProof ?? null,
@@ -827,6 +848,7 @@ export class ArenaBot {
     this.opponentRandomness = null;
     this.myCardCommit = null;
     this.opponentCardCommit = null;
+    this.opponentBlinding = null;
     this.handProofSent = false;
     this.committed = false;
     this.lastState = null;

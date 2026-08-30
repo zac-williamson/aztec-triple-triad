@@ -11,7 +11,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 function record(over: Partial<GameRecord> = {}): GameRecord {
   return {
     onChainGameId: '0xabc', relayGameId: 'g1', botAddress: '0xbot', opponentAddress: '0xopp',
-    botIsPlayer1: false, cardIds: [1, 2, 3, 4, 5], randomness: [], opponentCardIds: [],
+    botIsPlayer1: false, cardIds: [1, 2, 3, 4, 5], randomness: [], blindingFactor: '0xb1', opponentCardIds: [],
     myHandProof: null, opponentHandProof: null, moveProofs: [],
     committedAt: 1000, updatedAt: 1000, ...over,
   };
