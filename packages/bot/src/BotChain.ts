@@ -82,7 +82,7 @@ const IMPORT_PACE_MS = Number(process.env.ARENA_BOT_IMPORT_PACE_MS ?? '250');
 async function withRetry<T>(
   fn: () => Promise<T>,
   log: (m: string) => void,
-  attempts = 6,
+  attempts = Number(process.env.ARENA_BOT_RETRY_ATTEMPTS ?? '9'),
   initialDelay = 1000,
 ): Promise<T> {
   let delay = initialDelay;
@@ -95,7 +95,9 @@ async function withRetry<T>(
       if (!transient || i >= attempts - 1) throw err;
       log(`rate-limited, retrying in ${delay}ms (${i + 1}/${attempts - 1})`);
       await new Promise(r => setTimeout(r, delay));
-      delay = Math.min(Math.max(delay * 2, 1), 30_000);
+      // Cap high: a saturated public RPC stays saturated for tens of seconds,
+      // and giving up early loses a whole match rather than waiting one out.
+      delay = Math.min(Math.max(delay * 2, 1), 60_000);
     }
   }
 }
