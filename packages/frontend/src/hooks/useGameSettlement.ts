@@ -29,9 +29,17 @@ export type TxStatus = 'idle' | 'preparing' | 'proving' | 'sending' | 'confirmed
  * identity-stable, so they are safe in useCallback dependency arrays.
  */
 export interface SettlementSessionDeps {
-  /** Our blinding factor for this game. Settlement proves the card ids it mints
-   *  are the ones we committed, and this is the only value that binds them. */
-  blindingFactor: string | null;
+  /**
+   * Our blinding factor for this game. Settlement proves the card ids it mints
+   * are the ones we committed, and this is the only value that binds them.
+   *
+   * A GETTER, not a value: everything in this interface is identity-stable so
+   * it can sit in useCallback deps, and a plain field would be captured at the
+   * render where it was still null — which is exactly what happened, and the
+   * settlement failed with "No blinding factor for this game" against a session
+   * that had one.
+   */
+  getBlindingFactor: () => string | null;
   getPhase: () => OnChainPhase;
   transitionPhase: (to: OnChainPhase) => void;
   waitForActivePhase: (timeoutMs: number) => Promise<void>;
@@ -335,7 +343,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
         const capturedGameRandomness = sInfo.gameRandomness;
         const capturedCardIds = sInfo.callerCardIds;
         const capturedOpponentCardIds = sInfo.opponentCardIds;
-        const capturedBlinding = session.blindingFactor;
+        const capturedBlinding = session.getBlindingFactor();
         const capturedOpponentBlinding = ws.opponentBlinding;
 
         // Named individually: the contract rejects a wrong or missing factor as
@@ -531,12 +539,12 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
   const blindingSharedRef = useRef<string | null>(null);
   useEffect(() => {
     const gameId = ws.gameId;
-    const blinding = session.blindingFactor;
+    const blinding = session.getBlindingFactor();
     if (!ws.gameOver || !gameId || !blinding) return;
     if (blindingSharedRef.current === gameId) return;
     blindingSharedRef.current = gameId;
     ws.shareBlinding(gameId, blinding);
-  }, [ws.gameOver, ws.gameId, session.blindingFactor, ws.shareBlinding]);
+  }, [ws.gameOver, ws.gameId, session.getBlindingFactor, ws.shareBlinding]);
 
   const drawSettleTriggeredRef = useRef(false);
   useEffect(() => {
@@ -604,7 +612,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     const capturedOpponentCardIds = sInfo.opponentCardIds;
     // Recovery proves the ids it re-mints are the ones we committed; without
     // this the tx reverts after the whole claim and dispute wait.
-    const capturedBlinding = session.blindingFactor;
+    const capturedBlinding = session.getBlindingFactor();
     if (!capturedBlinding) {
       console.error('[useGameSettlement] cannot recover an abandoned game without our blinding factor');
       setIsClaimingAbandoned(false);

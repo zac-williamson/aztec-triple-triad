@@ -69,6 +69,8 @@ export interface UseGameSessionReturn {
   /** Resolves when the phase reaches 'active'; rejects after timeoutMs. */
   waitForActivePhase: (timeoutMs: number) => Promise<void>;
   getSettlementInfo: () => SettlementInfo | null;
+  /** Identity-stable read of the blinding factor — see SettlementSessionDeps. */
+  getBlindingFactor: () => string | null;
   /**
    * Merge the latest ws opponent state (address, randomness, card IDs) into
    * settlementInfo for any field still empty, then return it. Recovers from
@@ -167,6 +169,13 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
   }, []);
 
   const getSettlementInfo = useCallback((): SettlementInfo | null => settlementInfoRef.current, []);
+
+  // Mirrors the state into a ref so the getter can stay identity-stable: a
+  // settlement callback captured before the pipeline set it would otherwise read
+  // null forever.
+  const blindingFactorRef = useRef<string | null>(null);
+  blindingFactorRef.current = blindingFactor;
+  const getBlindingFactor = useCallback((): string | null => blindingFactorRef.current, []);
 
   const backfillSettlementInfoFromWs = useCallback((): SettlementInfo | null => {
     const sInfo = settlementInfoRef.current;
@@ -494,6 +503,7 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
     transitionPhase,
     waitForActivePhase,
     getSettlementInfo,
+    getBlindingFactor,
     backfillSettlementInfoFromWs,
     clearSettlementInfo,
     restoreFromSave,
