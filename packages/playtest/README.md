@@ -53,6 +53,14 @@ Only the wallet UI is simulated — the key, chain, contracts and money are real
 which is the point. This is what caught the `DepositToAztecPublic` ABI bug that
 every mocked unit test agreed was fine.
 
+Settlement has two halves and the default strategy usually wins, which leaves
+the losing half — where the winner has to hand back the loser's returned cards
+— unexercised. That is where the second bug lived. Cover it deliberately:
+
+```bash
+E2E_PLAY_TO_LOSE=1 PLAYTEST_TESTNET=1 ...   # same vars, plays to lose
+```
+
 ## Architecture
 
 | Piece | File | Role |

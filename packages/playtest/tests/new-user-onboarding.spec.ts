@@ -34,6 +34,17 @@ import { resolve } from 'path';
 import { ARTIFACTS_DIR } from '../src/env.js';
 
 const STARTER_CARDS = [1, 2, 3, 4, 5];
+/**
+ * Play badly on purpose, so the BOT wins.
+ *
+ * Settlement has two halves and they are not symmetric: the winner settles,
+ * the loser waits to be handed back the notes for its returned cards. The
+ * default strategy here beats the bot most of the time, which left the loser's
+ * half unexercised — and that is exactly where a bug lived (the bot never sent
+ * those notes, so losing to it cost a player four cards and hung their client).
+ * Set E2E_PLAY_TO_LOSE=1 to cover that half deliberately.
+ */
+const PLAY_TO_LOSE = process.env.E2E_PLAY_TO_LOSE === '1';
 /** The bridge is the slow part: three L1 blocks plus L1->L2 inclusion. */
 const FUNDING_TIMEOUT_MS = 25 * 60_000;
 
@@ -108,7 +119,7 @@ test('a new player with only an Ethereum account plays and settles a game', asyn
       }
       await player.waitReadyToMove();
       const board = (await player.phase()).game!.board;
-      const target = firstEmptyCell(board);
+      const target = PLAY_TO_LOSE ? mostExposedCell(board) : firstEmptyCell(board);
       if (!target) break;
       await player.selectHandCard(0);
       await player.clickCell(target.row, target.col);
@@ -180,6 +191,35 @@ function firstEmptyCell(board: { cardId: number | null }[][]): { row: number; co
     }
   }
   return null;
+}
+
+/**
+ * The emptiest-defended square: most neighbours, most of them the opponent's.
+ *
+ * A deliberately bad move — it hands the greedy bot the most capture
+ * opportunities — without needing card powers, which the phase snapshot does
+ * not carry. Heuristic, not a guarantee; it loses most games, which is enough
+ * to exercise the losing side on demand.
+ */
+function mostExposedCell(
+  board: { cardId: number | null; owner: string | null }[][],
+): { row: number; col: number } | null {
+  let best: { row: number; col: number } | null = null;
+  let bestScore = -1;
+  for (let row = 0; row < board.length; row++) {
+    for (let col = 0; col < board[row].length; col++) {
+      if (board[row][col].cardId !== null) continue;
+      let score = 0;
+      for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+        const r = row + dr, c = col + dc;
+        if (r < 0 || c < 0 || r >= board.length || c >= board[r].length) continue;
+        score += 1;                                             // an open flank
+        if (board[r][c].owner === 'player2') score += 2;         // already theirs
+      }
+      if (score > bestScore) { bestScore = score; best = { row, col }; }
+    }
+  }
+  return best;
 }
 
 function countOccupied(board: { cardId: number | null }[][]): number {
