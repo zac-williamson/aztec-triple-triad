@@ -63,6 +63,36 @@ export function loadBotIdentity(manifestPath: string): BotIdentity {
   return m;
 }
 
+/** Gap between import transactions. The public testnet RPC rate-limits well
+ *  before it runs out of capacity, and importing a deep stock is the burstiest
+ *  thing the bot ever does. */
+const IMPORT_PACE_MS = Number(process.env.ARENA_BOT_IMPORT_PACE_MS ?? '250');
+
+/**
+ * Retry a node call through rate limiting.
+ *
+ * The public testnet RPC answers 429 under load, and a 429 is not a failure —
+ * it is "ask again". Treating it as one left the bot with 88 of 200 cards
+ * imported and no way to tell that from a real error. Only retries rate limits
+ * and transient transport errors; anything else fails immediately, because
+ * retrying a genuine error just delays the report.
+ */
+async function withRetry<T>(fn: () => Promise<T>, log: (m: string) => void, attempts = 6): Promise<T> {
+  let delay = 1000;
+  for (let i = 0; ; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const msg = String((err as Error)?.message ?? err);
+      const transient = /429|rate limit|ETIMEDOUT|ECONNRESET|socket hang up|fetch failed/i.test(msg);
+      if (!transient || i >= attempts - 1) throw err;
+      log(`rate-limited, retrying in ${delay}ms (${i + 1}/${attempts - 1})`);
+      await new Promise(r => setTimeout(r, delay));
+      delay = Math.min(delay * 2, 30_000);
+    }
+  }
+}
+
 /** Process-wide guard: see the one-identity-per-process note above. */
 let connectedIdentity: string | null = null;
 
@@ -200,28 +230,43 @@ export class BotChain {
     for (const n of pending) byTx.set(n.txHash, [...(byTx.get(n.txHash) ?? []), n]);
 
     let imported = 0;
+    let failed = 0;
     for (const [txHash, group] of byTx) {
       try {
-        const effect = await fetchTxEffectData(this.node, txHash);
+        const effect = await withRetry(
+          () => fetchTxEffectData(this.node, txHash),
+          m => this.log(m),
+        );
         if (!effect) {
           this.log(`WARNING: no TxEffect for ${txHash.slice(0, 18)}… — ${group.length} note(s) not imported`);
+          failed += group.length;
           continue;
         }
-        await this.pxe.importCardNotes(
-          this.address, txHash,
-          group.map(n => ({ tokenId: n.tokenId, randomness: n.randomness })),
-          'bot stock', effect,
+        await withRetry(
+          () => this.pxe.importCardNotes(
+            this.address, txHash,
+            group.map(n => ({ tokenId: n.tokenId, randomness: n.randomness })),
+            'bot stock', effect,
+          ),
+          m => this.log(m),
         );
         for (const n of group) { done.add(key(n)); imported += 1; }
+        // Persist as we go: a run interrupted at note 900 must not start over.
+        writeFileSync(markerPath, JSON.stringify([...done]));
       } catch (err) {
         // Not fatal: the rest of the stock may still import, and a later start
         // retries this tx. Loud, because an unimported note is a card the bot
         // owns and cannot play.
+        failed += group.length;
         this.log(`WARNING: import of tx ${txHash.slice(0, 18)}… failed: ${(err as Error).message}`);
       }
+      // Pace against the public testnet RPC, which rate-limits (HTTP 429) long
+      // before it runs out of capacity. Importing a deep stock is the single
+      // burstiest thing the bot ever does.
+      await new Promise(r => setTimeout(r, IMPORT_PACE_MS));
     }
     writeFileSync(markerPath, JSON.stringify([...done]));
-    this.log(`imported ${imported} card note(s)`);
+    this.log(`imported ${imported} card note(s)${failed ? `, ${failed} still pending (retried next start)` : ''}`);
   }
 
   /** The frontend's ops layer, bound to the bot's wallet. */
