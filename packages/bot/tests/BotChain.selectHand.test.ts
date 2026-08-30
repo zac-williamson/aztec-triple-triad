@@ -45,3 +45,43 @@ describe('BotChain.selectHand with duplicates', () => {
     await expect(chainHolding([1, 2, 3]).selectHand(5)).rejects.toThrow(/holds only 3/);
   });
 });
+
+/**
+ * Rate-limit handling. The public testnet RPC answers 429 under ordinary load —
+ * enough to kill a create_game and lose the match — so a 429 must be "ask
+ * again", not a failure. A genuine revert must still fail at once.
+ */
+describe('BotChain rate-limit retries', () => {
+  it('retries a rate-limited call and returns its eventual result', async () => {
+    const { withRetryForTests } = await import('../src/BotChain.js') as any;
+    let calls = 0;
+    const out = await withRetryForTests(async () => {
+      calls += 1;
+      if (calls < 3) throw new Error('Error 429 from server: {"message":"API rate limit exceeded"}');
+      return 'ok';
+    }, () => {}, 5, 0);
+    expect(out).toBe('ok');
+    expect(calls).toBe(3);
+  });
+
+  it('fails a genuine error immediately, without burning retries', async () => {
+    const { withRetryForTests } = await import('../src/BotChain.js') as any;
+    let calls = 0;
+    await expect(withRetryForTests(async () => {
+      calls += 1;
+      throw new Error('Assertion failed: Could not find all 5 cards');
+    }, () => {}, 5, 0)).rejects.toThrow(/Could not find all 5 cards/);
+    // Retrying a revert only delays the report.
+    expect(calls).toBe(1);
+  });
+
+  it('gives up after the attempt budget', async () => {
+    const { withRetryForTests } = await import('../src/BotChain.js') as any;
+    let calls = 0;
+    await expect(withRetryForTests(async () => {
+      calls += 1;
+      throw new Error('fetch failed');
+    }, () => {}, 3, 0)).rejects.toThrow(/fetch failed/);
+    expect(calls).toBe(3);
+  });
+});

@@ -79,8 +79,13 @@ const IMPORT_PACE_MS = Number(process.env.ARENA_BOT_IMPORT_PACE_MS ?? '250');
  * and transient transport errors; anything else fails immediately, because
  * retrying a genuine error just delays the report.
  */
-async function withRetry<T>(fn: () => Promise<T>, log: (m: string) => void, attempts = 6): Promise<T> {
-  let delay = 1000;
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  log: (m: string) => void,
+  attempts = 6,
+  initialDelay = 1000,
+): Promise<T> {
+  let delay = initialDelay;
   for (let i = 0; ; i++) {
     try {
       return await fn();
@@ -90,9 +95,38 @@ async function withRetry<T>(fn: () => Promise<T>, log: (m: string) => void, atte
       if (!transient || i >= attempts - 1) throw err;
       log(`rate-limited, retrying in ${delay}ms (${i + 1}/${attempts - 1})`);
       await new Promise(r => setTimeout(r, delay));
-      delay = Math.min(delay * 2, 30_000);
+      delay = Math.min(Math.max(delay * 2, 1), 30_000);
     }
   }
+}
+
+/**
+ * Wrap the ops layer so every chain call survives rate limiting.
+ *
+ * The public testnet RPC answers 429 under ordinary load — enough to kill a
+ * `create_game` outright and lose the whole match. A 429 is the protocol saying
+ * "ask again"; treating it as a failure is not caution, it is a bot that cannot
+ * play on the network it is deployed to.
+ *
+ * Retrying a SEND is safe here even if the original reached the node: the retry
+ * spends the same notes, so a landed original makes the duplicate fail as an
+ * existing nullifier rather than committing anything twice. Only rate limits and
+ * transport errors retry; a revert or an assertion fails immediately, because
+ * retrying a genuine error only delays the report.
+ *
+ * Applied at this boundary rather than inside the shared pxe.ts, because that
+ * module is the browser's proving path too and a change there needs its own
+ * verification.
+ */
+function withRateLimitRetries<T extends object>(ops: T, log: (m: string) => void): T {
+  return new Proxy(ops, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function') return value;
+      return (...args: unknown[]) =>
+        withRetry(() => (value as (...a: unknown[]) => Promise<unknown>).apply(target, args), log);
+    },
+  }) as T;
 }
 
 /** Process-wide guard: see the one-identity-per-process note above. */
@@ -192,7 +226,7 @@ export class BotChain {
     const { setPxeWallet, pxe } = await import('../../frontend/src/aztec/pxe.js');
     setPxeWallet(wallet);
     connectedIdentity = this.identity.address;
-    this.ops = pxe;
+    this.ops = withRateLimitRetries(pxe, m => this.log(m));
     await this.importStock();
     this.log(`chain ready as ${this.identity.address.slice(0, 20)}… (${(await this.readCards()).length} spendable)`);
   }
@@ -355,3 +389,7 @@ export class BotChain {
     return hand.slice(0, size);
   }
 }
+
+
+/** Exported for tests only — the retry policy is worth asserting directly. */
+export const withRetryForTests = withRetry;
