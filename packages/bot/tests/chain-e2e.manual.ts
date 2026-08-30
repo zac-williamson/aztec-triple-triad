@@ -382,7 +382,10 @@ async function main(): Promise<void> {
     nftAddress: addresses.nft,
     gameAddress: addresses.game,
     tokenAddress: addresses.token,
-    manifestPath: `packages/bot/.artifacts/arena-bot-${index}.json`,
+    // ARENA_BOT_ARTIFACTS_DIR keeps sandbox and testnet identities apart. The
+    // manifest is the only record of an untagged note's plaintext, so the two
+    // sets must never share a directory.
+    manifestPath: `${process.env.ARENA_BOT_ARTIFACTS_DIR ?? 'packages/bot/.artifacts'}/arena-bot-${index}.json`,
   }, m => log(`chain${index}`, m));
 
   if (ROLE === 'opponent') {
