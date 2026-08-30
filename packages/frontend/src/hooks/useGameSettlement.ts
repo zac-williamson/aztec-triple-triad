@@ -29,6 +29,9 @@ export type TxStatus = 'idle' | 'preparing' | 'proving' | 'sending' | 'confirmed
  * identity-stable, so they are safe in useCallback dependency arrays.
  */
 export interface SettlementSessionDeps {
+  /** Our blinding factor for this game. Settlement proves the card ids it mints
+   *  are the ones we committed, and this is the only value that binds them. */
+  blindingFactor: string | null;
   getPhase: () => OnChainPhase;
   transitionPhase: (to: OnChainPhase) => void;
   waitForActivePhase: (timeoutMs: number) => Promise<void>;
@@ -332,7 +335,17 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
         const capturedGameRandomness = sInfo.gameRandomness;
         const capturedCardIds = sInfo.callerCardIds;
         const capturedOpponentCardIds = sInfo.opponentCardIds;
+        const capturedBlinding = session.blindingFactor;
+        const capturedOpponentBlinding = ws.opponentBlinding;
 
+        // Named individually: the contract rejects a wrong or missing factor as
+        // an opaque "card ids do not match their commitment" after all the
+        // proving work, and the two have completely different causes — ours is
+        // a local pipeline failure, theirs is the opponent not having sent one.
+        if (!capturedBlinding) throw new Error('No blinding factor for this game (settlement info incomplete)');
+        if (!capturedOpponentBlinding) {
+          throw new Error('Opponent has not shared their blinding factor yet — they send it at game over');
+        }
         if (capturedCardIds.length === 0) throw new Error('No caller card IDs (settlement info incomplete)');
         if (capturedOpponentCardIds.length === 0) {
           console.error('[useGameSettlement] Settlement failed: opponentCardIds is empty.',
@@ -425,6 +438,12 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           padToHand(Fr, capturedOpponentCardIds),
           callerRandomness,
           opponentRandomness,
+          // Blinding factors — the contract recomputes
+          // poseidon2([card_ids, blinding]) and asserts it against the
+          // commitment stored at create/join. Without them it would mint
+          // whatever ids it was handed.
+          toFrUtil(Fr, capturedBlinding),
+          toFrUtil(Fr, capturedOpponentBlinding),
         ];
         const hash = await ops.sendProcessGame(addr, processArgs, { node: aztec.nodeClient, timeoutMs: AZTEC_SETTLE_TX_TIMEOUT });
         return { hash, callerRandomness, opponentRandomness, capturedCardIds, capturedOpponentCardIds };
@@ -502,6 +521,23 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
   // NO transaction — it waits for the relay via the same path the win-loser uses
   // (SETTLE_STARTED → awaiting_settlement → NOTE_DATA import). A second
   // process_game would only revert on the already-settled game; we never send it.
+  // Share our blinding factor the moment the game ends, whoever won.
+  //
+  // Settlement has to prove that the card ids it mints are the ones each player
+  // committed, and the blinding factor is the only value that binds them. The
+  // WINNER cannot settle without ours, so a loser who never sends it locks both
+  // hands. Sent at game over and not a moment earlier: before that it would let
+  // the opponent brute-force our hand from the on-chain commitment.
+  const blindingSharedRef = useRef<string | null>(null);
+  useEffect(() => {
+    const gameId = ws.gameId;
+    const blinding = session.blindingFactor;
+    if (!ws.gameOver || !gameId || !blinding) return;
+    if (blindingSharedRef.current === gameId) return;
+    blindingSharedRef.current = gameId;
+    ws.shareBlinding(gameId, blinding);
+  }, [ws.gameOver, ws.gameId, session.blindingFactor, ws.shareBlinding]);
+
   const drawSettleTriggeredRef = useRef(false);
   useEffect(() => {
     if (ws.gameOver?.winner !== 'draw') { drawSettleTriggeredRef.current = false; return; }
@@ -566,6 +602,15 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     const capturedOnChainGameId = sInfo.onChainGameId;
     const capturedOpponentAddress = sInfo.opponentAddress;
     const capturedOpponentCardIds = sInfo.opponentCardIds;
+    // Recovery proves the ids it re-mints are the ones we committed; without
+    // this the tx reverts after the whole claim and dispute wait.
+    const capturedBlinding = session.blindingFactor;
+    if (!capturedBlinding) {
+      console.error('[useGameSettlement] cannot recover an abandoned game without our blinding factor');
+      setIsClaimingAbandoned(false);
+      session.transitionPhase('idle');
+      return;
+    }
 
     try {
       // Step 1: claim_abandoned_game
@@ -729,13 +774,15 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           const opponent = AztecAddress.fromStringUnsafe(capturedOpponentAddress);
           const callerRandomness = capturedGameRandomness!.map(v => toFrUtil(Fr, v));
 
+          // Recovers ONLY our own five cards. The absent player's ids cannot be
+          // verified — that needs their blinding factor and they are not here to
+          // give it — so minting on their behalf meant minting whatever we
+          // asserted. They recover their own stake when they come back.
           const settleArgs = [
             toFrUtil(Fr, capturedOnChainGameId!),
             padToHand(Fr, capturedCardIds),
             callerRandomness,
-            padToHand(Fr, capturedOpponentCardIds),
-            new Fr(BigInt(claimedCardId)),
-            opponent,
+            toFrUtil(Fr, capturedBlinding),
           ];
           const hash = await ops.sendSettleAbandonedGame(addr, settleArgs, { node: aztec.nodeClient, timeoutMs: AZTEC_TX_TIMEOUT });
           return { hash, callerRandomness };

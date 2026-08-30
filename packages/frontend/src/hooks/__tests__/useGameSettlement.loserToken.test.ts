@@ -54,7 +54,7 @@ import type { UseWebSocketReturn } from '../useWebSocket';
 const LOSER_RANDOMNESS = ['0x1', '0x2', '0x3', '0x4', '0x5', '0x6'];
 
 const session = {
-  getPhase: () => 'awaiting_settlement' as const,
+  blindingFactor: '0xb1', getPhase: () => 'awaiting_settlement' as const,
   transitionPhase: vi.fn(),
   waitForActivePhase: vi.fn().mockResolvedValue(undefined),
   getSettlementInfo: () => ({

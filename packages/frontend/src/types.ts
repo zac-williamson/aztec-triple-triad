@@ -88,6 +88,9 @@ export type ClientMessage =
   | { type: 'CANCEL_GAME'; gameId: string }
   // Aztec info exchange
   | { type: 'SHARE_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string; gameRandomness?: string[] }
+  /** Sent at GAME OVER only — earlier would let the opponent brute-force your
+   *  hand from the on-chain commitment. */
+  | { type: 'SHARE_BLINDING'; gameId: string; blindingFactor: string }
   // Note relay (offchain settlement delivery)
   | { type: 'RELAY_NOTE_DATA'; gameId: string; txHash: string; notes: PlaintextNoteData[] }
   // Settlement lifecycle
@@ -129,6 +132,7 @@ export type ServerMessage =
   | { type: 'GAME_CANCELLED'; gameId: string; reason: string }
   // Aztec info exchange
   | { type: 'OPPONENT_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string; gameRandomness?: string[] }
+  | { type: 'OPPONENT_BLINDING'; gameId: string; blindingFactor: string }
   // Note relay (offchain settlement delivery)
   | { type: 'NOTE_DATA'; gameId: string; txHash: string; notes: PlaintextNoteData[] }
   // Settlement lifecycle

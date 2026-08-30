@@ -124,7 +124,10 @@ export function useGame(wsUrl: string): UseGameReturn {
   const play = useGamePlay({ ws, cardIds, blindingFactor: session.blindingFactor });
 
   // --- Settlement: process_game, loser note import, abandoned-game flow ---
-  const settlement = useGameSettlement({ ws, cardIds, session, play });
+  const settlement = useGameSettlement({
+    ws, cardIds, play,
+    session: { ...session, blindingFactor: session.blindingFactor },
+  });
 
   // --- Effects ---
 

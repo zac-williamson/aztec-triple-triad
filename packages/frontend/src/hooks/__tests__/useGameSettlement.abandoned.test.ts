@@ -174,7 +174,7 @@ function makeWs(overrides: Record<string, unknown> = {}) {
 }
 
 const session = {
-  getPhase: () => 'active' as const,
+  blindingFactor: '0xb1', getPhase: () => 'active' as const,
   transitionPhase: vi.fn(),
   waitForActivePhase: vi.fn().mockResolvedValue(undefined),
   getSettlementInfo: () => settlementInfo,

@@ -59,7 +59,12 @@ export interface UseWebSocketReturn {
   submitHandProof: (gameId: string, handProof: HandProofData) => void;
   submitMoveProof: (gameId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData, moveNumber: number) => void;
   shareAztecInfo: (gameId: string, aztecAddress: string, onChainGameId?: string, gameRandomness?: string[]) => void;
+  /** Send at GAME OVER only — earlier would let the opponent brute-force your hand. */
+  shareBlinding: (gameId: string, blindingFactor: string) => void;
   opponentGameRandomness: string[] | null;
+  /** The opponent's blinding factor, relayed at game over. Settlement cannot
+   *  prove their card ids without it. */
+  opponentBlinding: string | null;
   refreshGameList: () => void;
   leaveGame: () => void;
   disconnect: () => void;
@@ -100,6 +105,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const [incomingNoteData, setIncomingNoteData] = useState<{ txHash: string; notes: PlaintextNoteData[] } | null>(null);
   const [opponentSettling, setOpponentSettling] = useState<{ selectedCardId: number } | null>(null);
   const [opponentGameRandomness, setOpponentGameRandomness] = useState<string[] | null>(null);
+  const [opponentBlinding, setOpponentBlinding] = useState<string | null>(null);
   const [opponentTxConfirmed, setOpponentTxConfirmed] = useState(false);
   const [matchmakingStatus, setMatchmakingStatus] = useState<'idle' | 'queued' | 'matched'>('idle');
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
@@ -241,6 +247,9 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
             col: msg.col,
           });
           break;
+        case 'OPPONENT_BLINDING':
+          setOpponentBlinding(msg.blindingFactor);
+          break;
         case 'OPPONENT_AZTEC_INFO':
           setOpponentAztecAddress(msg.aztecAddress);
           if (msg.onChainGameId) setOpponentOnChainGameId(msg.onChainGameId);
@@ -369,6 +378,10 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     send({ type: 'SHARE_AZTEC_INFO', gameId: gId, aztecAddress, onChainGameId, gameRandomness });
   }, [send]);
 
+  const shareBlinding = useCallback((gId: string, blindingFactor: string) => {
+    send({ type: 'SHARE_BLINDING', gameId: gId, blindingFactor });
+  }, [send]);
+
   const submitMoveProof = useCallback((gId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData, moveNumber: number) => {
     if (!gId) return;
     setError(null);
@@ -472,6 +485,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     notifySettleStarted,
     notifyAbandonedGameSettled,
     opponentGameRandomness,
+    opponentBlinding,
     opponentTxConfirmed,
     relayNoteData,
     notifyTxConfirmed,
@@ -483,6 +497,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     submitHandProof,
     submitMoveProof,
     shareAztecInfo,
+    shareBlinding,
     refreshGameList,
     leaveGame,
     disconnect,
