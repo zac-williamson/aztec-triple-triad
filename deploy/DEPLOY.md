@@ -196,6 +196,72 @@ cert automatically.
 
 ---
 
+## Step 3b — Run the arena bot (optional, but the arena is empty without it)
+
+The bot is a backend opponent: it watches the matchmaking queue and, when a
+player has waited more than 30 seconds, joins their game and plays it for real —
+committing cards, proving moves, settling on-chain. Without it a lone player
+waits forever.
+
+Provision an identity first. This mints its stock and, crucially, writes the
+note plaintexts to a manifest:
+
+```bash
+# On a machine with the deployer key (NOT the box — the minter key never goes there).
+export AZTEC_PXE_URL=https://v5.testnet.rpc.aztec-labs.com
+export DEPLOYER_SECRET=... DEPLOYER_SALT=... DEPLOYER_SIGNING_KEY=...
+set -a; . packages/frontend/.env.testnet; set +a
+
+npx tsx scripts/provision-arena-bot.ts --index 0 --cards 1000
+```
+
+**The manifest and its `.imported.json` marker are the only record of the bot's
+note plaintexts.** Its cards are minted untagged (the tagged path caps at ~84
+notes per finalisation window), so a note whose randomness is lost is a card
+nobody can ever import or spend. Copy `packages/bot/.artifacts/` to the box and
+back it up; do not let a sandbox and a testnet set share a directory — use
+`ARENA_BOT_ARTIFACTS_DIR` to keep them apart.
+
+Then on the box:
+
+```bash
+sudo cp deploy/triad-bot.service /etc/systemd/system/
+sudo sed -i "s|__REPO_DIR__|$HOME/axolotl-arena-server|" /etc/systemd/system/triad-bot.service
+sudo cp deploy/triad-bot.env.example /etc/triad-bot.env
+sudo chmod 600 /etc/triad-bot.env && sudo chown root:root /etc/triad-bot.env
+sudo nano /etc/triad-bot.env      # ARENA_BOT_TOKEN must match the relay's
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now triad-bot
+journalctl -u triad-bot -f
+```
+
+The first start imports the whole stock, which is the burstiest thing the bot
+ever does against a rate-limited node — expect several minutes and some
+`rate-limited, retrying` lines. It resumes where it left off if interrupted.
+
+**A pool is N units, not one process with N identities.** The PXE binds one
+wallet per process. Copy the unit per index, giving each its own
+`ARENA_BOT_INDEX` and `ARENA_BOT_HEALTH_PORT`, and provision an identity for
+each. The relay refuses to pair two bots and sends only one to each waiting
+player, so the pool needs no coordination of its own.
+
+### Monitoring
+
+```bash
+curl -s localhost:5175/health | jq   # bot: failures, cardsStranded, spendableCards
+curl -s localhost:5174/metrics | jq  # relay: matches formed, bot matches, wait times
+
+# Wire this into cron or an uptime probe — it exits non-zero with a reason.
+deploy/check-arena-health.sh
+```
+
+Alert on `healthy: false` and on `spendableCards` falling toward zero. The
+second is the one that bites: the bot's collection is a loss budget, every
+player who beats it takes a card, and a bot that runs out goes **idle** — which
+is correct behaviour and indistinguishable from a quiet night until someone
+notices the arena has no opponent.
+
 ## Step 4 — Smoke test
 
 1. Open `https://play.YOURDOMAIN.com` in two browsers.
