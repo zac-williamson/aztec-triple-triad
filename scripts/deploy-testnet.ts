@@ -369,6 +369,29 @@ async function main() {
   await nftContract.methods.set_token_contract(tokenContract.address).send(await sendAs(deployerAddress));
   await tokenContract.methods.set_nft_contract(nftContract.address).send(await sendAs(deployerAddress));
   await tokenContract.methods.set_game_contract(gameContract.address).send(await sendAs(deployerAddress));
+
+  // Arena bot slots — the ONLY accounts allowed to hold duplicate cards
+  // (TripleTriadNFT.mint_bot_cards). Each slot is write-once, so registering
+  // here rather than later closes the window in which a freshly deployed NFT
+  // has no bots and the exemption is unclaimed. Addresses are derived, not read
+  // from a manifest, so the deploy never depends on provisioning having run.
+  {
+    const { arenaBotAccount } = await import('./lib/arenaBotAccount');
+    const slots = Number(process.env.ARENA_BOT_SLOTS ?? '4');
+    console.log(`Registering ${slots} arena bot slot(s)...`);
+    for (let slot = 0; slot < slots; slot++) {
+      const keys = arenaBotAccount(slot);
+      const botAccount = await wallet.createSchnorrAccount(
+        Fr.fromHexString(keys.secret),
+        Fr.fromHexString(keys.salt),
+        GrumpkinScalar.fromHexString(keys.signingKey),
+      );
+      await nftContract.methods
+        .set_arena_bot(new Fr(BigInt(slot)), botAccount.address)
+        .send(await sendAs(deployerAddress));
+      console.log(`  slot ${slot}: ${botAccount.address.toString()}`);
+    }
+  }
   console.log('Done.');
 
   // Contracts are NOT updatable: a "code update" is a fresh redeploy (new
