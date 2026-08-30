@@ -65,6 +65,14 @@ export interface UseWebSocketReturn {
   /** The opponent's blinding factor, relayed at game over. Settlement cannot
    *  prove their card ids without it. */
   opponentBlinding: string | null;
+  /**
+   * Identity-stable read of the same value, for settlement callbacks.
+   *
+   * They capture their dependencies once and run minutes later, so reading the
+   * field directly gave them the null it held when the callback was built — and
+   * settlement failed on a message that had in fact arrived.
+   */
+  getOpponentBlinding: () => string | null;
   refreshGameList: () => void;
   leaveGame: () => void;
   disconnect: () => void;
@@ -106,6 +114,9 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const [opponentSettling, setOpponentSettling] = useState<{ selectedCardId: number } | null>(null);
   const [opponentGameRandomness, setOpponentGameRandomness] = useState<string[] | null>(null);
   const [opponentBlinding, setOpponentBlinding] = useState<string | null>(null);
+  const opponentBlindingRef = useRef<string | null>(null);
+  opponentBlindingRef.current = opponentBlinding;
+  const getOpponentBlinding = useCallback((): string | null => opponentBlindingRef.current, []);
   const [opponentTxConfirmed, setOpponentTxConfirmed] = useState(false);
   const [matchmakingStatus, setMatchmakingStatus] = useState<'idle' | 'queued' | 'matched'>('idle');
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
@@ -486,6 +497,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     notifyAbandonedGameSettled,
     opponentGameRandomness,
     opponentBlinding,
+    getOpponentBlinding,
     opponentTxConfirmed,
     relayNoteData,
     notifyTxConfirmed,

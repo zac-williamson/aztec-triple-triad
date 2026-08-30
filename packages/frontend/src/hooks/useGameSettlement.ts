@@ -344,7 +344,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
         const capturedCardIds = sInfo.callerCardIds;
         const capturedOpponentCardIds = sInfo.opponentCardIds;
         const capturedBlinding = session.getBlindingFactor();
-        const capturedOpponentBlinding = ws.opponentBlinding;
+        const capturedOpponentBlinding = ws.getOpponentBlinding();
 
         // Named individually: the contract rejects a wrong or missing factor as
         // an opaque "card ids do not match their commitment" after all the
@@ -514,7 +514,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
       session.transitionPhase('idle');
       session.clearSettlementInfo();
     });
-  }, [ws.gameId, ws.playerNumber,
+  }, [ws.gameId, ws.playerNumber, ws.getOpponentBlinding,
       aztec.wallet, aztec.accountAddress, importNotes, ws.relayNoteData, ws.notifySettleStarted,
       session.getPhase, session.waitForActivePhase, session.transitionPhase,
       session.getSettlementInfo, session.backfillSettlementInfoFromWs, session.clearSettlementInfo,

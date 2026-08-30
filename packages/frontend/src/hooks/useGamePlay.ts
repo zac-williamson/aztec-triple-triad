@@ -102,7 +102,15 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
   const myCardCommit = myHandProof?.cardCommit ?? null;
   const opponentCardCommit = opponentHandProof?.cardCommit ?? null;
   const cardIdsRef = useRef<number[]>([]);
-  const canSettle = myHandProof !== null && opponentHandProof !== null && collectedMoveProofs.length >= TOTAL_MOVES;
+  // The opponent's blinding factor is part of what settlement needs, not an
+  // extra: the contract proves the card ids it mints against BOTH commitments,
+  // and it arrives at game over like the last move proof does. Leaving it out
+  // of this gate meant settlement fired the moment the proofs were in and
+  // failed on a message that was still in flight.
+  const canSettle = myHandProof !== null
+    && opponentHandProof !== null
+    && collectedMoveProofs.length >= TOTAL_MOVES
+    && ws.opponentBlinding !== null;
 
   // Ref to always access latest move proofs (avoids stale closure in settlement)
   const moveProofsRef = useRef(collectedMoveProofs);
