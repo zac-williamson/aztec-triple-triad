@@ -44,6 +44,7 @@ pub contract TripleTriadGame {
         protocol::{
             address::AztecAddress,
             hash::poseidon2_hash,
+            traits::ToField,
         },
         state_vars::{Map, PublicImmutable, PublicMutable},
     };
@@ -107,6 +108,9 @@ pub contract TripleTriadGame {
         game_status: Map<Field, PublicMutable<Field, Context>, Context>,
         game_player1: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
         game_player2: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
+        /// Per-(game, player) recovery flag for abandoned games, keyed by
+        /// poseidon2([game_id, player]). Each side recovers its own stake.
+        game_recovered: Map<Field, PublicMutable<bool, Context>, Context>,
         game_card_commit_1: Map<Field, PublicMutable<Field, Context>, Context>,
         game_card_commit_2: Map<Field, PublicMutable<Field, Context>, Context>,
         game_player_state_1: Map<Field, PublicMutable<Field, Context>, Context>,
@@ -454,22 +458,38 @@ pub contract TripleTriadGame {
     /// Settle an abandoned game after the dispute window has elapsed.
     ///
     /// The claiming player gets their 5 cards back privately.
-    /// If they specify a claimed_card_id (nonzero), they also get one opponent card
-    /// and the opponent gets 4 cards to public ownership.
-    /// If claimed_card_id is 0, the opponent gets all 5 cards to public ownership.
+    /// Recovers ONLY the caller's own five cards, proving they are the ones it
+    /// committed. Each side recovers independently, whenever it returns; nobody
+    /// wins a card because an opponent disconnected.
     #[external("private")]
     fn settle_abandoned_game(
         game_id: Field,
         caller_card_ids: [Field; 5],
         caller_randomness: [Field; 6],
-        opponent_card_ids: [Field; 5],
-        claimed_card_id: Field,
-        opponent: AztecAddress,
+        caller_blinding: Field,
     ) {
         let caller = self.msg_sender();
         let nft_address = self.storage.nft_contract.read();
 
-        // Re-mint caller's 5 cards privately
+        // Recover ONLY the caller's own stake.
+        //
+        // This used to also mint the opponent's cards back and let the claimant
+        // take one of them, all from an `opponent_card_ids` list the claimant
+        // supplied and nothing verified. Two ways that paid: name any card as
+        // `claimed_card_id` and have it minted to yourself, or name a third
+        // party's publicly-owned ids and have `set_public_owner` reassign them
+        // to a confederate.
+        //
+        // The absent player's ids cannot be verified — the binding needs their
+        // blinding factor, and by definition they are not here to reveal it. So
+        // the honest shape is the one this function now has: each player
+        // recovers their own stake, whenever they come back, proving their own
+        // cards. Nobody wins a card because an opponent's tab crashed.
+        let caller_cards_commit = poseidon2_hash([
+            caller_card_ids[0], caller_card_ids[1], caller_card_ids[2],
+            caller_card_ids[3], caller_card_ids[4], caller_blinding,
+        ]);
+
         let mut caller_rand_5: [Field; 5] = [0; 5];
         for i in 0..5 { caller_rand_5[i] = caller_randomness[i]; }
 
@@ -477,52 +497,9 @@ pub contract TripleTriadGame {
             .mint_for_game_draw_offchain(caller_card_ids, caller, caller_rand_5)
             .call(self.context);
 
-        if claimed_card_id != 0 {
-            // Validate claimed card is in opponent's hand
-            let mut card_found = false;
-            for i in 0..5 {
-                if opponent_card_ids[i] == claimed_card_id {
-                    card_found = true;
-                }
-            }
-            assert(card_found, "Claimed card not in opponent's hand");
-
-            // Mint claimed card privately to caller
-            TripleTriadNFT::at(nft_address)
-                .mint_single_card_private(claimed_card_id, caller, caller_randomness[5])
-                .call(self.context);
-
-            // Build opponent's remaining 4 cards (minus claimed one)
-            let mut opp_return: [Field; 4] = [0; 4];
-            let mut idx: u32 = 0;
-            let mut removed = false;
-            for i in 0..5 {
-                if (opponent_card_ids[i] == claimed_card_id) & (!removed) {
-                    removed = true;
-                } else {
-                    opp_return[idx] = opponent_card_ids[i];
-                    idx += 1;
-                }
-            }
-
-            // Mint opponent's remaining cards to public ownership
-            TripleTriadNFT::at(nft_address)
-                .mint_to_public_batch_4(opp_return, opponent)
-                .call(self.context);
-
-            // Reward only the claiming player (opponent abandoned)
-            let token_addr = self.storage.token_contract.read();
-            ArenaToken::at(token_addr).mint_private(caller, 20).call(self.context);
-        } else {
-            // No card claim -- return all opponent cards to public ownership
-            TripleTriadNFT::at(nft_address)
-                .mint_to_public_batch_5(opponent_card_ids, opponent)
-                .call(self.context);
-        }
-
         let caller_state_hash = poseidon2_hash(caller_randomness);
         self.enqueue_self.settle_abandoned_game_public(
-            game_id, caller, opponent, claimed_card_id, caller_state_hash,
+            game_id, caller, caller_state_hash, caller_cards_commit,
         );
     }
 
@@ -530,41 +507,63 @@ pub contract TripleTriadGame {
     #[only_self]
     fn settle_abandoned_game_public(
         game_id: Field,
-        claimant: AztecAddress,
-        opponent: AztecAddress,
-        claimed_card_id: Field,
+        recoverer: AztecAddress,
         caller_state_hash: Field,
+        caller_cards_commit: Field,
     ) {
         let status = self.storage.game_status.at(game_id).read();
         assert(status == 5, "Game must be in abandoned_claimed state");
 
-        let stored_claimant = self.storage.game_claim_player.at(game_id).read();
-        assert(claimant == stored_claimant, "Only the claimant can settle an abandoned game");
+        // Recovery is now PER PLAYER, not once per game. The old version let the
+        // claimant settle for everybody and then marked the game done — which
+        // meant the absent player, if they ever came back, had no route to their
+        // own five cards. Each side recovers its own stake, whenever it returns.
+        let key = poseidon2_hash([game_id, recoverer.to_field()]);
+        assert(!self.storage.game_recovered.at(key).read(), "Already recovered for this player");
 
-        // Check dispute window: at least 5 blocks (~60 seconds)
+        // The dispute window is measured from the claim for everyone. A player
+        // returning later has long since passed it; the claimant must wait it out.
         let claim_block = self.storage.game_claim_block.at(game_id).read() as u32;
         let current_block = self.context.block_number() as u32;
         assert(current_block - claim_block >= 5, "Dispute window not elapsed (wait ~1 minute)");
 
-        let settled = self.storage.game_settled.at(game_id).read();
-        assert(!settled, "Game already settled");
-
-        // Verify claimant is a player and opponent matches
+        // Verify the recoverer is a player, and that BOTH the randomness they
+        // used to re-mint and the card ids they minted are the ones their side
+        // committed.
         let p1 = self.storage.game_player1.at(game_id).read();
         let p2 = self.storage.game_player2.at(game_id).read();
-        if claimant == p1 {
-            assert(opponent == p2, "Opponent address mismatch");
-            assert(caller_state_hash == self.storage.game_player_state_1.at(game_id).read(), "Player state hash mismatch");
+        if recoverer == p1 {
+            assert(
+                caller_state_hash == self.storage.game_player_state_1.at(game_id).read(),
+                "Player state hash mismatch",
+            );
+            assert(
+                caller_cards_commit == self.storage.game_card_commit_1.at(game_id).read(),
+                "Card ids do not match this player's commitment",
+            );
         } else {
-            assert(claimant == p2, "Claimant must be a player");
-            assert(opponent == p1, "Opponent address mismatch");
-            assert(caller_state_hash == self.storage.game_player_state_2.at(game_id).read(), "Player state hash mismatch");
+            assert(recoverer == p2, "Recoverer must be a player in this game");
+            assert(
+                caller_state_hash == self.storage.game_player_state_2.at(game_id).read(),
+                "Player state hash mismatch",
+            );
+            assert(
+                caller_cards_commit == self.storage.game_card_commit_2.at(game_id).read(),
+                "Card ids do not match this player's commitment",
+            );
         }
 
-        self.storage.game_settled.at(game_id).write(true);
-        self.storage.game_status.at(game_id).write(3); // settled
+        self.storage.game_recovered.at(key).write(true);
 
-        self.emit(AbandonedGameSettled { game_id, claimant, claimed_card_id });
+        // The game is finished only once BOTH sides have their cards back.
+        let other = if recoverer == p1 { p2 } else { p1 };
+        let other_key = poseidon2_hash([game_id, other.to_field()]);
+        if self.storage.game_recovered.at(other_key).read() {
+            self.storage.game_settled.at(game_id).write(true);
+            self.storage.game_status.at(game_id).write(3); // settled
+        }
+
+        self.emit(AbandonedGameSettled { game_id, claimant: recoverer, claimed_card_id: 0 });
     }
 
     // --- Process Game ---
@@ -623,6 +622,13 @@ pub contract TripleTriadGame {
         // These are constrained via player_state_hash stored on-chain
         caller_randomness: [Field; 6],    // 6 for winner, first 5 for draw
         opponent_randomness: [Field; 6],   // 6 values (committed via player_state_hash)
+        // Blinding factors, revealed at settlement so the contract can check
+        // that the card ids it is about to MINT are the ones each player
+        // actually committed. Secret during play (each is derived from a
+        // player's nhk_app_secret) and harmless afterwards — hands are public
+        // at settlement anyway, and a factor is scoped to one game.
+        caller_blinding: Field,
+        opponent_blinding: Field,
     ) {
         // Read stored VK hashes
         let stored_hand_vk_hash = self.storage.hand_vk_hash.read();
@@ -700,6 +706,26 @@ pub contract TripleTriadGame {
         let caller_state_hash = poseidon2_hash(caller_randomness);
         let opponent_state_hash = poseidon2_hash(opponent_randomness);
 
+        // ===== 9b. Bind the card ids to what was committed =====
+        // WITHOUT this, caller_card_ids and opponent_card_ids are simply
+        // believed, and every one of them is minted below. A winner could name
+        // the five strongest cards in the database instead of the five they
+        // wagered — every game, unbounded. The hand proofs bind a card_commit
+        // and the contract binds that commit to what was stored at create/join,
+        // but nothing tied the ids being minted back to it.
+        //
+        // Recomputes exactly what TripleTriadNFT.commit_five_nfts_* hashed:
+        //   card_commit = poseidon2([card_ids[0..5], blinding])
+        // and the public half asserts these against the stored commitments.
+        let caller_cards_commit = poseidon2_hash([
+            caller_card_ids[0], caller_card_ids[1], caller_card_ids[2],
+            caller_card_ids[3], caller_card_ids[4], caller_blinding,
+        ]);
+        let opponent_cards_commit = poseidon2_hash([
+            opponent_card_ids[0], opponent_card_ids[1], opponent_card_ids[2],
+            opponent_card_ids[3], opponent_card_ids[4], opponent_blinding,
+        ]);
+
         // ===== 10. Settlement =====
         let caller = self.msg_sender();
         let nft_address = self.storage.nft_contract.read();
@@ -763,6 +789,7 @@ pub contract TripleTriadGame {
                 card_commit_1, card_commit_2, winner_id,
                 caller_state_hash, opponent_state_hash,
                 opponent_state_from_p1_proof, opponent_state_from_p2_proof,
+                caller_cards_commit, opponent_cards_commit,
             );
         } else {
             // Draw -- use offchain mint (no tagging)
@@ -795,6 +822,7 @@ pub contract TripleTriadGame {
                 game_id, card_commit_1, card_commit_2,
                 caller_state_hash, opponent_state_hash,
                 opponent_state_from_p1_proof, opponent_state_from_p2_proof,
+                caller_cards_commit, opponent_cards_commit,
             );
         }
     }
@@ -816,6 +844,8 @@ pub contract TripleTriadGame {
         opponent_state_hash: Field,
         opponent_state_from_p1_proof: Field,
         opponent_state_from_p2_proof: Field,
+        caller_cards_commit: Field,
+        opponent_cards_commit: Field,
     ) {
         let settled = self.storage.game_settled.at(game_id).read();
         assert(!settled, "Game already settled");
@@ -827,6 +857,18 @@ pub contract TripleTriadGame {
         assert(stored_cc2 != 0, "Game card_commit_2 not set");
         assert(proof_card_commit_1 == stored_cc1, "card_commit_1 mismatch");
         assert(proof_card_commit_2 == stored_cc2, "card_commit_2 mismatch");
+
+        // The CARD IDS being minted must hash to those same commitments. Without
+        // this the ids are merely asserted by the caller, and a winner can name
+        // any cards they like. The caller is the winner, so winner_id says which
+        // side they are.
+        if winner_id == 1 {
+            assert(caller_cards_commit == stored_cc1, "Caller card ids do not match their commitment");
+            assert(opponent_cards_commit == stored_cc2, "Opponent card ids do not match their commitment");
+        } else {
+            assert(caller_cards_commit == stored_cc2, "Caller card ids do not match their commitment");
+            assert(opponent_cards_commit == stored_cc1, "Opponent card ids do not match their commitment");
+        }
 
         // Verify player_state_hash values match on-chain records
         let stored_ps1 = self.storage.game_player_state_1.at(game_id).read();
@@ -878,6 +920,8 @@ pub contract TripleTriadGame {
         opponent_state_hash: Field,
         opponent_state_from_p1_proof: Field,
         opponent_state_from_p2_proof: Field,
+        caller_cards_commit: Field,
+        opponent_cards_commit: Field,
     ) {
         let settled = self.storage.game_settled.at(game_id).read();
         assert(!settled, "Game already settled");
@@ -888,6 +932,15 @@ pub contract TripleTriadGame {
         assert(stored_cc2 != 0, "Game card_commit_2 not set");
         assert(proof_card_commit_1 == stored_cc1, "card_commit_1 mismatch");
         assert(proof_card_commit_2 == stored_cc2, "card_commit_2 mismatch");
+
+        // Same binding as settle_game. A draw may be settled by EITHER player,
+        // so the pair must match the stored commitments in one order or the
+        // other — the same shape as the state-hash check below.
+        assert(
+            ((caller_cards_commit == stored_cc1) & (opponent_cards_commit == stored_cc2))
+            | ((caller_cards_commit == stored_cc2) & (opponent_cards_commit == stored_cc1)),
+            "Card ids do not match the commitments in a draw",
+        );
 
         // Verify player_state_hash values match on-chain records
         let stored_ps1 = self.storage.game_player_state_1.at(game_id).read();
