@@ -63,6 +63,15 @@ asserts `!nft_exists` against a **contract-wide** map. Proven by a real mint fai
   `get_cards_for_new_player` / `create_and_push_note`, which never touch
   `nft_exists`. Only the `mint_to_*` path registers ids.
 
+**a-bis) The "globally unique token_id" constraint was removed (2026-08-29).**
+Everything above about disjoint slices and a shared 257-card budget was true of
+the contract as it stood, and is no longer. `mint_bot_cards` skips the
+one-NFT-per-id rule for the arena bot's registered addresses only, so the bot
+holds many cards of a few weak types, its stock is unbounded, and it does not
+compete with players for ids. Provisioning needs no offsets. The bot's notes are
+untagged (the tagged path caps at ~84 per finalisation window) and are imported
+by the bot from its manifest.
+
 **b) "One game at a time" makes the queue worse, not better.**
 The stated goal is to avoid long queue waits. But if the bot plays one game at a
 time and a bot game takes ~10 minutes (measured: our campaign games are 10.1/10.2/9.9
@@ -285,10 +294,11 @@ remaining provisioned accounts, and must not happen while nobody is watching.
   sandbox by port — `kill -9 $(lsof -tiTCP:8080 -sTCP:LISTEN)` — and verify the
   port is free before starting another.** No Aztec defect involved; the two early
   successes were simply the first, un-stale instance.
-- Still open: **phase 6 (testnet)**, which needs a deliberate, watched redeploy
-  and a provisioning budget decision — the bot's cards come out of the same
-  257-id global space as players'. Phases 1-5 are done and verified on a
-  sandbox.
+- **Phase 6 (testnet) is done**: contracts deployed, bot provisioned, full games
+  settling on-chain in both directions. Production is NOT repointed —
+  `deploy-testnet` writes the local `.env`/`.env.testnet` only. Switching the
+  live site to the new contracts orphans every card players currently hold, so
+  that step is deliberate and separate (`sync-vercel-env`).
 
 - 2026-08-29 (later): **a full chain game SETTLES, in both directions.** Three
   defects stood between the previous entry and this one, and all three were
@@ -388,6 +398,29 @@ remaining provisioned accounts, and must not happen while nobody is watching.
   `commit_five_nfts_join` cannot then find. `selectHand`'s lowest-five choice has
   worked in every chain run so far, but it trusts that same reader, so this is a
   live risk to commit reliability and not merely a testing inconvenience.
+
+- 2026-08-29 (contracts + TESTNET): three contract changes, then a green run on
+  the live testnet.
+  1. **`with_filter` could not find cards a player owned.** `commit_five_nfts_*`
+     capped the oracle at 16 notes and filtered CLIENT-SIDE, so ANY owner holding
+     more than 16 cards could fail to commit a legitimate hand — silently, more
+     likely the more cards they own. This was a live player-facing bug, not only
+     a bot one. `pop_cards_by_id` selects per card in the oracle instead.
+  2. **The bot may hold duplicates**, via a mint restricted to write-once
+     arena-bot slots. Verified with a **1000-card** stock: minted, imported,
+     1000 spendable, and a hand committed out of it — which the old code could
+     not have done at all.
+  3. **A game abandoned before any move can be claimed** (`n >= 1` removed, and
+     the claim's hand proofs now bound to the on-chain commitments, which is what
+     makes a zero-move claim safe).
+  Two limits found the hard way, both environmental rather than ours: tagged
+  delivery caps at ~84 notes per finalisation window (hence untagged mints plus
+  an import step), and the public testnet RPC rate-limits hard enough to fail a
+  join (hence backoff and pacing).
+  **Verified on testnet:** new contracts deployed with 4 bot slots, bot
+  provisioned and imported, a full game — match, create, join, 2 hand proofs, 9
+  move proofs, recursive settlement — reaching `get_game_status == 3`, in both
+  directions (opponent settles; **bot wins and settles itself**).
 
 **Operational note from testing, now measured.** Every incomplete game strands
 its five committed cards. After a session of debugging, each identity showed

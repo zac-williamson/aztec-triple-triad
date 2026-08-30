@@ -30,7 +30,7 @@ ARENA_BOT_TOKEN=<same as the backend's> npm run dev -w packages/bot
 first:
 
 ```bash
-npx tsx scripts/provision-arena-bot.ts --index 0 --cards 40 --offset 0
+npx tsx scripts/provision-arena-bot.ts --index 0 --cards 1000
 
 set -a; . packages/frontend/.env; set +a          # contract addresses
 ARENA_BOT_TOKEN=... ARENA_BOT_CHAIN=1 \
@@ -64,8 +64,8 @@ hand, and the server hides it. `greedy` is beatable but not random.
 ## Running a pool
 
 ```bash
-npx tsx scripts/provision-arena-bot.ts --index 0 --cards 30 --offset 0
-npx tsx scripts/provision-arena-bot.ts --index 1 --cards 30 --offset 30   # DISJOINT
+npx tsx scripts/provision-arena-bot.ts --index 0 --cards 1000
+npx tsx scripts/provision-arena-bot.ts --index 1 --cards 1000   # no offsets needed
 ARENA_BOT_POOL_SIZE=2 ARENA_BOT_CHAIN=1 npm run pool -w packages/bot
 ```
 
@@ -109,12 +109,22 @@ Two endpoints, and they answer different questions:
 - **One identity per PROCESS.** `pxe.ts` binds the wallet in a module-level
   global, so two identities in one process silently share the last-connected
   wallet. `BotChain` throws rather than let them merge. A pool is N processes.
-- **`token_id`s are globally unique.** The whole pool draws from ONE 257-card
-  budget, so every identity needs a disjoint `--offset` slice.
-- **The collection is a LOSS BUDGET.** Every player who beats the bot
-  permanently takes a card. It does not re-mint on its own — deliberately: a
-  silently-refilling bot is an unbounded card faucet and is hard to walk back.
-  Watch `cardsRecovered` and the spendable count.
+- **The bot may hold DUPLICATE cards; players may not.** `mint_bot_cards` is the
+  only mint that skips the one-NFT-per-`token_id` rule, and it is restricted to
+  the addresses registered in the NFT's write-once arena-bot slots. So the bot's
+  stock is not capped by the 256-card database and does not compete with players
+  for ids. Provision as many as you like: `--cards 1000`.
+- **The stock is WEAK on purpose.** It is drawn from the twelve lowest-ranked
+  types, because every player who beats the bot permanently takes one of them —
+  the collection is a payout schedule as much as a wager. It does not re-mint on
+  its own: a silently-refilling bot is an unbounded card faucet.
+- **Its notes are UNTAGGED, so the bot must import them.** Tagged delivery
+  consumes a tagging index per note and caps at ~84 per finalisation window,
+  which a deep stock blows straight through. The manifest therefore carries each
+  note's plaintext and `BotChain` imports on connect — once, cached beside the
+  manifest. On a rate-limited public node that first import is the burstiest
+  thing the bot ever does; it retries 429s with backoff and resumes where it
+  left off.
 - **Committed cards vanish until the game settles.** So "spendable" is legitimately
   lower than "owned" while a game is in flight. Because the bot is always the
   joiner it cannot cancel a stuck game — cancel is creator-only — so its five
