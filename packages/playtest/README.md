@@ -27,6 +27,32 @@ fresh backend rooms) only holds on the FIRST run against a stack. Re-running a
 campaign against a used stack fails its baseline assertions by design — boot a
 fresh stack for acceptance runs.
 
+## Run the new-player onboarding acceptance test
+
+Proves the claim the rest of the harness deliberately skips: that somebody
+holding **only an Ethereum account with testnet ETH** can reach a settled game.
+Every other spec seeds a pre-provisioned, already-funded account from the pool
+(`seed`), which is the fastest way to test gameplay and the surest way never to
+test onboarding.
+
+```bash
+PLAYTEST_TESTNET=1 \
+PLAYTEST_PXE_URL=https://v5.testnet.rpc.aztec-labs.com \
+PLAYTEST_BACKEND_URL=https://ws.aztec-arena.com \
+npx playwright test new-user-onboarding --config packages/playtest/playwright.config.ts
+```
+
+It generates a throwaway Sepolia key, funds it from the treasury
+(`~/.aztec-triad-private/treasury-l1-key.txt`), installs it as `window.ethereum`
+via `src/walletShim.ts`, and then touches nothing else: the browser buys the fee
+asset, bridges it, deploys its Aztec account claiming the bridged Fee Juice,
+mints starter cards, queues on the **live** relay, plays the deployed bot, and
+settles. Leftover ETH goes back to the treasury at the end.
+
+Only the wallet UI is simulated — the key, chain, contracts and money are real,
+which is the point. This is what caught the `DepositToAztecPublic` ABI bug that
+every mocked unit test agreed was fine.
+
 ## Architecture
 
 | Piece | File | Role |

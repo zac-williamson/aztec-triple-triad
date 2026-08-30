@@ -34,6 +34,8 @@ function snapshotPhase(): PhaseSnapshot | null {
     seq,
     screen: game.screen,
     aztecStatus: aztec.status,
+    fundingProgress: aztec.fundingProgress ?? null,
+    aztecError: aztec.error ?? null,
     accountAddress: aztec.accountAddress,
     ownedCardIds: [...aztec.ownedCardIds],
     tokenBalance: aztec.tokenBalance,

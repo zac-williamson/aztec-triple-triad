@@ -21,6 +21,16 @@ export interface PhaseSnapshot {
   seq: number;
   screen: string;
   aztecStatus: string;
+  /** Non-null while wallet funding is in flight; the current step's text. */
+  fundingProgress: string | null;
+  /**
+   * The connection error the app is showing, if any.
+   *
+   * Onboarding failures deliberately leave `aztecStatus` alone so the player
+   * keeps their retry, which means the status cannot tell a harness that
+   * anything went wrong — only this can.
+   */
+  aztecError: string | null;
   accountAddress: string | null;
   ownedCardIds: number[];
   tokenBalance: number;

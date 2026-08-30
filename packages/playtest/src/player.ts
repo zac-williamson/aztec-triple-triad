@@ -185,6 +185,16 @@ function claimPlaytestAccount(): Record<string, string> {
   };
 }
 
+/** Per-player launch overrides. Defaults preserve the campaign's behaviour. */
+export interface LaunchOptions {
+  /** localStorage seed; `null` means "a new player", bypassing the account pool. */
+  seed?: Record<string, string> | null;
+  /** Runs after init scripts, before navigation. */
+  beforeNavigate?: (page: Page) => Promise<void>;
+  /** Dismiss the tutorial during boot (default true). */
+  skipTutorial?: boolean;
+}
+
 export class PlayerDriver {
   private consoleLog: WriteStream | null = null;
 
@@ -208,7 +218,7 @@ export class PlayerDriver {
   }
 
   /** Launch an ISOLATED Chromium process for this player and boot it. */
-  static async launch(name: string, logsDir: string): Promise<PlayerDriver> {
+  static async launch(name: string, logsDir: string, opts?: LaunchOptions): Promise<PlayerDriver> {
     // Diff the Chromium group-leaders across the launch to learn the new
     // browser's pid (the client Browser exposes none). Serial single-worker
     // launches make the diff unambiguous. Register it so a SIGKILLed worker
@@ -224,13 +234,22 @@ export class PlayerDriver {
     // TESTNET: claim a pre-funded, pre-deployed account from the provisioned pool
     // and seed it into localStorage so onboarding restores it (no app faucet).
     // Local sandbox keeps the auto-fund path (seed stays undefined).
-    const seed = TESTNET ? claimPlaytestAccount() : undefined;
-    await driver.boot(logsDir, seed);
+    // `seed: null` is how a caller says "a genuinely new player" — the pool
+    // exists to SKIP onboarding, which is exactly what an onboarding test must
+    // not do. `undefined` keeps the default (pool on testnet, faucet locally).
+    const seed = opts?.seed !== undefined
+      ? (opts.seed ?? undefined)
+      : (TESTNET ? claimPlaytestAccount() : undefined);
+    await driver.boot(logsDir, seed, opts);
     return driver;
   }
 
   /** Navigate, capture console/page errors to the artifacts dir, skip the tutorial. */
-  async boot(logsDir: string, localStorageSeed?: Record<string, string>): Promise<void> {
+  async boot(
+    logsDir: string,
+    localStorageSeed?: Record<string, string>,
+    opts?: LaunchOptions,
+  ): Promise<void> {
     this.consoleLog = createWriteStream(resolve(logsDir, `browser-${this.name}.log`));
     this.page.on('console', msg =>
       this.consoleLog!.write(`[${new Date().toISOString()}] [${msg.type()}] ${msg.text()}\n`));
@@ -287,6 +306,10 @@ export class PlayerDriver {
         for (const k in entries) localStorage.setItem(k, entries[k]);
       }, localStorageSeed);
     }
+    // Last chance to install anything that must exist before app JS — the
+    // injected wallet provider, for one: the app reads window.ethereum on the
+    // click, and a provider added after navigation would race it.
+    if (opts?.beforeNavigate) await opts.beforeNavigate(this.page);
     await this.page.goto(FRONTEND_URL);
     await this.page.waitForFunction(() => !!window.__triadTest, undefined, {
       timeout: TIMEOUTS.install, polling: POLL_MS,
@@ -301,10 +324,19 @@ export class PlayerDriver {
     // transition) — then skip to reach the menu. Keeping the click (rather than
     // seeding tutorial_seen=true) also exercises and asserts the new
     // parallel-onboarding path: if the prompt never appears, boot fails loud.
+    // A player who starts at 'needs-funding' is not offered the tutorial yet
+    // (App.tsx suppresses it for that status), so a boot-time wait would hang
+    // until the funding it is blocking on completes. Those flows skip it
+    // themselves once funded, via skipTutorial().
+    if (opts?.skipTutorial !== false) await this.skipTutorial();
+    this.startWatchdog();
+  }
+
+  /** Dismiss the Xochitl tutorial prompt. Fails loud if it never appears. */
+  async skipTutorial(): Promise<void> {
     const tutorialSkip = this.page.getByTestId('tutorial-skip');
     await tutorialSkip.waitFor({ state: 'visible', timeout: TIMEOUTS.wsConnect });
     await tutorialSkip.click();
-    this.startWatchdog();
   }
 
   /** Read the in-page WebGL context counters (bounded; null if unreadable). */
@@ -454,6 +486,66 @@ export class PlayerDriver {
       `${this.name}: timed out waiting for "aztec connected with starter cards" after ${TIMEOUTS.onboarding / 1000}s\n` +
       `last phase: ${JSON.stringify(last, null, 2)}`,
     );
+  }
+
+  /**
+   * The new-player path: pay for Fee Juice from the injected wallet, then wait
+   * out onboarding.
+   *
+   * Distinct from waitConnected, which treats 'needs-funding' as terminal —
+   * here it is the STARTING state, and the account stays in it for the whole
+   * bridge (three L1 transactions plus the L1->L2 message). What must not
+   * happen is sitting in it with nothing in flight, so a null fundingProgress
+   * while still unfunded is the failure this watches for.
+   */
+  async fundFromWallet(opts: { timeout?: number; log?: (m: string) => void } = {}): Promise<PhaseSnapshot> {
+    const log = opts.log ?? (() => {});
+    const timeout = opts.timeout ?? TIMEOUTS.onboarding;
+    await this.page.getByTestId('fund-with-wallet').click();
+
+    const deadline = Date.now() + timeout;
+    let lastProgress: string | null = null;
+    let idleSince: number | null = null;
+    while (Date.now() < deadline) {
+      if (this.deadReason) throw new Error(`${this.name}: PAGE DEAD during funding — ${this.deadReason}`);
+      const p = await this.phase().catch(() => null);
+      if (p) {
+        if (p.fundingProgress && p.fundingProgress !== lastProgress) {
+          lastProgress = p.fundingProgress;
+          log(`funding: ${p.fundingProgress}`);
+        }
+        // Funding errors leave the status at 'needs-funding' on purpose (the
+        // player keeps their retry), so the error field is the only signal.
+        if (p.aztecError) {
+          throw new Error(`${this.name}: funding failed — ${p.aztecError}`);
+        }
+        if (p.aztecStatus === 'error') {
+          throw new Error(`${this.name}: funding failed — ${await this.errorText()}`);
+        }
+        if (p.aztecStatus === 'connected' && p.ownedCardIds.length >= 5 && p.ws.connected) return p;
+        // Nothing in flight and still not funded: the click was swallowed.
+        if (p.aztecStatus === 'needs-funding' && !p.fundingProgress) {
+          idleSince ??= Date.now();
+          if (Date.now() - idleSince > 60_000) {
+            throw new Error(`${this.name}: still at 'needs-funding' with no funding in flight 60s after ` +
+              `clicking Fund with My Wallet — the click did not start anything.`);
+          }
+        } else {
+          idleSince = null;
+        }
+      }
+      await this.page.waitForTimeout(POLL_MS).catch(() => {});
+    }
+    throw new Error(`${this.name}: wallet funding did not complete within ${timeout / 1000}s ` +
+      `(last step: ${lastProgress ?? 'none'})`);
+  }
+
+  /** Whatever the app is currently showing as an error, for failure messages. */
+  private async errorText(): Promise<string> {
+    return this.page.evaluate(() => {
+      const el = document.querySelector('[role="alert"], .parchment-dialog__error');
+      return el?.textContent?.trim() || 'no error text on screen';
+    }).catch(() => 'unreadable');
   }
 
   /**
