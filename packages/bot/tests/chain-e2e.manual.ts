@@ -31,6 +31,16 @@ import { BotProofs } from '../src/BotProofs.js';
 import { configFromEnv } from '../src/config.js';
 
 const PORT = 5399;
+/**
+ * Point the scripted player at an EXTERNAL relay — the live one — instead of a
+ * relay this process starts. With it set, no local relay and no local bot are
+ * created: the opponent is whatever arena bot is actually deployed. This is the
+ * only check that covers the wiring BETWEEN deployed pieces (the bot's token
+ * matching the relay's, the relay carrying SHARE_BLINDING, the bot holding
+ * cards for the contracts the frontend is pointed at), which no amount of local
+ * testing can.
+ */
+const EXTERNAL_RELAY = process.env.E2E_EXTERNAL_RELAY ?? null;
 const PXE_URL = process.env.AZTEC_PXE_URL ?? 'http://localhost:8080';
 const log = (who: string, m: string) => console.log(`[${who}] ${m}`);
 const OPPONENT_DIFFICULTY = (process.env.E2E_OPPONENT_DIFFICULTY ?? 'greedy') as 'random' | 'greedy' | 'lookahead';
@@ -99,10 +109,15 @@ class ScriptedOpponent {
 
   constructor(private chain: BotChain, private proofs: BotProofs) {}
 
-  async run(): Promise<void> {
+  /** Set once MATCH_FOUND lands, so a production run can assert it played the BOT. */
+  opponentWasBot: boolean | null = null;
+  /** The on-chain id, for reading the settled status afterwards. */
+  get onChainGameIdPublic(): string | null { return this.onChainGameId; }
+
+  async run(relayUrl?: string): Promise<void> {
     this.hand = FORCED_OPP_HAND ?? await this.chain.selectHand(5);
     log('opponent', `hand ${this.hand.join(',')}`);
-    this.ws = new WebSocket(`ws://localhost:${PORT}`);
+    this.ws = new WebSocket(relayUrl ?? `ws://localhost:${PORT}`);
     await new Promise<void>(r => this.ws.once('open', () => r()));
     this.ws.on('message', raw => void this.handle(JSON.parse(raw.toString())).catch(e =>
       log('opponent', `ERROR ${e?.message ?? e}`)));
@@ -119,6 +134,7 @@ class ScriptedOpponent {
       case 'MATCH_FOUND': {
         this.gameId = msg.gameId;
         this.me = msg.playerNumber === 1 ? 'player1' : 'player2';
+        this.opponentWasBot = msg.opponentIsBot ?? null;
         log('opponent', `matched as ${this.me} (opponentIsBot=${msg.opponentIsBot})`);
         if (this.me === 'player1') await this.createOnChain();
         this.move(msg.gameState);
@@ -359,6 +375,17 @@ class ScriptedOpponent {
   close() { this.ws?.close(); }
 }
 
+/** A chain for the production run, independent of the local stack's mk(). */
+function mkExternal(index: number, addresses: { nft: string; game: string; token?: string }): BotChain {
+  return new BotChain({
+    pxeUrl: PXE_URL,
+    nftAddress: addresses.nft,
+    gameAddress: addresses.game,
+    tokenAddress: addresses.token,
+    manifestPath: `${process.env.ARENA_BOT_ARTIFACTS_DIR ?? 'packages/bot/.artifacts'}/arena-bot-${index}.json`,
+  }, m => log(`chain${index}`, m));
+}
+
 const ROLE = process.argv.includes('--role=opponent') ? 'opponent' : 'bot';
 
 async function main(): Promise<void> {
@@ -369,6 +396,36 @@ async function main(): Promise<void> {
     token: process.env.VITE_TOKEN_CONTRACT_ADDRESS,
   };
   if (!addresses.nft || !addresses.game) throw new Error('source packages/frontend/.env first');
+
+  // Production mode: drive the LIVE relay and let the DEPLOYED bot be the
+  // opponent. Everything else here builds a local stack, which is the wrong
+  // thing to test once the pieces are actually deployed.
+  if (EXTERNAL_RELAY) {
+    const oppChain = mkExternal(Number(process.env.E2E_PLAYER_INDEX ?? '1'), addresses);
+    await oppChain.connect();
+    const player = new ScriptedOpponent(oppChain, new BotProofs(m => log('player:proofs', m)));
+    await player.run(EXTERNAL_RELAY);
+
+    const deadline = Date.now() + 30 * 60_000;
+    while (Date.now() < deadline && !player.over) await new Promise(r => setTimeout(r, 2_000));
+    const flushBy = Date.now() + 180_000;
+    while (Date.now() < flushBy && !player.transcriptFlushed) await new Promise(r => setTimeout(r, 1_000));
+    // The bot settles when it wins; give that time to land.
+    await new Promise(r => setTimeout(r, 120_000));
+
+    const status = player.onChainGameIdPublic
+      ? Number(await oppChain.pxe.readGameStatus(oppChain.address, player.onChainGameIdPublic))
+      : 0;
+    console.log('\n=== PRODUCTION GAME ===');
+    console.log('  opponent was the bot :', player.opponentWasBot === true ? 'yes' : `NO (${player.opponentWasBot})`);
+    console.log('  result               :', player.over ?? 'TIMED OUT');
+    console.log('  on-chain status      :', status, status === 3 ? '(SETTLED)' : '');
+    const ok = player.opponentWasBot === true && player.over !== null && status === 3;
+    console.log(ok
+      ? '\n  ✓ A REAL PLAYER GOT A GAME FROM THE DEPLOYED BOT AND IT SETTLED'
+      : '\n  ✗ production did not serve a complete game — see above');
+    process.exit(ok ? 0 : 1);
+  }
 
   let server: ReturnType<typeof createServer> | null = null;
   if (ROLE === 'bot') {
