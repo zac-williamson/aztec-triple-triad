@@ -76,20 +76,22 @@ export async function createFundedL1Account(
 }
 
 /**
- * Wire a page's `window.ethereum` to a locally-signing wallet.
+ * An EIP-1193 provider backed by a local key — a wallet, minus the UI.
  *
- * The provider object in the page is deliberately thin: it forwards every call
- * to a Playwright binding, so all the real behaviour lives here in Node where a
- * key can be held safely and a failure is legible in the test output.
+ * Shared by the browser shim and by Node-side callers, because production code
+ * asks a WALLET to sign (`eth_sendTransaction` with an address, not a local
+ * account). Handing it a plain RPC transport instead fails with "unknown
+ * account": the RPC holds no keys. This is the piece that does.
  */
-export async function installWallet(page: Page, privateKey: Hex): Promise<void> {
+export function localSignerProvider(privateKey: Hex): {
+  request: (a: { method: string; params?: unknown[] }) => Promise<unknown>;
+} {
   const account = privateKeyToAccount(privateKey);
   const pub = createPublicClient({ chain: sepolia, transport: http(L1_RPC) });
   const wallet = createWalletClient({ account, chain: sepolia, transport: http(L1_RPC) });
 
-  await page.exposeFunction(
-    '__triadWalletRpc',
-    async (method: string, params: unknown[]): Promise<unknown> => {
+  return {
+    request: async ({ method, params = [] }) => {
       switch (method) {
         case 'eth_requestAccounts':
         case 'eth_accounts':
@@ -103,7 +105,7 @@ export async function installWallet(page: Page, privateKey: Hex): Promise<void> 
         case 'wallet_addEthereumChain':
           return null;
         case 'eth_sendTransaction': {
-          const tx = (params?.[0] ?? {}) as { to?: Address; data?: Hex; value?: Hex; from?: Address };
+          const tx = (params[0] ?? {}) as { to?: Address; data?: Hex; value?: Hex; from?: Address };
           if (tx.from && tx.from.toLowerCase() !== account.address.toLowerCase()) {
             throw new Error(`Wallet asked to sign for ${tx.from}, which it does not hold`);
           }
@@ -122,6 +124,22 @@ export async function installWallet(page: Page, privateKey: Hex): Promise<void> 
           return pub.request({ method, params } as never);
       }
     },
+  };
+}
+
+/**
+ * Wire a page's `window.ethereum` to a locally-signing wallet.
+ *
+ * The provider object in the page is deliberately thin: it forwards every call
+ * to a Playwright binding, so all the real behaviour lives here in Node where a
+ * key can be held safely and a failure is legible in the test output.
+ */
+export async function installWallet(page: Page, privateKey: Hex): Promise<void> {
+  const provider = localSignerProvider(privateKey);
+
+  await page.exposeFunction(
+    '__triadWalletRpc',
+    (method: string, params: unknown[]) => provider.request({ method, params }),
   );
 
   await page.addInitScript(() => {

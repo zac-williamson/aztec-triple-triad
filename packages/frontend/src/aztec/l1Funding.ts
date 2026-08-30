@@ -14,8 +14,13 @@
  * Step 1 is the only one that differs between networks, and it is deliberately
  * the ONLY difference: on mainnet the player swaps ETH through a DEX, on a
  * testnet the fee asset is a mock with a free permissionless mint. Steps 2 and 3
- * are byte-identical either way, so testing on a testnet exercises the real
- * mainnet code apart from the swap leg itself.
+ * are byte-identical either way, so a testnet run exercises the real mainnet
+ * code for everything but the swap.
+ *
+ * The swap itself is covered separately, because "the only leg that spends real
+ * money" and "the only leg no deployment exercises" must not be the same leg:
+ * packages/playtest/scripts/swap-leg-live.mts runs swapForFeeAsset against a
+ * real Uniswap V3 pool on Sepolia.
  *
  * We do NOT reuse the SDK's L1FeeJuicePortalManager here: it requires an HTTP
  * transport and a local private-key account (see createExtendedL1Client), and
@@ -208,33 +213,7 @@ export async function fundAccountFromWallet(params: FundAccountParams): Promise<
     }
   } else {
     report('acquire', `Swapping ${formatEther(route.ethIn)} ETH for Fee Juice…`);
-    const before = await pub.readContract({
-      address: feeAsset, abi: ERC20_ABI, functionName: 'balanceOf', args: [account],
-    });
-    const hash = await wallet.sendTransaction({
-      account, chain: null, to: route.router, value: route.ethIn,
-      data: encodeFunctionData({
-        abi: SWAP_ROUTER_ABI,
-        functionName: 'exactInputSingle',
-        args: [{
-          tokenIn: route.weth,
-          tokenOut: feeAsset,
-          fee: route.poolFee,
-          recipient: account,
-          amountIn: route.ethIn,
-          // A zero floor is a free sandwich for anyone watching the mempool. The
-          // caller supplies a quote-derived minimum; we refuse to swap without one.
-          amountOutMinimum: quoteFloor(route),
-          sqrtPriceLimitX96: 0n,
-        }],
-      }),
-    });
-    await mined(pub, hash, 'Fee asset swap');
-    const after = await pub.readContract({
-      address: feeAsset, abi: ERC20_ABI, functionName: 'balanceOf', args: [account],
-    });
-    amount = after - before;
-    if (amount <= 0n) throw new Error('Swap completed but no Fee Juice arrived — check the pool and fee tier.');
+    amount = await swapForFeeAsset({ pub, wallet, account, feeAsset, route });
   }
 
   // ---- 2. Approve the portal ----------------------------------------------
@@ -328,6 +307,58 @@ export async function fundAccountFromWallet(params: FundAccountParams): Promise<
     ),
     { claim },
   );
+}
+
+/**
+ * Buy the fee asset on a DEX and return how much actually arrived.
+ *
+ * Split out of the funding flow so it can be run against a real pool: on a
+ * network whose fee asset is a mock this branch never executes, which would
+ * otherwise leave the one leg that spends real money as the one leg no test
+ * ever runs.
+ *
+ * The amount is measured as a balance delta rather than taken from the router's
+ * return value, because a fee-on-transfer or rebasing token can deliver less
+ * than it reports, and the deposit that follows must bridge what we HAVE.
+ */
+export async function swapForFeeAsset(params: {
+  pub: PublicClient;
+  wallet: WalletClient;
+  account: Address;
+  feeAsset: Address;
+  route: Extract<AcquireRoute, { kind: 'swap' }>;
+}): Promise<bigint> {
+  const { pub, wallet, account, feeAsset, route } = params;
+  const before = await pub.readContract({
+    address: feeAsset, abi: ERC20_ABI, functionName: 'balanceOf', args: [account],
+  });
+  const hash = await wallet.sendTransaction({
+    account, chain: null, to: route.router, value: route.ethIn,
+    data: encodeFunctionData({
+      abi: SWAP_ROUTER_ABI,
+      functionName: 'exactInputSingle',
+      args: [{
+        tokenIn: route.weth,
+        tokenOut: feeAsset,
+        fee: route.poolFee,
+        recipient: account,
+        amountIn: route.ethIn,
+        // A zero floor is a free sandwich for anyone watching the mempool. The
+        // caller supplies a quote-derived minimum; we refuse to swap without one.
+        amountOutMinimum: quoteFloor(route),
+        sqrtPriceLimitX96: 0n,
+      }],
+    }),
+  });
+  await mined(pub, hash, 'Fee asset swap');
+  const after = await pub.readContract({
+    address: feeAsset, abi: ERC20_ABI, functionName: 'balanceOf', args: [account],
+  });
+  const gained = after - before;
+  if (gained <= 0n) {
+    throw new Error('Swap completed but no Fee Juice arrived — check the pool and fee tier.');
+  }
+  return gained;
 }
 
 /**
