@@ -242,8 +242,20 @@ function persistNotes(
   const prior: Partial<BotManifest> = existsSync(p)
     ? JSON.parse(readFileSync(p, 'utf-8'))
     : {};
-  const seen = new Set((prior.notes ?? []).map(n => `${n.tokenId}:${n.randomness}`));
-  const merged = [...(prior.notes ?? []), ...notes.filter(n => !seen.has(`${n.tokenId}:${n.randomness}`))];
+  // Dedupe across BOTH inputs, not just against what is already on disk. This
+  // function is called once per batch with the whole accumulated list, so any
+  // overlap — a retried batch, a re-run, a partially written manifest — would
+  // otherwise double entries. Observed: 1800 records for 1000 notes, which
+  // doubles every import at boot for no benefit. (tokenId, randomness) is the
+  // note's identity; the tx it came from is not part of it.
+  const seen = new Set<string>();
+  const merged: NonNullable<BotManifest['notes']> = [];
+  for (const n of [...(prior.notes ?? []), ...notes]) {
+    const k = `${n.tokenId}:${n.randomness}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    merged.push(n);
+  }
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify({
     ...prior, index, address, ...keys,

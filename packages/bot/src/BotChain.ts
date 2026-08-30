@@ -212,7 +212,16 @@ export class BotChain {
    * tolerable.
    */
   private async importStock(): Promise<void> {
-    const notes = this.identity?.notes ?? [];
+    // Dedupe by note identity: a manifest can carry the same note twice (a
+    // retried batch, an older writer), and importing a duplicate is wasted work
+    // on a rate-limited node rather than an error.
+    const seenNote = new Set<string>();
+    const notes = (this.identity?.notes ?? []).filter(n => {
+      const k = `${n.tokenId}:${n.randomness}`;
+      if (seenNote.has(k)) return false;
+      seenNote.add(k);
+      return true;
+    });
     if (notes.length === 0) return;
 
     const markerPath = `${this.cfg.manifestPath}.imported.json`;
