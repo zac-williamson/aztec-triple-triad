@@ -52,6 +52,8 @@ export type ClientMessage =
   | { type: 'CANCEL_GAME'; gameId: string }
   // Aztec info exchange
   | { type: 'SHARE_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string; gameRandomness?: string[] }
+  /** Sent at GAME OVER only — see the handler for why the timing matters. */
+  | { type: 'SHARE_BLINDING'; gameId: string; blindingFactor: string }
   // Note relay (offchain settlement delivery)
   | { type: 'RELAY_NOTE_DATA'; gameId: string; txHash: string; notes: PlaintextNoteData[] }
   // Settlement lifecycle
@@ -113,6 +115,7 @@ export type ServerMessage =
    * bots. Not an error — standing down is the correct outcome, and routing it
    * through ERROR would inflate the bot's failure counters.
    */
+  | { type: 'OPPONENT_BLINDING'; gameId: string; blindingFactor: string }
   | { type: 'QUEUE_DECLINED'; reason: 'already-covered' | 'nobody-waiting'; humansWaiting: number; botsQueued: number }
   /** `opponentIsBot` is the disclosure flag: the UI labels the opponent. */
   | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState; opponentIsBot: boolean }

@@ -33,6 +33,7 @@ const VALID_MESSAGE_TYPES = new Set([
   'SUBMIT_HAND_PROOF', 'SUBMIT_MOVE_PROOF',
   'TX_CONFIRMED', 'TX_FAILED', 'CANCEL_GAME',
   'SHARE_AZTEC_INFO',
+  'SHARE_BLINDING',
   'RELAY_NOTE_DATA',
   'SETTLE_STARTED',
   'ABANDONED_GAME_SETTLED',
@@ -365,6 +366,10 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       case 'SHARE_AZTEC_INFO':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
         if (!msg.aztecAddress || typeof msg.aztecAddress !== 'string') return 'aztecAddress is required';
+        break;
+      case 'SHARE_BLINDING':
+        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
+        if (!msg.blindingFactor || typeof msg.blindingFactor !== 'string') return 'blindingFactor is required';
         break;
       case 'RELAY_NOTE_DATA':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
@@ -804,6 +809,24 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
           send(ws, { type: 'GAME_CANCELLED', gameId: msg.gameId, reason: 'Cancelled by creator' }, playerId);
         } catch (err: any) {
           send(ws, { type: 'ERROR', message: err.message }, playerId);
+        }
+        break;
+      }
+
+      case 'SHARE_BLINDING': {
+        // Sent at GAME OVER, never before. Settlement has to prove that the card
+        // ids it mints are the ones each player committed, and the only value
+        // that binds them is the blinding factor — secret during play, harmless
+        // once the hands are on their way to being public. Relayed BEFORE the
+        // game is over and it would let the opponent brute-force a hand from the
+        // on-chain commitment mid-game.
+        const blindOpponentId = await getOpponentId(msg.gameId, playerId);
+        if (blindOpponentId) {
+          await sendToPlayer(blindOpponentId, {
+            type: 'OPPONENT_BLINDING',
+            gameId: msg.gameId,
+            blindingFactor: msg.blindingFactor,
+          });
         }
         break;
       }

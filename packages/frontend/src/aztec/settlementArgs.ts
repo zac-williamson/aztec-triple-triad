@@ -70,6 +70,16 @@ export interface ProcessGameInputs {
   opponentCardIds: number[];
   myRandomness: string[];
   opponentRandomness: string[];
+  /**
+   * Blinding factors, one per player. The contract recomputes
+   * poseidon2([card_ids, blinding]) and asserts it against the commitment
+   * stored at create/join — without them it would mint whatever ids it was
+   * handed. Yours comes from `compute_blinding_factor(game_id)`; the
+   * opponent's is exchanged over the relay at game over, when hands stop being
+   * secret.
+   */
+  myBlinding: string;
+  opponentBlinding: string;
 }
 
 /**
@@ -104,6 +114,8 @@ export async function buildProcessGameArgs(inputs: ProcessGameInputs): Promise<u
     padToHand(Fr, inputs.opponentCardIds),
     inputs.myRandomness.map(v => toFr(Fr, v)),
     inputs.opponentRandomness.map(v => toFr(Fr, v)),
+    toFr(Fr, inputs.myBlinding),
+    toFr(Fr, inputs.opponentBlinding),
   ];
 }
 
@@ -193,28 +205,31 @@ export async function buildClaimAbandonedArgs(inputs: ClaimAbandonedInputs): Pro
 
 export interface SettleAbandonedInputs {
   Fr: any;
-  AztecAddress: any;
   onChainGameId: string;
   myCardIds: number[];
   myRandomness: string[];
-  opponentCardIds: number[];
-  /** 0 to return all five opponent cards; otherwise the one card we claim. */
-  claimedCardId: number;
-  opponentAddress: string;
+  /** Proves the ids being re-minted are the ones this player committed. */
+  myBlinding: string;
 }
 
-/** Build the ordered `settle_abandoned_game` argument list. */
+/**
+ * Build the ordered `settle_abandoned_game` argument list.
+ *
+ * Recovers only YOUR OWN stake. There is no claimed card and no opponent data:
+ * the absent player's ids cannot be verified — that binding needs their
+ * blinding factor and they are not there to reveal it — so minting anything on
+ * their behalf meant minting whatever the claimant asserted. They recover their
+ * own five cards themselves, whenever they come back.
+ */
 export function buildSettleAbandonedArgs(inputs: SettleAbandonedInputs): Promise<unknown[]> {
   return (async () => {
     const { toFr } = await import('./fieldUtils');
-    const { Fr, AztecAddress } = inputs;
+    const { Fr } = inputs;
     return [
       toFr(Fr, inputs.onChainGameId),
       padToHand(Fr, inputs.myCardIds),
       inputs.myRandomness.map(v => toFr(Fr, v)),
-      padToHand(Fr, inputs.opponentCardIds),
-      new Fr(BigInt(inputs.claimedCardId)),
-      AztecAddress.fromStringUnsafe(inputs.opponentAddress),
+      toFr(Fr, inputs.myBlinding),
     ];
   })();
 }
