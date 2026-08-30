@@ -18,7 +18,7 @@ PLAYTEST_REUSE_STACK=1 npx playwright test
 npx tsx scripts/stop-stack.ts
 ```
 
-Prerequisites: `aztec` CLI at the pinned 4.2 version, contracts/circuits
+Prerequisites: `aztec` CLI at the pinned version (see CLAUDE.md), contracts/circuits
 compiled (`packages/contracts/target`, `circuits/target`), root
 `npm install --legacy-peer-deps` done, `npx playwright install chromium`.
 

@@ -48,14 +48,22 @@ For how it all fits together — the three-transaction game lifecycle, the 11-pr
 ## Prerequisites
 
 - **Node.js** >= 22.0.0
-- **Aztec CLI** 4.3.1 — install via:
+- **Aztec CLI** 5.2.0-nightly.20260815 — install via:
   ```bash
-  bash -i <(curl -s https://install.aztec.network) 4.3.1
+  aztec-up install 5.2.0-nightly.20260815
+  aztec-up use 5.2.0-nightly.20260815
   ```
-  (or `aztec-up use 4.3.1` to switch an existing install). The toolchain version is pinned per-checkout by the committed `.aztecrc`.
-- **Nargo** (installed with the Aztec CLI; this repo uses `1.0.0-beta.21`)
+  The toolchain version is pinned per-checkout by the committed `.aztecrc`. On
+  the 5.2 line `aztec-up install` can exit 0 while installing nothing, and
+  re-running does not fix it — CLAUDE.md has the workaround and how to spot it.
+- **Nargo** (installed with the Aztec CLI; this repo uses `1.0.0-beta.25`)
 
-> Everything is pinned to **Aztec 4.3.1** — the npm `@aztec/*` packages, the aztec-nr git tags in every `Nargo.toml`, and the CLI. Never mix versions across packages. See [CLAUDE.md](CLAUDE.md#versions--matched-sets-never-bumped-piecemeal) for the full pin table.
+> Everything is pinned to **Aztec 5.2.0-nightly.20260815** — the npm `@aztec/*`
+> packages, the aztec-nr git tags in every `Nargo.toml`, and the CLI. The pin
+> matches the live testnet node's `nodeVersion` exactly, because protocol
+> compatibility is what matters; do not follow npm `latest`. Never mix versions
+> across packages. See [CLAUDE.md](CLAUDE.md#versions--matched-sets-never-bumped-piecemeal)
+> for the full pin table.
 
 ## Getting Started
 
@@ -140,20 +148,30 @@ npm run dev:testnet
 
 ### 2. Fund your account
 
-On testnet, the app will show a **"Needs Funding"** prompt with your account address. You need to send Fee Juice to this address before the account can be deployed. Use the [Aztec testnet faucet](https://docs.aztec.network) or bridge Fee Juice from L1 Sepolia.
+Click **Fund with My Wallet**. The app buys the fee asset with your own ETH,
+bridges it through the Fee Juice portal, and then deploys your account claiming
+it — all from your wallet, with no faucet involved. On a testnet the asset is a
+mock with a free mint, so the only thing that differs from mainnet is that leg;
+on mainnet the same flow buys it on Uniswap v4 and shows you the price first.
 
-Once funded, click **Confirm Funded** and the app will deploy your account and mint starter cards.
+Bridging is the slow part (three L1 transactions plus L1→L2 inclusion), so
+expect a few minutes. If you would rather fund the address yourself, the prompt
+still offers a manual path.
 
 ### Testnet contract addresses
 
-The testnet contracts are deployed on Aztec 4.3.1 and configured in `packages/frontend/.env.testnet`:
+Live addresses are in `packages/frontend/.env.testnet`, which is the single
+source of truth — read them from there rather than from here. This section used
+to copy them, and the copy was three re-genesises out of date.
 
+```bash
+grep VITE_ packages/frontend/.env.testnet
+npx tsx scripts/check-testnet-state.ts   # and confirm they are still alive
 ```
-VITE_AZTEC_PXE_URL=https://rpc.testnet.aztec-labs.com
-VITE_NFT_CONTRACT_ADDRESS=0x0a191688e1f460ed720f6e7eabeca5b4933c675054871421be58db185f617cf9
-VITE_GAME_CONTRACT_ADDRESS=0x21793d5ec7ee711a92ba0401990f5cfca79b17798f760e9dfc2b928233537cb3
-VITE_TOKEN_CONTRACT_ADDRESS=0x2a6bfcc292b4b1c7ec5d90c84ce00c4653df241f60a33461c65968ace63a3879
-```
+
+The testnet re-genesises on protocol upgrades and silently orphans deployed
+contracts; it has happened three times. If anything on-chain looks dead, run the
+check above before debugging anything else.
 
 All three contracts are **updatable** (admin-guarded): each exposes an `update_to(new_class_id)` function that swaps the contract class while preserving the address, gated to the deployer (`minter` for the NFT, `admin` for the game and token contracts) and subject to an on-chain update delay. Future bug fixes ship as address-preserving class updates — these addresses are stable, so deployments no longer churn `.env.testnet`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the contract details.
 
