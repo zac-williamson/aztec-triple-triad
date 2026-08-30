@@ -123,15 +123,18 @@ test('a new player with only an Ethereum account plays and settles a game', asyn
     // Whoever won settles. When the human wins it happens in this browser; when
     // the bot wins it happens on the bot's box, and we wait for the chain.
     const iWon = over.ws.gameOver?.winner === 'player1';
+    let claimedCard: number;
     if (iWon) {
       await player.waitCanSettle();
-      const claim = pickClaimableCard(over.game!.board);
-      log(`settling, claiming card ${claim}`);
-      await player.pickSettleCard(claim);
+      claimedCard = pickClaimableCard(over.game!.board);
+      log(`settling, claiming card ${claimedCard}`);
+      await player.pickSettleCard(claimedCard);
       await player.waitSettleConfirmed();
     } else {
       log('the bot won — waiting for it to settle');
-      await player.waitOpponentSettled();
+      const settled = await player.waitOpponentSettled();
+      claimedCard = settled.chain.takenCardId!;
+      log(`the bot took card ${claimedCard}`);
     }
 
     // ---- The chain is the judge ---------------------------------------------
@@ -143,9 +146,27 @@ test('a new player with only an Ethereum account plays and settles a game', asyn
     expect(status, `game ${onChainGameId} is settled on-chain`).toBe(GAME_STATUS.settled);
     log(`on-chain status ${status} (SETTLED) for game ${onChainGameId}`);
 
-    const finalCards = (await player.phase()).ownedCardIds;
-    log(`newcomer finished holding ${finalCards.length} cards`);
-    expect(finalCards.length, 'the wager moved a card one way or the other').not.toBe(5);
+    // What the player is left holding is the whole point of the wager, and it
+    // is the slowest thing to settle: the notes land on-chain first, are
+    // imported next, and only then reach the card list. Poll for the end
+    // state rather than sampling once — a sample taken between the old cards
+    // being spent and the new ones arriving reads zero, which is how an
+    // earlier `not.toBe(5)` assertion passed on a winner holding nothing.
+    const expected = iWon
+      ? [...STARTER_CARDS, claimedCard].sort((a, b) => a - b)
+      : STARTER_CARDS.filter(id => id !== claimedCard);
+    const settledCards = await player.waitPhase(
+      `the card list to reach ${expected.length} cards`,
+      (p, want: number) => p.ownedCardIds.length === want,
+      5 * 60_000,
+      expected.length,
+    );
+    const finalCards = settledCards.ownedCardIds.slice().sort((a, b) => a - b);
+    log(`newcomer finished holding ${finalCards.length} cards: [${finalCards}]`);
+    expect(finalCards, iWon
+      ? 'the winner keeps its hand and gains the claimed card'
+      : 'the loser keeps every card except the one wagered away',
+    ).toEqual(expected);
   } finally {
     await player?.dispose().catch(() => {});
     if (wallet) await refundTreasury(wallet.privateKey, log);
