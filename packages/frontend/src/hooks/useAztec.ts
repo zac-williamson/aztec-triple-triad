@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { AZTEC_CONFIG } from '../aztec/AztecContext';
 import { prepareConnection, deployAndRegister, type PreparedConnection } from '../aztec/connectToAztec';
 import type { FeeJuiceClaim } from '../aztec/fundDevnet';
+import type { AcquireRoute } from '../aztec/l1Funding';
 import { pxe, setPxeWallet, runPxeTx } from '../aztec/pxe';
 import { startPxeKeepSynced } from '../aztec/pxeKeepSynced';
 type ConnectionStatus =
@@ -33,13 +34,33 @@ export interface UseAztecReturn {
    * a mock the same code mints it instead — the swap is the only leg that
    * differs, so testing here exercises the real thing.
    */
-  fundWithWallet: () => Promise<void>;
+  fundWithWallet: (opts?: { acceptQuote?: boolean }) => Promise<void>;
   fundingProgress: string | null;
+  /**
+   * A priced swap waiting for the player to agree to it.
+   *
+   * Set when funding needs real money: `fundWithWallet` stops here and spends
+   * nothing until it is called again with `acceptQuote`. Showing someone the
+   * price before their ETH moves is the whole point.
+   */
+  pendingQuote: SwapQuote | null;
+  cancelQuote: () => void;
   disconnect: () => void;
   refreshOwnedCards: () => Promise<void>;
   updateOwnedCards: (updater: (prev: number[]) => number[]) => void;
   tokenBalance: number;
   refreshTokenBalance: () => Promise<void>;
+}
+
+/** A swap the player has been shown but not yet agreed to. */
+export interface SwapQuote {
+  /** ETH that will leave their wallet. */
+  ethIn: bigint;
+  /** Fee Juice expected back. */
+  quotedOut: bigint;
+  /** Worst case they will accept, after slippage. */
+  minimumOut: bigint;
+  poolFee: number;
 }
 
 export function useAztec(): UseAztecReturn {
@@ -159,8 +180,12 @@ export function useAztec(): UseAztecReturn {
   }, []);
 
   const [fundingProgress, setFundingProgress] = useState<string | null>(null);
+  const [pendingQuote, setPendingQuote] = useState<SwapQuote | null>(null);
+  // Held out of state so accepting a quote spends the exact route that was
+  // priced and shown, not one re-quoted at a moved price behind their back.
+  const quotedRouteRef = useRef<unknown>(null);
 
-  const fundWithWallet = useCallback(async () => {
+  const fundWithWallet = useCallback(async (opts?: { acceptQuote?: boolean }) => {
     const prepared = preparedRef.current;
     if (!prepared) {
       setError('No prepared connection');
@@ -171,7 +196,7 @@ export function useAztec(): UseAztecReturn {
     setFundingProgress('Connecting your wallet…');
     try {
       const { fundAccountFromWallet } = await import('../aztec/l1Funding');
-      const { chooseAcquireRoute } = await import('../aztec/fundingRoutes');
+      const { resolveAcquireRoute } = await import('../aztec/fundingRoutes');
       const info = await prepared.node.getNodeInfo();
       const l1 = {
         feeJuiceAddress: String(info.l1ContractAddresses.feeJuiceAddress) as `0x${string}`,
@@ -181,19 +206,39 @@ export function useAztec(): UseAztecReturn {
           : undefined,
       };
       const chainId = Number(info.l1ChainId);
-      // On a mock-asset network this is a free mint, so there is nothing to
-      // quote. A real swap needs a quote from the router before we get here —
-      // chooseAcquireRoute refuses without one rather than risk a sandwich.
-      const route = chooseAcquireRoute({ chainId, l1, ethIn: 0n });
-      if (route.kind === 'swap') {
-        // A real swap needs a live quote and a price shown to the player before
-        // their ETH moves. Refusing here beats silently spending it.
-        throw new Error(
-          'This network requires buying Fee Juice. The in-app swap needs a live ' +
-          'quote — use the bridge link below until that is wired up.',
-        );
+
+      // Reuse the route the player already agreed to; otherwise price it now.
+      let route: AcquireRoute | null =
+        opts?.acceptQuote ? (quotedRouteRef.current as AcquireRoute | null) : null;
+      if (!route) {
+        setFundingProgress('Checking the price of Fee Juice…');
+        const { createPublicClient, custom } = await import('viem');
+        const eth = (globalThis as { ethereum?: unknown }).ethereum;
+        if (!eth) throw new Error('No Ethereum wallet found. Install MetaMask, or fund the account another way.');
+        const pub = createPublicClient({ transport: custom(eth as never) });
+        route = await resolveAcquireRoute({ chainId, l1, pub: pub as never });
       }
 
+      const { routeCostsRealMoney } = await import('../aztec/fundingRoutes');
+      if (!route) throw new Error('Could not determine how to fund this account');
+      if (routeCostsRealMoney(route) && !opts?.acceptQuote) {
+        // Stop. Nothing has been signed yet, and nothing will be until they
+        // have seen what it costs.
+        const swap = route as unknown as {
+          ethIn: bigint; quotedOut: bigint; maxSlippage: number; poolFee: number;
+        };
+        quotedRouteRef.current = route;
+        setPendingQuote({
+          ethIn: swap.ethIn,
+          quotedOut: swap.quotedOut,
+          minimumOut: (swap.quotedOut * BigInt(Math.round((1 - swap.maxSlippage) * 10_000))) / 10_000n,
+          poolFee: swap.poolFee,
+        });
+        setFundingProgress(null);
+        return;
+      }
+
+      setPendingQuote(null);
       const claim = await fundAccountFromWallet({
         aztecAddress: prepared.accountAddress,
         l1, chainId, node: prepared.node as never, route,
@@ -204,10 +249,16 @@ export function useAztec(): UseAztecReturn {
       await confirmFundedWith(claim as never);
     } catch (err) {
       setFundingProgress(null);
+      setPendingQuote(null);
       // Keep the player on the funding screen: the account is not deployed, and
       // dropping them into an error state loses the retry.
       setError(err instanceof Error ? err.message : 'Funding failed');
     }
+  }, []);
+
+  const cancelQuote = useCallback(() => {
+    quotedRouteRef.current = null;
+    setPendingQuote(null);
   }, []);
 
   /** The manual path: the player says they funded it themselves. */
@@ -303,6 +354,8 @@ export function useAztec(): UseAztecReturn {
     confirmFunded,
     fundWithWallet,
     fundingProgress,
+    pendingQuote,
+    cancelQuote,
     disconnect,
     refreshOwnedCards,
     updateOwnedCards: setOwnedCardIds,

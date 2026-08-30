@@ -5,6 +5,21 @@
  * then clicks "I've Funded My Account" to deploy.
  */
 
+/** Mirrors useAztec's SwapQuote; kept structural so this stays presentational. */
+export interface SwapQuote {
+  ethIn: bigint;
+  quotedOut: bigint;
+  minimumOut: bigint;
+  poolFee: number;
+}
+
+/** 18-decimal fixed point, trimmed. Intl can't take a bigint of this scale. */
+function formatUnits18(v: bigint, places = 5): string {
+  const whole = v / 10n ** 18n;
+  const frac = (v % 10n ** 18n).toString().padStart(18, '0').slice(0, places).replace(/0+$/, '');
+  return frac ? `${whole}.${frac}` : `${whole}`;
+}
+
 interface FundingPromptProps {
   accountAddress: string;
   /** The manual escape hatch: the player says they funded it elsewhere. */
@@ -14,6 +29,13 @@ interface FundingPromptProps {
    * where nobody hands out fee juice — the player pays with their own ETH.
    */
   onFundWithWallet: () => void;
+  /**
+   * A priced swap awaiting agreement. While set, nothing has been signed and
+   * nothing will be until `onAcceptQuote` fires.
+   */
+  quote?: SwapQuote | null;
+  onAcceptQuote?: () => void;
+  onCancelQuote?: () => void;
   /** Human-readable step while funding is in flight. */
   progress?: string | null;
   error?: string | null;
@@ -23,6 +45,7 @@ const BRIDGE_URL = 'https://bridge.aztec-kit.anothercoffeefor.me/';
 
 export function FundingPrompt({
   accountAddress, onConfirm, onFundWithWallet, progress, error,
+  quote, onAcceptQuote, onCancelQuote,
 }: FundingPromptProps) {
   const busy = Boolean(progress);
   const copyAddress = () => {
@@ -68,9 +91,52 @@ export function FundingPrompt({
           We'll ask you to approve a few transactions.
         </p>
 
-        <div style={{ margin: '16px 0 8px' }}>
+        {quote && (
+          <div
+            data-testid="swap-quote"
+            style={{
+              margin: '16px 0', padding: '12px 14px', textAlign: 'left',
+              border: '1px solid #b9a67f', borderRadius: 6, background: 'rgba(255,252,244,0.6)',
+              fontFamily: "'Cinzel', serif", fontSize: 13, color: '#5a4a34',
+            }}
+          >
+            <strong style={{ display: 'block', marginBottom: 6 }}>Confirm your purchase</strong>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>You pay</span>
+              <span style={{ fontVariantNumeric: 'tabular-nums' }}>{formatUnits18(quote.ethIn)} ETH</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>You receive</span>
+              <span style={{ fontVariantNumeric: 'tabular-nums' }}>~{formatUnits18(quote.quotedOut)} Fee Juice</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', opacity: 0.8 }}>
+              <span>At worst</span>
+              <span style={{ fontVariantNumeric: 'tabular-nums' }}>{formatUnits18(quote.minimumOut)} Fee Juice</span>
+            </div>
+            <p style={{ margin: '8px 0 0', fontSize: 12, opacity: 0.8 }}>
+              Prices move. If the trade would return less than the worst case above,
+              it is cancelled and your ETH stays with you.
+            </p>
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <button
+                className="parchment-dialog__btn"
+                data-testid="accept-quote"
+                onClick={onAcceptQuote}
+                disabled={busy}
+              >
+                {busy ? 'Buying…' : 'Buy Fee Juice'}
+              </button>
+              <button className="parchment-dialog__btn" onClick={onCancelQuote} disabled={busy}>
+                Back
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div style={{ margin: '16px 0 8px', display: quote ? 'none' : undefined }}>
           <button
             className="parchment-dialog__btn"
+            data-testid="fund-with-wallet"
             onClick={onFundWithWallet}
             disabled={busy}
             style={busy ? { opacity: 0.6, cursor: 'wait' } : undefined}

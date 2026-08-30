@@ -94,6 +94,9 @@ function AppInner() {
           accountAddress={aztec.accountAddress}
           onConfirm={aztec.confirmFunded}
           onFundWithWallet={aztec.fundWithWallet}
+          quote={aztec.pendingQuote}
+          onAcceptQuote={() => aztec.fundWithWallet({ acceptQuote: true })}
+          onCancelQuote={aztec.cancelQuote}
           progress={aztec.fundingProgress}
           error={aztec.error}
         />

@@ -73,3 +73,68 @@ export function chooseAcquireRoute(input: RouteInputs): AcquireRoute {
 export function routeCostsRealMoney(route: AcquireRoute): boolean {
   return route.kind === 'swap';
 }
+
+/**
+ * How much Fee Juice a new player needs to get through onboarding and a game.
+ *
+ * On a mock-asset network the faucet decides this for us. On mainnet we have to
+ * name a number, and it has to cover the account deployment plus the three
+ * chain transactions a game costs, with headroom — a player who runs dry
+ * mid-game cannot settle, and cannot buy more without leaving the app.
+ */
+export const DEFAULT_FEE_JUICE_TARGET = 10n ** 18n;
+
+export interface ResolveInputs extends Omit<RouteInputs, 'ethIn' | 'quotedOut'> {
+  /** Reads quotes. Must be connected to `chainId`. */
+  pub: PublicClientLike;
+  /** Fee-asset units to end up with. Defaults to DEFAULT_FEE_JUICE_TARGET. */
+  target?: bigint;
+  /** Extra ETH sent above the quote so a moving price still fills. */
+  ethBuffer?: number;
+  quoterAddress?: Address;
+  feeTiers?: readonly number[];
+}
+
+/** Structural, so tests and Node callers do not need a full viem PublicClient. */
+type PublicClientLike = Parameters<typeof import('./uniswapQuote')['quoteExactInput']>[0]['pub'];
+
+/**
+ * Decide the route AND price it, hitting the chain when money is involved.
+ *
+ * Split from `chooseAcquireRoute` so the decision stays pure and testable while
+ * the quoting — the part that needs a live pool — happens in one place that
+ * every caller shares.
+ */
+export async function resolveAcquireRoute(input: ResolveInputs): Promise<AcquireRoute> {
+  if (input.l1.feeAssetHandlerAddress) return { kind: 'mint' };
+
+  const { quoterFor, quoteExactInput, quoteExactOutput } = await import('./uniswapQuote');
+  const quoter = quoterFor(input.chainId, input.quoterAddress);
+  // Resolve the pair the same way chooseAcquireRoute will, so a router/WETH
+  // misconfiguration fails before we spend a quote on it.
+  const scaffold = chooseAcquireRoute({ ...input, ethIn: 1n, quotedOut: 1n });
+  if (scaffold.kind !== 'swap') throw new Error('Unreachable: no handler yet not a swap');
+  const { router, weth } = scaffold;
+
+  const target = input.target ?? DEFAULT_FEE_JUICE_TARGET;
+  const common = { pub: input.pub, quoter, feeTiers: input.feeTiers };
+
+  // Price the amount we actually want, so the player sees the real cost...
+  const { poolFee, amountIn } = await quoteExactOutput({
+    ...common, tokenIn: weth, tokenOut: input.l1.feeJuiceAddress, amountOut: target,
+  });
+
+  // ...then send a little more than that, because an exact-input swap sized to
+  // an exact-output quote fills only if the price has not moved at all.
+  const bufferBps = BigInt(Math.round(((input.ethBuffer ?? 0.03) + 1) * 10_000));
+  const ethIn = (amountIn * bufferBps) / 10_000n;
+
+  // The floor comes from quoting the amount we will genuinely send, on the tier
+  // we will genuinely use — not from rescaling the exact-output quote.
+  const { amountOut } = await quoteExactInput({
+    ...common, tokenIn: weth, tokenOut: input.l1.feeJuiceAddress,
+    amountIn: ethIn, feeTiers: [poolFee],
+  });
+
+  return chooseAcquireRoute({ ...input, ethIn, quotedOut: amountOut, poolFee });
+}
