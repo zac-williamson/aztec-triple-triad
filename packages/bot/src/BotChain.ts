@@ -368,6 +368,33 @@ export class BotChain {
    */
   lastKnownCardCount = -1;
 
+  /**
+   * Fee Juice at the last check, or -1 if never read.
+   *
+   * The bot pays its own fees for every commit and every settlement, and
+   * running dry is not graceful: it still queues, matches and plays a full
+   * nine-move game, then cannot settle it — locking five of its cards and
+   * handing the player a match that never resolves. Cached like the card
+   * count so a health probe adds no load to a rate-limited node.
+   */
+  lastKnownFeeJuice = -1n;
+
+  /** Read the account's Fee Juice balance from public state. */
+  async readFeeJuice(): Promise<bigint> {
+    const [{ Fr }, { ProtocolContractAddress }, { deriveStorageSlotInMap }] = await Promise.all([
+      import('@aztec/foundation/curves/bn254'),
+      import('@aztec/protocol-contracts'),
+      import('@aztec/stdlib/hash'),
+    ]);
+    const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+    // Slot 1 is FeeJuice's balances map — the derivation the SDK's own
+    // getFeeJuiceBalance uses, rather than a slot read off a layout dump.
+    const slot = await deriveStorageSlotInMap(new Fr(1), AztecAddress.fromStringUnsafe(this.address));
+    const raw = await this.node.getPublicStorageAt('latest', ProtocolContractAddress.FeeJuice, slot);
+    this.lastKnownFeeJuice = raw.toBigInt();
+    return this.lastKnownFeeJuice;
+  }
+
   async selectHand(size = 5): Promise<number[]> {
     const held = await this.readCards();
     this.lastKnownCardCount = held.length;

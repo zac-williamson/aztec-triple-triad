@@ -1,0 +1,18 @@
+# Where a failed probe goes.
+#
+# Deliberately simple and deliberately loud: it writes to the journal with an
+# alert priority and appends to a file an operator can tail or ship. Replace
+# ExecStart with a pager/webhook call when there is one — the point of the
+# indirection is that the probe does not need to know.
+[Unit]
+Description=Alert that %i failed
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/bin/bash -c '\
+  msg="$(systemctl status --no-pager -n 20 %i 2>&1 | tail -n 20)"; \
+  echo "ARENA ALERT: %i failed at $(date -Is)"; \
+  echo "$msg"; \
+  mkdir -p /var/lib/triad-bot/alerts; \
+  { echo "=== $(date -Is) %i ==="; echo "$msg"; } >> /var/lib/triad-bot/alerts/health.log'

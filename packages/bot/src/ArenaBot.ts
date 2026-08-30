@@ -43,6 +43,8 @@ export interface BotChainLike {
   readonly address: string;
   readonly nodeClient?: any;
   selectHand(size?: number): Promise<number[]>;
+  /** Fee Juice balance; the bot pays its own transaction fees. */
+  readFeeJuice?(): Promise<bigint>;
   /** Cards the PXE can currently see. The only honest check that an import
    *  worked: import_note swallows per-note failures. */
   readCards(): Promise<number[]>;
@@ -83,6 +85,12 @@ export interface BotStats {
    * loss counter, not a warning.
    */
   cardsUnimported: number;
+  /**
+   * Fee Juice at the last hand selection, as a decimal string (it exceeds
+   * Number's safe range), or "-1" if never read. The bot pays its own fees;
+   * empty means it plays whole games it then cannot settle.
+   */
+  feeJuice: string;
   lastError: string | null;
 }
 
@@ -179,7 +187,7 @@ export class ArenaBot {
     state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
     joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0, settleFailures: 0, settlements: 0,
     lastOnChainGameId: null, abandonedGames: 0, cardsStranded: 0, spendableCards: -1,
-    cardsUnimported: 0, lastError: null,
+    cardsUnimported: 0, feeJuice: '-1', lastError: null,
   };
 
   private readonly chain: BotChainLike | null;
@@ -304,6 +312,11 @@ export class ArenaBot {
       try {
         hand = await this.chain.selectHand(5);
         this.stats.spendableCards = (this.chain as { lastKnownCardCount?: number }).lastKnownCardCount ?? -1;
+        // Same cadence as the card count: both are things that end the arena
+        // quietly when they hit zero, and both are cheap to read here.
+        await (this.chain as { readFeeJuice?: () => Promise<bigint> }).readFeeJuice?.()
+          .then(v => { this.stats.feeJuice = v.toString(); })
+          .catch(() => { /* a failed read must not stop the bot queueing */ });
         this.handShortageLogged = false;
       } catch (err) {
         // This condition persists until someone re-provisions, and tick() runs

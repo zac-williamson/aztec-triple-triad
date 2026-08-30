@@ -236,6 +236,34 @@ sudo systemctl enable --now triad-bot
 journalctl -u triad-bot -f
 ```
 
+### Health monitoring (do not skip this)
+
+Nothing else in the deployment notices the failures that actually happen. The
+bot crashing is covered by `Restart=always`; the bot running out of cards or
+Fee Juice is not, and both end the arena silently — an idle bot is
+indistinguishable from a quiet night.
+
+```bash
+sudo cp deploy/triad-health.service deploy/triad-health.timer \
+        deploy/triad-health-alert@.service /etc/systemd/system/
+sudo sed -i "s|__REPO_DIR__|$HOME/axolotl-arena-server|" /etc/systemd/system/triad-health.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now triad-health.timer
+
+systemctl list-timers triad-health.timer     # confirm it is scheduled
+sudo systemctl start triad-health.service    # run it once, now
+journalctl -u triad-health.service -n 20     # and read the verdict
+```
+
+The probe fails (exit 2) on: an unreachable relay, an unhealthy bot, cards
+below `CARD_FLOOR`, Fee Juice below `FEE_JUICE_FLOOR`, or any card the bot owns
+on-chain but cannot see (`cardsUnimported`) — that last one is a permanent
+loss, so its ceiling is zero. Thresholds are set in the unit file.
+
+`triad-health-alert@.service` writes to the journal and
+`/var/lib/triad-bot/alerts/health.log`. Point its `ExecStart` at a pager or
+webhook when there is one; the probe deliberately does not know where alerts go.
+
 The first start imports the whole stock, which is the burstiest thing the bot
 ever does against a rate-limited node — expect several minutes and some
 `rate-limited, retrying` lines. It resumes where it left off if interrupted.

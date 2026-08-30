@@ -1,0 +1,25 @@
+# One health probe. Exits non-zero when something needs a human, which is what
+# OnFailure= keys on.
+#
+# The script itself has existed and been correct for some time; nothing ever
+# ran it. Every alarm in the deployment depends on this unit, because the
+# failure modes that matter here are not crashes: a bot that is up, healthy and
+# out of cards looks exactly like a quiet night, and Restart=always cannot see
+# the difference.
+[Unit]
+Description=Axolotl Arena health probe
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=__REPO_DIR__
+ExecStart=/bin/bash __REPO_DIR__/deploy/check-arena-health.sh
+# Thresholds live here so they can be tuned without editing the script.
+Environment=CARD_FLOOR=25
+Environment=FEE_JUICE_FLOOR=50
+Environment=UNIMPORTED_CEILING=0
+Environment=STRANDED_CEILING=25
+
+# A failed probe is the whole point of the unit.
+OnFailure=triad-health-alert@%n.service

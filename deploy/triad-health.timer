@@ -1,0 +1,17 @@
+# Runs the probe every five minutes.
+#
+# Five is chosen against what it protects: the bot burns at most one card per
+# game and a game takes minutes, so five-minute granularity cannot miss a
+# meaningful move in the numbers, and the probe is two local HTTP calls.
+[Unit]
+Description=Run the Axolotl Arena health probe every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+# Do not stampede all the probes onto the same second after a reboot.
+RandomizedDelaySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
