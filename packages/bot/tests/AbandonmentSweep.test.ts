@@ -185,7 +185,7 @@ describe('AbandonmentSweep', () => {
     // cards meant naming it from a list nothing verified — any card, minted to
     // us. Nobody wins a card because an opponent disconnected.
     const { buildSettleAbandonedArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
-    const call = vi.mocked(buildSettleAbandonedArgs).mock.calls[0][0] as Record<string, unknown>;
+    const call = vi.mocked(buildSettleAbandonedArgs).mock.calls[0][0] as unknown as Record<string, unknown>;
     expect(call).not.toHaveProperty('claimedCardId');
     expect(call).not.toHaveProperty('opponentCardIds');
     expect(call).toMatchObject({ myCardIds: [1, 2, 3, 4, 5], myBlinding: '0xb1' });
