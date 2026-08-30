@@ -31,6 +31,14 @@ RestartSec=15
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
+# The bot proves recursively, which is both CPU- and memory-hungry, and it
+# shares this box with the relay. A cap means an over-large proof kills the BOT
+# — recoverable, its cards come back through the sweep — instead of the kernel
+# picking a victim and taking the relay down with it, which would stop everyone
+# playing. Tune TRIAD_PROOF_THREADS in the env file to match the core count.
+MemoryMax=2G
+CPUWeight=50
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=triad-bot

@@ -14,8 +14,18 @@ let bbInitPromise: Promise<Barretenberg> | null = null;
  * `triad_proof_threads` localStorage key. The playtest harness sets the
  * override to half the cores — two headless browsers proving on one machine
  * otherwise starve each other's timers and background sync.
+ *
+ * TRIAD_PROOF_THREADS covers the same need in NODE, where the arena bot runs
+ * this code: there is no `navigator` there, so the fallback silently picks 4 —
+ * which oversubscribes a small box and starves the relay sharing it.
  */
 function proverThreads(): number {
+  try {
+    if (typeof process !== 'undefined' && process.env?.TRIAD_PROOF_THREADS) {
+      const fromEnv = Number(process.env.TRIAD_PROOF_THREADS);
+      if (Number.isInteger(fromEnv) && fromEnv > 0) return fromEnv;
+    }
+  } catch { /* no process (browser) — fall through */ }
   const fallback = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
   try {
     const override = Number(localStorage.getItem('triad_proof_threads'));
