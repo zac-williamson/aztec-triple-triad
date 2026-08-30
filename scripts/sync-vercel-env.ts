@@ -205,11 +205,30 @@ async function triggerFromGitRef(prior: any): Promise<string> {
   return deployment.url || deployment.id || '(unknown)';
 }
 
+/**
+ * Rehearse the sync without touching production.
+ *
+ * Every guard runs and the intended values are printed, but nothing is written
+ * and no build is triggered. Worth doing before a real cutover: the failure
+ * modes here (a localhost value, a missing var, a stale env file) are cheap to
+ * find now and expensive to find with the site down.
+ */
+const DRY_RUN = process.argv.includes('--dry-run');
+
 async function main() {
   console.log(`Vercel project: ${projectId}`);
   if (TEAM_ID) console.log(`Team: ${TEAM_ID}`);
 
   console.log(`Env source: ${FRONTEND_ENV_FILE}`);
+  if (DRY_RUN) {
+    console.log('\n--dry-run: guards passed, nothing will be written.\n');
+    for (const [key, value] of Object.entries(desired)) {
+      // Contract addresses and URLs are not secrets; showing them is the point.
+      console.log(`  ${key} = ${value}`);
+    }
+    console.log('\nRun again without --dry-run to apply and redeploy.');
+    return;
+  }
   console.log('Fetching existing env vars...');
   const existing = await listEnvVars();
   // One key can have SEVERAL records (one per target split) — keep them all.

@@ -37,6 +37,8 @@ export function startHealthServer(bot: ArenaBot, port: number, log: (m: string) 
     const stats = bot.getStats();
     const failures = stats.joinFailures + stats.moveFailures + stats.commitFailures
       + stats.proofFailures + stats.settleFailures;
+    // spendableCards rides along in ...stats below; deploy/check-arena-health.sh
+    // alerts on it, because a bot running out of cards goes quietly idle.
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       healthy: stats.lastError === null || failures === 0,

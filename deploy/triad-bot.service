@@ -1,0 +1,47 @@
+[Unit]
+Description=Axolotl Arena bot (backend opponent)
+# The relay must be up first: the bot's only job is to watch its queue, and a
+# bot that starts first just logs connection failures until it happens to
+# reconnect.
+After=network.target triad-backend.service
+Wants=triad-backend.service
+
+[Service]
+Type=simple
+User=ubuntu
+# __REPO_DIR__ is substituted by the provision script (sed), exactly as in
+# triad-backend.service. Do not hardcode a clone path.
+WorkingDirectory=__REPO_DIR__
+
+# Holds ARENA_BOT_TOKEN, the contract addresses and the node URL.
+# See deploy/triad-bot.env.example.
+EnvironmentFile=/etc/triad-bot.env
+
+# tsx, not plain node: the bot imports the FRONTEND's chain and proving modules
+# directly (that is the point — a parallel Node implementation would drift from
+# what players execute), and those are TypeScript sources, not build output.
+# ProtectHome is therefore NOT read-only here: tsx needs a writable npm cache.
+ExecStart=/usr/bin/npx tsx packages/bot/src/index.ts
+
+# A crashed bot is holding five committed cards per in-flight game, and only a
+# live process runs the sweep that recovers them — so restart always, not just
+# on-failure. StartLimit stops a misconfigured bot from spinning forever.
+Restart=always
+RestartSec=15
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=triad-bot
+
+# Basic hardening. Milder than the relay's: the bot writes its identity
+# manifests and note-import markers under the repo, and those files are the ONLY
+# record of its untagged note plaintexts — lose them and its cards are
+# unspendable.
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

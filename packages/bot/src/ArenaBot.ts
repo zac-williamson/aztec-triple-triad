@@ -61,6 +61,12 @@ export interface BotStats {
   /** Games abandoned by the watchdog, and cards left locked in them. */
   abandonedGames: number;
   cardsStranded: number;
+  /**
+   * Cards the bot could field at its last hand selection, or -1 off-chain.
+   * The number to alert on: it is what predicts the bot going idle, and an
+   * idle bot looks exactly like a quiet night.
+   */
+  spendableCards: number;
   lastError: string | null;
 }
 
@@ -151,7 +157,7 @@ export class ArenaBot {
   private readonly stats: BotStats = {
     state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
     joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0, settleFailures: 0, settlements: 0,
-    lastOnChainGameId: null, abandonedGames: 0, cardsStranded: 0, lastError: null,
+    lastOnChainGameId: null, abandonedGames: 0, cardsStranded: 0, spendableCards: -1, lastError: null,
   };
 
   private readonly chain: BotChainLike | null;
@@ -275,6 +281,7 @@ export class ArenaBot {
     if (this.chain) {
       try {
         hand = await this.chain.selectHand(5);
+        this.stats.spendableCards = (this.chain as { lastKnownCardCount?: number }).lastKnownCardCount ?? -1;
         this.handShortageLogged = false;
       } catch (err) {
         // This condition persists until someone re-provisions, and tick() runs

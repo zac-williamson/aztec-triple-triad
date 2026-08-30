@@ -354,8 +354,18 @@ export class BotChain {
    * because a duplicated hand still plays; refusing would idle the bot over a
    * cosmetic preference.
    */
+  /**
+   * Cards held at the last selectHand. Surfaced on /health because it is the
+   * number that predicts the bot going idle — and an idle bot is
+   * indistinguishable from a quiet night until someone notices the arena has no
+   * opponent. Read from a cached value rather than a fresh chain call so a
+   * health probe cannot add load to a rate-limited node.
+   */
+  lastKnownCardCount = -1;
+
   async selectHand(size = 5): Promise<number[]> {
     const held = await this.readCards();
+    this.lastKnownCardCount = held.length;
     if (held.length < size) {
       throw new Error(
         `Arena bot holds only ${held.length} card(s) but needs ${size}. Its collection is a LOSS ` +

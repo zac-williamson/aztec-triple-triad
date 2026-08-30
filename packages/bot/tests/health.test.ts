@@ -68,3 +68,26 @@ describe('bot health endpoint', () => {
     expect(keys).not.toMatch(/secret|salt|signingKey|cardIds|hand/i);
   });
 });
+
+describe('health surfaces the number that predicts going idle', () => {
+  it('reports spendableCards so an alert can fire BEFORE the bot goes quiet', async () => {
+    const bot = {
+      getStats: () => ({
+        state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
+        joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0,
+        settleFailures: 0, settlements: 0, lastOnChainGameId: null,
+        abandonedGames: 0, cardsStranded: 0, spendableCards: 7, lastError: null,
+      }),
+    } as unknown as import('../src/ArenaBot.js').ArenaBot;
+
+    const srv = startHealthServer(bot, 0);
+    const port = (srv.server.address() as { port: number }).port;
+    const body = await (await fetch(`http://localhost:${port}/health`)).json();
+    await srv.close();
+
+    // An out-of-cards bot idles, which is correct and indistinguishable from a
+    // quiet night — so the count has to be visible from outside the process.
+    expect(body.spendableCards).toBe(7);
+    expect(body.healthy).toBe(true);
+  });
+});
