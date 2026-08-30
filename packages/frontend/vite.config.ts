@@ -60,6 +60,13 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
+    // The oversized chunks are Barretenberg's WASM glue and the Aztec kernel
+    // circuits — vendor artifacts, already split into their own lazily loaded
+    // chunks, and not divisible by any manualChunks arrangement we control.
+    // Left at the default the warning fires on every build, which is how a
+    // genuine bundle regression would go unnoticed. 5 MB clears the known
+    // offenders (the largest is ~4.1 MB) and still trips on a new one.
+    chunkSizeWarningLimit: 5000,
   },
   optimizeDeps: {
     esbuildOptions: {

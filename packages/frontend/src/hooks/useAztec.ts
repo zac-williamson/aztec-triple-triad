@@ -158,7 +158,18 @@ export function useAztec(): UseAztecReturn {
   }, []);
 
   const refreshOwnedCards = useCallback(async () => {
-    // TODO: implement refresh via contract call
+    if (!walletRef.current || !accountAddress) return;
+    try {
+      // Serialized through the PXE queue inside pxe.readPrivateCards (ground
+      // rule #6) — the same reader the rest of the app uses, so this cannot
+      // disagree with what a game sees when it commits a hand.
+      const { pxe } = await import('../aztec/pxe');
+      setOwnedCardIds(await pxe.readPrivateCards(accountAddress));
+    } catch (err) {
+      // A failed refresh must not clear the list: showing zero cards to someone
+      // who owns cards is worse than showing a slightly stale count.
+      console.warn('[useAztec] refreshOwnedCards failed; keeping the previous list:', err);
+    }
   }, [accountAddress]);
 
   const refreshTokenBalance = useCallback(async () => {
