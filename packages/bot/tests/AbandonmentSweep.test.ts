@@ -283,3 +283,51 @@ describe('AbandonmentSweep with per-player recovery', () => {
     expect(stats.failed).toBe(0);
   });
 });
+
+describe('permanently unrecoverable games', () => {
+  /**
+   * A game whose journal is missing a hand proof can never be claimed — the
+   * claim verifies both. That is a fact about the record, not an event, and it
+   * was being announced every fifteen minutes forever. A recurring alarm for a
+   * state that will never change is how real alarms get ignored.
+   */
+  function unrecoverableDeps() {
+    const logs: string[] = [];
+    const rec = {
+      onChainGameId: '0xdead', relayGameId: 'g', botAddress: '0xbot', opponentAddress: '0xopp',
+      botIsPlayer1: false, cardIds: [1, 2, 3, 4, 5], randomness: ['0x1'], blindingFactor: '0xb',
+      opponentCardIds: [], myHandProof: { proof: 'p', publicInputs: [] },
+      opponentHandProof: null,           // the missing half
+      moveProofs: [], committedAt: 0, updatedAt: 0,
+    };
+    return { logs, rec };
+  }
+
+  it('reports an unrecoverable game once, then counts it instead', async () => {
+    const { logs, rec } = unrecoverableDeps();
+    const sweep = new AbandonmentSweep({
+      journal: {
+        outstanding: () => [rec], forget: () => {}, write: () => {}, read: () => rec,
+        markSettled: () => {}, pruneSettled: () => 0,
+      } as never,
+      // 2 = active: the game really is outstanding, which is what gets the
+      // sweep as far as inspecting the transcript.
+      chain: {
+        address: '0xbot', nodeClient: {},
+        pxe: { readGameStatus: async () => 2 },
+      } as never,
+      proofs: {} as never,
+      log: (m: string) => logs.push(m),
+      minAgeMs: 0,
+    });
+
+    await sweep.run();
+    await sweep.run();
+    await sweep.run();
+
+    const reports = logs.filter(l => l.includes('UNRECOVERABLE'));
+    expect(reports, 'said once, not once per pass').toHaveLength(1);
+    // The cards are still locked, and that stays visible as a number.
+    expect(sweep.stats.unrecoverable).toBe(5);
+  });
+});

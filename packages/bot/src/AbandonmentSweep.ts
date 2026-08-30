@@ -37,6 +37,12 @@ export interface SweepStats {
   cardsRecovered: number;
   failed: number;
   skipped: number;
+  /**
+   * Cards locked in games that can never be recovered — the journal is missing
+   * a hand proof the claim requires. A number rather than a repeated log line,
+   * because it is a permanent fact, not an event.
+   */
+  unrecoverable: number;
   lastError: string | null;
 }
 
@@ -55,6 +61,9 @@ export interface SweepDeps {
 export const SETTLED_RETENTION_MS = 7 * 24 * 60 * 60_000;
 
 export class AbandonmentSweep {
+  /** Games already reported as permanently unrecoverable; reported once each. */
+  private readonly reportedUnrecoverable = new Set<string>();
+
   private readonly log: (m: string) => void;
   private readonly now: () => number;
   private readonly minAgeMs: number;
@@ -62,7 +71,8 @@ export class AbandonmentSweep {
   private running = false;
 
   readonly stats: SweepStats = {
-    scanned: 0, recovered: 0, cardsRecovered: 0, failed: 0, skipped: 0, lastError: null,
+    scanned: 0, recovered: 0, cardsRecovered: 0, failed: 0, skipped: 0,
+    unrecoverable: 0, lastError: null,
   };
 
   constructor(private readonly deps: SweepDeps) {
@@ -90,6 +100,9 @@ export class AbandonmentSweep {
       const pruned = this.deps.journal.pruneSettled?.(SETTLED_RETENTION_MS) ?? 0;
       if (pruned) this.log(`sweep: pruned ${pruned} settled record(s)`);
 
+      // Recomputed each pass: it is a property of the journal right now, not a
+      // tally of how many times we have looked.
+      this.stats.unrecoverable = 0;
       const outstanding = this.deps.journal.outstanding();
       this.stats.scanned = outstanding.length;
       if (outstanding.length === 0) return this.stats;
@@ -166,10 +179,17 @@ export class AbandonmentSweep {
     }
     if (!rec.myHandProof || !rec.opponentHandProof) {
       this.stats.skipped += 1;
-      // Not recoverable by us: the claim verifies BOTH hand proofs. Say so
-      // rather than retrying forever in silence.
-      this.log(`sweep: ${id} UNRECOVERABLE — hand proofs missing from the journal ` +
-               `(${rec.cardIds.length} cards stay locked)`);
+      this.stats.unrecoverable += rec.cardIds.length;
+      // Not recoverable by us: the claim verifies BOTH hand proofs. This is a
+      // PERMANENT condition, so say it once and then stop: re-deciding it every
+      // fifteen minutes emitted a recurring alarm for a state that will never
+      // change, which is how real signal gets tuned out. The record stays on
+      // disk — it is the only evidence those cards are locked.
+      if (!this.reportedUnrecoverable.has(id)) {
+        this.reportedUnrecoverable.add(id);
+        this.log(`sweep: ${id} UNRECOVERABLE — hand proofs missing from the journal ` +
+                 `(${rec.cardIds.length} cards locked for good; not reported again)`);
+      }
       return;
     }
     if (rec.moveProofs.length >= 9) {
