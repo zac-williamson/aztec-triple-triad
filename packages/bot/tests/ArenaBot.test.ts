@@ -272,12 +272,29 @@ const SIX_RANDOM = Array.from({ length: 6 }, (_, i) => FIELD(0x100 + i));
 /** Minimal fake of the chain adapter, recording what the bot asks of it. */
 function fakeChain(over: Partial<Record<string, any>> = {}) {
   const calls: any[] = [];
+  const imported = { calls: [] as any[][], held: [] as number[] };
   return {
     calls,
+    imported,
     chain: {
       address: '0xbot',
+      // A real node response shape, so the production fetchTxEffectData runs
+      // for real rather than being mocked away.
+      nodeClient: over.nodeClient ?? {
+        getTxEffect: async () => ({
+          data: { noteHashes: [FIELD(0xa11)], nullifiers: [FIELD(0xa22)] },
+        }),
+      },
       selectHand: over.selectHand ?? (async () => [7, 8, 9, 10, 11]),
+      // Grows as imports land, so a test can assert the bot actually got its
+      // cards back rather than merely that it called import.
+      readCards: over.readCards ?? (async () => [...imported.held]),
       pxe: {
+        importCardNotes: over.importCardNotes ?? (async (_o: string, _t: string, notes: any[]) => {
+          imported.calls.push(notes);
+          for (const n of notes) imported.held.push(n.tokenId);
+          return notes.map((n: any) => n.tokenId);
+        }),
         previewCreateGame: over.previewCreateGame ?? (async () => ({
           gameId: FIELD(0xabc), randomness: SIX_RANDOM, blindingFactor: FIELD(0xb), status: 0,
         })),
@@ -546,6 +563,7 @@ describe('ArenaBot settlement', () => {
 
   /** Well-formed field/address hex — buildProcessGameArgs really parses these. */
   const hex = FIELD;
+  const SETTLE_TX = hex(0x5e77);
   const CHAIN_GAME_ID = hex(0xabc);
   const OPP_ADDRESS = hex(0xdef);
   const RANDOMNESS = SIX_RANDOM;
@@ -555,10 +573,11 @@ describe('ArenaBot settlement', () => {
 
   function settleHarness(winner: string, playerNumber: 1 | 2, seedTranscript: boolean, over: any = {}) {
     const socket = new FakeSocket();
-    const f = fakeChain();
+    // `over` carries chain overrides (nodeClient) as well as config ones.
+    const f = fakeChain(over);
     const sent: any[] = [];
     const logs: string[] = [];
-    f.chain.pxe.sendProcessGame = async (...a: any[]) => { sent.push(a); return '0xsettletx'; };
+    f.chain.pxe.sendProcessGame = async (...a: any[]) => { sent.push(a); return SETTLE_TX; };
     const proofs = {
       cardCommitHash: async (ids: number[]) => `0xc-${ids.join('')}`,
       verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
@@ -573,7 +592,7 @@ describe('ArenaBot settlement', () => {
       fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
       chain: f.chain as any, proofs: proofs as any, log: (m: string) => logs.push(m), now: () => Date.now(),
     });
-    return { bot, socket, sent, logs, async run() {
+    return { bot, socket, sent, logs, imported: f.imported, async run() {
       const settle = (ms: number) => new Promise(r => setTimeout(r, ms));
       bot.start(); socket.emit('open');
       socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
@@ -601,6 +620,9 @@ describe('ArenaBot settlement', () => {
       socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner, gameState: freshState(), player1CardIds: [1,2,3,4,5], player2CardIds: [6,7,8,9,10] });
       // Long enough for the settle wait (300ms) plus its 500ms poll tick.
       await settle(1200);
+      // Late-arriving messages (a winner's NOTE_DATA lands minutes after we
+      // reset to idle) must be delivered while the bot is still alive.
+      if (over.afterGameOver) { await over.afterGameOver(socket); await settle(400); }
       bot.stop();
     } };
   }
@@ -642,7 +664,7 @@ describe('ArenaBot settlement', () => {
     const relay = h.socket.lastOfType('RELAY_NOTE_DATA');
     expect(relay, 'the bot relays note data after settling').toBeTruthy();
     expect(relay.gameId).toBe('g1');
-    expect(relay.txHash).toBe('0xsettletx');
+    expect(relay.txHash).toBe(SETTLE_TX);
     // The bot claims opponentCardIds[0] (= 1); the other four go home.
     expect(relay.notes.map((n: { tokenId: number }) => n.tokenId)).toEqual([2, 3, 4, 5]);
     // Randomness must stay paired with its own slot, or the loser imports
@@ -664,6 +686,66 @@ describe('ArenaBot settlement', () => {
     const h = settleHarness('player1', 2, true);
     await h.run();
     expect(h.socket.lastOfType('RELAY_NOTE_DATA')).toBeUndefined();
+  });
+
+  it('takes its own five cards back after settling a win', async () => {
+    // process_game re-mints the settler's cards with create_and_push_note and
+    // offchain delivery — nothing discovers them passively. Skipping this
+    // import removed five cards from the bot's wallet EVERY settled game, which
+    // is the arena's entire card supply on a timer.
+    const h = settleHarness('player2', 2, true);
+    await h.run();
+
+    const batches = h.imported.calls;
+    expect(batches.length, 'the bot imported its returned cards').toBeGreaterThan(0);
+    const own = batches[0];
+    // Its five, plus the card it claimed — mint_for_game_winner takes [Field; 6].
+    expect(own.map((n: { tokenId: number }) => n.tokenId)).toEqual([7, 8, 9, 10, 11, 1]);
+    // randomness[i] pairs with slot i; the claimed card takes randomness[5].
+    expect(own.map((n: { randomness: string }) => n.randomness)).toEqual([
+      SIX_RANDOM[0], SIX_RANDOM[1], SIX_RANDOM[2], SIX_RANDOM[3], SIX_RANDOM[4], SIX_RANDOM[5],
+    ]);
+  });
+
+  it('takes five back on a draw, and claims nothing', async () => {
+    const h = settleHarness('draw', 2, true, { drawFallbackMs: 0 });
+    await h.run();
+    const own = h.imported.calls[0];
+    expect(own.map((n: { tokenId: number }) => n.tokenId)).toEqual([7, 8, 9, 10, 11]);
+  });
+
+  it('imports the cards the winner relays back when it loses', async () => {
+    // The mirror of relayReturnedNotes. Losing must cost exactly one card.
+    const h = settleHarness('player1', 2, true, {
+      // Delivered AFTER the bot has reset to idle, which is when it really
+      // arrives: the winner still had an eleven-proof settlement to do.
+      afterGameOver: (socket: FakeSocket) => socket.deliver({
+        type: 'NOTE_DATA', gameId: 'g1', txHash: SETTLE_TX,
+        notes: [
+          { tokenId: 8, randomness: SIX_RANDOM[1] },
+          { tokenId: 9, randomness: SIX_RANDOM[2] },
+          { tokenId: 10, randomness: SIX_RANDOM[3] },
+          { tokenId: 11, randomness: SIX_RANDOM[4] },
+        ],
+      }),
+    });
+    await h.run();
+    expect(h.sent, 'the loser does not settle').toHaveLength(0);
+
+    const relayed = h.imported.calls[h.imported.calls.length - 1];
+    expect(relayed.map((n: { tokenId: number }) => n.tokenId)).toEqual([8, 9, 10, 11]);
+  });
+
+  it('counts cards it could not import, rather than losing them quietly', async () => {
+    // An unimported note is a card the bot owns on-chain and can never field.
+    // Silence here is what let 40 cards go missing unnoticed.
+    // A throwing node fails immediately; `{data:null}` would retry 5x3s and
+    // outlast the harness, which is a property of noteImporter, not of this.
+    const h = settleHarness('player2', 2, true, {
+      nodeClient: { getTxEffect: async () => { throw new Error('node unreachable'); } },
+    });
+    await h.run();
+    expect(h.bot.getStats().cardsUnimported).toBe(6);
   });
 
   it('names what is missing rather than sending an incomplete transcript', async () => {

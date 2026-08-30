@@ -32,10 +32,20 @@ export interface BotProofsLike {
 }
 
 /** The slice of BotChain the bot uses — narrowed so tests can fake it. */
+/**
+ * How long we keep waiting for a winner to hand back our cards. Generous: their
+ * settlement is an eleven-proof recursive verification plus inclusion, and a
+ * forgotten entry costs us four cards permanently.
+ */
+const RETURN_WAIT_MS = 60 * 60_000;
+
 export interface BotChainLike {
   readonly address: string;
   readonly nodeClient?: any;
   selectHand(size?: number): Promise<number[]>;
+  /** Cards the PXE can currently see. The only honest check that an import
+   *  worked: import_note swallows per-note failures. */
+  readCards(): Promise<number[]>;
   pxe: any;
 }
 
@@ -67,6 +77,12 @@ export interface BotStats {
    * idle bot looks exactly like a quiet night.
    */
   spendableCards: number;
+  /**
+   * Cards that are the bot's on-chain but which its PXE cannot see, because an
+   * import failed. Every one is a card it can never field again, so this is a
+   * loss counter, not a warning.
+   */
+  cardsUnimported: number;
   lastError: string | null;
 }
 
@@ -157,7 +173,8 @@ export class ArenaBot {
   private readonly stats: BotStats = {
     state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
     joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0, settleFailures: 0, settlements: 0,
-    lastOnChainGameId: null, abandonedGames: 0, cardsStranded: 0, spendableCards: -1, lastError: null,
+    lastOnChainGameId: null, abandonedGames: 0, cardsStranded: 0, spendableCards: -1,
+    cardsUnimported: 0, lastError: null,
   };
 
   private readonly chain: BotChainLike | null;
@@ -415,6 +432,10 @@ export class ArenaBot {
             this.recordError('settle', err as Error);
           }).finally(() => this.resetToIdle());
         } else {
+          // Somebody else settles this one, which means somebody else owes us
+          // the plaintexts for our returned cards. Remember it: we are about to
+          // forget the game id, and their message can be minutes away.
+          if (this.chain && this.gameId) this.expectReturnedNotes(this.gameId);
           this.resetToIdle();
         }
         break;
@@ -437,6 +458,23 @@ export class ArenaBot {
       case 'OPPONENT_BLINDING':
         if (msg.gameId === this.gameId && typeof msg.blindingFactor === 'string') {
           this.opponentBlinding = msg.blindingFactor;
+        }
+        break;
+
+      case 'NOTE_DATA':
+        // We lost, and the winner has settled and handed our remaining cards
+        // back. This is the ONLY way we ever see them again: they are minted
+        // with offchain delivery, so nothing discovers them passively, and only
+        // the settler can compute their randomness.
+        //
+        // Deliberately NOT gated on the current gameId. We reset to idle the
+        // moment we lose, while the winner still has minutes of proving ahead
+        // of it, so by the time this arrives `this.gameId` is null — and may
+        // already belong to a different game. Matching against the games we are
+        // still owed cards for is the only correct test.
+        if (typeof msg.txHash === 'string' && Array.isArray(msg.notes) && this.isAwaitingReturn(msg.gameId)) {
+          this.awaitingReturn.delete(String(msg.gameId));
+          void this.importRelayedNotes(msg.txHash, msg.notes);
         }
         break;
 
@@ -739,9 +777,136 @@ export class ArenaBot {
     // forever and never got four of their five cards back. Losing one card is
     // the game; losing the hand is a bug.
     this.relayReturnedNotes(String(txHash), selectedCardId, winner);
+    // Take our OWN cards back into the PXE. process_game re-mints them with
+    // create_and_push_note + offchain delivery, which nothing discovers
+    // passively (ground rule 9) — settling without this silently burned all
+    // five every game, win or lose.
+    await this.importOwnReturnedCards(chain, String(txHash), selectedCardId, winner);
     // Cards are back (or fairly lost). The journal entry exists purely to mark
     // cards as locked, so leaving it would make the sweep chase a settled game.
     if (this.onChainGameId) this.journal?.forget(this.onChainGameId);
+  }
+
+  /**
+   * Games we lost (or drew and did not settle) whose returned cards are still
+   * owed to us, mapped to when we stop waiting. Bounded and expiring, because
+   * an opponent who never settles must not leak an entry per game forever.
+   */
+  private readonly awaitingReturn = new Map<string, number>();
+
+  private expectReturnedNotes(gameId: string): void {
+    this.pruneAwaitingReturn();
+    this.awaitingReturn.set(gameId, this.now() + RETURN_WAIT_MS);
+  }
+
+  private isAwaitingReturn(gameId: unknown): boolean {
+    this.pruneAwaitingReturn();
+    return typeof gameId === 'string' && this.awaitingReturn.has(gameId);
+  }
+
+  private pruneAwaitingReturn(): void {
+    const now = this.now();
+    for (const [id, deadline] of this.awaitingReturn) {
+      if (deadline <= now) this.awaitingReturn.delete(id);
+    }
+  }
+
+  /**
+   * Re-import the cards process_game just minted back to us.
+   *
+   * Both mint paths use create_and_push_note with offchain delivery, so NOTHING
+   * discovers these passively — not the settler, not the opponent. The frontend
+   * winner has always done this ("Winner import"); the bot never did, so every
+   * settled game removed its five committed cards from view permanently. At
+   * five a game that is the arena's whole card supply on a timer.
+   *
+   * Win : our five at randomness[0..4], plus the claimed card at randomness[5]
+   *       (mint_for_game_winner takes a [Field; 6] in exactly that order).
+   * Draw: our five at randomness[0..4]; nothing changes hands.
+   */
+  private async importOwnReturnedCards(
+    chain: BotChainLike,
+    txHash: string,
+    selectedCardId: number,
+    winner: string,
+  ): Promise<void> {
+    const randomness = this.myRandomness;
+    if (!randomness || this.hand.length < 5) {
+      this.stats.cardsUnimported += this.hand.length;
+      this.log(`WARNING: cannot re-import our own cards for ${txHash.slice(0, 18)}… ` +
+        `(no randomness) — ${this.hand.length} card(s) are ours on-chain but invisible`);
+      return;
+    }
+    const notes = this.hand.slice(0, 5).map((tokenId, i) => ({
+      tokenId, randomness: String(randomness[i]),
+    }));
+    if (winner !== 'draw' && selectedCardId !== 0) {
+      notes.push({ tokenId: selectedCardId, randomness: String(randomness[5]) });
+    }
+    try {
+      const { fetchTxEffectData } = await import('../../frontend/src/aztec/noteImporter.js');
+      const txEffect = await fetchTxEffectData(chain.nodeClient as never, txHash);
+      if (!txEffect) {
+        this.stats.cardsUnimported += notes.length;
+        this.log(`WARNING: no TxEffect for ${txHash.slice(0, 18)}… — ${notes.length} card(s) ` +
+          `are ours on-chain but the PXE cannot see them`);
+        return;
+      }
+      const held = await chain.readCards();
+      await chain.pxe.importCardNotes(chain.address, txHash, notes, 'settlement return', txEffect);
+      // import_note swallows per-note failures, so the only honest check is
+      // whether the wallet can actually see more cards afterwards.
+      const after = await chain.readCards();
+      const gained = after.length - held.length;
+      if (gained < notes.length) {
+        this.stats.cardsUnimported += notes.length - gained;
+        this.log(`WARNING: imported ${gained}/${notes.length} returned card(s) — ` +
+          `${notes.length - gained} are ours on-chain but invisible`);
+      } else {
+        this.log(`re-imported ${notes.length} returned card(s); now holding ${after.length}`);
+      }
+    } catch (err) {
+      this.stats.cardsUnimported += notes.length;
+      this.log(`WARNING: re-import of our own cards failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Import the cards the WINNER handed back to us after they settled.
+   *
+   * The mirror of relayReturnedNotes: when we lose, only the settler can
+   * compute the randomness for our returned cards, so this message is the only
+   * way we ever see them again.
+   */
+  private async importRelayedNotes(
+    txHash: string,
+    notes: { tokenId: number; randomness: string }[],
+  ): Promise<void> {
+    const chain = this.chain;
+    if (!chain || notes.length === 0) return;
+    try {
+      const { fetchTxEffectData } = await import('../../frontend/src/aztec/noteImporter.js');
+      const txEffect = await fetchTxEffectData(chain.nodeClient as never, txHash);
+      if (!txEffect) {
+        this.stats.cardsUnimported += notes.length;
+        this.log(`WARNING: no TxEffect for relayed notes ${txHash.slice(0, 18)}… — ` +
+          `${notes.length} card(s) invisible`);
+        return;
+      }
+      const held = await chain.readCards();
+      await chain.pxe.importCardNotes(chain.address, txHash, notes, 'opponent settlement', txEffect);
+      const after = await chain.readCards();
+      const gained = after.length - held.length;
+      if (gained < notes.length) {
+        this.stats.cardsUnimported += notes.length - gained;
+        this.log(`WARNING: imported ${gained}/${notes.length} relayed card(s)`);
+      } else {
+        this.log(`imported ${notes.length} card(s) returned by the winner; now holding ${after.length}`);
+      }
+    } catch (err) {
+      this.stats.cardsUnimported += notes.length;
+      this.log(`WARNING: import of relayed notes failed: ${(err as Error).message}`);
+    }
   }
 
   /**
