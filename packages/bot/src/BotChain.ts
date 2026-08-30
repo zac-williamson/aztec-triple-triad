@@ -196,7 +196,12 @@ export class BotChain {
       // Per-identity, NOT the default shared directory — see dataDir.ts. Must
       // match what provision-arena-bot.ts used for this index, since that is
       // the store its cards were minted into.
-      pxeConfig: { proverEnabled: true, dataDirectory: identityDataDirectory(this.identity.index) },
+      pxeConfig: {
+        proverEnabled: true,
+        // Version-scoped: a store from a dead chain fails with "unknown note
+        // hash", which looks nothing like the stale directory it is.
+        dataDirectory: identityDataDirectory(this.identity.index, process.cwd(), Number(rollupVersion)),
+      },
     });
     const account = await wallet.createSchnorrAccount(
       Fr.fromHexString(this.identity.secret),

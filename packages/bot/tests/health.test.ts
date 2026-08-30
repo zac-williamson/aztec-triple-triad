@@ -82,7 +82,7 @@ describe('health surfaces the number that predicts going idle', () => {
 
     const srv = startHealthServer(bot, 0);
     const port = (srv.server.address() as { port: number }).port;
-    const body = await (await fetch(`http://localhost:${port}/health`)).json();
+    const body = await (await fetch(`http://localhost:${port}/health`)).json() as Record<string, unknown>;
     await srv.close();
 
     // An out-of-cards bot idles, which is correct and indistinguishable from a

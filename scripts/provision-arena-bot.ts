@@ -299,7 +299,7 @@ async function main(): Promise<number> {
   // identities wedges LMDB the moment two of them run at once; see
   // packages/bot/src/dataDir.ts.
   const { identityDataDirectory } = await import('../packages/bot/src/dataDir.js');
-  const dataDirectory = identityDataDirectory(index, ROOT_DIR);
+  const dataDirectory = identityDataDirectory(index, ROOT_DIR, Number(rollupVersion));
   console.log(`  Store:  ${dataDirectory}`);
   const wallet = await EmbeddedWallet.create(node, {
     ephemeral: false,

@@ -17,9 +17,21 @@
  *
  * The provisioner and the bot for a given index MUST agree on this path: the
  * provisioner mints into that store and the bot spends from it.
+ *
+ * The path also carries the ROLLUP VERSION. A sandbox redeploys the rollup at
+ * the same L1 address every time, so the store's own key (chain id + rollup
+ * address) repeats across chains — and a store full of notes from a dead chain
+ * fails with "Read request is reading an unknown note hash", which reads like a
+ * contract bug rather than a stale directory. Versioning the path makes a stale
+ * store impossible instead of merely documented.
  */
 import { resolve } from 'path';
 
-export function identityDataDirectory(index: number, root = process.cwd()): string {
-  return resolve(root, 'aztec-wallet-data', `identity-${index}`);
+export function identityDataDirectory(
+  index: number,
+  root = process.cwd(),
+  rollupVersion?: number | string,
+): string {
+  const suffix = rollupVersion === undefined ? '' : `-rv${rollupVersion}`;
+  return resolve(root, 'aztec-wallet-data', `identity-${index}${suffix}`);
 }
