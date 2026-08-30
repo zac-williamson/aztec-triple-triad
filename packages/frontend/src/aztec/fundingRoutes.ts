@@ -8,14 +8,18 @@
  * exactly the code path we cannot fake locally.
  */
 import type { AcquireRoute, L1Addresses } from './l1Funding';
+import type { PoolKey } from './uniswapQuote';
 import type { Address } from 'viem';
 
-/** Uniswap V3 SwapRouter02 and WETH9, per chain. */
-const UNISWAP: Record<number, { router: Address; weth: Address }> = {
-  1: {
-    router: '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
-    weth: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
-  },
+/**
+ * Uniswap Universal Router, per chain — the entry point for v4 swaps.
+ *
+ * No WETH here: v4 treats native ETH as a currency in its own right, so the fee
+ * asset is bought with ETH directly and there is nothing to wrap or approve on
+ * the way in.
+ */
+const UNISWAP: Record<number, { router: Address }> = {
+  1: { router: '0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af' },
 };
 
 export interface RouteInputs {
@@ -25,11 +29,12 @@ export interface RouteInputs {
   ethIn: bigint;
   /** Fee-asset output quoted for `ethIn`. Required for a swap. */
   quotedOut?: bigint;
-  /** Pool fee tier; 0.3% is the usual starting pool for a new pair. */
-  poolFee?: number;
+  /** The exact pool, from the quoter. v4 has no factory to look one up. */
+  poolKey?: PoolKey;
+  zeroForOne?: boolean;
   maxSlippage?: number;
-  /** Overrides for a chain not in the table, or a pool that moves. */
-  overrides?: Partial<{ router: Address; weth: Address }>;
+  /** Overrides for a chain not in the table, or a router that moves. */
+  overrides?: Partial<{ router: Address }>;
 }
 
 /**
@@ -43,11 +48,10 @@ export function chooseAcquireRoute(input: RouteInputs): AcquireRoute {
 
   const known = UNISWAP[input.chainId];
   const router = input.overrides?.router ?? known?.router;
-  const weth = input.overrides?.weth ?? known?.weth;
-  if (!router || !weth) {
+  if (!router) {
     throw new Error(
       `No Fee Juice route for chain ${input.chainId}: it has no fee-asset faucet and no ` +
-      `configured swap router. Set the router and WETH addresses for this chain.`,
+      `configured Universal Router. Set the router address for this chain.`,
     );
   }
   if (input.quotedOut === undefined || input.quotedOut <= 0n) {
@@ -58,11 +62,15 @@ export function chooseAcquireRoute(input: RouteInputs): AcquireRoute {
   }
   if (input.ethIn <= 0n) throw new Error('ethIn must be greater than zero');
 
+  if (!input.poolKey) {
+    throw new Error('A v4 swap needs the pool key the quote came from — there is no factory to look one up.');
+  }
+
   return {
     kind: 'swap',
     router,
-    weth,
-    poolFee: input.poolFee ?? 3000,
+    poolKey: input.poolKey,
+    zeroForOne: input.zeroForOne ?? true,
     ethIn: input.ethIn,
     quotedOut: input.quotedOut,
     maxSlippage: input.maxSlippage ?? 0.02,
@@ -84,7 +92,7 @@ export function routeCostsRealMoney(route: AcquireRoute): boolean {
  */
 export const DEFAULT_FEE_JUICE_TARGET = 10n ** 18n;
 
-export interface ResolveInputs extends Omit<RouteInputs, 'ethIn' | 'quotedOut'> {
+export interface ResolveInputs extends Omit<RouteInputs, 'ethIn' | 'quotedOut' | 'poolKey' | 'zeroForOne'> {
   /** Reads quotes. Must be connected to `chainId`. */
   pub: PublicClientLike;
   /** Fee-asset units to end up with. Defaults to DEFAULT_FEE_JUICE_TARGET. */
@@ -92,7 +100,7 @@ export interface ResolveInputs extends Omit<RouteInputs, 'ethIn' | 'quotedOut'> 
   /** Extra ETH sent above the quote so a moving price still fills. */
   ethBuffer?: number;
   quoterAddress?: Address;
-  feeTiers?: readonly number[];
+  poolShapes?: readonly { fee: number; tickSpacing: number }[];
 }
 
 /** Structural, so tests and Node callers do not need a full viem PublicClient. */
@@ -108,33 +116,32 @@ type PublicClientLike = Parameters<typeof import('./uniswapQuote')['quoteExactIn
 export async function resolveAcquireRoute(input: ResolveInputs): Promise<AcquireRoute> {
   if (input.l1.feeAssetHandlerAddress) return { kind: 'mint' };
 
-  const { quoterFor, quoteExactInput, quoteExactOutput } = await import('./uniswapQuote');
+  const { quoterFor, quoteExactInput, quoteExactOutput, NATIVE } = await import('./uniswapQuote');
   const quoter = quoterFor(input.chainId, input.quoterAddress);
-  // Resolve the pair the same way chooseAcquireRoute will, so a router/WETH
-  // misconfiguration fails before we spend a quote on it.
-  const scaffold = chooseAcquireRoute({ ...input, ethIn: 1n, quotedOut: 1n });
-  if (scaffold.kind !== 'swap') throw new Error('Unreachable: no handler yet not a swap');
-  const { router, weth } = scaffold;
-
   const target = input.target ?? DEFAULT_FEE_JUICE_TARGET;
-  const common = { pub: input.pub, quoter, feeTiers: input.feeTiers };
+  const common = {
+    pub: input.pub, quoter,
+    tokenIn: NATIVE, tokenOut: input.l1.feeJuiceAddress,
+    poolShapes: input.poolShapes,
+  };
 
   // Price the amount we actually want, so the player sees the real cost...
-  const { poolFee, amountIn } = await quoteExactOutput({
-    ...common, tokenIn: weth, tokenOut: input.l1.feeJuiceAddress, amountOut: target,
-  });
+  const out = await quoteExactOutput({ ...common, amountOut: target });
 
   // ...then send a little more than that, because an exact-input swap sized to
   // an exact-output quote fills only if the price has not moved at all.
   const bufferBps = BigInt(Math.round(((input.ethBuffer ?? 0.03) + 1) * 10_000));
-  const ethIn = (amountIn * bufferBps) / 10_000n;
+  const ethIn = (out.amount * bufferBps) / 10_000n;
 
-  // The floor comes from quoting the amount we will genuinely send, on the tier
+  // The floor comes from quoting the amount we will genuinely send, in the pool
   // we will genuinely use — not from rescaling the exact-output quote.
-  const { amountOut } = await quoteExactInput({
-    ...common, tokenIn: weth, tokenOut: input.l1.feeJuiceAddress,
-    amountIn: ethIn, feeTiers: [poolFee],
+  const inQuote = await quoteExactInput({
+    ...common, amountIn: ethIn,
+    poolShapes: [{ fee: out.poolKey.fee, tickSpacing: out.poolKey.tickSpacing }],
   });
 
-  return chooseAcquireRoute({ ...input, ethIn, quotedOut: amountOut, poolFee });
+  return chooseAcquireRoute({
+    ...input, ethIn, quotedOut: inQuote.amount,
+    poolKey: inQuote.poolKey, zeroForOne: inQuote.zeroForOne,
+  });
 }

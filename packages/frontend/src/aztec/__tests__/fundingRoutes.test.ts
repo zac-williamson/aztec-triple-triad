@@ -9,6 +9,12 @@ import { chooseAcquireRoute, routeCostsRealMoney } from '../fundingRoutes';
 const PORTAL = '0x00000000000000000000000000000000000000aa' as const;
 const ASSET = '0x00000000000000000000000000000000000000bb' as const;
 const HANDLER = '0x00000000000000000000000000000000000000cc' as const;
+/** The shape the quoter hands back: v4 needs the whole key, not a fee tier. */
+const POOL_KEY = {
+  currency0: '0x0000000000000000000000000000000000000000',
+  currency1: ASSET, fee: 10000, tickSpacing: 200,
+  hooks: '0x0000000000000000000000000000000000000000',
+} as const;
 
 describe('chooseAcquireRoute', () => {
   it('mints where the node exposes a fee-asset faucet', () => {
@@ -29,11 +35,13 @@ describe('chooseAcquireRoute', () => {
       l1: { feeJuiceAddress: ASSET, feeJuicePortalAddress: PORTAL },
       ethIn: 10n ** 16n,
       quotedOut: 10n ** 18n,
+      poolKey: POOL_KEY,
     });
     expect(route.kind).toBe('swap');
     if (route.kind !== 'swap') return;
-    expect(route.router).toBe('0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45');
-    expect(route.weth).toBe('0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2');
+    // Universal Router: v4 has no per-pool entry point, and no WETH — native
+    // ETH is a currency in its own right.
+    expect(route.router).toBe('0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af');
     expect(routeCostsRealMoney(route)).toBe(true);
   });
 
@@ -53,7 +61,7 @@ describe('chooseAcquireRoute', () => {
       l1: { feeJuiceAddress: ASSET, feeJuicePortalAddress: PORTAL },
       ethIn: 10n ** 16n,
       quotedOut: 10n ** 18n,
-    })).toThrow(/no configured swap router/i);
+    })).toThrow(/no configured Universal Router/i);
   });
 
   it('accepts an override for a chain not in the table', () => {
@@ -62,7 +70,8 @@ describe('chooseAcquireRoute', () => {
       l1: { feeJuiceAddress: ASSET, feeJuicePortalAddress: PORTAL },
       ethIn: 10n ** 16n,
       quotedOut: 10n ** 18n,
-      overrides: { router: PORTAL, weth: ASSET },
+      poolKey: POOL_KEY,
+      overrides: { router: PORTAL },
     });
     expect(route.kind).toBe('swap');
   });
@@ -82,6 +91,7 @@ describe('chooseAcquireRoute', () => {
       l1: { feeJuiceAddress: ASSET, feeJuicePortalAddress: PORTAL },
       ethIn: 10n ** 16n,
       quotedOut: 10n ** 18n,
+    poolKey: POOL_KEY,
     });
     if (route.kind !== 'swap') throw new Error('expected a swap');
     expect(route.maxSlippage).toBeGreaterThan(0);

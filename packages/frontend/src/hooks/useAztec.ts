@@ -60,6 +60,7 @@ export interface SwapQuote {
   quotedOut: bigint;
   /** Worst case they will accept, after slippage. */
   minimumOut: bigint;
+  /** Pool fee in hundredths of a bip, e.g. 10000 = 1%. */
   poolFee: number;
 }
 
@@ -225,14 +226,15 @@ export function useAztec(): UseAztecReturn {
         // Stop. Nothing has been signed yet, and nothing will be until they
         // have seen what it costs.
         const swap = route as unknown as {
-          ethIn: bigint; quotedOut: bigint; maxSlippage: number; poolFee: number;
+          ethIn: bigint; quotedOut: bigint; maxSlippage: number;
+          poolKey: { fee: number };
         };
         quotedRouteRef.current = route;
         setPendingQuote({
           ethIn: swap.ethIn,
           quotedOut: swap.quotedOut,
           minimumOut: (swap.quotedOut * BigInt(Math.round((1 - swap.maxSlippage) * 10_000))) / 10_000n,
-          poolFee: swap.poolFee,
+          poolFee: swap.poolKey.fee,
         });
         setFundingProgress(null);
         return;

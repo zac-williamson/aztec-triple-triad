@@ -17,13 +17,12 @@ const QUOTER = '0x00000000000000000000000000000000000000dd' as const;
 /** Exact-out costs 1 wei per unit; exact-in returns 1 unit per wei. */
 function linearQuoter() {
   return {
-    simulateContract: vi.fn(async ({ functionName, args }: {
-      functionName: string; args: readonly { amount?: bigint; amountIn?: bigint; fee: number }[];
+    simulateContract: vi.fn(async ({ args }: {
+      args: readonly { poolKey: { fee: number }; exactAmount: bigint }[];
     }) => {
-      if (args[0].fee !== 3000) throw new Error('execution reverted');
-      return functionName === 'quoteExactOutputSingle'
-        ? { result: [args[0].amount!, 0n, 0, 0n] }
-        : { result: [args[0].amountIn!, 0n, 0, 0n] };
+      if (args[0].poolKey.fee !== 3000) throw new Error('execution reverted');
+      // 1:1 pool, both directions.
+      return { result: [args[0].exactAmount, 0n] };
     }),
   } as never;
 }
@@ -52,7 +51,7 @@ describe('resolveAcquireRoute', () => {
     expect(route.ethIn).toBe((DEFAULT_FEE_JUICE_TARGET * 10_300n) / 10_000n);
     // ...and the floor is quoted from THAT amount, not rescaled from the target.
     expect(route.quotedOut).toBe(route.ethIn);
-    expect(route.poolFee).toBe(3000);
+    expect(route.poolKey.fee).toBe(3000);
   });
 
   it('honours an explicit target', async () => {
@@ -70,7 +69,7 @@ describe('resolveAcquireRoute', () => {
     await expect(resolveAcquireRoute({
       chainId: 1, pub: dead, quoterAddress: QUOTER,
       l1: { feeJuiceAddress: ASSET, feeJuicePortalAddress: PORTAL },
-    })).rejects.toThrow(/No Uniswap V3 pool with liquidity/);
+    })).rejects.toThrow(/No Uniswap v4 pool with fillable liquidity/);
   });
 
   it('refuses an unknown chain even with a quoter, since the router is unknown', async () => {

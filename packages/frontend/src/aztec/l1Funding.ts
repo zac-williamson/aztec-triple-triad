@@ -28,9 +28,11 @@
  */
 import {
   createPublicClient, createWalletClient, custom, http,
-  encodeFunctionData, parseAbi, decodeEventLog, formatEther,
+  encodeFunctionData, encodeAbiParameters, concatHex, numberToHex,
+  parseAbi, decodeEventLog, formatEther,
   type Address, type Hex, type PublicClient, type WalletClient,
 } from 'viem';
+import { NATIVE, type PoolKey } from './uniswapQuote';
 
 /** The subset of the portal/ERC20/handler ABIs this flow touches. */
 /** Exported so a test can pin it against a log the real portal emitted. */
@@ -55,11 +57,27 @@ const FEE_ASSET_HANDLER_ABI = parseAbi([
   'function mint(address _recipient)',
   'function mintAmount() view returns (uint256)',
 ]);
-/** Uniswap V3 SwapRouter02. `exactInputSingle` is payable, so ETH is wrapped for us. */
-const SWAP_ROUTER_ABI = parseAbi([
-  'struct ExactInputSingleParams { address tokenIn; address tokenOut; uint24 fee; address recipient; uint256 amountIn; uint256 amountOutMinimum; uint160 sqrtPriceLimitX96; }',
-  'function exactInputSingle(ExactInputSingleParams params) payable returns (uint256 amountOut)',
+/**
+ * Uniswap Universal Router. v4 swaps go through it as an encoded command rather
+ * than a direct call: one V4_SWAP command whose payload is a little action
+ * program the router replays against the PoolManager.
+ */
+const UNIVERSAL_ROUTER_ABI = parseAbi([
+  'function execute(bytes commands, bytes[] inputs, uint256 deadline) payable',
 ]);
+
+/** UniversalRouter command. */
+const CMD_V4_SWAP = 0x10;
+/**
+ * v4-periphery action opcodes (Actions.sol). Three are needed for one swap:
+ * do the trade, pay what we owe, collect what we are owed. Getting any of them
+ * wrong reverts the whole transaction rather than misbehaving quietly, and the
+ * fork test in packages/playtest/scripts/ exercises exactly this encoding
+ * against the real router and the real pool.
+ */
+const ACTION_SWAP_EXACT_IN_SINGLE = 0x06;
+const ACTION_SETTLE_ALL = 0x0c;
+const ACTION_TAKE_ALL = 0x0f;
 
 /** L1 addresses, as the Aztec node reports them. */
 export interface L1Addresses {
@@ -80,10 +98,12 @@ export type AcquireRoute =
   | { kind: 'mint' }
   | {
       kind: 'swap';
+      /** Uniswap Universal Router. v4 has no per-pool router entry point. */
       router: Address;
-      weth: Address;
-      /** Uniswap V3 pool fee tier, e.g. 3000 for 0.3%. */
-      poolFee: number;
+      /** The exact pool to trade in. v4 identifies pools by the whole key. */
+      poolKey: PoolKey;
+      /** Direction through the pool, derived from which currency we spend. */
+      zeroForOne: boolean;
       /** Chain-native ETH to spend. The swap is exact-input: we spend this much. */
       ethIn: bigint;
       /**
@@ -98,6 +118,8 @@ export type AcquireRoute =
        * A swap with no floor can be sandwiched for everything it is worth.
        */
       maxSlippage: number;
+      /** How long the router will accept this transaction. */
+      deadlineSeconds?: number;
     };
 
 export interface FundingProgress {
@@ -332,22 +354,65 @@ export async function swapForFeeAsset(params: {
   const before = await pub.readContract({
     address: feeAsset, abi: ERC20_ABI, functionName: 'balanceOf', args: [account],
   });
+
+  const minOut = quoteFloor(route);
+  const currencyIn = route.zeroForOne ? route.poolKey.currency0 : route.poolKey.currency1;
+  const currencyOut = route.zeroForOne ? route.poolKey.currency1 : route.poolKey.currency0;
+
+  // One V4_SWAP command carrying a three-step action program: trade, pay in,
+  // take out. SETTLE_ALL and TAKE_ALL both carry a bound, so the router itself
+  // refuses to spend more or deliver less than we agreed.
+  const actions = concatHex([
+    numberToHex(ACTION_SWAP_EXACT_IN_SINGLE, { size: 1 }),
+    numberToHex(ACTION_SETTLE_ALL, { size: 1 }),
+    numberToHex(ACTION_TAKE_ALL, { size: 1 }),
+  ]);
+  const swapParams = encodeAbiParameters(
+    [{
+      type: 'tuple',
+      components: [
+        { name: 'poolKey', type: 'tuple', components: [
+          { name: 'currency0', type: 'address' }, { name: 'currency1', type: 'address' },
+          { name: 'fee', type: 'uint24' }, { name: 'tickSpacing', type: 'int24' },
+          { name: 'hooks', type: 'address' },
+        ] },
+        { name: 'zeroForOne', type: 'bool' },
+        { name: 'amountIn', type: 'uint128' },
+        { name: 'amountOutMinimum', type: 'uint128' },
+        { name: 'hookData', type: 'bytes' },
+      ],
+    }],
+    [{
+      poolKey: route.poolKey,
+      zeroForOne: route.zeroForOne,
+      amountIn: route.ethIn,
+      amountOutMinimum: minOut,
+      hookData: '0x',
+    }] as never,
+  );
+  const settleParams = encodeAbiParameters(
+    [{ type: 'address' }, { type: 'uint256' }], [currencyIn, route.ethIn],
+  );
+  const takeParams = encodeAbiParameters(
+    [{ type: 'address' }, { type: 'uint256' }], [currencyOut, minOut],
+  );
+  const v4Input = encodeAbiParameters(
+    [{ type: 'bytes' }, { type: 'bytes[]' }],
+    [actions, [swapParams, settleParams, takeParams]],
+  );
+
   const hash = await wallet.sendTransaction({
-    account, chain: null, to: route.router, value: route.ethIn,
+    account, chain: null, to: route.router,
+    // Native ETH in: the value IS the input, so there is nothing to approve.
+    value: currencyIn === NATIVE ? route.ethIn : 0n,
     data: encodeFunctionData({
-      abi: SWAP_ROUTER_ABI,
-      functionName: 'exactInputSingle',
-      args: [{
-        tokenIn: route.weth,
-        tokenOut: feeAsset,
-        fee: route.poolFee,
-        recipient: account,
-        amountIn: route.ethIn,
-        // A zero floor is a free sandwich for anyone watching the mempool. The
-        // caller supplies a quote-derived minimum; we refuse to swap without one.
-        amountOutMinimum: quoteFloor(route),
-        sqrtPriceLimitX96: 0n,
-      }],
+      abi: UNIVERSAL_ROUTER_ABI,
+      functionName: 'execute',
+      args: [
+        numberToHex(CMD_V4_SWAP, { size: 1 }),
+        [v4Input],
+        BigInt(Math.floor(Date.now() / 1000) + (route.deadlineSeconds ?? 600)),
+      ],
     }),
   });
   await mined(pub, hash, 'Fee asset swap');
@@ -356,7 +421,7 @@ export async function swapForFeeAsset(params: {
   });
   const gained = after - before;
   if (gained <= 0n) {
-    throw new Error('Swap completed but no Fee Juice arrived — check the pool and fee tier.');
+    throw new Error('Swap completed but no Fee Juice arrived — check the pool key and liquidity.');
   }
   return gained;
 }
