@@ -42,6 +42,13 @@ const OPPONENT_DIFFICULTY = (process.env.E2E_OPPONENT_DIFFICULTY ?? 'greedy') as
  */
 const ABANDON_AFTER = Number(process.env.E2E_ABANDON_AFTER_MOVES ?? 0);
 /**
+ * Walk out after the hand proof but BEFORE the first move — the case that was
+ * unrecoverable until the contract allowed a zero-move claim. The bot has both
+ * hand proofs and no move proofs, which is exactly the transcript the claim now
+ * accepts (and only from player 2, who is not the one who failed to move).
+ */
+const ABANDON_BEFORE_MOVE = process.env.E2E_ABANDON_BEFORE_MOVE === '1';
+/**
  * Fixed hands, to force a specific OUTCOME. A draw in particular cannot be
  * arranged by difficulty alone — ranks are per token_id from a fixed database,
  * so a draw needs a hand pair that happens to end 5-5 under greedy play. The
@@ -266,6 +273,12 @@ class ScriptedOpponent {
     // case here, not an edge case: it cost a full chain run (moves 8/9).
     if (!this.committed) return;
     if (!this.myCommit || !this.oppCommit) return;
+    if (ABANDON_BEFORE_MOVE && !this.abandoned) {
+      log('opponent', 'ABANDONING before playing a single card — closing the socket');
+      this.abandoned = true;
+      this.close();
+      return;
+    }
     if (!state || state.status !== 'playing' || state.currentTurn !== this.me) return;
     // Overridable so a run can force a BOT win: the bot settling is a distinct
     // on-chain path from the opponent settling (it is the side that takes a
@@ -445,7 +458,7 @@ async function main(): Promise<void> {
   // --- Abandonment mode: the opponent walked out, so nothing will ever settle
   // this game normally. Prove the cards actually come BACK, which is the only
   // thing that makes an unattended bot viable.
-  if (ABANDON_AFTER > 0) {
+  if (ABANDON_AFTER > 0 || ABANDON_BEFORE_MOVE) {
     const before = await botChain.readCards();
     const outstanding = journal.outstanding();
     console.log('\n=== ABANDONMENT RECOVERY ===');

@@ -214,9 +214,23 @@ export class BotChain {
     if (notes.length === 0) return;
 
     const markerPath = `${this.cfg.manifestPath}.imported.json`;
-    const done = new Set<string>(
+    let done = new Set<string>(
       existsSync(markerPath) ? (JSON.parse(readFileSync(markerPath, 'utf-8')) as string[]) : [],
     );
+
+    // The marker records what THIS store imported, and a store can be wiped
+    // (a fresh machine, a cleared data directory, a re-provision) while the
+    // marker file survives beside the manifest. It then claims everything is
+    // imported into a PXE that holds nothing, and the bot idles for want of
+    // cards it demonstrably owns. Holding zero while the manifest lists notes
+    // is unambiguous: re-import. import_note is idempotent, so the cost of
+    // being wrong here is time, and the cost of NOT checking is a bot that
+    // never plays again.
+    if (done.size > 0 && (await this.readCards()).length === 0) {
+      this.log('holding 0 cards but the import marker says otherwise — the PXE store was wiped; re-importing');
+      done = new Set<string>();
+    }
+
     const key = (n: { tokenId: number; randomness: string }) => `${n.tokenId}:${n.randomness}`;
     const pending = notes.filter(n => !done.has(key(n)));
     if (pending.length === 0) return;
