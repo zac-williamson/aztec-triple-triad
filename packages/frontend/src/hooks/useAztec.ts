@@ -25,6 +25,16 @@ export interface UseAztecReturn {
   ownedCardIds: number[];
   connect: () => Promise<void>;
   confirmFunded: () => Promise<void>;
+  /**
+   * Fund the account from the player's own wallet and deploy in one go.
+   *
+   * This is the path that works on mainnet: the player buys the fee asset with
+   * their own ETH rather than us handing it out. On a network whose fee asset is
+   * a mock the same code mints it instead — the swap is the only leg that
+   * differs, so testing here exercises the real thing.
+   */
+  fundWithWallet: () => Promise<void>;
+  fundingProgress: string | null;
   disconnect: () => void;
   refreshOwnedCards: () => Promise<void>;
   updateOwnedCards: (updater: (prev: number[]) => number[]) => void;
@@ -111,7 +121,7 @@ export function useAztec(): UseAztecReturn {
   }, []);
 
   /** Called when the user confirms they've funded their address */
-  const confirmFunded = useCallback(async () => {
+  const confirmFundedWith = useCallback(async (feeJuiceClaim?: unknown) => {
     const prepared = preparedRef.current;
     if (!prepared) {
       setError('No prepared connection');
@@ -131,7 +141,9 @@ export function useAztec(): UseAztecReturn {
         label: 'Deploying account & minting starter cards...',
         execute: async (ops, setPhase) => {
           setPhase('sending');
-          return deployAndRegister(prepared, ops, { log });
+          // The claim, when present, is spent in this very transaction —
+          // FeeJuicePaymentMethodWithClaim claims and pays in one go.
+          return deployAndRegister(prepared, ops, { log, feeJuiceClaim: feeJuiceClaim as never });
         },
       });
       walletRef.current = result.wallet;
@@ -145,6 +157,61 @@ export function useAztec(): UseAztecReturn {
       setStatus('error');
     }
   }, []);
+
+  const [fundingProgress, setFundingProgress] = useState<string | null>(null);
+
+  const fundWithWallet = useCallback(async () => {
+    const prepared = preparedRef.current;
+    if (!prepared) {
+      setError('No prepared connection');
+      setStatus('error');
+      return;
+    }
+    setError(null);
+    setFundingProgress('Connecting your wallet…');
+    try {
+      const { fundAccountFromWallet } = await import('../aztec/l1Funding');
+      const { chooseAcquireRoute } = await import('../aztec/fundingRoutes');
+      const info = await prepared.node.getNodeInfo();
+      const l1 = {
+        feeJuiceAddress: String(info.l1ContractAddresses.feeJuiceAddress) as `0x${string}`,
+        feeJuicePortalAddress: String(info.l1ContractAddresses.feeJuicePortalAddress) as `0x${string}`,
+        feeAssetHandlerAddress: info.l1ContractAddresses.feeAssetHandlerAddress
+          ? String(info.l1ContractAddresses.feeAssetHandlerAddress) as `0x${string}`
+          : undefined,
+      };
+      const chainId = Number(info.l1ChainId);
+      // On a mock-asset network this is a free mint, so there is nothing to
+      // quote. A real swap needs a quote from the router before we get here —
+      // chooseAcquireRoute refuses without one rather than risk a sandwich.
+      const route = chooseAcquireRoute({ chainId, l1, ethIn: 0n });
+      if (route.kind === 'swap') {
+        // A real swap needs a live quote and a price shown to the player before
+        // their ETH moves. Refusing here beats silently spending it.
+        throw new Error(
+          'This network requires buying Fee Juice. The in-app swap needs a live ' +
+          'quote — use the bridge link below until that is wired up.',
+        );
+      }
+
+      const claim = await fundAccountFromWallet({
+        aztecAddress: prepared.accountAddress,
+        l1, chainId, node: prepared.node as never, route,
+        onProgress: p => setFundingProgress(p.detail),
+      });
+
+      setFundingProgress(null);
+      await confirmFundedWith(claim as never);
+    } catch (err) {
+      setFundingProgress(null);
+      // Keep the player on the funding screen: the account is not deployed, and
+      // dropping them into an error state loses the retry.
+      setError(err instanceof Error ? err.message : 'Funding failed');
+    }
+  }, []);
+
+  /** The manual path: the player says they funded it themselves. */
+  const confirmFunded = useCallback(() => confirmFundedWith(undefined), [confirmFundedWith]);
 
   const disconnect = useCallback(() => {
     walletRef.current = null;
@@ -234,6 +301,8 @@ export function useAztec(): UseAztecReturn {
     ownedCardIds,
     connect,
     confirmFunded,
+    fundWithWallet,
+    fundingProgress,
     disconnect,
     refreshOwnedCards,
     updateOwnedCards: setOwnedCardIds,

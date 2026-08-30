@@ -93,6 +93,9 @@ function AppInner() {
         <FundingPrompt
           accountAddress={aztec.accountAddress}
           onConfirm={aztec.confirmFunded}
+          onFundWithWallet={aztec.fundWithWallet}
+          progress={aztec.fundingProgress}
+          error={aztec.error}
         />
       )}
 

@@ -26,8 +26,8 @@
     "@aztec/kv-store": "5.2.0-nightly.20260815",
     "@aztec/noir-contracts.js": "5.2.0-nightly.20260815",
     "@aztec/stdlib": "5.2.0-nightly.20260815",
-    "@aztec/wallets": "5.2.0-nightly.20260815",
     "@aztec/wallet-sdk": "5.2.0-nightly.20260815",
+    "@aztec/wallets": "5.2.0-nightly.20260815",
     "@noir-lang/noir_js": "1.0.0-beta.25",
     "@react-three/drei": "^9.122.0",
     "@react-three/fiber": "^8.18.0",
@@ -36,7 +36,8 @@
     "postprocessing": "^6.38.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "three": "^0.170.0"
+    "three": "^0.170.0",
+    "viem": "2.38.2"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
