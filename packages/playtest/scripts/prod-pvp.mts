@@ -226,6 +226,9 @@ async function main() {
     }
 
     await Promise.all(seats.map((s, i) => s.open(wallets[i])));
+    // Again after both launches: the two `open` calls race, and whichever
+    // Playwright launch finishes last reinstalls the handlers we just removed.
+    ownShutdownSignals();
     // Onboarding is mostly waiting on L1 and L2, so the two overlap happily.
     await Promise.all(seats.map(s => s.onboard()));
 
