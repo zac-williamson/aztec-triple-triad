@@ -77,21 +77,37 @@ contract/circuit commands with `~/.aztec/current` actually on
 **Install footgun (bites every time on the 5.2 line, re-running does NOT fix
 it).** `aztec-up install` exits 0 while leaving `versions/<v>/bin/` empty and
 printing `expected bundled binary 'forge' missing from .../internal-bin`. Cause
-is upstream: the version installer `mv`s foundryup's `bin/<tool>` — which are
-symlinks into its temp dir — into `internal-bin`, then `rm -rf`s that temp dir,
-so every foundry binary lands dangling; the next step's `-e` test then fails.
-Workaround, until upstream fixes it:
+is upstream: the version installer `mv`s tools out of a temp dir into
+`internal-bin` and then `rm -rf`s that temp dir — but what it moves are
+SYMLINKS back into that dir, so every one lands dangling; the next step's `-e`
+test then fails.
+
+**It does this in THREE places, not one** — `nargo`, `noir-profiler`, and each
+foundry binary. An earlier version of this note patched only foundry, which
+gets you past the `forge` error and into `spawn nargo ENOENT` two steps later:
+a dangling symlink reports ENOENT exactly like a missing file. Patch them all:
 
 ```bash
 curl -fsSL https://install.aztec-labs.com/<VERSION>/install -o /tmp/install.sh
-sed -i '' 's|mv "$temp_foundry_dir/bin/$binary"|cp -L "$temp_foundry_dir/bin/$binary"|' /tmp/install.sh
+# BSD sed wants `-i ''`; GNU sed (Linux, CI) wants `-i` or `-i.bak`.
+sed -i '' -E 's|mv "\$temp_([A-Za-z_]+)/bin/([^"]+)"|cp -L "$temp_\1/bin/\2"|g' /tmp/install.sh
+grep -cE 'cp -L "\$temp_[A-Za-z_]+/bin/' /tmp/install.sh    # expect 3
 rm -rf ~/.aztec/versions/<VERSION>
 VERSION=<VERSION> bash /tmp/install.sh
 aztec-up use <VERSION>
 ```
 
-Always verify a "successful" install with a non-empty `~/.aztec/versions/<v>/bin/`
-and a present `node_modules/` — an empty either way means it aborted.
+Note the versioned installer writes ONLY to `versions/<VERSION>` — it never
+touches `current` and never installs `aztec-up`, both of which belong to the
+wrapper at install.aztec.network. Without `aztec-up` available, make the
+symlink yourself: `ln -sfn ~/.aztec/versions/<VERSION> ~/.aztec/current`.
+
+Always verify a "successful" install rather than trusting its exit code:
+`~/.aztec/versions/<v>/bin/` non-empty, `node_modules/` present, and
+`test -x ~/.aztec/versions/<v>/internal-bin/nargo` — `test -x` follows
+symlinks, so it is what catches a dangling one.
+
+`.github/workflows/ci.yml` does all of this; keep the two in step.
 
 ## Build, run, test
 
