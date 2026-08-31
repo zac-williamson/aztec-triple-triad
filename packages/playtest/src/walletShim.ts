@@ -20,6 +20,8 @@ import {
 import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts';
 import { sepolia } from 'viem/chains';
 import { createRequire } from 'module';
+import { appendFileSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { dirname } from 'path';
 
 // scripts/ is CJS (the root package declares no "type"), this package is ESM.
 // A plain named import across that boundary fails to resolve under Playwright's
@@ -30,6 +32,49 @@ const { readFunderKey } = createRequire(import.meta.url)(
 ) as { readFunderKey: (env?: NodeJS.ProcessEnv) => string };
 
 export const L1_RPC = process.env.TESTNET_L1_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com';
+
+/**
+ * Where funded throwaway keys are noted down until they are refunded.
+ *
+ * A run that is killed cannot be relied on to refund anything. A signal
+ * handler helps with Ctrl-C, but a SIGTERM followed promptly by SIGKILL — how
+ * a supervisor stops a background job — announces the refund and dies with the
+ * RPC call in flight, which is exactly what happened and left two more
+ * accounts holding their funding. Money should not depend on winning that
+ * race, so every funded key is written down first and struck off once its
+ * refund lands. `sweep-throwaways.mts` collects whatever is left.
+ *
+ * These are single-use Sepolia keys holding ~0.02 test ETH and nothing else,
+ * and the file is under .artifacts (gitignored). Set PLAYTEST_KEY_LEDGER=off
+ * to skip it.
+ */
+export const KEY_LEDGER = process.env.PLAYTEST_KEY_LEDGER
+  ?? '.artifacts/throwaway-keys.jsonl';
+
+function ledgerAdd(address: Address, privateKey: Hex): void {
+  if (KEY_LEDGER === 'off') return;
+  try {
+    mkdirSync(dirname(KEY_LEDGER), { recursive: true });
+    appendFileSync(KEY_LEDGER, JSON.stringify({ address, privateKey, at: new Date().toISOString() }) + '\n');
+  } catch { /* the ledger is a safety net, never the thing that fails a run */ }
+}
+
+function ledgerRemove(address: Address): void {
+  if (KEY_LEDGER === 'off' || !existsSync(KEY_LEDGER)) return;
+  try {
+    const kept = readFileSync(KEY_LEDGER, 'utf8').split('\n')
+      .filter(l => l.trim() && !l.includes(address));
+    writeFileSync(KEY_LEDGER, kept.length ? kept.join('\n') + '\n' : '');
+  } catch { /* as above */ }
+}
+
+/** Every throwaway account still recorded as unrefunded. */
+export function pendingThrowaways(): { address: Address; privateKey: Hex; at: string }[] {
+  if (!existsSync(KEY_LEDGER)) return [];
+  return readFileSync(KEY_LEDGER, 'utf8').split('\n')
+    .filter(l => l.trim())
+    .map(l => JSON.parse(l));
+}
 
 /** Enough for mint + approve + deposit with room for a fee spike. */
 const DEFAULT_ONBOARDING_ETH = 20_000_000_000_000_000n; // 0.02 ETH
@@ -65,6 +110,7 @@ export async function createFundedL1Account(
   const receipt = await pub.waitForTransactionReceipt({ hash });
   if (receipt.status !== 'success') throw new Error(`Funding the new account reverted (${hash})`);
   log(`funded with ${formatEther(fundWei)} SepoliaETH (${hash})`);
+  ledgerAdd(account.address, privateKey);
 
   return {
     address: account.address,
@@ -184,8 +230,15 @@ export async function refundTreasury(privateKey: Hex, log?: (m: string) => void)
     const balance = await pub.getBalance({ address: account.address });
     const fees = await pub.estimateFeesPerGas();
     const cost = 21_000n * (fees.maxFeePerGas ?? 0n);
-    if (balance <= cost * 2n) return; // not worth a transaction
-    await wallet.sendTransaction({ to: treasury.address, value: balance - cost * 2n, gas: 21_000n });
+    if (balance <= cost * 2n) { ledgerRemove(account.address); return; } // not worth a transaction
+    const hash = await wallet.sendTransaction({ to: treasury.address, value: balance - cost * 2n, gas: 21_000n });
+    // Struck off only once the refund has actually MINED. Removing it at send
+    // time would discard the record on the one occasion it matters — a
+    // transaction that never lands — which is the whole failure the ledger
+    // exists to catch. If we are killed during this wait the entry survives and
+    // the sweep retries; re-refunding an already-empty account is a no-op.
+    await pub.waitForTransactionReceipt({ hash });
+    ledgerRemove(account.address);
     log?.(`refunded ~${formatEther(balance - cost * 2n)} ETH to the treasury`);
   } catch (err) {
     log?.(`refund skipped: ${err instanceof Error ? err.message : String(err)}`);

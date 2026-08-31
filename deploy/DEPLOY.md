@@ -385,6 +385,18 @@ Run it where the treasury key is. It CANNOT run on the relay box: the key is
 deliberately not there, and a browser doing client-side proving would compete
 with the bot for the box's two cores.
 
+If a run is interrupted, its throwaway account keeps whatever is left of its
+funding. Each funded key is recorded in `.artifacts/throwaway-keys.jsonl` and
+struck off once its refund mines, so nothing is lost even to a `kill -9`:
+
+```bash
+npx tsx packages/playtest/scripts/sweep-throwaways.mts --dry-run   # what is outstanding
+npx tsx packages/playtest/scripts/sweep-throwaways.mts             # refund it
+```
+
+Do not sweep while a game is in progress — refunding an account mid-run takes
+the gas its next transaction needs.
+
 Two runs rather than one because almost every bug found in this codebase came
 from repetition — a queue that only floods under load, a settlement timeout
 that only bites when the ninth proof lands after the relay has declared the
