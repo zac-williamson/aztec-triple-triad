@@ -1008,6 +1008,99 @@ describe('ArenaBot move proof staleness', () => {
   });
 });
 
+/**
+ * The move that ENDS a game is proved after the relay has already announced
+ * GAME_OVER — that is the ordinary sequence, not an edge case. On a loss the
+ * bot has reset to idle by then, and it used to check `this.gameId !== gameId`
+ * after the await and drop the finished proof on the floor.
+ *
+ * That proof is the WINNER's. Without it they sit at 8/9, their wait expires,
+ * and the game can never be settled: five cards stranded a side. Seen twice on
+ * production, where it was misread as a timeout being too short — no wait
+ * would have been long enough, because the ninth proof was never coming.
+ */
+describe('ArenaBot final move proof', () => {
+  const setup = () => {
+    const socket = new FakeSocket();
+    const f = fakeChain();
+    let release: (v: any) => void = () => {};
+    const proofs = {
+      cardCommitHash: async () => FIELD(0x1),
+      verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
+      proveHand: async () => ({ proof: 'p', publicInputs: [], cardCommit: FIELD(0x1) }),
+      // Held open so the test decides when proving finishes.
+      proveMove: () => new Promise(res => { release = res; }),
+    };
+    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 20 }), {
+      connect: () => socket as unknown as any,
+      // A waiting human, so the bot QUEUES and thereby picks its hand — without
+      // one it never has cards to play and never takes a turn.
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, proofs: proofs as any, log: () => {}, now: () => 1_000_000,
+    });
+    return { socket, bot, finishProving: () => release({ proof: 'p', publicInputs: [], startStateHash: 's' }) };
+  };
+
+  /** Play one bot move and echo the board it produced, leaving it mid-proof. */
+  async function moveAndStartProving(h: ReturnType<typeof setup>) {
+    h.bot.start();
+    h.socket.emit('open');
+    h.socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    h.socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
+    h.socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 1, handProof: { proof: 'q', publicInputs: [], cardCommit: FIELD(0x2) } });
+    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
+    await vi.advanceTimersByTimeAsync(50);
+    const placed: any = h.socket.lastOfType('PLACE_CARD');
+    expect(placed, 'the bot should have taken its turn').toBeDefined();
+
+    // The echoed state must be EXACTLY the one its move produced.
+    const after: any = botTurnState();
+    after.board[placed.row][placed.col] = { card: { id: 1 }, owner: 'player2', originalOwner: 'player2' };
+    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: after });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(h.socket.countOfType('SUBMIT_MOVE_PROOF'), 'still proving').toBe(0);
+    return after;
+  }
+
+  it('sends it even though the game ended while it was still proving', async () => {
+    const h = setup();
+    const after = await moveAndStartProving(h);
+
+    h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'player1', gameState: after });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(h.bot.getStats().state, 'a loss resets us to idle').not.toBe('playing');
+
+    h.finishProving();
+    await vi.advanceTimersByTimeAsync(50);
+
+    const sent: any = h.socket.lastOfType('SUBMIT_MOVE_PROOF');
+    expect(sent, 'the winner cannot settle without this proof').toBeDefined();
+    expect(sent.gameId).toBe('g1');
+    h.bot.stop();
+  });
+
+  it('still drops one for a game it has since left for a different one', async () => {
+    const h = setup();
+    const after = await moveAndStartProving(h);
+
+    h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'player1', gameState: after });
+    await vi.advanceTimersByTimeAsync(20);
+    // Straight into the next game, so `gameId` is set again — and to something
+    // else. Sending g1's proof now would be answering for a game we are no
+    // longer part of.
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g2', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    await vi.advanceTimersByTimeAsync(20);
+
+    h.finishProving();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.socket.countOfType('SUBMIT_MOVE_PROOF')).toBe(0);
+    h.bot.stop();
+  });
+});
+
 describe('ArenaBot stuck-game watchdog', () => {
   it('abandons a stuck game and reports the cards left committed', async () => {
     const socket = new FakeSocket();

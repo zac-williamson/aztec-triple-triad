@@ -300,6 +300,13 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
     const pending = pendingMovesRef.current.splice(0);
     console.log(`[useGamePlay] Processing ${pending.length} queued move(s)`);
 
+    // Captured BEFORE any awaiting. Reading ws.gameId after the proof comes
+    // back drops it if the player has left the game meanwhile — and the proof
+    // of the move that ENDED the game is exactly the one the winner needs to
+    // settle. The bot had the same bug and it stranded five cards a side on
+    // production: the winner sat at 8/9 for a proof that was never coming.
+    const proofGameId = ws.gameId;
+
     (async () => {
       for (const move of pending) {
         try {
@@ -335,8 +342,8 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
             scoresBefore, scoresAfter,
             gameEnded, winnerId,
           );
-          if (moveProof && ws.gameId) {
-            ws.submitMoveProof(ws.gameId, move.handIndex, move.row, move.col, moveProof, move.moveNumber);
+          if (moveProof && proofGameId) {
+            ws.submitMoveProof(proofGameId, move.handIndex, move.row, move.col, moveProof, move.moveNumber);
           }
         } catch (err) {
           console.warn('[useGamePlay] Deferred move proof failed:', err);
@@ -399,6 +406,10 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
 
         if (myHandProof && opponentHandProof) {
           owe(+1);
+          // Captured before awaiting, for the same reason as the deferred path
+          // above: leaving the game while this proof generates must not discard
+          // it, because the last move's proof is what lets the winner settle.
+          const proofGameId = ws.gameId;
           try {
             const moveProof = await generateMoveProofForPlacement(
               card.id, row, col, ws.playerNumber,
@@ -406,7 +417,7 @@ export function useGamePlay({ ws, cardIds, blindingFactor }: UseGamePlayParams):
               scoresBefore, scoresAfter,
               gameEnded, winnerId,
             );
-            ws.submitMoveProof(ws.gameId, handIndex, row, col, moveProof, moveNumber);
+            ws.submitMoveProof(proofGameId, handIndex, row, col, moveProof, moveNumber);
           } finally {
             // Cleared even on failure: the proof is not coming, so holding the
             // unload guard up forever would only trap the player in a tab that

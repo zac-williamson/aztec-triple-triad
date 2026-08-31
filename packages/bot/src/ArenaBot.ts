@@ -741,17 +741,34 @@ export class ArenaBot {
       gameEnded: ended, winnerId,
       playerHandData: { cardIds: [...this.hand], blindingFactor, handIndex: 0 },
     });
-    if (this.gameId !== gameId || !gameId) return;
-    // Key by the chain link, not the move number: sortProofChain orders the
-    // transcript by state hash, and duplicates from a relay replay must collapse.
-    this.moveProofs.set(String(moveProof.startStateHash), moveProof);
-    this.journalGame();
+    if (!gameId) return;
+    // A proof that finishes AFTER the game ended still has to be sent.
+    //
+    // The move that ends the game is proved after the relay has already
+    // announced GAME_OVER, and on a loss `resetToIdle()` has by then nulled
+    // `this.gameId`. Bailing out here on that basis dropped the proof silently
+    // — and it is the one the WINNER needs, so they sat at 8/9 until their
+    // wait expired and the game could never be settled: five cards stranded a
+    // side. Raising that wait did not help and could not have; the ninth proof
+    // was never coming. Observed on production, twice.
+    //
+    // Only a DIFFERENT game is grounds to drop it. The relay routes by the
+    // gameId in the message and keeps rooms after they finish, so a late proof
+    // reaches the opponent regardless of what we have moved on to.
+    const stillOurs = this.gameId === gameId;
+    if (this.gameId !== null && !stillOurs) return;
+    if (stillOurs) {
+      // Key by the chain link, not the move number: sortProofChain orders the
+      // transcript by state hash, and duplicates from a relay replay collapse.
+      this.moveProofs.set(String(moveProof.startStateHash), moveProof);
+      this.journalGame();
+    }
     this.send({
       type: 'SUBMIT_MOVE_PROOF', gameId,
       handIndex: 0, row: pending.row, col: pending.col,
       moveNumber: pending.moveNumber, moveProof,
     });
-    this.log(`move proof ${pending.moveNumber} submitted`);
+    this.log(`move proof ${pending.moveNumber} submitted${stillOurs ? '' : ' (after game over)'}`);
   }
 
   /**
