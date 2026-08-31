@@ -101,23 +101,52 @@ async function main() {
     await shot(page, 'in-game');
     log('matched — playing');
 
-    // Nine placements, alternating. Cells are DOM nodes; pick any empty one.
+    // The board is a WebGL quad, not DOM: production ships no testkit, so there
+    // is no getScreenXY to aim with and no cell element to click. Interpolate
+    // the nine cell centres across the board's projected corners and verify by
+    // whether the turn actually flipped — a click that misses is silent.
+    const CORNERS = { bl: [515, 252], br: [920, 252], fl: [468, 658], fr: [985, 658] };
+    const cellPoint = (r: number, c: number): [number, number] => {
+      const u = (c + 0.5) / 3, v = (r + 0.5) / 3;
+      const topX = CORNERS.bl[0] + u * (CORNERS.br[0] - CORNERS.bl[0]);
+      const topY = CORNERS.bl[1] + u * (CORNERS.br[1] - CORNERS.bl[1]);
+      const botX = CORNERS.fl[0] + u * (CORNERS.fr[0] - CORNERS.fl[0]);
+      const botY = CORNERS.fl[1] + u * (CORNERS.fr[1] - CORNERS.fl[1]);
+      return [topX + v * (botX - topX), topY + v * (botY - topY)];
+    };
+    const text = () => page.evaluate(() => document.body.innerText);
+
     for (let move = 0; move < 9; move++) {
-      const over = /Game Over/i.test(await page.evaluate(() => document.body.innerText));
-      if (over) break;
+      if (/Game Over/i.test(await text())) break;
       await until(page, 'my turn', /Your Turn|Game Over/i, 15 * 60_000);
-      if (/Game Over/i.test(await page.evaluate(() => document.body.innerText))) break;
-      const hand = await page.locator('[data-testid^="card-"]:visible').all();
-      if (hand.length) await hand[0].click().catch(() => {});
-      await page.waitForTimeout(600);
-      const cells = await page.locator('.board__cell--clickable, [data-testid^="cell-"]').all();
+      if (/Game Over/i.test(await text())) break;
+
+      // Pick a card. The hand IS DOM, but there is no text that confirms a
+      // selection: the hint reads "Select a card from your hand" purely while
+      // ten cards remain across both hands, so it says that whether or not
+      // anything is selected. Treating it as a selection signal is what made an
+      // earlier run give up on a click that had probably worked. The turn
+      // flipping is the only honest confirmation, so that is what we check.
+      const hand = await page.locator('[data-testid^="card-"]').all();
+      if (!hand.length) { log('no hand cards in the DOM — stopping'); await shot(page, 'no-hand'); break; }
+      await hand[0].click({ timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(900);
+
+      // Try each empty-looking cell until the turn flips.
       let placed = false;
-      for (const c of cells) {
-        if (await c.click({ timeout: 4000 }).then(() => true).catch(() => false)) { placed = true; break; }
+      for (let r = 0; r < 3 && !placed; r++) {
+        for (let c = 0; c < 3 && !placed; c++) {
+          const [x, y] = cellPoint(r, c);
+          await page.mouse.click(x, y);
+          await page.waitForTimeout(2500);
+          if (/Opponent's Turn|Game Over/i.test(await text())) {
+            placed = true;
+            log(`played move ${move + 1} at cell [${r},${c}]`);
+          }
+        }
       }
-      if (!placed) { log('no clickable cell found — stopping'); break; }
-      log(`played move ${move + 1}`);
-      await page.waitForTimeout(4000);
+      if (!placed) { await shot(page, `stuck-move-${move + 1}`); log('no cell accepted a card — stopping'); break; }
+      await page.waitForTimeout(3000);
     }
 
     await until(page, 'the game to end', /Game Over/i, 20 * 60_000);
