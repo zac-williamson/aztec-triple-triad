@@ -70,11 +70,30 @@ can state precisely why it cannot and the loss is bounded and monitored.
 fails loudly, and running it is now part of the release runbook
 (`deploy/DEPLOY.md`, "Before announcing a release: play a real game").
 
-It earned its place immediately. On its second run it caught a real production
-bug — `MOVE_PROOF_WAIT_TIMEOUT` was 30s, but the ninth move proof is generated
-AFTER the relay declares the game over, so the winner timed out at 8/9, went
-idle, and since a win has exactly one settler the game stranded five cards a
-side. Now 180s, with tests pinning it to the hand-proof budget.
+It earned its place twice over.
+
+On its second run it surfaced `Timed out waiting for move proofs: have 8/9` —
+the winner unable to settle, and since a win has exactly one settler, five cards
+a side stranded. That looked like the 30s `MOVE_PROOF_WAIT_TIMEOUT` being too
+tight, so it went to 180s.
+
+**It came back at 180s**, which is what finally identified the real cause. The
+bot's log:
+
+    23:12:01  move proof 5 submitted
+    23:12:04  game over: player1 (bot was player2)
+
+Three proofs where four were owed. The move that ENDS a game is proved after the
+relay has announced GAME_OVER — the ordinary sequence — and on a loss the bot
+has reset to idle by then, so its post-await `this.gameId !== gameId` check
+dropped the finished proof in silence. No timeout could have been long enough;
+the ninth proof was never coming. The frontend had the same shape, which would
+have stranded a human opponent whenever a player left while their last proof was
+still generating.
+
+The 180s stays — proving does take time, and player-vs-player needs the
+headroom — but it was never the bug. Two runs of this check are what separated
+the two.
 
 It also cried wolf once, which was worse than useless: it decided pass/fail by
 grepping for settlement wording that the losing path never prints, and reported
