@@ -50,8 +50,11 @@ export interface BotChainLike {
   /** Fee Juice balance; the bot pays its own transaction fees. */
   readFeeJuice?(): Promise<bigint>;
   /** Cards the PXE can currently see. The only honest check that an import
-   *  worked: import_note swallows per-note failures. */
-  readCards(): Promise<number[]>;
+   *  worked: import_note swallows per-note failures. Cached — pass force to
+   *  pay for a fresh page-through. */
+  readCards(opts?: { force?: boolean }): Promise<number[]>;
+  /** Drop the card cache; call whenever cards have moved. */
+  invalidateCards?(): void;
   pxe: any;
 }
 
@@ -578,6 +581,8 @@ export class ArenaBot {
     if (this.gameId !== wsGameId) return;
     this.send({ type: 'TX_CONFIRMED', gameId: wsGameId, txType: 'join_game', txHash });
     this.committed = true;
+    // Five cards are nullified by the join; the cached collection is now stale.
+    (chain as { invalidateCards?: () => void }).invalidateCards?.();
     this.log(`join_game mined: ${txHash.slice(0, 18)}…`);
     // Our cards are locked from THIS moment. Journal before anything else can
     // fail, or a crash in the next few seconds strands them unrecoverably.
@@ -860,7 +865,7 @@ export class ArenaBot {
     const chain = this.chain as (BotChainLike & { lastKnownCardCount?: number }) | null;
     if (!chain) return;
     try {
-      const held = await chain.readCards();
+      const held = await chain.readCards({ force: true });
       this.stats.spendableCards = held.length;
     } catch { /* a failed read must not stop the bot starting */ }
     try {
@@ -943,8 +948,10 @@ export class ArenaBot {
       const held = await chain.readCards();
       await chain.pxe.importCardNotes(chain.address, txHash, notes, 'settlement return', txEffect);
       // import_note swallows per-note failures, so the only honest check is
-      // whether the wallet can actually see more cards afterwards.
-      const after = await chain.readCards();
+      // whether the wallet can actually see more cards afterwards. Cards have
+      // definitely moved, so this read must not come from the cache.
+      chain.invalidateCards?.();
+      const after = await chain.readCards({ force: true });
       const gained = after.length - held.length;
       if (gained < notes.length) {
         this.stats.cardsUnimported += notes.length - gained;
@@ -983,7 +990,8 @@ export class ArenaBot {
       }
       const held = await chain.readCards();
       await chain.pxe.importCardNotes(chain.address, txHash, notes, 'opponent settlement', txEffect);
-      const after = await chain.readCards();
+      chain.invalidateCards?.();
+      const after = await chain.readCards({ force: true });
       const gained = after.length - held.length;
       if (gained < notes.length) {
         this.stats.cardsUnimported += notes.length - gained;

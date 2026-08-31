@@ -342,8 +342,37 @@ export class BotChain {
   }
 
   /** Cards the bot's PXE can actually spend right now. */
-  async readCards(): Promise<number[]> {
-    return await this.pxe.readPrivateCards(this.address);
+  /**
+   * The collection, cached.
+   *
+   * readPrivateCards pages the whole collection ten cards at a time, so it is
+   * O(cards) sequential simulations against the node — about 46 seconds at
+   * 1,382 cards. The bot polls every two seconds and used to re-read on every
+   * poll, which enqueued a 46-second operation 23 times faster than the single
+   * serial PXE queue could drain it. A join then waited behind 21 of them:
+   * sixteen minutes, measured in production, for a transaction that takes
+   * forty-four seconds.
+   *
+   * The count only changes when cards move — a commit, a settlement, an import
+   * — and those all invalidate explicitly. The TTL is a backstop for anything
+   * that changes them without saying so.
+   */
+  private cardCache: { ids: number[]; at: number } | null = null;
+  private static readonly CARD_CACHE_TTL_MS = 120_000;
+
+  async readCards(opts: { force?: boolean } = {}): Promise<number[]> {
+    const fresh = this.cardCache
+      && Date.now() - this.cardCache.at < BotChain.CARD_CACHE_TTL_MS;
+    if (!opts.force && fresh) return this.cardCache!.ids;
+    const ids = await this.pxe.readPrivateCards(this.address);
+    this.cardCache = { ids, at: Date.now() };
+    this.lastKnownCardCount = ids.length;
+    return ids;
+  }
+
+  /** Call whenever cards move; the next read pays for a fresh page-through. */
+  invalidateCards(): void {
+    this.cardCache = null;
   }
 
   /**
