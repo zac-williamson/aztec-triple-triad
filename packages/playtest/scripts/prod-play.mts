@@ -123,7 +123,8 @@ async function main() {
       const botY = CORNERS.fl[1] + u * (CORNERS.fr[1] - CORNERS.fl[1]);
       return [topX + v * (botX - topX), topY + v * (botY - topY)];
     };
-    const text = () => page.evaluate(() => document.body.innerText);
+    const text = () => page!.evaluate(() => document.body.innerText);
+    let moves = 0;
 
     for (let move = 0; move < 9; move++) {
       if (/Game Over/i.test(await text())) break;
@@ -138,23 +139,38 @@ async function main() {
       // made an earlier run abandon a click that had probably worked. The turn
       // flipping is the only honest confirmation, so that is what we check.
       const HAND_Y = 855;
-      const HAND_X = [570, 645, 720, 795, 870];
+      // Leftmost card each turn: the hand re-lays out as it shrinks, so the
+      // first slot is the only position that is always occupied.
+      await page.mouse.click(570, HAND_Y);
+      await page.waitForTimeout(1200);
 
-      // Pick a hand card, then try cells, until the turn flips. Both are
-      // canvas hit-tests, so neither click reports whether it landed.
+      // ONE cell per attempt, then wait properly for the turn to flip.
+      //
+      // The first version clicked cells 2.2s apart and treated any flip as
+      // success. A real move takes longer than that to process — proof, then
+      // animation — so the DOM still read "Your Turn" and it clicked the next
+      // cell, placing several cards per iteration while logging one. A 5-5 draw
+      // came back having logged two moves out of nine. Fast enough to look like
+      // it worked, wrong enough to prove nothing.
+      //
+      // A legitimate move always lands well inside this window, so trying
+      // another cell only happens when the click genuinely did nothing (an
+      // occupied square).
+      const MOVE_CONFIRM_MS = 90_000;
       let placed = false;
-      for (const hx of HAND_X) {
-        if (placed) break;
-        await page.mouse.click(hx, HAND_Y);
-        await page.waitForTimeout(900);
-        for (let r = 0; r < 3 && !placed; r++) {
-          for (let c = 0; c < 3 && !placed; c++) {
-            const [x, y] = cellPoint(r, c);
-            await page.mouse.click(x, y);
-            await page.waitForTimeout(2200);
-            if (/Opponent's Turn|Game Over/i.test(await text())) {
+      for (let r = 0; r < 3 && !placed; r++) {
+        for (let c = 0; c < 3 && !placed; c++) {
+          const [x, y] = cellPoint(r, c);
+          await page.mouse.click(x, y);
+          const until = Date.now() + MOVE_CONFIRM_MS;
+          while (Date.now() < until) {
+            await page.waitForTimeout(2000);
+            const t = await text();
+            if (/Opponent's Turn|Game Over/i.test(t)) {
               placed = true;
-              log(`played move ${move + 1}: hand x=${hx} -> cell [${r},${c}]`);
+              moves += 1;
+              log(`move ${moves}: cell [${r},${c}] — turn passed to the opponent`);
+              break;
             }
           }
         }
