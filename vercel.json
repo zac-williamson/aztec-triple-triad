@@ -3,6 +3,11 @@
   "buildCommand": "npm run build --workspace=@axolotl-arena/game-logic && cd packages/frontend && npm run build",
   "outputDirectory": "packages/frontend/dist",
   "installCommand": "npm install --legacy-peer-deps",
+  "git": {
+    "deploymentEnabled": {
+      "main": false
+    }
+  },
   "framework": null,
   "headers": [
     {
