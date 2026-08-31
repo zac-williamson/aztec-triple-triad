@@ -39,6 +39,10 @@ export interface BotProofsLike {
  */
 const RETURN_WAIT_MS = 60 * 60_000;
 
+/** Game ids are 62 hex chars; logs stay readable with the first few. */
+const short = (id: unknown): string =>
+  typeof id === 'string' ? `${id.slice(0, 10)}…` : String(id);
+
 export interface BotChainLike {
   readonly address: string;
   readonly nodeClient?: any;
@@ -385,6 +389,14 @@ export class ArenaBot {
         break;
 
       case 'OPPONENT_AZTEC_INFO':
+        // Announce what arrived. Without this, an info share that is missing a
+        // field — or that arrives for a game we have already left — is
+        // indistinguishable from one that never came, and the bot simply never
+        // joins while the player waits out the whole game.
+        this.log(`opponent info for ${short(msg.gameId)}: ` +
+          `addr=${msg.aztecAddress ? 'yes' : 'no'} onChainId=${msg.onChainGameId ? 'yes' : 'no'} ` +
+          `randomness=${Array.isArray(msg.gameRandomness) ? msg.gameRandomness.length : 'no'}` +
+          (msg.gameId === this.gameId ? '' : `  IGNORED (our game is ${short(this.gameId)})`));
         if (this.chain && msg.gameId === this.gameId) {
           // Record each field independently: they are optional on the wire, and
           // coupling the id to the randomness meant a share without randomness
@@ -415,10 +427,22 @@ export class ArenaBot {
         // "Game not in created state".
         if (this.chain && this.myPlayer === 'player2' && msg.gameId === this.gameId
             && msg.status?.player1Tx === 'confirmed' && this.onChainGameId) {
+          this.log(`player 1 confirmed on-chain — joining ${short(this.onChainGameId)}`);
           void this.commitAsPlayer2(msg.gameId, this.onChainGameId).catch(err => {
             this.stats.commitFailures += 1;
             this.recordError('commit-join', err as Error);
           });
+        } else if (this.myPlayer === 'player2' && msg.gameId === this.gameId && !this.committed) {
+          // Say WHY we are not joining. This condition failing silently is what
+          // let a production game sit at move zero for eighteen minutes: every
+          // message had arrived and been handled, and nothing said which term
+          // was false.
+          const missing = [
+            !this.chain && 'chain mode off',
+            msg.status?.player1Tx !== 'confirmed' && `player1Tx=${msg.status?.player1Tx ?? 'absent'}`,
+            !this.onChainGameId && 'no on-chain game id yet',
+          ].filter(Boolean).join(', ');
+          if (missing) this.log(`not joining yet: ${missing}`);
         }
         break;
 
