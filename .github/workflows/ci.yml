@@ -168,6 +168,12 @@ jobs:
           # check what actually landed instead of trusting the exit code.
           test -x "$HOME/.aztec/versions/$V/internal-bin/forge" \
             || { echo "forge still missing after install"; ls -la "$HOME/.aztec/versions/$V/internal-bin" || true; exit 1; }
+          # The versioned installer does not point `current` at what it just
+          # installed — the wrapper at install.aztec.network does that — so
+          # without this the next step gets `aztec: command not found`.
+          "$HOME/.aztec/bin/aztec-up" use "$V"
+          test -x "$HOME/.aztec/current/bin/aztec" \
+            || { echo "aztec missing from current/bin"; ls -la "$HOME/.aztec/current/bin" || true; exit 1; }
 
       - name: Add Aztec to PATH
         run: |
