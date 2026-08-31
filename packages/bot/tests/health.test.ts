@@ -3,7 +3,11 @@ import { startHealthServer, type HealthServer } from '../src/health.js';
 import { ArenaBot } from '../src/ArenaBot.js';
 import { EventEmitter } from 'events';
 
-const PORT = 5399 + Math.floor(Math.random() * 500);
+// A fresh OS-assigned port per test, not one fixed port for the whole file.
+// Servers that start and stop around each test on the SAME port leave undici
+// holding a keep-alive socket to a server that has since closed, and the next
+// request on it fails with "other side closed" — an intermittent CI failure
+// with nothing wrong in the code under test. It duly failed a CI run.
 let running: HealthServer | null = null;
 afterEach(async () => { await running?.close(); running = null; });
 
@@ -17,14 +21,19 @@ const stubBot = (over: Partial<ReturnType<ArenaBot['getStats']>> = {}) => ({
   }),
 }) as unknown as ArenaBot;
 
-const get = async (path: string) => {
-  const res = await fetch(`http://localhost:${PORT}${path}`);
-  return { status: res.status, body: await res.json() as any };
-};
+/** Start a server on an ephemeral port; returns a `get` bound to it. */
+async function serve(bot: ArenaBot) {
+  running = startHealthServer(bot, 0);
+  const port = await running.ready;
+  return async (path: string) => {
+    const res = await fetch(`http://127.0.0.1:${port}${path}`);
+    return { status: res.status, body: await res.json() as any };
+  };
+}
 
 describe('bot health endpoint', () => {
   it('reports healthy for an idle bot with no failures', async () => {
-    running = startHealthServer(stubBot(), PORT);
+    const get = await serve(stubBot());
     const { status, body } = await get('/health');
     expect(status).toBe(200);
     // An idle bot is the NORMAL state when nobody is queuing — alerting on it
@@ -36,10 +45,10 @@ describe('bot health endpoint', () => {
   });
 
   it('surfaces the counters an operator needs to see a breakage', async () => {
-    running = startHealthServer(stubBot({
+    const get = await serve(stubBot({
       proofFailures: 2, commitFailures: 1, abandonedGames: 3, cardsStranded: 15,
       lastError: 'prove-hand: boom',
-    }), PORT);
+    }));
     const { body } = await get('/metrics');
     expect(body.healthy).toBe(false);
     expect(body.totalFailures).toBe(3);
@@ -49,7 +58,7 @@ describe('bot health endpoint', () => {
   });
 
   it('serves the same payload on /health and /metrics', async () => {
-    running = startHealthServer(stubBot({ gamesPlayed: 4 }), PORT);
+    const get = await serve(stubBot({ gamesPlayed: 4 }));
     const a = await get('/health');
     const b = await get('/metrics');
     expect(a.body.gamesPlayed).toBe(4);
@@ -57,13 +66,13 @@ describe('bot health endpoint', () => {
   });
 
   it('404s anything else rather than leaking a default', async () => {
-    running = startHealthServer(stubBot(), PORT);
+    const get = await serve(stubBot());
     const { status } = await get('/secrets');
     expect(status).toBe(404);
   });
 
   it('never exposes keys or card contents', async () => {
-    running = startHealthServer(stubBot({ lastOnChainGameId: '0xabc' }), PORT);
+    const get = await serve(stubBot({ lastOnChainGameId: '0xabc' }));
     const { body } = await get('/health');
     const keys = Object.keys(body).join(',');
     expect(keys).not.toMatch(/secret|salt|signingKey|cardIds|hand/i);

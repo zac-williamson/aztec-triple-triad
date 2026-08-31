@@ -13,10 +13,13 @@
  * production if that is not acceptable in your deployment.
  */
 import http from 'http';
+import type { AddressInfo } from 'net';
 import type { ArenaBot } from './ArenaBot.js';
 
 export interface HealthServer {
   server: http.Server;
+  /** Resolves with the port actually bound — the point of passing 0. */
+  ready: Promise<number>;
   close(): Promise<void>;
 }
 
@@ -24,6 +27,12 @@ export interface HealthServer {
  * `healthy` is the single field an alert should page on. The bot being idle is
  * NOT unhealthy — an idle bot with nobody queuing is the normal state, and
  * alerting on it would train people to ignore the alert.
+ *
+ * `port` may be 0, which asks the OS for a free one; `ready` then says which.
+ * Tests want that: a fixed port shared by servers that start and stop around
+ * each test leaves undici holding a keep-alive socket to a server that has
+ * since closed, and the next request on it dies with "other side closed" — an
+ * intermittent CI failure with nothing wrong in the code under test.
  */
 export function startHealthServer(bot: ArenaBot, port: number, log: (m: string) => void = () => {}): HealthServer {
   const startedAt = Date.now();
@@ -48,9 +57,23 @@ export function startHealthServer(bot: ArenaBot, port: number, log: (m: string) 
     }));
   });
 
-  server.listen(port, () => log(`health endpoint on :${port}`));
+  const ready = new Promise<number>(resolve => {
+    server.listen(port, () => {
+      const bound = (server.address() as AddressInfo).port;
+      log(`health endpoint on :${bound}`);
+      resolve(bound);
+    });
+  });
+
   return {
     server,
-    close: () => new Promise<void>(resolve => server.close(() => resolve())),
+    ready,
+    // closeAllConnections as well as close: `close` only stops ACCEPTING and
+    // then waits for existing keep-alive sockets, so without this a test that
+    // has made a request never finishes tearing down.
+    close: () => new Promise<void>(resolve => {
+      server.closeAllConnections?.();
+      server.close(() => resolve());
+    }),
   };
 }
