@@ -85,12 +85,31 @@ export function routeCostsRealMoney(route: AcquireRoute): boolean {
 /**
  * How much Fee Juice a new player needs to get through onboarding and a game.
  *
- * On a mock-asset network the faucet decides this for us. On mainnet we have to
- * name a number, and it has to cover the account deployment plus the three
- * chain transactions a game costs, with headroom — a player who runs dry
- * mid-game cannot settle, and cannot buy more without leaving the app.
+ * On a mock-asset network the faucet decides this for us — testnet's mints 1e21
+ * — so this number only governs the mainnet swap route, where the player is
+ * buying it. It used to be 1e18, named as a plausible round number.
+ *
+ * Measured instead. Eight throwaway accounts from real production runs, read
+ * off the FeeJuice balances map with `scripts/fee-juice-used.ts`, come out
+ * cleanly bimodal:
+ *
+ *   deploy + create_game + play, no settlement   4.217 – 4.343e18   (4 accounts)
+ *   the same, plus settling the game             6.676 – 6.751e18   (4 accounts)
+ *
+ * So onboarding and one game is ~4.3e18, settlement adds ~2.4e18, and 1e18
+ * would not have covered the account deployment — a player would have run dry
+ * before their first move, which is precisely the failure this constant exists
+ * to prevent, since they cannot buy more without leaving the app.
+ *
+ * 50e18 is onboarding plus roughly five settled games (~28e18) with about 75%
+ * headroom for a busier fee market. Erring high is the cheap direction: the
+ * cost of too much is that the player bought Fee Juice they did not need yet,
+ * and the cost of too little is a game they cannot finish.
+ *
+ * Measured on testnet's fee market. Re-measure before mainnet — the script
+ * takes an address and needs no keys.
  */
-export const DEFAULT_FEE_JUICE_TARGET = 10n ** 18n;
+export const DEFAULT_FEE_JUICE_TARGET = 50n * 10n ** 18n;
 
 export interface ResolveInputs extends Omit<RouteInputs, 'ethIn' | 'quotedOut' | 'poolKey' | 'zeroForOne'> {
   /** Reads quotes. Must be connected to `chainId`. */

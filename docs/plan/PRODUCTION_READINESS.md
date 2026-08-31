@@ -230,10 +230,31 @@ The card-commitment binding bug found earlier in this project — where nothing
 tied claimed card ids to the commitment — is precisely what an audit exists to
 catch, and it was found by chance.
 
-### 12. `DEFAULT_FEE_JUICE_TARGET` uncalibrated · `OPEN`
-1e18, chosen as a plausible number rather than measured. Too low strands a
-player mid-game with no way to buy more without leaving the app. Now
-measurable: the bot's real consumption is on `/health`.
+### 12. `DEFAULT_FEE_JUICE_TARGET` uncalibrated · `DONE` (31 Aug)
+Measured, and the old number was not merely unproven — it was wrong by about
+7x, in the dangerous direction.
+
+Fee Juice balances live in public storage, so any account can be read with
+nothing but its address (`scripts/fee-juice-used.ts`, no keys, no PXE). Eight
+throwaway accounts from real production runs come out cleanly bimodal:
+
+    deploy + create_game + play, no settlement   4.217 – 4.343e18   (4 accounts)
+    the same, plus settling the game             6.676 – 6.751e18   (4 accounts)
+
+So onboarding plus one game is ~4.3e18 and settlement adds ~2.4e18. At 1e18 a
+mainnet player would have run dry before their first move — the exact failure
+the constant exists to prevent, since they cannot buy more without leaving the
+app.
+
+Now 50e18: onboarding plus roughly five settled games with ~75% headroom.
+Erring high is the cheap direction — too much means Fee Juice bought early,
+too little means a game that cannot be finished. Three tests hold it against
+the measurements.
+
+**No effect on testnet**, where the fee asset has a faucet: `resolveAcquireRoute`
+returns the mint route before it ever reads the target, and the faucet mints
+1e21 regardless. This is the mainnet swap path only, and should be re-measured
+against mainnet's fee market before launch.
 
 ---
 
