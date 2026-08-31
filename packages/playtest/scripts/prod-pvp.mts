@@ -173,8 +173,26 @@ class Seat {
       const leave = this.page.getByRole('button', { name: /Leave/i }).first();
       if (await leave.isVisible({ timeout: 3000 }).catch(() => false)) await leave.click({ timeout: 5000 });
     } catch { /* the page may already be gone */ }
-    await this.browser?.close().catch(() => {});
+    // Bounded: `browser.close()` does not reliably settle after a page has been
+    // through a settlement, and an unbounded await here wedged a completed run
+    // — every assertion done, nothing printed, and the accounts never refunded.
+    await Promise.race([
+      this.browser?.close().catch(() => {}) ?? Promise.resolve(),
+      new Promise(r => setTimeout(r, 15_000)),
+    ]);
   }
+}
+
+/** Multiset difference: what is in `a` that `b` does not also account for. */
+function without(a: number[], b: number[]): number[] {
+  const rest = [...b];
+  const out: number[] = [];
+  for (const id of a) {
+    const i = rest.indexOf(id);
+    if (i === -1) out.push(id);
+    else rest.splice(i, 1);
+  }
+  return out;
 }
 
 /**
@@ -353,10 +371,12 @@ async function main() {
       // Conservation: the exact card the loser no longer has is the one the
       // winner now does. Counting to six and four would pass if the contract
       // minted a card and burned another.
-      const lost = startCards[loserSeat.name as 'north' | 'south']
-        .filter(id => !lEnd!.ownedCardIds.includes(id));
-      const gained = wEnd!.ownedCardIds
-        .filter(id => !startCards[winnerSeat.name as 'north' | 'south'].includes(id));
+      // Multiset, not set: the winner here already held a card 1 and won a
+      // SECOND one, so a `!includes` comparison saw no gain at all and called
+      // a correct settlement a failure. Duplicates are normal — the bot wagers
+      // duplicate starter cards by design.
+      const lost = without(startCards[loserSeat.name as 'north' | 'south'], lEnd!.ownedCardIds);
+      const gained = without(wEnd!.ownedCardIds, startCards[winnerSeat.name as 'north' | 'south']);
       console.log(`   ${winnerSeat.name}: ${wEnd!.ownedCardIds.length} cards ` +
         `[${[...wEnd!.ownedCardIds].sort((x, y) => x - y)}], ${wEnd!.tokenBalance} tokens`);
       console.log(`   ${loserSeat.name}: ${lEnd!.ownedCardIds.length} cards ` +

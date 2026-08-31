@@ -92,12 +92,32 @@ which is `main` — 507 commits behind `testnet`. The file therefore has to be
 on `main` to fire at all. It needs no checkout, so a stale `main` costs it
 nothing.
 
-### 5. Player-vs-player never exercised on production · `OPEN`
-Every production run has been human-vs-bot. Two humans is the intended primary
-path and has only ever been tested on a local sandbox.
+### 5. Player-vs-player never exercised on production · `DONE` (31 Aug)
+Two browsers, two throwaway accounts, one game on the deployed app.
+`packages/playtest/scripts/prod-pvp.mts` drives both sides and checks both.
 
-**Done when:** two browsers complete a game against each other on the deployed
-app, settlement included.
+That it was player-vs-player is proven rather than assumed: both of the
+harness's own pages report the SAME on-chain game id, one as player 1 and one
+as player 2, so the bot cannot also have been in it.
+
+    MATCHED player-vs-player in 0x1cb26389… — north is player 1, south is player 2
+    move 9: north → [2,1] — board 9/9, score 8-2
+    [north] settlement CONFIRMED on-chain  (0x1fbfae5c…)
+    [south] told: the winner took card 1
+    north: 6 cards [1,1,2,3,4,5], 120 tokens
+    south: 4 cards [2,3,4,5], 120 tokens
+
+The part that had never run on production is the last two lines. Against the
+bot, the bot relays the settlement note data that lets the loser import their
+returned cards and their +20. Between two people that relay IS the winner's
+browser, and if it were broken the loser would silently end four cards down and
+twenty tokens short. Both sides ended correct.
+
+Two bugs in the harness, not the app, surfaced on the way and are fixed: the
+conservation check compared card lists as sets, so a winner who won a SECOND
+copy of a card they already held read as having gained nothing; and an
+unbounded `browser.close()` wedged the run after every assertion had already
+passed, printing nothing and refunding neither account.
 
 ---
 
@@ -225,10 +245,34 @@ the repair button already had.
 
 ## Mainnet — beyond testnet-ready
 
-### 11. No contract audit · `OPEN`
+### 11. No contract audit · `OPEN` — not ours to close, but scoped
 The card-commitment binding bug found earlier in this project — where nothing
 tied claimed card ids to the commitment — is precisely what an audit exists to
-catch, and it was found by chance.
+catch, and it was found by chance. Commissioning one is a decision for the
+project, not something this work can close.
+
+What it can do is say where to look. The five places where a bug is
+unrecoverable, in rough order of how much a mistake would cost:
+
+1. **Settlement binding.** `process_game` must make it impossible to claim a
+   card the loser never committed. The current chain is: stored
+   `card_commit_1/2` → every move proof asserts both → the transferred card is
+   asserted present in the opponent's card list. The historical bug was a gap
+   in exactly this chain, and it is the thing to re-derive from scratch rather
+   than read for plausibility.
+2. **Transcript integrity.** Two hand proofs and nine move proofs verify
+   recursively. The question is not whether each proof verifies but whether a
+   set of proofs that all verify can describe a game that never happened —
+   reordering, replaying a move, or colliding on a board-state hash.
+3. **Abandonment and recovery.** The claim turns on move parity, and recovery
+   on a five-block dispute window plus a per-player `game_recovered` flag. Both
+   players recovering the same cards, or a claim inside the window, would mint
+   value from nothing.
+4. **Idempotence.** `settled`, and the status transitions around it. Settling
+   twice must be impossible, not merely unlikely.
+5. **The draw path**, which is the one settlement route where nothing changes
+   hands — and therefore the one where a coerced transfer would be least
+   expected.
 
 ### 12. `DEFAULT_FEE_JUICE_TARGET` uncalibrated · `DONE` (31 Aug)
 Measured, and the old number was not merely unproven — it was wrong by about
