@@ -6,10 +6,18 @@ previously believed done on the strength of a check that could not fail.
 
 Status: `OPEN` · `IN PROGRESS` · `DONE` · `ACCEPTED` (a decision, not a defect)
 
-Context: as of 31 Aug 2026 the full flow is verified on the deployed app —
-onboarding from an ETH-only wallet, a nine-move game against the bot, and all
-three settlement paths (winner, loser, draw) with the wagered card actually
-changing hands. `packages/playtest/scripts/prod-play.mts` is what proves it.
+Context: as of 31 Aug 2026 the full flow is verified on the deployed app, both
+ways round. Against the bot — onboarding from an ETH-only wallet, a nine-move
+game, and all three settlement paths (winner, loser, draw) with the wagered
+card actually changing hands: `packages/playtest/scripts/prod-play.mts`. And
+between two people, which is the intended primary path and exercises a
+settlement relay the bot otherwise stands in for:
+`packages/playtest/scripts/prod-pvp.mts`.
+
+Everything on this list is now closed except the contract audit (item 11),
+which is a decision for the project rather than a defect to fix, and two
+entries marked ACCEPTED where the honest answer was a stated limit rather than
+a change.
 
 ---
 
