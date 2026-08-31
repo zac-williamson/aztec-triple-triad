@@ -13,10 +13,20 @@ name: uptime
 
 on:
   schedule:
-    # Every ten minutes. GitHub's scheduler is best-effort and can run late
-    # under load; that is fine for "is it down", and this is not the thing
-    # measuring latency.
-    - cron: '*/10 * * * *'
+    # Every fifteen minutes, deliberately OFF the hour boundary.
+    #
+    # This started as `*/10`, and in three and a half hours it did not fire
+    # once — zero scheduled runs repo-wide, while a manual dispatch of the same
+    # file passed in ten seconds. GitHub's scheduler is best-effort and drops
+    # runs under load, and its own guidance is to avoid the start of the hour
+    # and to not ask for the shortest interval. So: a longer period, at minutes
+    # nobody else picks.
+    #
+    # Which makes the cadence a hope, not a guarantee. The on-box
+    # deploy/triad-health.timer is what runs on a real timer; this exists for
+    # the one failure that one cannot report — the box being gone — and being
+    # late to notice that is survivable in a way that never noticing is not.
+    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
 
 # A backlog of queued runs helps nobody: only the current state matters.
