@@ -16,6 +16,8 @@ import { createFundedL1Account, refundTreasury, type InjectedWallet } from '../s
 const SHOT = process.env.SHOT_DIR!;
 const URL = 'https://www.aztec-arena.com';
 const log = (m: string) => console.log(`   ${m}`);
+/** Play badly on purpose, so the bot wins and the winner/loser path runs. */
+const PLAY_TO_LOSE = process.env.E2E_PLAY_TO_LOSE === '1';
 let shotN = 0;
 const shot = async (page: Page, name: string) => {
   await page.screenshot({ path: `${SHOT}/${String(++shotN).padStart(2, '0')}-${name}.png` });
@@ -106,7 +108,7 @@ async function main() {
     await shot(page, 'queued');
 
     log('waiting to be matched (the bot joins after 30s of nobody else)…');
-    await until(page, 'a game to start', /Your Turn|Opponent's Turn/i, 8 * 60_000);
+    await until(page, 'a game to start', /Your Turn|Opponent's Turn/i, 35 * 60_000);
     await shot(page, 'in-game');
     log('matched — playing');
 
@@ -137,13 +139,32 @@ async function main() {
       if (!ready) { log('never became ready to move'); break; }
       if ((await phase())?.ws.gameOver) break;
 
-      // Pick the first empty cell from the board the app reports.
+      // Which empty cell to take.
+      //
+      // Reading order tends to produce draws, and a draw is the UNUSUAL
+      // settlement path — single settler, nothing changes hands. The common
+      // case is a winner claiming a card and handing the rest back, which is
+      // different code. PLAY_TO_LOSE takes the most exposed square instead, so
+      // the bot wins and that path gets exercised.
       const board = (await phase())!.game!.board;
-      let target: { row: number; col: number } | null = null;
-      for (let r = 0; r < 3 && !target; r++) {
-        for (let c = 0; c < 3 && !target; c++) if (board[r][c].cardId === null) target = { row: r, col: c };
+      const empties: { row: number; col: number; exposure: number }[] = [];
+      for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 3; c++) {
+          if (board[r][c].cardId !== null) continue;
+          let exposure = 0;
+          for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+            const nr = r + dr, nc = c + dc;
+            if (nr < 0 || nc < 0 || nr > 2 || nc > 2) continue;
+            exposure += 1;
+            if (board[nr][nc].owner === 'player2') exposure += 2;
+          }
+          empties.push({ row: r, col: c, exposure });
+        }
       }
-      if (!target) break;
+      if (empties.length === 0) break;
+      const target = PLAY_TO_LOSE
+        ? empties.reduce((a, b) => (b.exposure > a.exposure ? b : a))
+        : empties[0];
 
       const hand = await screenXY({ type: 'hand', index: 0 });
       if (!hand) { log('hand slot 0 not projectable'); break; }
