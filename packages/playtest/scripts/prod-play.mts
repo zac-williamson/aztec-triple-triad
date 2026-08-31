@@ -1,10 +1,12 @@
 /**
  * Play a real game on the DEPLOYED app, as a new player, headless.
  *
- * Not the playtest harness: production has no testkit, so there is no
- * window.__triadTest to read state from and no getScreenXY to aim clicks with.
- * Everything here goes through the DOM the way a person's mouse would, against
- * https://www.aztec-arena.com and the live relay and bot.
+ * Clicks go through the DOM the way a person's mouse would, against
+ * https://www.aztec-arena.com and the live relay and bot. READS go through the
+ * testkit, which production carries but only installs when asked for it with
+ * `?e2e=1` — guessing at pixels failed twice over, because the board is a WebGL
+ * quad and the hand is a 3D fan laid out with sin(angle), so neither has a
+ * screen position that can be computed from outside the app.
  *
  * The only thing simulated is the wallet, backed by a throwaway Sepolia key
  * funded from the treasury — the user's own Chrome, their own browser engine,
@@ -202,6 +204,7 @@ async function main() {
     // common case: claim a card, hand the rest back. Stopping at "Game Over"
     // proved the game, not the settlement.
     const iWon = winner === 'player1';
+    let settlementSeen = false;
     if (iWon) {
       // The claim buttons ARE DOM (settle-card-<id>), unlike the board.
       const claimable = await page.locator('[data-testid^="settle-card-"]').all();
@@ -214,6 +217,7 @@ async function main() {
           const p = window.__triadTest?.phase();
           return p?.chain.settleTxStatus === 'confirmed';
         }, undefined, { timeout: 25 * 60_000, polling: 2000 }).then(() => true).catch(() => false);
+        settlementSeen = settled;
         log(settled ? 'settlement CONFIRMED on-chain' : 'settlement did not confirm in time');
         await shot(page, 'settled');
       }
@@ -233,6 +237,7 @@ async function main() {
         // On a draw either side may be the settler, so accept our own tx too.
         return draw ? (theirs || p.chain.settleTxStatus === 'confirmed') : theirs;
       }, isDraw, { timeout: 25 * 60_000, polling: 2000 }).then(() => true).catch(() => false);
+      settlementSeen = got;
       log(got ? 'settlement observed' : 'settlement NOT observed');
       await shot(page, 'settled');
     }
@@ -268,7 +273,12 @@ async function main() {
     log(`final: ${end.ownedCardIds.length} cards [${finalCards}], ${end.tokenBalance} tokens` +
       (reached ? '' : `  — EXPECTED ${want} cards, the wager did not complete`) +
       (gotTokens ? '' : `  — EXPECTED ${STARTER_TOKENS + GAME_REWARD} tokens, the reward did not arrive`));
-    if (!reached || !gotTokens) { await shot(page, 'settlement-incomplete'); process.exitCode = 1; }
+    const ok = reached && gotTokens && settlementSeen;
+    if (!ok) { await shot(page, 'settlement-incomplete'); process.exitCode = 1; }
+    // One line, fixed shape, for anything reading this run without a human.
+    console.log(`RESULT: ${ok ? 'pass' : 'fail'} winner=${winner} ` +
+      `cards=${end.ownedCardIds.length}/${want} tokens=${end.tokenBalance}/${STARTER_TOKENS + GAME_REWARD} ` +
+      `settled=${settlementSeen}`);
   } finally {
     // Leave the game rather than just closing the tab. An abandoned game holds
     // the bot until its 30-minute watchdog fires, and with one bot that is

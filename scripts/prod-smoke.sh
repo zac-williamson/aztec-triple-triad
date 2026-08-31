@@ -31,14 +31,17 @@ for i in $(seq 1 "$RUNS"); do
 
   if PROOF_THREADS="${PROOF_THREADS:-6}" SHOT_DIR="$OUT" \
      npx tsx packages/playtest/scripts/prod-play.mts >"$log" 2>&1; then
-    # Exit zero is necessary but not sufficient: the script also sets a
-    # non-zero exit code when the wager did not complete, and a run that
-    # never reached settlement would otherwise look identical to one that did.
-    if grep -q "settlement CONFIRMED\|opponent settled" "$log"; then
-      echo "   PASS  $(grep -oE 'final: .*' "$log" | tail -1)"
+    # Exit zero is necessary but not sufficient, so prod-play prints one
+    # fixed-shape verdict line and this reads that. It used to grep for
+    # settlement wording instead, matched none of the three settlement paths'
+    # actual prose, and reported a good game — bot won, cards handed back,
+    # reward paid — as a failure.
+    if grep -q "^RESULT: pass" "$log"; then
+      echo "   PASS  $(grep -oE '^RESULT: .*' "$log" | tail -1)"
       pass=$((pass + 1))
     else
-      echo "   FAIL  finished without settling — see $log"
+      echo "   FAIL  $(grep -oE '^RESULT: .*' "$log" | tail -1 || echo 'no verdict line — see the log')"
+      echo "         see $log"
       fail=$((fail + 1))
     fi
   else
