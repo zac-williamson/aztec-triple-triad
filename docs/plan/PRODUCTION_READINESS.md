@@ -135,11 +135,19 @@ returned cards and their +20. Between two people that relay IS the winner's
 browser, and if it were broken the loser would silently end four cards down and
 twenty tokens short. Both sides ended correct.
 
-Two bugs in the harness, not the app, surfaced on the way and are fixed: the
+Two runs have now passed end to end with the harness reporting its own verdict:
+
+    RESULT: pass winner=player1 moved=1 winner_cards=6 loser_cards=4 \
+            winner_tokens=120 loser_tokens=120
+
+Three bugs in the harness, not the app, surfaced on the way and are fixed. The
 conservation check compared card lists as sets, so a winner who won a SECOND
-copy of a card they already held read as having gained nothing; and an
-unbounded `browser.close()` wedged the run after every assertion had already
-passed, printing nothing and refunding neither account.
+copy of a card they already held read as having gained nothing. An unbounded
+`browser.close()` wedged a run after every assertion had passed, printing
+nothing and refunding neither account. And the summary line was built from a
+snapshot taken before the reward wait, so a passing run printed
+`loser_tokens=100` beside its own pass — a verdict line that disagrees with its
+verdict is worse than none.
 
 ---
 
