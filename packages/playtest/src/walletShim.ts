@@ -142,24 +142,35 @@ export async function installWallet(page: Page, privateKey: Hex): Promise<void> 
     (method: string, params: unknown[]) => provider.request({ method, params }),
   );
 
-  await page.addInitScript(() => {
-    const w = window as unknown as {
-      ethereum?: unknown;
-      __triadWalletRpc: (m: string, p: unknown[]) => Promise<unknown>;
-    };
-    const listeners = new Map<string, Set<(...a: unknown[]) => void>>();
-    w.ethereum = {
-      isMetaMask: true,
-      request: ({ method, params }: { method: string; params?: unknown[] }) =>
-        w.__triadWalletRpc(method, params ?? []),
-      on: (event: string, fn: (...a: unknown[]) => void) => {
-        if (!listeners.has(event)) listeners.set(event, new Set());
-        listeners.get(event)!.add(fn);
-      },
-      removeListener: (event: string, fn: (...a: unknown[]) => void) => {
-        listeners.get(event)?.delete(fn);
-      },
-    };
+  // Injected as a STRING, not a function.
+  //
+  // Playwright serialises a function argument with the transpiler's own output,
+  // and esbuild (via tsx) rewrites arrow functions to carry a `__name` helper
+  // that exists in the build but not in the page. The init script then dies on
+  // `__name is not defined`, window.ethereum is never installed, and the app
+  // correctly reports "No Ethereum wallet found" — which reads exactly like a
+  // broken funding flow and cost a 25-minute production run to track down.
+  // Plain source text cannot be rewritten, so it works under any runner.
+  await page.addInitScript({
+    content: `
+      (function () {
+        var listeners = new Map();
+        window.ethereum = {
+          isMetaMask: true,
+          request: function (args) {
+            return window.__triadWalletRpc(args.method, args.params || []);
+          },
+          on: function (event, fn) {
+            if (!listeners.has(event)) listeners.set(event, new Set());
+            listeners.get(event).add(fn);
+          },
+          removeListener: function (event, fn) {
+            var s = listeners.get(event);
+            if (s) s.delete(fn);
+          },
+        };
+      })();
+    `,
   });
 }
 
