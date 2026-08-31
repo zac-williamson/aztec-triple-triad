@@ -7,14 +7,15 @@
     "dev": "vite",
     "dev:testnet": "vite --mode testnet",
     "dev:devnet": "vite --mode devnet",
-    "build": "vite build",
+    "build": "npm run copy-sqlite-worker && vite build",
     "build:testnet": "vite build --mode testnet",
     "build:devnet": "vite build --mode devnet",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
     "copy-circuits": "mkdir -p public/circuits && cp ../../circuits/target/prove_hand.json ../../circuits/target/game_move.json ../../circuits/target/dummy_move.json ../../circuits/target/dummy_hand.json public/circuits/",
-    "copy-contracts": "mkdir -p public/contracts && cp ../../packages/contracts/target/triple_triad_nft-TripleTriadNFT.json ../../packages/contracts/target/triple_triad_game-TripleTriadGame.json ../../packages/contracts/target/arena_token-ArenaToken.json public/contracts/"
+    "copy-contracts": "mkdir -p public/contracts && cp ../../packages/contracts/target/triple_triad_nft-TripleTriadNFT.json ../../packages/contracts/target/triple_triad_game-TripleTriadGame.json ../../packages/contracts/target/arena_token-ArenaToken.json public/contracts/",
+    "copy-sqlite-worker": "mkdir -p public/assets && cp ../../node_modules/@aztec/sqlite3mc-wasm/vendor/jswasm/sqlite3-opfs-async-proxy.js public/assets/"
   },
   "dependencies": {
     "@axolotl-arena/game-logic": "file:../game-logic",

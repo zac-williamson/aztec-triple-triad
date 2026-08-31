@@ -86,8 +86,15 @@ export default defineConfig({
     // worker via `new Worker(new URL('./worker.js', import.meta.url))`. Pre-bundling
     // rewrites import.meta.url to the .vite/deps chunk, where no worker.js exists, so
     // the worker dies on load ("SQLite worker crashed: undefined") and onboarding ends
-    // in aztecStatus='error'. Only the dev optimizer is affected -- the rollup
-    // production build emits the worker correctly.
+    // in aztecStatus='error'.
+    //
+    // The rollup build emits the WORKER correctly, but not
+    // sqlite3-opfs-async-proxy.js: sqlite fetches that one at runtime by
+    // computed URL, so no bundler can trace it and nothing put it in dist.
+    // Production 404'd on it, OPFS failed to initialise, and the PXE fell back
+    // to a store it was not configured to use — visible only on the deployed
+    // site, since dev serves it straight out of node_modules. The
+    // `copy-sqlite-worker` build step stages it into public/assets.
     //
     // Exclude the ./sqlite-opfs SUBPATH, not all of @aztec/kv-store: the package's
     // full closure is ~326 deps (AWS SDK, Koa, Google Cloud) and unbundling it just
