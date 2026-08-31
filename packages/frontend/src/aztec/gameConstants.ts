@@ -15,8 +15,22 @@ export const PXE_SYNC_MAX_POLLS = 60;
 /** Delay between PXE sync polls (ms) */
 export const PXE_SYNC_POLL_INTERVAL = 1000;
 
-/** Timeout for waiting on move proofs before settlement (ms) */
-export const MOVE_PROOF_WAIT_TIMEOUT = 30_000;
+/**
+ * Timeout for waiting on move proofs before settlement (ms).
+ *
+ * Three minutes, not thirty seconds. The ninth move proof is generated AFTER
+ * the relay declares the game over — the mover proves the position they just
+ * created — so the settler is always waiting on work that starts late, and on
+ * a party whose client may be queued behind its own proving.
+ *
+ * Thirty seconds lost a real game on production: the winner reported
+ * "Timed out waiting for move proofs: have 8/9", went idle, and nobody
+ * settled — a win has only one settler, so the game simply stranded, five
+ * cards a side, until a watchdog abandoned it. Waiting minutes for a proof
+ * that is demonstrably coming is far cheaper than that, and this sits below
+ * HAND_PROOF_WAIT_TIMEOUT's precedent of 120s for the same kind of wait.
+ */
+export const MOVE_PROOF_WAIT_TIMEOUT = 180_000;
 
 /** Timeout for waiting on hand proofs before settlement (ms) */
 export const HAND_PROOF_WAIT_TIMEOUT = 120_000;
