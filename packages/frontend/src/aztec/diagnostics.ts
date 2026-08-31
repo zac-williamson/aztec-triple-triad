@@ -18,10 +18,21 @@
 const MAX_LINES = 200;
 const ring: string[] = [];
 
+/**
+ * Reached through `globalThis`, not `window`, because the BOT compiles these
+ * frontend sources with a Node lib that has no DOM — a build that only fails
+ * on the deployment box, where it is most expensive to discover.
+ */
+const host = globalThis as unknown as {
+  localStorage?: { getItem(key: string): string | null };
+  location?: { search?: string };
+  __triadDiagnostics?: () => string;
+};
+
 function printingEnabled(): boolean {
   try {
-    if (localStorage.getItem('triad_debug') === '1') return true;
-    return new URLSearchParams(window.location.search).get('e2e') === '1';
+    if (host.localStorage?.getItem('triad_debug') === '1') return true;
+    return new URLSearchParams(host.location?.search ?? '').get('e2e') === '1';
   } catch {
     // Private mode, a sandboxed frame, storage disabled — recording still works.
     return false;
@@ -47,5 +58,5 @@ export function resetDiagnostics(): void {
 
 // Reachable from a player's console without shipping them a debug build.
 try {
-  (window as unknown as { __triadDiagnostics?: () => string }).__triadDiagnostics = diagnosticsDump;
-} catch { /* no window: unit tests, SSR */ }
+  host.__triadDiagnostics = diagnosticsDump;
+} catch { /* a frozen or exotic global: recording still works */ }
