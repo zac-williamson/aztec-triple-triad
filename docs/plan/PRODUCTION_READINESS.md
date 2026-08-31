@@ -57,13 +57,26 @@ can state precisely why it cannot and the loss is bounded and monitored.
 
 ## P2 — Confidence in the result
 
-### 3. Nothing runs the production check on a schedule · `OPEN`
-`prod-play.mts` works on demand. One green run is an anecdote; the bugs found
-this session were mostly things that only appear under repetition or load.
+### 3. Nothing runs the production check on a schedule · `DONE` (31 Aug)
+`RUNS=n ./scripts/prod-smoke.sh` plays real games against the deployed app and
+fails loudly, and running it is now part of the release runbook
+(`deploy/DEPLOY.md`, "Before announcing a release: play a real game").
 
-**Done when:** it runs on a schedule (or a documented pre-release ritual) and a
-failure reaches a human. Note it costs a real Sepolia-funded account and ~25
-minutes per run, so cadence is a judgement call.
+It earned its place immediately. On its second run it caught a real production
+bug — `MOVE_PROOF_WAIT_TIMEOUT` was 30s, but the ninth move proof is generated
+AFTER the relay declares the game over, so the winner timed out at 8/9, went
+idle, and since a win has exactly one settler the game stranded five cards a
+side. Now 180s, with tests pinning it to the hand-proof budget.
+
+It also cried wolf once, which was worse than useless: it decided pass/fail by
+grepping for settlement wording that the losing path never prints, and reported
+a perfect game as a failure. prod-play now prints one fixed-shape verdict line
+and the script reads that.
+
+**Not scheduled, deliberately.** Scheduling means a funding key in CI and ~25
+minutes of runner time per run. The ten-minute uptime probe (item 4) answers
+"is it up"; this answers "does it still work", on a human's decision to ship.
+Worth revisiting if releases become frequent.
 
 ### 4. The uptime probe runs on the box it monitors · `DONE` (31 Aug)
 `.github/workflows/uptime.yml` runs every ten minutes on GitHub's
@@ -113,25 +126,64 @@ for a player-2 claimant describes a game the chain would always refuse.
 
 ## P3 — Operability
 
-### 6. An abandoned game locks the bot for 30 minutes · `OPEN`
-The watchdog is correct but coarse: while it waits, the arena has no opponent
-for anyone. Repeatedly hit during this session.
+### 6. An abandoned game locks the bot for 30 minutes · `DONE` (31 Aug)
+The relay had been sending `OPPONENT_DISCONNECTED` the whole time and the bot
+ignored the message, then sat in `playing` until a thirty-minute watchdog meant
+for SILENCE — which cannot tell a slow player from a departed one, and so has
+to be generous. A disconnect is not silence: the relay watched it happen.
 
-**Done when:** a disconnect the relay already knows about ends the bot's game
-promptly, rather than waiting out a timer meant for silence.
+The bot now starts a 90s countdown on it and cancels on `OPPONENT_RECONNECTED`
+(also already sent). 90s because the relay's own reconnection window is 60s, so
+a wifi blip is not a forfeit.
 
-### 7. `readPrivateCards` is O(collection) · `OPEN`
-It pages ten cards at a time — 46 seconds at 1,382 cards. Cached for the bot,
-so the queue no longer floods, but the cost is still paid on a cold read and a
-player with a large collection pays it in the UI.
+Two things it deliberately does not do. It does not abandon a game it is
+settling — the loser closing their tab the moment the result appears is
+ordinary, and arrives while the winner is still assembling an 11-proof
+transcript. And it does not change what abandoning means: committed cards stay
+locked pending the abandonment claim and are still counted on `/health`. The
+gain is the twenty-eight minutes, not the cards.
 
-**Done when:** the read is bounded, or paged lazily, or we accept it with a
-stated collection ceiling.
+Verified on production, not just in tests: a real game was matched and the tab
+closed, and the bot was back in service in ~100s.
 
-### 8. `[pxe-queue]` diagnostics log to player consoles · `OPEN`
-Deliberate and useful for support, but new noise in every player's devtools.
+### 7. `readPrivateCards` is O(collection) · `ACCEPTED` (31 Aug) — with a ceiling
+It is worse than O(collection): it is **quadratic**, and the reason matters,
+because it rules out the obvious fixes.
 
-**Done when:** gated behind a debug flag, or consciously kept.
+The contract asks for ten notes at an offset, but the PXE never pushes that
+offset down to storage. `NoteService.getNotes` passes no limit or offset to the
+note store — it loads EVERY note for the slot — and `pickNotes` then does
+`.slice(offset, offset + limit)` on the resulting array in memory. Every page
+costs a full collection scan, so reading N cards costs about N²/10 note loads.
+(aztec-packages `pxe/src/notes/note_service.ts` and
+`pxe/src/contract_function_simulator/pick_notes.ts`.) A larger page size would
+not help; the per-page cost is the scan, not the ten.
+
+**The ceiling:** comfortable into the low hundreds of cards, unpleasant past
+roughly five hundred, 46s at 1,382. A player's collection is five starter cards
+plus ten per pack plus one per win, so reaching that means buying about fifty
+packs. The only holder anywhere near it is the bot, which caches.
+
+**Why not fixed:** a bigger page needs a contract change, and a redeploy
+orphans every player's cards. Refreshing by delta instead of re-reading avoids
+the scan but introduces a local idea of the collection that can drift from the
+PXE's — which is exactly the failure this codebase has already paid for
+("Could not find all 5 cards").
+
+A read over five seconds now records a diagnostic line, so a player who does
+reach the slow end is visible to support instead of just finding the app
+sluggish.
+
+### 8. `[pxe-queue]` diagnostics log to player consoles · `DONE` (31 Aug)
+Recording and printing are now separate concerns. Every line goes into a
+200-entry ring buffer always; it is printed only when `triad_debug` is set or
+the page is under the harness. Support can ask a player to run
+`__triadDiagnostics()` and paste the result.
+
+A flag alone would have been the wrong fix: whoever hits the problem has the
+flag off, and turning it on means asking them to reproduce a bug that took an
+hour to hit once. The buffer also survives a localStorage that throws (private
+mode, sandboxed frame, storage disabled), which is where support is hardest.
 
 ---
 

@@ -365,6 +365,37 @@ Two traps, both hit for real:
 
 ## Operational runbook
 
+### Before announcing a release: play a real game
+
+Nothing about a deploy is proven by it building. Run the production check
+against the live site and let it fail loudly:
+
+```bash
+RUNS=2 ./scripts/prod-smoke.sh
+```
+
+Each run creates a throwaway Sepolia account, funds it from the treasury,
+onboards it through the real UI, plays a full nine-move game against the bot,
+settles, and verifies the wagered card and the +20 reward actually moved —
+then refunds what is left. About 25 minutes and a few thousandths of an ETH in
+gas per run. It prints one verdict line per run and exits non-zero if any
+failed; `.artifacts/prod-smoke/history.txt` answers "when did this last work".
+
+Run it where the treasury key is. It CANNOT run on the relay box: the key is
+deliberately not there, and a browser doing client-side proving would compete
+with the bot for the box's two cores.
+
+Two runs rather than one because almost every bug found in this codebase came
+from repetition — a queue that only floods under load, a settlement timeout
+that only bites when the ninth proof lands after the relay has declared the
+game over.
+
+**Not yet scheduled.** Doing so means putting a funding key into CI and paying
+~25 minutes of runner time per run; the ten-minute uptime probe
+(`.github/workflows/uptime.yml`) covers "is it up", and this covers "does it
+still work", on a human's decision to ship. Worth revisiting if releases
+become frequent.
+
 ### Ship a backend change
 
 ```bash

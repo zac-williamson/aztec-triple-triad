@@ -20,6 +20,7 @@ import { toFr, toHexString } from './fieldUtils';
 import { gasSettingsWithHeadroom, type BaseFeeNode } from './feeSettings';
 import { CARDS_PER_HAND } from './gameConstants';
 import type { NoteToImport, TxEffectData } from './noteImporter';
+import { diag } from './diagnostics';
 
 type Schedule = <T>(fn: () => Promise<T>) => Promise<T>;
 
@@ -155,11 +156,35 @@ function makeOps(schedule: Schedule) {
         return Number(result);
       }),
 
-    /** All non-zero card IDs the PXE holds for `owner` (paged get_nfts_for_user). */
+    /**
+     * All non-zero card IDs the PXE holds for `owner` (paged get_nfts_for_user).
+     *
+     * This is QUADRATIC in the size of the collection, and it is worth knowing
+     * why before assuming a larger page would help. The contract asks for ten
+     * notes at an offset, but the PXE does not push that offset down to
+     * storage: `NoteService.getNotes` passes no limit or offset to the note
+     * store, so it loads EVERY note for the slot, and `pickNotes` then does
+     * `.slice(offset, offset + limit)` on the array in memory. Each page
+     * therefore costs a full collection scan, and reading N cards costs about
+     * N²/10 note loads. (aztec-packages `pxe/src/notes/note_service.ts` and
+     * `pxe/src/contract_function_simulator/pick_notes.ts`.)
+     *
+     * Measured at 46s for 1,382 cards. A player's collection is five starter
+     * cards plus ten per pack plus one per win, so this is comfortable into the
+     * low hundreds and unpleasant past roughly five hundred. The only holder
+     * anywhere near that is the arena bot, which caches the result.
+     *
+     * Accepted rather than fixed: a bigger page needs a contract change, and a
+     * redeploy orphans every player's cards. Refreshing by delta instead of
+     * re-reading would avoid the scan, but a local idea of the collection that
+     * can drift from the PXE's is precisely the failure this codebase has
+     * already paid for ("Could not find all 5 cards").
+     */
     readPrivateCards: (owner: string): Promise<number[]> =>
       schedule(async () => {
         const { nftContract, AztecAddress } = await resolveContracts();
         const addr = AztecAddress.fromStringUnsafe(owner);
+        const startedAt = Date.now();
         const ids: number[] = [];
         let pageIndex = 0;
         let hasMore = true;
@@ -172,6 +197,13 @@ function makeOps(schedule: Schedule) {
             if (id !== 0) ids.push(id);
           }
           pageIndex++;
+        }
+        // So that a player who does reach the slow end is visible to support
+        // rather than just "the app feels stuck sometimes".
+        const took = Date.now() - startedAt;
+        if (took > 5_000) {
+          diag(`[cards] read ${ids.length} cards in ${Math.round(took / 1000)}s ` +
+            `over ${pageIndex} pages — paging cost grows with the square of the collection`);
         }
         return ids;
       }),
