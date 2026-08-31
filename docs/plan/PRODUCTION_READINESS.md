@@ -65,12 +65,19 @@ this session were mostly things that only appear under repetition or load.
 failure reaches a human. Note it costs a real Sepolia-funded account and ~25
 minutes per run, so cadence is a judgement call.
 
-### 4. The uptime probe runs on the box it monitors · `OPEN`
-`triad-health.timer` cannot report that the box is down, which is the failure
-most worth hearing about.
+### 4. The uptime probe runs on the box it monitors · `DONE` (31 Aug)
+`.github/workflows/uptime.yml` runs every ten minutes on GitHub's
+infrastructure, so it survives anything that takes the box with it. It checks
+only what an outsider can see — the relay answers, the site serves an app
+bundle, and the testnet has not re-genesised (a pinned `rollupVersion`, since
+that failure looks like a perfectly healthy site with a game that can never
+start). The bot's internals stay with the on-box probe, whose /health is bound
+to localhost on purpose.
 
-**Done when:** something outside the box polls `https://ws.aztec-arena.com/health`
-and alerts. Minutes of work with any uptime service.
+**One thing to know:** scheduled workflows only run from the DEFAULT branch,
+which is `main` — 507 commits behind `testnet`. The file therefore has to be
+on `main` to fire at all. It needs no checkout, so a stale `main` costs it
+nothing.
 
 ### 5. Player-vs-player never exercised on production · `OPEN`
 Every production run has been human-vs-bot. Two humans is the intended primary
