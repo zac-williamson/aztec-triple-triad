@@ -358,21 +358,44 @@ export class BotChain {
    * that changes them without saying so.
    */
   private cardCache: { ids: number[]; at: number } | null = null;
+  private cardRead: Promise<number[]> | null = null;
   private static readonly CARD_CACHE_TTL_MS = 120_000;
 
   async readCards(opts: { force?: boolean } = {}): Promise<number[]> {
     const fresh = this.cardCache
       && Date.now() - this.cardCache.at < BotChain.CARD_CACHE_TTL_MS;
     if (!opts.force && fresh) return this.cardCache!.ids;
-    const ids = await this.pxe.readPrivateCards(this.address);
-    this.cardCache = { ids, at: Date.now() };
-    this.lastKnownCardCount = ids.length;
-    return ids;
+
+    // Share the in-flight read. Caching only the RESULT is not enough: the read
+    // takes ~46 seconds and the bot polls every two, so twenty-three callers
+    // start before the first finishes, every one of them misses an empty cache,
+    // and every one enqueues its own page-through. That stampede is what
+    // actually filled the queue — the first version of this cache changed
+    // nothing because the queue was already full of reads that had all begun.
+    if (!opts.force && this.cardRead) return this.cardRead;
+
+    const read = (async () => {
+      const ids = await this.pxe.readPrivateCards(this.address);
+      this.cardCache = { ids, at: Date.now() };
+      this.lastKnownCardCount = ids.length;
+      return ids;
+    })();
+    this.cardRead = read;
+    try {
+      return await read;
+    } finally {
+      if (this.cardRead === read) this.cardRead = null;
+    }
   }
 
   /** Call whenever cards move; the next read pays for a fresh page-through. */
   invalidateCards(): void {
     this.cardCache = null;
+  }
+
+  /** True while a page-through is in flight; exposed for tests. */
+  get cardReadInFlight(): boolean {
+    return this.cardRead !== null;
   }
 
   /**

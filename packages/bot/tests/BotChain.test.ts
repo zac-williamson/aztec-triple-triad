@@ -95,3 +95,41 @@ describe('collection caching', () => {
     expect(chain.lastKnownCardCount).toBe(6);
   });
 });
+
+describe('collection read stampede', () => {
+  /**
+   * Caching the RESULT is not enough. The read takes ~46 seconds and the bot
+   * polls every two, so twenty-three callers start before the first finishes,
+   * every one misses an empty cache, and every one enqueues its own
+   * page-through. The first version of this cache shipped to production and
+   * changed nothing for exactly this reason.
+   */
+  it('shares one page-through between concurrent callers', async () => {
+    let reads = 0;
+    let release: (v: number[]) => void = () => {};
+    const chain = new BotChain(
+      { pxeUrl: 'http://x', nftAddress: '0x1', gameAddress: '0x2', manifestPath: '/nonexistent' },
+      () => {},
+    );
+    Object.defineProperty(chain, 'pxe', {
+      configurable: true,
+      get: () => ({
+        readPrivateCards: () => {
+          reads += 1;
+          return new Promise<number[]>(res => { release = res; });
+        },
+      }),
+    });
+    (chain as unknown as { identity: unknown }).identity = { address: '0xbot' };
+
+    // Twenty pollers pile in while the first read is still outstanding.
+    const all = Promise.all(Array.from({ length: 20 }, () => chain.readCards()));
+    await new Promise(r => setTimeout(r, 10));
+    expect(reads, 'one page-through, not twenty').toBe(1);
+
+    release([1, 2, 3]);
+    const results = await all;
+    expect(results.every(r => r.length === 3)).toBe(true);
+    expect(reads).toBe(1);
+  });
+});
