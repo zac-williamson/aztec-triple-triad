@@ -143,8 +143,9 @@ transcript. And it does not change what abandoning means: committed cards stay
 locked pending the abandonment claim and are still counted on `/health`. The
 gain is the twenty-eight minutes, not the cards.
 
-Verified on production, not just in tests: a real game was matched and the tab
-closed, and the bot was back in service in ~100s.
+Six tests, each failing without the half of the fix it covers. The production
+check — match a real game, close the tab, watch the bot return to service — is
+still to run; the code is deployed and the bot is live on it.
 
 ### 7. `readPrivateCards` is O(collection) · `ACCEPTED` (31 Aug) — with a ceiling
 It is worse than O(collection): it is **quadratic**, and the reason matters,
