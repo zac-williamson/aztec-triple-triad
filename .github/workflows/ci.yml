@@ -139,11 +139,35 @@ jobs:
       # sidesteps both 4.3.1 PATH footguns (.aztecrc only honored in $PWD;
       # bare nargo lives in internal-bin, off PATH) — see
       # docs/plan/LANE_1_CHAIN.md ASSUMPTIONS #3/#4.
+      # The stock installer is BROKEN on the 5.2 line and fails this job every
+      # time: it `mv`s foundryup's bin/<tool> — which are symlinks into a temp
+      # dir — into internal-bin and then deletes that temp dir, so every foundry
+      # binary lands dangling and the next step's existence check fails with
+      #   Error: expected bundled binary 'forge' missing from …/internal-bin
+      # Re-running does not help. Copying the link TARGET does. Same workaround
+      # as CLAUDE.md's, using the versioned installer URL so the sed has
+      # something stable to patch.
+      #
+      # This job had been red on every push since the 5.2 migration, which meant
+      # no contract or circuit test had run in CI since — the kind of check that
+      # teaches you to ignore it.
       - name: Install Aztec toolchain
         if: steps.aztec-cache.outputs.cache-hit != 'true'
         run: |
-          curl -fsSL https://install.aztec.network -o /tmp/aztec-install.sh
-          VERSION=${{ steps.pin.outputs.version }} bash /tmp/aztec-install.sh
+          V='${{ steps.pin.outputs.version }}'
+          curl -fsSL "https://install.aztec-labs.com/$V/install" -o /tmp/aztec-install.sh
+          sed -i.bak 's|mv "$temp_foundry_dir/bin/$binary"|cp -L "$temp_foundry_dir/bin/$binary"|' /tmp/aztec-install.sh
+          # Fail loudly if upstream fixed the bug and the anchor moved, rather
+          # than silently installing the broken layout again.
+          if ! grep -q 'cp -L "$temp_foundry_dir/bin/$binary"' /tmp/aztec-install.sh; then
+            echo "::warning::the foundry-symlink patch did not apply — installer may be fixed upstream"
+          fi
+          rm -rf "$HOME/.aztec/versions/$V"
+          VERSION="$V" bash /tmp/aztec-install.sh
+          # The install script has exited 0 while leaving bin/ empty before, so
+          # check what actually landed instead of trusting the exit code.
+          test -x "$HOME/.aztec/versions/$V/internal-bin/forge" \
+            || { echo "forge still missing after install"; ls -la "$HOME/.aztec/versions/$V/internal-bin" || true; exit 1; }
 
       - name: Add Aztec to PATH
         run: |
