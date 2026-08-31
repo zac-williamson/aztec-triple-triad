@@ -194,8 +194,41 @@ async function main() {
 
     await until(page, 'the game to end', /Game Over/i, 20 * 60_000);
     await shot(page, 'game-over');
-    const final = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').slice(0, 400));
-    log(`game over — ${final.slice(0, 200)}`);
+    const result = (await phase())!;
+    const winner = result.ws.gameOver?.winner ?? 'unknown';
+    log(`game over: ${winner} — board ${result.game?.board.flat().filter(c => c.cardId !== null).length}/9`);
+
+    // Settlement is the point of the wager, and the winner's half is the
+    // common case: claim a card, hand the rest back. Stopping at "Game Over"
+    // proved the game, not the settlement.
+    const iWon = winner === 'player1';
+    if (iWon) {
+      // The claim buttons ARE DOM (settle-card-<id>), unlike the board.
+      const claimable = await page.locator('[data-testid^="settle-card-"]').all();
+      if (claimable.length === 0) { log('no claimable card offered'); }
+      else {
+        const id = await claimable[0].getAttribute('data-testid');
+        log(`claiming ${id?.replace('settle-card-', 'card ')} and settling…`);
+        await claimable[0].click();
+        const settled = await page.waitForFunction(() => {
+          const p = window.__triadTest?.phase();
+          return p?.chain.settleTxStatus === 'confirmed';
+        }, undefined, { timeout: 25 * 60_000, polling: 2000 }).then(() => true).catch(() => false);
+        log(settled ? 'settlement CONFIRMED on-chain' : 'settlement did not confirm in time');
+        await shot(page, 'settled');
+      }
+    } else {
+      log('the bot won — waiting for it to settle and hand our cards back');
+      const got = await page.waitForFunction(() => {
+        const p = window.__triadTest?.phase();
+        return p?.chain.opponentSettled === true && p.chain.takenCardId !== null;
+      }, undefined, { timeout: 25 * 60_000, polling: 2000 }).then(() => true).catch(() => false);
+      log(got ? 'opponent settled and returned our cards' : 'opponent settlement not observed');
+      await shot(page, 'settled');
+    }
+
+    const end = (await phase())!;
+    log(`final: ${end.ownedCardIds.length} cards, ${end.tokenBalance} tokens`);
   } finally {
     // Leave the game rather than just closing the tab. An abandoned game holds
     // the bot until its 30-minute watchdog fires, and with one bot that is
