@@ -285,10 +285,66 @@ deploy/check-arena-health.sh
 ```
 
 Alert on `healthy: false` and on `spendableCards` falling toward zero. The
-second is the one that bites: the bot's collection is a loss budget, every
-player who beats it takes a card, and a bot that runs out goes **idle** — which
-is correct behaviour and indistinguishable from a quiet night until someone
-notices the arena has no opponent.
+second is the one that bites: a bot that runs out goes **idle** — correct
+behaviour, and indistinguishable from a quiet night until someone notices the
+arena has no opponent.
+
+The collection is not a pure burn-down. Card transfer is zero-sum (winner +1,
+loser -1), so the stock drifts with the bot's win rate rather than only
+shrinking; at the default skill range it loses roughly a quarter of a card per
+game. What it cannot do is refill itself.
+
+### Refilling the bot's cards
+
+Minting is gated to the deployer (`minter`), so this runs from a machine with
+the deployer key — **never the box**. There is no supply cap; the only limit is
+ten cards per transaction, so a thousand cards is ~125 transactions and about
+fifteen minutes.
+
+```bash
+# 1. Back up the manifest FIRST. It is the only record of an untagged note's
+#    plaintext: a card whose randomness is lost can never be spent by anyone.
+mkdir -p ~/.aztec-triad-private/manifest-backups && chmod 700 ~/.aztec-triad-private/manifest-backups
+cp packages/bot/.artifacts/arena-bot-0.json \
+   ~/.aztec-triad-private/manifest-backups/arena-bot-0.$(date +%Y%m%dT%H%M%S).json
+
+# 2. Stop the bot. Cards committed to a live game are nullified out of the PXE
+#    and would be counted as missing, so a running bot skews the target.
+ssh box 'sudo systemctl stop triad-bot'
+
+# 3. Mint up to the new total. The target is CUMULATIVE and the manifest MERGES,
+#    so --cards 2000 on a 1000-card identity mints 1000 more, not 2000.
+set -a; . packages/frontend/.env.testnet; set +a          # contract addresses
+eval "$(grep -E '^DEPLOYER_' ~/.aztec-triad-private/deployer-testnet-key.txt)"
+export DEPLOYER_SECRET DEPLOYER_SALT DEPLOYER_SIGNING_KEY
+export AZTEC_PXE_URL=https://v5.testnet.rpc.aztec-labs.com
+npx tsx scripts/provision-arena-bot.ts --index 0 --cards 2000
+
+# 4. Ship the manifest. Leave arena-bot-0.json.imported.json ALONE — it is the
+#    record of what the box has already imported, so only the new notes import.
+scp packages/bot/.artifacts/arena-bot-0.json box:/tmp/m.json
+ssh box 'sudo mv /tmp/m.json /var/lib/triad-bot/arena-bot-0.json &&
+         sudo chown ubuntu:ubuntu /var/lib/triad-bot/arena-bot-0.json &&
+         sudo chmod 600 /var/lib/triad-bot/arena-bot-0.json &&
+         sudo systemctl start triad-bot'
+
+# 5. Verify. Importing is the burstiest thing the bot does — roughly a minute
+#    per hundred notes — and spendableCards is published once it finishes.
+ssh box 'journalctl -u triad-bot -f | grep -E "importing|imported|chain ready"'
+ssh box 'curl -s localhost:5175/health' | python3 -m json.tool | grep -E "spendable|Unimported"
+```
+
+Two traps, both hit for real:
+
+- **Point it at the right network.** `AZTEC_PXE_URL` alone is not enough — the
+  contract addresses come from the environment, so source `.env.testnet` too.
+  Without it the script used to read `.env` (the sandbox file) and try to mint
+  into a sandbox address.
+- **Do not target "what the bot can field".** This script's PXE is not the
+  bot's: `mint_bot_cards` creates untagged notes and the script never imports
+  them, so its own view of the collection stays stale no matter how much it
+  mints. Targeting that view once over-minted by 456 cards. The manifest is the
+  measure here; `/health` is the measure of what the bot can actually play.
 
 ## Step 4 — Smoke test
 
