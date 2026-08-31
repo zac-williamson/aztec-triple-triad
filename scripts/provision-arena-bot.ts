@@ -28,6 +28,9 @@
  *   npx tsx scripts/provision-arena-bot.ts --cards 40
  *   npx tsx scripts/provision-arena-bot.ts --index 1 --cards 40   # pool member 1
  *   npx tsx scripts/provision-arena-bot.ts --dry-run              # derive + report only
+ *   npx tsx scripts/provision-arena-bot.ts --cards 1000 --spendable
+ *                        # top up until the bot can FIELD 1000, ignoring cards
+ *                        # it owns but cannot see. Bot must be stopped.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { resolve, dirname } from 'path';
@@ -50,7 +53,19 @@ import { CARD_DATABASE, packRanks } from '../packages/game-logic/src/cards';
 
 const ROOT_DIR = resolve(import.meta.dirname || __dirname, '..');
 const PXE_URL = process.env.AZTEC_PXE_URL || 'http://localhost:8080';
-const ENV_PATH = resolve(ROOT_DIR, 'packages/frontend/.env');
+/**
+ * Where contract addresses come from when the environment does not carry them.
+ *
+ * Defaults to the sandbox file, which is fine for a sandbox and was silently
+ * wrong for everything else: this script was minting against whatever `.env`
+ * said no matter which network AZTEC_PXE_URL pointed at. Pointing it at testnet
+ * therefore tried to mint into a sandbox contract address, and the only reason
+ * it did not do something worse is that the address does not exist there.
+ *
+ * `process.env` now wins, so the usual `set -a; . packages/frontend/.env.testnet`
+ * does what it obviously looks like it does. ARENA_ENV_FILE overrides the file.
+ */
+const ENV_PATH = resolve(ROOT_DIR, process.env.ARENA_ENV_FILE ?? 'packages/frontend/.env');
 /**
  * One manifest PER IDENTITY. A single shared file would let provisioning index 1
  * silently overwrite index 0's keys and card list, which is precisely the pool
@@ -111,9 +126,13 @@ const arg = (name: string, dflt: number, allowZero = false): number => {
 };
 
 function readEnvAddress(key: string): string {
+  // The environment wins: minting is network-specific, and the address must be
+  // able to follow AZTEC_PXE_URL rather than being pinned to one file.
+  const fromEnv = process.env[key]?.trim();
+  if (fromEnv) return fromEnv;
   if (!existsSync(ENV_PATH)) throw new Error(`${ENV_PATH} missing — deploy the contracts first`);
   const m = readFileSync(ENV_PATH, 'utf-8').match(new RegExp(`^${key}=(.+)$`, 'm'));
-  if (!m) throw new Error(`${key} missing from ${ENV_PATH}`);
+  if (!m) throw new Error(`${key} missing from ${ENV_PATH} (and not in the environment)`);
   return m[1].trim();
 }
 
@@ -422,13 +441,33 @@ async function main(): Promise<number> {
   // them would inflate the stock every time a game is in flight.
   const heldNow = await readCollection(nft, botAccount.address);
   const committedElsewhere = Math.max(0, (previousMintedTotal(index)) - heldNow.length);
-  const have = heldNow.length + committedElsewhere;
+  // Two different questions, and they diverge once cards go missing.
+  //
+  // By default "have" counts cards committed to a live game, because they are
+  // nullified out of the PXE and come back on settlement — minting to cover
+  // them would inflate the stock every time a game is in flight.
+  //
+  // But a card that is gone (an import that failed, a game that can never be
+  // claimed) is indistinguishable from one merely committed, and counting those
+  // as present caps the bot below its target forever. --spendable targets what
+  // the bot can actually FIELD. Only correct with the bot stopped, since
+  // otherwise a live game's five cards read as missing.
+  const targetSpendable = process.argv.includes('--spendable');
+  const have = targetSpendable ? heldNow.length : heldNow.length + committedElsewhere;
   const toMint = Math.max(0, cardCount - have);
   console.log(
     `  holding ${heldNow.length} spendable` +
-    (committedElsewhere > 0 ? ` + ${committedElsewhere} committed to a game` : '') +
-    ` — minting ${toMint} more to reach ${cardCount}`,
+    (committedElsewhere > 0 ? ` + ${committedElsewhere} committed or lost` : '') +
+    ` — minting ${toMint} more to reach ${cardCount}` +
+    (targetSpendable ? ' spendable (--spendable)' : ' minted'),
   );
+  if (targetSpendable && committedElsewhere > 0) {
+    console.log(
+      `  NOTE: --spendable ignores the ${committedElsewhere} card(s) it cannot see. ` +
+      `If any are merely committed to a LIVE game, stop the bot and re-run, or ` +
+      `this will over-mint by that many.`,
+    );
+  }
 
   // 4. Mint in batches. One tx per batch rather than per card: at a thousand
   //    cards that is the difference between ~125 transactions and 1000.
