@@ -38,7 +38,11 @@ describe('pxe — serial-queue door', () => {
     const balance = await pxe.readTokenBalance('0xACC');
 
     expect(h.enqueuePxe).toHaveBeenCalledTimes(1);
-    expect(h.enqueuePxe).toHaveBeenCalledWith(expect.any(Function));
+    // The op's own name rides along, so queue diagnostics can say WHAT is
+    // waiting rather than just that something is.
+    expect(h.enqueuePxe).toHaveBeenCalledWith(
+      expect.any(Function), undefined, undefined, undefined, 'readTokenBalance',
+    );
     expect(h.simulate).toHaveBeenCalledTimes(1);
     expect(balance).toBe(7n);
   });

@@ -59,6 +59,9 @@ interface PxeQueueItem {
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
   priority: number;
+  /** For queue diagnostics; set on enqueue. */
+  enqueuedAt?: number;
+  label?: string;
   gameId?: string;
   timeoutMs: number;
 }
@@ -182,7 +185,13 @@ class TxManager {
    * (i.e. different games) always maintain FIFO order so that one
    * game's settlement completes before the next game's creation.
    */
-  enqueuePxe<T>(fn: () => Promise<T>, timeoutMs = PXE_OP_TIMEOUT, priority = 5, gameId?: string): Promise<T> {
+  enqueuePxe<T>(
+    fn: () => Promise<T>,
+    timeoutMs = PXE_OP_TIMEOUT,
+    priority = 5,
+    gameId?: string,
+    label?: string,
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const item: PxeQueueItem = {
         fn, resolve: resolve as (v: unknown) => void, reject, priority, gameId, timeoutMs,
@@ -200,7 +209,17 @@ class TxManager {
           break; // different game or higher/equal priority — stop here
         }
       }
+      item.enqueuedAt = Date.now();
+      item.label = label;
       this.pxeItems.splice(idx, 0, item);
+      // Queue depth at enqueue time. A PXE op that waits is indistinguishable
+      // from one that hangs unless the queue says which it is — that ambiguity
+      // cost a long production hunt, where a join sat behind an abandonment
+      // sweep and every log was silent.
+      if (this.pxeItems.length > 1 || this.pxeProcessing) {
+        console.log(`[pxe-queue] ${label ?? 'op'} queued behind ${this.pxeItems.length - 1} ` +
+          `item(s)${this.pxeProcessing ? ' + one running' : ''}`);
+      }
 
       this.drainPxeQueue();
     });
@@ -213,6 +232,11 @@ class TxManager {
 
     while (this.pxeItems.length > 0) {
       const item = this.pxeItems.shift()!;
+      const waited = item.enqueuedAt ? Date.now() - item.enqueuedAt : 0;
+      if (waited > 5_000) {
+        console.log(`[pxe-queue] ${item.label ?? 'op'} starting after ${Math.round(waited / 1000)}s in the queue`);
+      }
+      const startedAt = Date.now();
       try {
         const value = await Promise.race([
           item.fn(),
@@ -223,6 +247,13 @@ class TxManager {
         item.resolve(value);
       } catch (e) {
         item.reject(e);
+      } finally {
+        const ran = Date.now() - startedAt;
+        // Anything holding the single serial queue this long is starving
+        // everything else, which is worth a line whether it succeeded or not.
+        if (ran > 30_000) {
+          console.log(`[pxe-queue] ${item.label ?? 'op'} held the queue for ${Math.round(ran / 1000)}s`);
+        }
       }
     }
 

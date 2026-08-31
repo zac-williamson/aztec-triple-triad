@@ -72,6 +72,26 @@ function padNoteHashes(Fr: any, noteHashes: string[]): any[] {
  * inline. Callers pass and receive plain values (hex strings, numbers, bigints,
  * pre-built Fr arg arrays) — never a contract instance.
  */
+/**
+ * `makeOps` with the operation's own name threaded through to the scheduler.
+ * Implemented as a Proxy so every op is covered without naming each by hand,
+ * and so a new op cannot be added without a label by accident.
+ */
+function makeOpsNamed(schedule: (fn: () => Promise<unknown>, name: string) => Promise<unknown>): PxeOps {
+  const named = { current: 'op' };
+  const ops = makeOps((fn) => schedule(fn, named.current) as Promise<never>);
+  return new Proxy(ops as object, {
+    get(target, prop, recv) {
+      const value = Reflect.get(target, prop, recv);
+      if (typeof value !== 'function') return value;
+      return (...args: unknown[]) => {
+        named.current = String(prop);
+        return (value as (...a: unknown[]) => unknown)(...args);
+      };
+    },
+  }) as PxeOps;
+}
+
 function makeOps(schedule: Schedule) {
   return {
     /** Private ARNA-token balance for `owner` (decimal-safe → bigint). */
@@ -469,7 +489,14 @@ function requireTxHash(receipt: any, label: string): string {
 export type PxeOps = ReturnType<typeof makeOps>;
 
 /** Standalone facade: every op is enqueued on the serial PXE queue. */
-export const pxe: PxeOps = makeOps((fn) => txManager.enqueuePxe(fn));
+/**
+ * Queued facade. Each op carries its own name so the queue diagnostics can say
+ * WHAT is waiting and what is holding it — "previewJoinGame queued behind 1
+ * item" is the line that would have ended a very long production hunt in one
+ * pass.
+ */
+export const pxe: PxeOps = makeOpsNamed((fn, name) =>
+  txManager.enqueuePxe(fn, undefined, undefined, undefined, name));
 
 /** In-tx facade: ops run INLINE within the current queue item (no re-enqueue). */
 const inlinePxe: PxeOps = makeOps((fn) => fn());
