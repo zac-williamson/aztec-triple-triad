@@ -116,27 +116,34 @@ export function MainMenu({
         <p className="main-menu__card-status">Loading your cards from Aztec...</p>
       )}
 
-      <button
-        className="main-menu__btn-clear"
-        data-testid="repair-chain-sync"
-        title="Rebuilds local chain-sync state (fixes 'PXE chain-sync is wedged' errors). Your account and cards are kept."
-        onClick={async () => {
-          const { repairChainSync } = await import('../aztec/connectToAztec');
-          repairChainSync();
-        }}
-      >
-        Repair Chain Sync
-      </button>
+      {/* Both were `position: fixed; bottom: 16px; right: 16px`, so they sat on
+          top of each other. One row that owns the corner; the buttons lay
+          themselves out inside it. */}
+      <div className="main-menu__utility-bar">
+        <button
+          className="main-menu__btn-clear"
+          data-testid="repair-chain-sync"
+          title="Rebuilds local chain-sync state (fixes 'PXE chain-sync is wedged' errors). Your account and cards are kept."
+          onClick={async () => {
+            const { repairChainSync } = await import('../aztec/connectToAztec');
+            repairChainSync();
+          }}
+        >
+          Repair Chain Sync
+        </button>
 
-      <button
-        className="main-menu__btn-clear"
-        onClick={async () => {
-          const { clearAllState } = await import('../aztec/connectToAztec');
-          clearAllState();
-        }}
-      >
-        Clear All State
-      </button>
+        <button
+          className="main-menu__btn-clear main-menu__btn-clear--destructive"
+          data-testid="clear-all-state"
+          title="Deletes this browser's account, keys and cards. There is no undo, and nothing is recoverable afterwards."
+          onClick={async () => {
+            const { clearAllState } = await import('../aztec/connectToAztec');
+            clearAllState();
+          }}
+        >
+          Clear All State
+        </button>
+      </div>
 
       {showNotEnoughCards && (
         <div className="main-menu__dialog-overlay" onClick={() => setShowNotEnoughCards(false)}>

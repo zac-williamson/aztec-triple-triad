@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Axolotl Arena">
+  <!-- Reads at 16px as one card on a dark ground: three shapes, high contrast.
+       Palette is the app's own — swamp green #1a2e1a, gold #c4a265, and the
+       axolotl's salmon. -->
+  <rect width="32" height="32" rx="7" fill="#1a2e1a"/>
+  <rect x="8" y="5" width="16" height="22" rx="2.5" fill="none" stroke="#c4a265" stroke-width="2.2"/>
+  <circle cx="16" cy="14" r="3.6" fill="#f2a3a0"/>
+  <path d="M16 18.6c-2.2 0-3.9 1.5-3.9 3.4h7.8c0-1.9-1.7-3.4-3.9-3.4z" fill="#f2a3a0"/>
+</svg>

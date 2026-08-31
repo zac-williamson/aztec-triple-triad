@@ -143,9 +143,16 @@ transcript. And it does not change what abandoning means: committed cards stay
 locked pending the abandonment claim and are still counted on `/health`. The
 gain is the twenty-eight minutes, not the cards.
 
-Six tests, each failing without the half of the fix it covers. The production
-check — match a real game, close the tab, watch the bot return to service — is
-still to run; the code is deployed and the bot is live on it.
+Six tests, each failing without the part of the fix it covers, and verified on
+production by matching a real game and closing the tab:
+
+    22:00:57  matched into 0x80e1f059… as player2
+    22:01:02  opponent disconnected — giving them 90s to come back
+    22:02:34  opponent disconnected and did not come back — abandoning
+    22:02:39  state=idle
+
+Ninety-seven seconds, against thirty minutes before. `cardsStranded: 0`, since
+nothing had been committed — item 2's fix and this one meeting as intended.
 
 ### 7. `readPrivateCards` is O(collection) · `ACCEPTED` (31 Aug) — with a ceiling
 It is worse than O(collection): it is **quadratic**, and the reason matters,
@@ -190,14 +197,29 @@ mode, sandboxed frame, storage disabled), which is where support is hardest.
 
 ## P4 — Cosmetic, on the deployed site
 
-### 9. Four assets 404 · `OPEN`
-`aztec-symbol.png` and three model textures
-(`PolygonNatureBiomes_Texture_01_Justin.psd`, `..._Tom.png`,
-`Bake_02_baseTexBaked.png`). No functional impact; they make the network log
-noisy enough to hide a real 404 — which is exactly how the OPFS worker hid.
+### 9. Four assets 404 · `DONE` (31 Aug)
+Two unrelated causes.
 
-### 10. Overlapping controls, bottom right · `OPEN`
-"Repair Chain Sync" and "Clear All State" render on top of each other.
+`aztec-symbol.png` was a favicon reference to a file that was never in the
+repo — and the wrong brand anyway, since the game is Axolotl Arena. Replaced
+with an actual `favicon.svg` in the app's own palette.
+
+The three textures are named inside the FBX models, from the artist's original
+project (one is a `.psd`), and the pack never shipped them. The app assigns its
+own materials from `/textures`, so the references are dead weight — but the
+loader still fetched each one. The FBX loader now runs through a
+`LoadingManager` that answers any texture request under `/models` with a
+transparent pixel, which is structural rather than a list of filenames:
+`/models` holds `.fbx` and nothing else, so every texture asked for there is
+one we do not have. That covers the other thirteen names in those files too.
+
+### 10. Overlapping controls, bottom right · `DONE` (31 Aug)
+Both buttons were `position: fixed; bottom: 16px; right: 16px`, so each claimed
+the same corner. They now sit in one flex row that owns the corner.
+
+While there: one of them repairs and the other is irreversible, and they looked
+identical. "Clear All State" now gets a distinguishing hover and the title text
+the repair button already had.
 
 ---
 

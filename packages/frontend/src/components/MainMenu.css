@@ -224,10 +224,19 @@
   line-height: 1.5;
 }
 
-.main-menu__btn-clear {
+/* Owns the bottom-right corner so its children do not each claim it. */
+.main-menu__utility-bar {
   position: fixed;
   bottom: 16px;
   right: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  pointer-events: none;   /* the row is only a container; the buttons take clicks */
+}
+
+.main-menu__btn-clear {
   padding: 6px 14px;
   border: 1px solid rgba(232, 228, 216, 0.15);
   border-radius: 4px;
@@ -244,4 +253,11 @@
   color: rgba(232, 228, 216, 0.7);
   border-color: rgba(232, 228, 216, 0.3);
   background: rgba(0, 0, 0, 0.6);
+}
+
+/* One of these repairs and the other is irreversible; they should not look
+   like the same button. Muted until hovered, so it does not shout. */
+.main-menu__btn-clear--destructive:hover {
+  color: rgba(232, 168, 160, 0.9);
+  border-color: rgba(232, 168, 160, 0.45);
 }

@@ -1,6 +1,6 @@
 import { useMemo, useEffect, useState } from 'react';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
-import { TextureLoader, MeshStandardMaterial, RepeatWrapping, Group, Texture } from 'three';
+import { TextureLoader, MeshStandardMaterial, RepeatWrapping, Group, Texture, LoadingManager } from 'three';
 import { TEXTURES } from '../../assets/modelManifest';
 
 // Shared cache for loaded assets — exported so all model components can reuse
@@ -9,8 +9,33 @@ const textureCache = new Map<string, Texture>();
 const modelPromises = new Map<string, Promise<Group>>();
 const texturePromises = new Map<string, Promise<Texture>>();
 
+/**
+ * The FBX files name their textures from the artist's own project — a .psd
+ * among them — and the pack never shipped those files. We assign our own
+ * materials from /textures below, so the references are dead weight, but the
+ * loader still tries to fetch each one and takes a 404.
+ *
+ * The rule is structural rather than a list of filenames: /models holds
+ * nothing but .fbx, so ANY texture requested from there is one we do not have.
+ * A 1x1 transparent GIF satisfies the loader without a request.
+ *
+ * Worth doing for a reason beyond tidiness: a browser console full of expected
+ * 404s is where an unexpected one hides, which is exactly how a missing OPFS
+ * worker went unnoticed on the deployed build.
+ */
+export const BLANK_PIXEL =
+  'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+/** Exported for tests: the .fbx itself must still be fetched normally. */
+export function resolveFbxAssetUrl(url: string): string {
+  return /\/models\/.*\.(png|psd|tga|jpg|jpeg|bmp|tif|tiff)$/i.test(url) ? BLANK_PIXEL : url;
+}
+
+const fbxManager = new LoadingManager();
+fbxManager.setURLModifier(resolveFbxAssetUrl);
+
 // Singleton loaders
-const _fbxLoader = new FBXLoader();
+const _fbxLoader = new FBXLoader(fbxManager);
 const _texLoader = new TextureLoader();
 
 /**
