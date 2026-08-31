@@ -214,6 +214,11 @@ export class ArenaBot {
   start(): void {
     this.stopped = false;
     this.openSocket();
+    // Publish the consumables immediately rather than waiting for the first
+    // match: a bot that has not been matched since restart was reporting -1 for
+    // both, so the health probe passed while blind to the two numbers that end
+    // the arena.
+    void this.refreshConsumables();
     this.pollTimer = setInterval(() => {
       void this.tick().catch(err => this.recordError('poll', err));
     }, this.cfg.pollIntervalMs);
@@ -817,6 +822,28 @@ export class ArenaBot {
    * 1 until a game starts, so anything that plays outside a match plays well.
    */
   private gameSkill = 1;
+
+  /**
+   * Read the two consumables once at startup.
+   *
+   * They were refreshed only when the bot picked a hand, so a bot that had not
+   * been matched since its last restart reported "-1 spendable, -1 FJ" — the
+   * health probe went green while saying nothing about the two numbers that
+   * actually end the arena. BotChain already knows the card count by the time
+   * it is connected; this just publishes it.
+   */
+  private async refreshConsumables(): Promise<void> {
+    const chain = this.chain as (BotChainLike & { lastKnownCardCount?: number }) | null;
+    if (!chain) return;
+    try {
+      const held = await chain.readCards();
+      this.stats.spendableCards = held.length;
+    } catch { /* a failed read must not stop the bot starting */ }
+    try {
+      const fj = await chain.readFeeJuice?.();
+      if (fj !== undefined) this.stats.feeJuice = fj.toString();
+    } catch { /* likewise */ }
+  }
 
   /** Uniform in [skillMin, skillMax]. */
   private rollSkill(): number {

@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { startHealthServer, type HealthServer } from '../src/health.js';
-import type { ArenaBot } from '../src/ArenaBot.js';
+import { ArenaBot } from '../src/ArenaBot.js';
+import { EventEmitter } from 'events';
 
 const PORT = 5399 + Math.floor(Math.random() * 500);
 let running: HealthServer | null = null;
@@ -89,5 +90,44 @@ describe('health surfaces the number that predicts going idle', () => {
     // quiet night — so the count has to be visible from outside the process.
     expect(body.spendableCards).toBe(7);
     expect(body.healthy).toBe(true);
+  });
+});
+
+describe('consumables at startup', () => {
+  /**
+   * Both numbers used to be refreshed only when the bot picked a hand, so a bot
+   * that had not been matched since restart reported -1 for each and the health
+   * probe went green while blind to the two things that actually end the arena.
+   */
+  it('reports cards and fee juice without waiting for a match', async () => {
+    const socket = new EventEmitter() as any;
+    socket.readyState = 1; socket.send = () => {}; socket.close = () => {};
+    const bot = new ArenaBot(
+      {
+        wsUrl: 'ws://t', httpUrl: 'http://t', token: 't', joinThresholdMs: 1_000,
+        pollIntervalMs: 10_000, queueTimeoutMs: 60_000, handCardIds: [1, 2, 3, 4, 5],
+        difficulty: 'greedy', skillMin: 1, skillMax: 1, moveDelayMs: 0,
+        maxConcurrentGames: 1, chainTxTimeoutMs: 1, settleWaitMs: 0,
+        sweepIntervalMs: 900_000, drawFallbackMs: 0, gameTimeoutMs: 1, healthPort: 0,
+      } as never,
+      {
+        connect: () => socket,
+        fetchQueue: async () => ({ length: 0, oldestWaitMs: 0, entries: [] }),
+        chain: {
+          address: '0xbot',
+          selectHand: async () => [1, 2, 3, 4, 5],
+          readCards: async () => Array.from({ length: 1382 }, (_, i) => i % 12),
+          readFeeJuice: async () => 953447137296251479537n,
+          pxe: {},
+        } as never,
+        log: () => {},
+      },
+    );
+    bot.start();
+    await new Promise(r => setTimeout(r, 50));
+    bot.stop();
+
+    expect(bot.getStats().spendableCards).toBe(1382);
+    expect(bot.getStats().feeJuice).toBe('953447137296251479537');
   });
 });

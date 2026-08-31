@@ -28,9 +28,6 @@
  *   npx tsx scripts/provision-arena-bot.ts --cards 40
  *   npx tsx scripts/provision-arena-bot.ts --index 1 --cards 40   # pool member 1
  *   npx tsx scripts/provision-arena-bot.ts --dry-run              # derive + report only
- *   npx tsx scripts/provision-arena-bot.ts --cards 1000 --spendable
- *                        # top up until the bot can FIELD 1000, ignoring cards
- *                        # it owns but cannot see. Bot must be stopped.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { resolve, dirname } from 'path';
@@ -441,33 +438,24 @@ async function main(): Promise<number> {
   // them would inflate the stock every time a game is in flight.
   const heldNow = await readCollection(nft, botAccount.address);
   const committedElsewhere = Math.max(0, (previousMintedTotal(index)) - heldNow.length);
-  // Two different questions, and they diverge once cards go missing.
+  // `heldNow` is what THIS script's PXE can see, which is not what the bot can
+  // see and never will be: mint_bot_cards creates untagged notes, and this
+  // process never imports them. After minting 800 cards its own view still read
+  // 144. So the manifest — every note this identity has ever been minted — is
+  // the only sound basis for "how many does it have", and cards committed to a
+  // live game count as present because they return on settlement.
   //
-  // By default "have" counts cards committed to a live game, because they are
-  // nullified out of the PXE and come back on settlement — minting to cover
-  // them would inflate the stock every time a game is in flight.
-  //
-  // But a card that is gone (an import that failed, a game that can never be
-  // claimed) is indistinguishable from one merely committed, and counting those
-  // as present caps the bot below its target forever. --spendable targets what
-  // the bot can actually FIELD. Only correct with the bot stopped, since
-  // otherwise a live game's five cards read as missing.
-  const targetSpendable = process.argv.includes('--spendable');
-  const have = targetSpendable ? heldNow.length : heldNow.length + committedElsewhere;
+  // A `--spendable` flag that targeted `heldNow` instead lived here briefly and
+  // over-minted by 456 cards on its first run, for exactly this reason. What
+  // the bot can actually FIELD is knowable only inside the bot; ask its
+  // /health endpoint, not this script.
+  const have = Math.max(heldNow.length + committedElsewhere, previousMintedTotal(index));
   const toMint = Math.max(0, cardCount - have);
   console.log(
-    `  holding ${heldNow.length} spendable` +
-    (committedElsewhere > 0 ? ` + ${committedElsewhere} committed or lost` : '') +
-    ` — minting ${toMint} more to reach ${cardCount}` +
-    (targetSpendable ? ' spendable (--spendable)' : ' minted'),
+    `  holding ${heldNow.length} visible here` +
+    (committedElsewhere > 0 ? ` + ${committedElsewhere} minted but not visible to this process` : '') +
+    ` — minting ${toMint} more to reach ${cardCount} minted`,
   );
-  if (targetSpendable && committedElsewhere > 0) {
-    console.log(
-      `  NOTE: --spendable ignores the ${committedElsewhere} card(s) it cannot see. ` +
-      `If any are merely committed to a LIVE game, stop the bot and re-run, or ` +
-      `this will over-mint by that many.`,
-    );
-  }
 
   // 4. Mint in batches. One tx per batch rather than per card: at a thousand
   //    cards that is the difference between ~125 transactions and 1000.
