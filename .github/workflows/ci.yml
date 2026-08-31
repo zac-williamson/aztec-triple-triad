@@ -199,18 +199,35 @@ jobs:
           echo "$HOME/.aztec/current/bin" >> "$GITHUB_PATH"
           echo "$HOME/.aztec/current/node_modules/.bin" >> "$GITHUB_PATH"
           echo "$HOME/.aztec/bin" >> "$GITHUB_PATH"
-          # internal-bin holds the bare-named tools (nargo, bb, ...). The
-          # installer keeps it OFF PATH deliberately, so they cannot shadow a
-          # developer's own toolchain, and the `aztec` wrapper is supposed to
-          # add it for its own subprocesses. On this runner that did not happen:
-          # `aztec compile` died on `spawn nargo ENOENT` with nargo present and
-          # executable in internal-bin. A hermetic CI box has no user toolchain
-          # to shadow, so put it on PATH and stop depending on the wrapper.
+          # internal-bin holds the bare-named tools (nargo, bb, ...), which the
+          # installer keeps OFF PATH so they cannot shadow a developer's own
+          # toolchain. The `aztec` wrapper in current/bin is what is meant to
+          # add it for its subprocesses — but it never runs here, and the
+          # diagnostic below is what finally showed why:
+          #
+          #   which aztec → …/current/node_modules/.bin/aztec
+          #
+          # $GITHUB_PATH PREPENDS, so the LAST line written ends up FIRST. That
+          # puts node_modules/.bin ahead of current/bin, and the raw npm bin
+          # shadows the wrapper. Hence `aztec compile` dying on
+          # `spawn nargo ENOENT` with nargo present and executable all along.
+          #
+          # A CI runner has no user toolchain to shadow, so internal-bin goes on
+          # PATH directly and nothing depends on the wrapper. Written last, so
+          # it lands first. Do not reorder these lines to read more naturally —
+          # the order is inverted on purpose.
           echo "$HOME/.aztec/current/internal-bin" >> "$GITHUB_PATH"
 
-      # Because three separate guesses at the previous step were wrong, and
-      # guessing again without seeing the box is how a fourth would go.
-      - name: Toolchain layout
+      # aztec compile, NOT nargo compile — nargo misses AVM transpilation + VKs.
+      - name: Compile contracts
+        run: aztec compile
+        working-directory: packages/contracts
+
+      # Three guesses at the toolchain layout were wrong before anyone looked at
+      # the box, each moving the failure one step later. So when it breaks
+      # again, the facts are in the log rather than in the next guess.
+      - name: Toolchain layout (on failure)
+        if: failure()
         run: |
           echo "PATH=$PATH"
           echo "--- which ---"; which aztec nargo aztec-nargo bb 2>&1 || true
@@ -218,11 +235,6 @@ jobs:
           echo "--- internal-bin ---"; ls -la "$HOME/.aztec/current/internal-bin" || true
           echo "--- aztec wrapper ---"; cat "$HOME/.aztec/current/bin/aztec" || true
           aztec --version || true
-
-      # aztec compile, NOT nargo compile — nargo misses AVM transpilation + VKs.
-      - name: Compile contracts
-        run: aztec compile
-        working-directory: packages/contracts
 
       - name: Compile circuits and run circuit tests
         run: |
