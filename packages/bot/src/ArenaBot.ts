@@ -39,6 +39,14 @@ export interface BotProofsLike {
  */
 const RETURN_WAIT_MS = 60 * 60_000;
 
+/**
+ * How long to wait for the opponent's hand proof before declining to commit.
+ * Generous: it is a client-side proof over a hand they already hold, so it
+ * takes seconds, and the cost of giving up early is a game that could have
+ * been played.
+ */
+const HAND_PROOF_WAIT_MS = 3 * 60_000;
+
 /** Game ids are 62 hex chars; logs stay readable with the first few. */
 const short = (id: unknown): string =>
   typeof id === 'string' ? `${id.slice(0, 10)}…` : String(id);
@@ -575,6 +583,24 @@ export class ArenaBot {
     this.blindingFactor = blindingFactor;
     this.myRandomness = randomness;
     this.send({ type: 'SHARE_AZTEC_INFO', gameId: wsGameId, aztecAddress: chain.address, onChainGameId, gameRandomness: randomness });
+
+    // Do not commit cards we could not get back.
+    //
+    // Recovering an abandoned game requires BOTH hand proofs — the claim binds
+    // each side's committed hand — so a player who leaves before proving theirs
+    // strands our five permanently. Two such games are locked for good.
+    //
+    // Sharing our randomness above is exactly what unblocks their hand proof
+    // (they cannot build it without it), so waiting here cannot deadlock: we
+    // have already given them everything they need. If it never comes we simply
+    // never commit, and the watchdog resets a game in which nothing was at
+    // stake — strictly better than holding cards nobody can ever release.
+    if (!(await this.awaitOpponentHandProof(wsGameId))) {
+      this.committedGameIds.delete(onChainGameId);
+      this.log('no opponent hand proof — NOT committing, so nothing can be stranded');
+      return;
+    }
+
     this.log(`join_game: committing ${this.hand.join(',')} into ${onChainGameId.slice(0, 18)}…`);
 
     const txHash = await chain.pxe.sendJoinGame(chain.address, onChainGameId, this.hand, { node: chain.nodeClient, timeoutMs: this.cfg.chainTxTimeoutMs });
@@ -902,6 +928,22 @@ export class ArenaBot {
     for (const [id, deadline] of this.awaitingReturn) {
       if (deadline <= now) this.awaitingReturn.delete(id);
     }
+  }
+
+  /**
+   * Wait for the opponent's hand proof, which recovery will need.
+   *
+   * Bounded: an opponent who never proves is one we never commit against, and
+   * the watchdog tidies up an empty game soon enough.
+   */
+  private async awaitOpponentHandProof(wsGameId: string): Promise<boolean> {
+    const deadline = this.now() + HAND_PROOF_WAIT_MS;
+    while (this.now() < deadline) {
+      if (this.gameId !== wsGameId) return false;   // game moved on without us
+      if (this.opponentHandProof) return true;
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    return false;
   }
 
   /**

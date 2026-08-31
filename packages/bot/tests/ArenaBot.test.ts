@@ -60,6 +60,14 @@ function botTurnState(): GameState {
 function deliverJoinHandshake(socket: FakeSocket, gameId = 'g1', onChainGameId = FIELD(0xc1)): void {
   socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId, aztecAddress: FIELD(0xdef), onChainGameId, gameRandomness: SIX_RANDOM });
   socket.deliver({ type: 'ON_CHAIN_STATUS', gameId, status: { player1Tx: 'confirmed', player2Tx: 'pending' } });
+  // The bot will not commit cards until it holds the opponent's hand proof —
+  // recovery needs it, so committing first is how five cards get stranded for
+  // good. The real opponent sends this as soon as our randomness reaches them,
+  // which the OPPONENT_AZTEC_INFO above is standing in for.
+  socket.deliver({
+    type: 'HAND_PROOF', gameId, fromPlayer: 1,
+    handProof: { proof: 'p', publicInputs: ['0x1', '0x2'], cardCommit: FIELD(0x222) },
+  });
 }
 
 /** Build a bot wired to a fake socket and a settable queue snapshot. */
@@ -392,10 +400,16 @@ describe('ArenaBot chain mode', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
     h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xhuman', onChainGameId: FIELD(0xc1) });
+    // Recovery needs the opponent's hand proof, so the bot holds off committing
+    // until it has one — otherwise a player who leaves early strands our five.
+    h.socket.deliver({
+      type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 1,
+      handProof: { proof: 'p', publicInputs: ['0x1', '0x2'], cardCommit: FIELD(0x222) },
+    });
     await vi.advanceTimersByTimeAsync(50);
 
     h.socket.deliver({ type: 'ON_CHAIN_STATUS', gameId: 'g1', status: { player1Tx: 'confirmed', player2Tx: 'pending' } });
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(1_500);
     expect(h.f.calls.some(c => c[0] === 'join')).toBe(true);
     expect(h.socket.lastOfType('TX_CONFIRMED')).toMatchObject({ txType: 'join_game' });
   });
@@ -406,11 +420,71 @@ describe('ArenaBot chain mode', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
     h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: '0xhuman', onChainGameId: FIELD(0xc1) });
+    // Committing waits on the opponent's hand proof, since recovery needs it.
+    h.socket.deliver({
+      type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 1,
+      handProof: { proof: 'p', publicInputs: ['0x1', '0x2'], cardCommit: FIELD(0x222) },
+    });
     for (let i = 0; i < 3; i++) {
       h.socket.deliver({ type: 'ON_CHAIN_STATUS', gameId: 'g1', status: { player1Tx: 'confirmed', player2Tx: 'pending' } });
-      await vi.advanceTimersByTimeAsync(20);
+      await vi.advanceTimersByTimeAsync(1_500);
     }
     expect(h.f.calls.filter(c => c[0] === 'join')).toHaveLength(1);
+  });
+
+  describe('never commit cards it could not recover', () => {
+    /**
+     * Recovering an abandoned game requires BOTH hand proofs, so a player who
+     * leaves before proving theirs used to strand the bot's five cards for good.
+     * Two production games are locked that way and cannot be claimed by anyone.
+     *
+     * Sharing our randomness is what unblocks their hand proof — they cannot
+     * build it without it — so waiting for that proof before committing cannot
+     * deadlock. If it never arrives we never commit, and the watchdog tidies up a
+     * game in which nothing was at stake.
+     */
+    const withoutHandProof = (socket: FakeSocket) => {
+      socket.deliver({
+        type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: FIELD(0xdef),
+        onChainGameId: FIELD(0xc1), gameRandomness: SIX_RANDOM,
+      });
+      socket.deliver({
+        type: 'ON_CHAIN_STATUS', gameId: 'g1',
+        status: { player1Tx: 'confirmed', player2Tx: 'pending' },
+      });
+    };
+
+    it('shares its randomness before waiting, so the opponent CAN prove', async () => {
+      const h = chainHarness();
+      await h.ready();
+      await vi.advanceTimersByTimeAsync(1_000);
+      h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+      withoutHandProof(h.socket);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      // The share must go out FIRST, or waiting for their proof deadlocks.
+      const shared = h.socket.lastOfType('SHARE_AZTEC_INFO');
+      expect(shared, 'randomness shared before committing').toBeTruthy();
+      expect(Array.isArray(shared.gameRandomness)).toBe(true);
+      expect(h.f.calls.filter(c => c[0] === 'join'), 'but no cards committed yet').toHaveLength(0);
+    });
+
+    it('commits once the opponent proves their hand', async () => {
+      const h = chainHarness();
+      await h.ready();
+      await vi.advanceTimersByTimeAsync(1_000);
+      h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+      withoutHandProof(h.socket);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(h.f.calls.filter(c => c[0] === 'join')).toHaveLength(0);
+
+      h.socket.deliver({
+        type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 1,
+        handProof: { proof: 'p', publicInputs: ['0x1', '0x2'], cardCommit: FIELD(0x222) },
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(h.f.calls.filter(c => c[0] === 'join'), 'now it is safe to commit').toHaveLength(1);
+    });
   });
 
 });
@@ -477,21 +551,24 @@ describe('ArenaBot proof flow', () => {
     const h = h2();
     await h.ready();
     h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
-    deliverJoinHandshake(h.socket);
+    // Deliberately WITHOUT the opponent's hand proof.
+    h.socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: FIELD(0xdef), onChainGameId: FIELD(0xc1), gameRandomness: SIX_RANDOM });
+    h.socket.deliver({ type: 'ON_CHAIN_STATUS', gameId: 'g1', status: { player1Tx: 'confirmed', player2Tx: 'pending' } });
     await vi.advanceTimersByTimeAsync(50);
 
-    // Our turn, our cards committed, our own hand proof done — but the
-    // opponent's commitment has not arrived. A move proof binds BOTH, and it
-    // needs the EXACT post-move board, so a card played now could never be
-    // proved: not then, and not later once the board has moved on. One
-    // unprovable move makes the whole game unsettleable, so the bot must HOLD.
+    // Without the opponent's hand proof the bot does not commit at all — that
+    // proof is what recovery would need, so committing first is how cards get
+    // stranded. It follows that it cannot place either: a move proof binds BOTH
+    // commitments and needs the EXACT post-move board, so a card played now
+    // could never be proved, and one unprovable move makes the whole game
+    // unsettleable.
     h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
     await vi.advanceTimersByTimeAsync(50);
     expect(h.socket.countOfType('PLACE_CARD')).toBe(0);
 
-    // The opponent's hand proof releases it. Nothing else can: the relay only
-    // pushes a state when somebody moves, and the missing move is ours.
+    // The opponent's hand proof releases both: the bot commits, then plays.
     h.socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 1, handProof: { proof: 'q', publicInputs: [], cardCommit: FIELD(0x2) } });
+    await vi.advanceTimersByTimeAsync(1_500);
     await vi.advanceTimersByTimeAsync(50);
     expect(h.socket.countOfType('PLACE_CARD')).toBe(1);
 
@@ -606,9 +683,16 @@ describe('ArenaBot settlement', () => {
       socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber, gameState: freshState(), opponentIsBot: false });
       socket.deliver({ type: 'OPPONENT_AZTEC_INFO', gameId: 'g1', aztecAddress: OPP_ADDRESS, onChainGameId: CHAIN_GAME_ID, gameRandomness: RANDOMNESS });
       socket.deliver({ type: 'ON_CHAIN_STATUS', gameId: 'g1', status: { player1Tx: 'confirmed', player2Tx: 'pending' } });
-      await settle(80);
+      // The opponent's HAND proof gates COMMITTING (recovery needs it), which
+      // is a separate concern from the MOVE proofs that gate settling. It is
+      // always delivered, so `seedTranscript` still means "is the move
+      // transcript complete" — which is what the settlement tests are about.
+      socket.deliver({
+        type: 'HAND_PROOF', gameId: 'g1', fromPlayer: playerNumber === 1 ? 2 : 1,
+        handProof: { proof: fakeProofB64(), publicInputs: ['0x3', '0x4'], cardCommit: hex(0x222) },
+      });
+      await settle(1400);
       if (seedTranscript) {
-        socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: playerNumber === 1 ? 2 : 1, handProof: { proof: fakeProofB64(), publicInputs: ['0x3', '0x4'], cardCommit: hex(0x222) } });
         let start = initialHash;
         for (let i = 0; i < 9; i++) {
           const end = `0x${String(i + 1).padStart(64, '0')}`;

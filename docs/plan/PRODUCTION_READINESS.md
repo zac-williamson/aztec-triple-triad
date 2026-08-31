@@ -27,7 +27,22 @@ caught 100. With an explicit wait the run reports
 prod-play.mts now fails if the reward does not arrive, so this cannot be
 assumed away again.
 
-### 2. Cards stranded by abandoned games · `OPEN`
+### 2. Cards stranded by abandoned games · `DONE` (31 Aug) — cause fixed
+The bot no longer commits cards it could not recover.
+
+Recovery requires BOTH hand proofs, and the bot used to commit as soon as
+player 1's create_game confirmed — before the opponent had proved anything. A
+player who left in that window stranded five cards permanently.
+
+It now shares its randomness (which is what unblocks THEIR hand proof, so this
+cannot deadlock), waits for that proof, and only then commits. If it never
+arrives, nothing was ever at stake and the watchdog tidies up.
+
+The five already stranded in `0x162a5204…` and `0x16db8bf8…` remain
+unrecoverable — the claim needs a proof that was never made. Bounded, visible
+as `cardsStranded`, and can no longer grow from this cause.
+
+### 2b. Original text, for the record · `CLOSED`
 Five cards are locked in games the bot can never claim (its journal is missing
 the opponent's hand proof), and two such games are known:
 `0x162a5204…`, `0x16db8bf8…`. Health reports `cardsStranded: 5`.
