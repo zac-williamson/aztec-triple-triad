@@ -238,11 +238,24 @@ async function main() {
       return (p?.ownedCardIds.length ?? 0) === n;
     }, want, { timeout: 10 * 60_000, polling: 2000 }).then(() => true).catch(() => false);
 
+    // The +20 reward lands on its own clock: the token note needs a PXE block
+    // sync, so the app refreshes the balance ~5s after settlement. Reading it
+    // with the cards caught 100 instead of 120 and I could not tell whether
+    // that was my sampling or a lost reward. Wait for it explicitly, and fail
+    // if it never arrives — the reward is real value either way.
+    const STARTER_TOKENS = 100, GAME_REWARD = 20;
+    const gotTokens = await page.waitForFunction(n => {
+      const p = window.__triadTest?.phase();
+      return (p?.tokenBalance ?? 0) >= n;
+    }, STARTER_TOKENS + GAME_REWARD, { timeout: 6 * 60_000, polling: 2000 })
+      .then(() => true).catch(() => false);
+
     const end = (await phase())!;
     const finalCards = [...end.ownedCardIds].sort((a, b) => a - b);
     log(`final: ${end.ownedCardIds.length} cards [${finalCards}], ${end.tokenBalance} tokens` +
-      (reached ? '' : `  — EXPECTED ${want}, the wager did not complete`));
-    if (!reached) { await shot(page, 'cards-missing'); process.exitCode = 1; }
+      (reached ? '' : `  — EXPECTED ${want} cards, the wager did not complete`) +
+      (gotTokens ? '' : `  — EXPECTED ${STARTER_TOKENS + GAME_REWARD} tokens, the reward did not arrive`));
+    if (!reached || !gotTokens) { await shot(page, 'settlement-incomplete'); process.exitCode = 1; }
   } finally {
     // Leave the game rather than just closing the tab. An abandoned game holds
     // the bot until its 30-minute watchdog fires, and with one bot that is

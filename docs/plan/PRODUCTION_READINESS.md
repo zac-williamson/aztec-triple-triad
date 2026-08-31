@@ -15,17 +15,17 @@ changing hands. `packages/playtest/scripts/prod-play.mts` is what proves it.
 
 ## P1 — Correctness, unexplained
 
-### 1. Winner's +20 ArenaToken did not appear · `OPEN`
-The verified winner run ended `6 cards [1,2,3,4,5,8], 100 tokens`. Cards were
-right; tokens should have been 120.
+### 1. Winner's +20 ArenaToken did not appear · `DONE` (31 Aug)
+Was the harness sampling early, not a lost reward — but only provably so after
+the harness was made to wait for it.
 
-`useGameSettlement` refreshes the balance after a 5s delay, so this is
-plausibly the harness sampling early — the same class of mistake that made an
-earlier run report `0 cards`. Plausible is not proven, and the reward is real
-value.
+The token note uses ONCHAIN_CONSTRAINED delivery and needs a PXE block sync, so
+the app refreshes the balance ~5s AFTER the cards land. Reading both together
+caught 100. With an explicit wait the run reports
+`6 cards [1,2,3,4,5,5], 120 tokens`.
 
-**Done when:** either the harness waits for the balance and observes 120, or a
-genuine defect is found and fixed. Do not close this by assuming it is timing.
+prod-play.mts now fails if the reward does not arrive, so this cannot be
+assumed away again.
 
 ### 2. Cards stranded by abandoned games · `OPEN`
 Five cards are locked in games the bot can never claim (its journal is missing
