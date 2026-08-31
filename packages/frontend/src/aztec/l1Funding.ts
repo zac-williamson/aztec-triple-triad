@@ -32,7 +32,7 @@ import {
   parseAbi, decodeEventLog, formatEther,
   type Address, type Hex, type PublicClient, type WalletClient,
 } from 'viem';
-import { NATIVE, type PoolKey } from './uniswapQuote';
+import { NATIVE, type PoolKey } from './uniswapQuote.js';
 
 /** The subset of the portal/ERC20/handler ABIs this flow touches. */
 /** Exported so a test can pin it against a log the real portal emitted. */

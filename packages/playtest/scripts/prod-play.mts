@@ -58,7 +58,7 @@ async function main() {
     });
 
     log(`opening ${URL} as a first-time visitor…`);
-    await page.goto(URL, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${URL}/?e2e=1`, { waitUntil: 'domcontentloaded' });
     await until(page, 'the app to boot', /First time here|Fund with My Wallet|Play/i, 120_000);
     await shot(page, 'landing');
 
@@ -110,73 +110,65 @@ async function main() {
     await shot(page, 'in-game');
     log('matched — playing');
 
-    // The board is a WebGL quad, not DOM: production ships no testkit, so there
-    // is no getScreenXY to aim with and no cell element to click. Interpolate
-    // the nine cell centres across the board's projected corners and verify by
-    // whether the turn actually flipped — a click that misses is silent.
-    const CORNERS = { bl: [515, 252], br: [920, 252], fl: [468, 658], fr: [985, 658] };
-    const cellPoint = (r: number, c: number): [number, number] => {
-      const u = (c + 0.5) / 3, v = (r + 0.5) / 3;
-      const topX = CORNERS.bl[0] + u * (CORNERS.br[0] - CORNERS.bl[0]);
-      const topY = CORNERS.bl[1] + u * (CORNERS.br[1] - CORNERS.bl[1]);
-      const botX = CORNERS.fl[0] + u * (CORNERS.fr[0] - CORNERS.fl[0]);
-      const botY = CORNERS.fl[1] + u * (CORNERS.fr[1] - CORNERS.fl[1]);
-      return [topX + v * (botX - topX), topY + v * (botY - topY)];
-    };
-    const text = () => page!.evaluate(() => document.body.innerText);
     let moves = 0;
+    // Drive through the testkit, the same way the playtest harness does.
+    // Guessing at pixels was the wrong approach twice over: the board is a
+    // WebGL quad and the hand is a 3D FAN laid out with sin(angle), so neither
+    // has a stable screen position that can be computed from outside. The app
+    // already knows where its own cells are; ask it.
+    const phase = () => page!.evaluate(() => window.__triadTest!.phase());
+    const screenXY = (t: unknown) =>
+      page!.evaluate(target => window.__triadTest!.getScreenXY(target as never), t);
 
     for (let move = 0; move < 9; move++) {
-      if (/Game Over/i.test(await text())) break;
-      await until(page, 'my turn', /Your Turn|Game Over/i, 15 * 60_000);
-      if (/Game Over/i.test(await text())) break;
+      const before = await phase();
+      if (before?.ws.gameOver || before?.game?.status !== 'playing') break;
 
-      // The hand is 3D as well (PlayerHand3D), so it takes canvas clicks like
-      // the board — there is no DOM card to click. And no text confirms a
-      // selection either: the hint reads "Select a card from your hand" purely
-      // while ten cards remain across both hands, so at move one it says that
-      // whether or not anything is selected. Treating it as a selection signal
-      // made an earlier run abandon a click that had probably worked. The turn
-      // flipping is the only honest confirmation, so that is what we check.
-      const HAND_Y = 855;
-      // Leftmost card each turn: the hand re-lays out as it shrinks, so the
-      // first slot is the only position that is always occupied.
-      await page.mouse.click(570, HAND_Y);
-      await page.waitForTimeout(1200);
+      // Wait for a genuinely idle turn: my turn, nothing selected, no card in
+      // flight and no capture animation running.
+      const ready = await page.waitForFunction(() => {
+        const p = window.__triadTest?.phase();
+        return !!p && (p.ws.gameOver !== null || (
+          p.game?.status === 'playing' && p.game.isMyTurn &&
+          p.interaction !== null && !p.interaction.flying && !p.interaction.cascading &&
+          p.interaction.selectedCardIndex === null
+        ));
+      }, undefined, { timeout: 15 * 60_000, polling: 1000 }).then(() => true).catch(() => false);
+      if (!ready) { log('never became ready to move'); break; }
+      if ((await phase())?.ws.gameOver) break;
 
-      // ONE cell per attempt, then wait properly for the turn to flip.
-      //
-      // The first version clicked cells 2.2s apart and treated any flip as
-      // success. A real move takes longer than that to process — proof, then
-      // animation — so the DOM still read "Your Turn" and it clicked the next
-      // cell, placing several cards per iteration while logging one. A 5-5 draw
-      // came back having logged two moves out of nine. Fast enough to look like
-      // it worked, wrong enough to prove nothing.
-      //
-      // A legitimate move always lands well inside this window, so trying
-      // another cell only happens when the click genuinely did nothing (an
-      // occupied square).
-      const MOVE_CONFIRM_MS = 90_000;
-      let placed = false;
-      for (let r = 0; r < 3 && !placed; r++) {
-        for (let c = 0; c < 3 && !placed; c++) {
-          const [x, y] = cellPoint(r, c);
-          await page.mouse.click(x, y);
-          const until = Date.now() + MOVE_CONFIRM_MS;
-          while (Date.now() < until) {
-            await page.waitForTimeout(2000);
-            const t = await text();
-            if (/Opponent's Turn|Game Over/i.test(t)) {
-              placed = true;
-              moves += 1;
-              log(`move ${moves}: cell [${r},${c}] — turn passed to the opponent`);
-              break;
-            }
-          }
-        }
+      // Pick the first empty cell from the board the app reports.
+      const board = (await phase())!.game!.board;
+      let target: { row: number; col: number } | null = null;
+      for (let r = 0; r < 3 && !target; r++) {
+        for (let c = 0; c < 3 && !target; c++) if (board[r][c].cardId === null) target = { row: r, col: c };
       }
-      if (!placed) { await shot(page, `stuck-move-${move + 1}`); log('no cell accepted a card — stopping'); break; }
-      await page.waitForTimeout(3000);
+      if (!target) break;
+
+      const hand = await screenXY({ type: 'hand', index: 0 });
+      if (!hand) { log('hand slot 0 not projectable'); break; }
+      await page.mouse.click(hand.x, hand.y);
+      await page.waitForTimeout(600);
+
+      const cell = await screenXY({ type: 'cell', row: target.row, col: target.col });
+      if (!cell) { log(`cell [${target.row},${target.col}] not projectable`); break; }
+      await page.mouse.click(cell.x, cell.y);
+
+      // Confirmed by the board itself, not by a turn indicator that can flip
+      // for reasons of its own.
+      const wanted = board.flat().filter(c => c.cardId !== null).length + 1;
+      const landed = await page.waitForFunction(n => {
+        const p = window.__triadTest?.phase();
+        if (!p) return false;
+        if (p.ws.gameOver) return true;
+        return (p.game?.board.flat().filter(c => c.cardId !== null).length ?? 0) >= n;
+      }, wanted, { timeout: 5 * 60_000, polling: 1000 }).then(() => true).catch(() => false);
+      if (!landed) { log(`move ${move + 1} did not land on [${target.row},${target.col}]`); break; }
+
+      moves += 1;
+      const now = (await phase())!;
+      log(`move ${moves}: cell [${target.row},${target.col}] — board now ` +
+        `${now.game?.board.flat().filter(c => c.cardId !== null).length ?? '?'}/9`);
     }
 
     await until(page, 'the game to end', /Game Over/i, 20 * 60_000);

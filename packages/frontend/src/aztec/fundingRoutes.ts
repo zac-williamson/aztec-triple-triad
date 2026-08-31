@@ -7,8 +7,8 @@
  * way to get the asset is to buy it, which is exactly the behaviour we want and
  * exactly the code path we cannot fake locally.
  */
-import type { AcquireRoute, L1Addresses } from './l1Funding';
-import type { PoolKey } from './uniswapQuote';
+import type { AcquireRoute, L1Addresses } from './l1Funding.js';
+import type { PoolKey } from './uniswapQuote.js';
 import type { Address } from 'viem';
 
 /**
@@ -104,7 +104,7 @@ export interface ResolveInputs extends Omit<RouteInputs, 'ethIn' | 'quotedOut' |
 }
 
 /** Structural, so tests and Node callers do not need a full viem PublicClient. */
-type PublicClientLike = Parameters<typeof import('./uniswapQuote')['quoteExactInput']>[0]['pub'];
+type PublicClientLike = Parameters<typeof import('./uniswapQuote.js')['quoteExactInput']>[0]['pub'];
 
 /**
  * Decide the route AND price it, hitting the chain when money is involved.
@@ -116,7 +116,7 @@ type PublicClientLike = Parameters<typeof import('./uniswapQuote')['quoteExactIn
 export async function resolveAcquireRoute(input: ResolveInputs): Promise<AcquireRoute> {
   if (input.l1.feeAssetHandlerAddress) return { kind: 'mint' };
 
-  const { quoterFor, quoteExactInput, quoteExactOutput, NATIVE } = await import('./uniswapQuote');
+  const { quoterFor, quoteExactInput, quoteExactOutput, NATIVE } = await import('./uniswapQuote.js');
   const quoter = quoterFor(input.chainId, input.quoterAddress);
   const target = input.target ?? DEFAULT_FEE_JUICE_TARGET;
   const common = {

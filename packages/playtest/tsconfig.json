@@ -10,5 +10,8 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src", "tests", "*.ts"]
+  // scripts/ was missing here, so `tsc --noEmit` reported success on
+// files it had never opened — an undefined variable shipped to a
+// production run twice behind a green typecheck.
+  "include": ["src", "tests", "scripts", "*.ts"]
 }
