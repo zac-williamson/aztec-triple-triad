@@ -377,11 +377,6 @@ async function main() {
       // duplicate starter cards by design.
       const lost = without(startCards[loserSeat.name as 'north' | 'south'], lEnd!.ownedCardIds);
       const gained = without(wEnd!.ownedCardIds, startCards[winnerSeat.name as 'north' | 'south']);
-      console.log(`   ${winnerSeat.name}: ${wEnd!.ownedCardIds.length} cards ` +
-        `[${[...wEnd!.ownedCardIds].sort((x, y) => x - y)}], ${wEnd!.tokenBalance} tokens`);
-      console.log(`   ${loserSeat.name}: ${lEnd!.ownedCardIds.length} cards ` +
-        `[${[...lEnd!.ownedCardIds].sort((x, y) => x - y)}], ${lEnd!.tokenBalance} tokens`);
-
       const problems: string[] = [];
       if (!settledWin) problems.push(`winner holds ${wEnd!.ownedCardIds.length} cards, expected 6`);
       if (!settledLose) problems.push(`loser holds ${lEnd!.ownedCardIds.length} cards, expected 4`);
@@ -400,13 +395,25 @@ async function main() {
           if (!got) problems.push(`${s.name} holds ${(await s.phase())!.tokenBalance} tokens, expected ${want}`);
         }
       }
+      // Report from a FRESH read, not from the snapshot the checks ran against.
+      // The loser's reward lands on its own clock — the token note needs a PXE
+      // block sync, so it arrives after the cards — and reporting the earlier
+      // snapshot printed `loser_tokens=100` on a run that had waited for, and
+      // seen, 120. A verdict line that disagrees with its own verdict is worse
+      // than no verdict line.
+      const [wFinal, lFinal] = await Promise.all([winnerSeat.phase(), loserSeat.phase()]);
+      console.log(`   ${winnerSeat.name}: ${wFinal!.ownedCardIds.length} cards ` +
+        `[${[...wFinal!.ownedCardIds].sort((x, y) => x - y)}], ${wFinal!.tokenBalance} tokens`);
+      console.log(`   ${loserSeat.name}: ${lFinal!.ownedCardIds.length} cards ` +
+        `[${[...lFinal!.ownedCardIds].sort((x, y) => x - y)}], ${lFinal!.tokenBalance} tokens`);
+
       if (problems.length) throw new Error(problems.join('; '));
       console.log('\n   PASS — two people played and settled a game on production.');
       // Same fixed-shape verdict prod-play prints, so a caller never has to
       // pattern-match prose to find out whether this worked.
       console.log(`RESULT: pass winner=${winner} moved=${lost[0]} ` +
-        `winner_cards=${wEnd!.ownedCardIds.length} loser_cards=${lEnd!.ownedCardIds.length} ` +
-        `winner_tokens=${wEnd!.tokenBalance} loser_tokens=${lEnd!.tokenBalance}`);
+        `winner_cards=${wFinal!.ownedCardIds.length} loser_cards=${lFinal!.ownedCardIds.length} ` +
+        `winner_tokens=${wFinal!.tokenBalance} loser_tokens=${lFinal!.tokenBalance}`);
     } else {
       // A draw settles with a single settler and nothing changes hands, so it
       // proves the game but NOT the transfer this test exists for.
