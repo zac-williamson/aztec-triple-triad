@@ -52,6 +52,16 @@ export interface SweepDeps {
   proofs: BotProofs;
   log?: (msg: string) => void;
   now?: () => number;
+  /**
+   * True while the bot is in a game.
+   *
+   * The sweep and live gameplay share ONE serial PXE queue, and a recovery
+   * claim or settle holds it for minutes while it proves and mines. A player
+   * who gets matched during a pass therefore waits behind maintenance for an
+   * old game: their opponent never joins, and the match dies at move zero.
+   * Recovery can always wait — a person watching a loading spinner cannot.
+   */
+  isBusy?: () => boolean;
   /** Minimum age before a game is considered abandoned rather than merely slow. */
   minAgeMs?: number;
   txTimeoutMs?: number;
@@ -103,12 +113,23 @@ export class AbandonmentSweep {
       // Recomputed each pass: it is a property of the journal right now, not a
       // tally of how many times we have looked.
       this.stats.unrecoverable = 0;
+      if (this.deps.isBusy?.()) {
+        this.log('sweep: a game is live — deferring to the next pass');
+        return this.stats;
+      }
+
       const outstanding = this.deps.journal.outstanding();
       this.stats.scanned = outstanding.length;
       if (outstanding.length === 0) return this.stats;
       this.log(`sweep: ${outstanding.length} game(s) with cards committed`);
 
       for (const rec of outstanding) {
+        // Re-check between games: a pass can span many minutes of chain work,
+        // and a player may have been matched since it started.
+        if (this.deps.isBusy?.()) {
+          this.log('sweep: a game started mid-pass — stopping, the rest waits');
+          break;
+        }
         try {
           await this.recoverOne(rec);
         } catch (err) {

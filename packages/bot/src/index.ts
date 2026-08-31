@@ -101,6 +101,8 @@ async function main(): Promise<void> {
     sweep = new AbandonmentSweep({
       journal, chain, proofs,
       log: m => console.log(`[arena-bot:sweep] ${m}`),
+      // Never compete with a live game for the PXE queue.
+      isBusy: () => bot.getStats().state !== 'idle',
       minAgeMs: cfg.gameTimeoutMs,
     });
     const pass = () => void sweep!.run().catch(err =>

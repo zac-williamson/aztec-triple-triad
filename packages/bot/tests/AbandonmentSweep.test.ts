@@ -331,3 +331,67 @@ describe('permanently unrecoverable games', () => {
     expect(sweep.stats.unrecoverable).toBe(5);
   });
 });
+
+describe('yielding to live games', () => {
+  /**
+   * The sweep and gameplay share one serial PXE queue, and a recovery claim
+   * holds it for minutes while it proves and mines. A player matched during a
+   * pass would wait behind maintenance for an abandoned game — their opponent
+   * never joins and the match dies at move zero. That is exactly what happened
+   * in production: "player 1 confirmed on-chain — joining" and then eleven
+   * minutes of nothing, because previewJoinGame sat behind the sweep.
+   */
+  function sweepWith(isBusy: () => boolean, records: number) {
+    const logs: string[] = [];
+    const scanned: string[] = [];
+    const recs = Array.from({ length: records }, (_, i) => ({
+      onChainGameId: `0x${i}`, relayGameId: 'g', botAddress: '0xbot', opponentAddress: '0xopp',
+      botIsPlayer1: false, cardIds: [1, 2, 3, 4, 5], randomness: ['0x1'], blindingFactor: '0xb',
+      opponentCardIds: [], myHandProof: null, opponentHandProof: null, moveProofs: [],
+      committedAt: 0, updatedAt: 0,
+    }));
+    const sweep = new AbandonmentSweep({
+      journal: {
+        outstanding: () => recs, forget: () => {}, write: () => {}, read: () => recs[0],
+        markSettled: () => {}, pruneSettled: () => 0,
+      } as never,
+      chain: {
+        address: '0xbot', nodeClient: {},
+        pxe: { readGameStatus: async (_a: string, id: string) => { scanned.push(id); return 2; } },
+      } as never,
+      proofs: {} as never,
+      log: (m: string) => logs.push(m),
+      minAgeMs: 0,
+      isBusy,
+    });
+    return { sweep, logs, scanned };
+  }
+
+  it('does not start a pass while a game is live', async () => {
+    const h = sweepWith(() => true, 3);
+    await h.sweep.run();
+    expect(h.scanned, 'nothing touched the PXE queue').toHaveLength(0);
+    expect(h.logs.join(' ')).toMatch(/deferring to the next pass/);
+  });
+
+  it('runs normally when the bot is idle', async () => {
+    const h = sweepWith(() => false, 3);
+    await h.sweep.run();
+    expect(h.scanned.length, 'every outstanding game is inspected').toBe(3);
+  });
+
+  it('stops mid-pass if a player gets matched', async () => {
+    // A pass spans minutes of chain work; a match can land partway through.
+    let busy = false;
+    const h = sweepWith(() => busy, 4);
+    const chain = (h.sweep as unknown as { deps: { chain: { pxe: { readGameStatus: unknown } } } }).deps.chain;
+    chain.pxe.readGameStatus = async (_a: string, id: string) => {
+      h.scanned.push(id);
+      if (h.scanned.length === 2) busy = true;   // matched after the second
+      return 2;
+    };
+    await h.sweep.run();
+    expect(h.scanned.length, 'stopped rather than finishing the queue').toBeLessThan(4);
+    expect(h.logs.join(' ')).toMatch(/a game started mid-pass/);
+  });
+});

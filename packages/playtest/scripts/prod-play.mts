@@ -35,17 +35,26 @@ async function until(page: Page, what: string, re: RegExp, ms: number): Promise<
 
 async function main() {
   let wallet: InjectedWallet | null = null;
+  let page: Awaited<ReturnType<Awaited<ReturnType<typeof browser.newContext>>['newPage']>> | null = null;
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {
     log('creating a funded Ethereum account (throwaway key)…');
     wallet = await createFundedL1Account({ log });
 
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-    const page = await ctx.newPage();
+    page = await ctx.newPage();
     await wallet.install(page);
+    // Capture the on-chain pipeline as well as errors: when a game stalls, the
+    // question is always which half of the create/join handshake did not
+    // happen, and guessing at that has cost several runs.
     page.on('console', m => {
       const t = m.text();
-      if (/error/i.test(m.type()) && !/404|OPFS/i.test(t)) log(`  [page] ${t.slice(0, 110)}`);
+      if (/\[(useGameSession|txManager)\]/.test(t)) log(`  ${t.slice(0, 150)}`);
+      else if (/error/i.test(m.type()) && !/404|OPFS/i.test(t)) log(`  [page] ${t.slice(0, 110)}`);
+    });
+    // Proving is the slow step and headless has no GPU; give it real threads.
+    await page.addInitScript({
+      content: `localStorage.setItem('triad_proof_threads','${process.env.PROOF_THREADS ?? '6'}')`,
     });
 
     log(`opening ${URL} as a first-time visitor…`);
@@ -121,27 +130,32 @@ async function main() {
       await until(page, 'my turn', /Your Turn|Game Over/i, 15 * 60_000);
       if (/Game Over/i.test(await text())) break;
 
-      // Pick a card. The hand IS DOM, but there is no text that confirms a
-      // selection: the hint reads "Select a card from your hand" purely while
-      // ten cards remain across both hands, so it says that whether or not
-      // anything is selected. Treating it as a selection signal is what made an
-      // earlier run give up on a click that had probably worked. The turn
+      // The hand is 3D as well (PlayerHand3D), so it takes canvas clicks like
+      // the board — there is no DOM card to click. And no text confirms a
+      // selection either: the hint reads "Select a card from your hand" purely
+      // while ten cards remain across both hands, so at move one it says that
+      // whether or not anything is selected. Treating it as a selection signal
+      // made an earlier run abandon a click that had probably worked. The turn
       // flipping is the only honest confirmation, so that is what we check.
-      const hand = await page.locator('[data-testid^="card-"]').all();
-      if (!hand.length) { log('no hand cards in the DOM — stopping'); await shot(page, 'no-hand'); break; }
-      await hand[0].click({ timeout: 5000 }).catch(() => {});
-      await page.waitForTimeout(900);
+      const HAND_Y = 855;
+      const HAND_X = [570, 645, 720, 795, 870];
 
-      // Try each empty-looking cell until the turn flips.
+      // Pick a hand card, then try cells, until the turn flips. Both are
+      // canvas hit-tests, so neither click reports whether it landed.
       let placed = false;
-      for (let r = 0; r < 3 && !placed; r++) {
-        for (let c = 0; c < 3 && !placed; c++) {
-          const [x, y] = cellPoint(r, c);
-          await page.mouse.click(x, y);
-          await page.waitForTimeout(2500);
-          if (/Opponent's Turn|Game Over/i.test(await text())) {
-            placed = true;
-            log(`played move ${move + 1} at cell [${r},${c}]`);
+      for (const hx of HAND_X) {
+        if (placed) break;
+        await page.mouse.click(hx, HAND_Y);
+        await page.waitForTimeout(900);
+        for (let r = 0; r < 3 && !placed; r++) {
+          for (let c = 0; c < 3 && !placed; c++) {
+            const [x, y] = cellPoint(r, c);
+            await page.mouse.click(x, y);
+            await page.waitForTimeout(2200);
+            if (/Opponent's Turn|Game Over/i.test(await text())) {
+              placed = true;
+              log(`played move ${move + 1}: hand x=${hx} -> cell [${r},${c}]`);
+            }
           }
         }
       }
@@ -154,6 +168,18 @@ async function main() {
     const final = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').slice(0, 400));
     log(`game over — ${final.slice(0, 200)}`);
   } finally {
+    // Leave the game rather than just closing the tab. An abandoned game holds
+    // the bot until its 30-minute watchdog fires, and with one bot that is
+    // thirty minutes in which nobody in the arena can get an opponent. Three
+    // failed runs of this script cost ninety.
+    try {
+      const leave = page!.getByRole('button', { name: /Leave/i }).first();
+      if (await leave.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await leave.click({ timeout: 5000 });
+        log('left the game so the bot is free immediately');
+        await page!.waitForTimeout(3000);
+      }
+    } catch { /* best effort: the browser may already be gone */ }
     await browser.close();
     if (wallet) await refundTreasury(wallet.privateKey, log);
   }
