@@ -1,0 +1,68 @@
+# Is the arena up? Asked from OUTSIDE the box that runs it.
+#
+# deploy/triad-health.timer already checks the bot thoroughly, but it runs ON
+# the relay box, so the one failure it can never report is that box being gone
+# — which is the failure most worth hearing about. This runs on GitHub's
+# infrastructure instead, so it survives anything that takes the box with it.
+#
+# The split is deliberate: this asks only what an outsider can see (is the
+# relay answering, does the site load, is the game contract still alive on
+# chain). Anything needing the bot's internals stays with the on-box probe,
+# whose /health endpoint is bound to localhost on purpose.
+name: uptime
+
+on:
+  schedule:
+    # Every ten minutes. GitHub's scheduler is best-effort and can run late
+    # under load; that is fine for "is it down", and this is not the thing
+    # measuring latency.
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+# A backlog of queued runs helps nobody: only the current state matters.
+concurrency:
+  group: uptime
+  cancel-in-progress: true
+
+jobs:
+  reachable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Relay answers /health
+        run: |
+          body="$(curl -fsS --max-time 20 https://ws.aztec-arena.com/health)" || {
+            echo "::error::relay unreachable — nobody can play at all"; exit 1; }
+          echo "$body"
+          echo "$body" | grep -q '"status":"ok"' || {
+            echo "::error::relay answered but not ok: $body"; exit 1; }
+
+      - name: Site serves the app
+        run: |
+          html="$(curl -fsS --max-time 30 https://www.aztec-arena.com)" || {
+            echo "::error::site unreachable"; exit 1; }
+          # A 200 that is not the app is still an outage. The bundle reference
+          # is the cheapest proof that the build was deployed rather than a
+          # placeholder or an error page cached by the CDN.
+          echo "$html" | grep -qE '/assets/index-[^"]+\.js' || {
+            echo "::error::site served a page with no app bundle"; exit 1; }
+
+      - name: Testnet has not re-genesised under us
+        run: |
+          # A re-genesis silently orphans every deployed contract — three times
+          # so far — and the symptom is a site that loads perfectly and a game
+          # that can never start. rollupVersion changes when it happens, so
+          # pinning it turns a silent death into a failed check.
+          #
+          # After an INTENTIONAL migration, redeploy the contracts and update
+          # this number. It is meant to be edited; that is the point.
+          EXPECTED=1821665230
+          out="$(curl -fsS --max-time 25 -X POST -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","method":"node_getNodeInfo","params":[],"id":1}' \
+            https://v5.testnet.rpc.aztec-labs.com)" || {
+            echo "::error::aztec node unreachable"; exit 1; }
+          got=$(echo "$out" | grep -oE '"rollupVersion":[0-9]+' | cut -d: -f2)
+          echo "rollupVersion=$got (expected $EXPECTED)"
+          [ "$got" = "$EXPECTED" ] || {
+            echo "::error::testnet re-genesised: rollupVersion $got != $EXPECTED — deployed contracts are orphaned"
+            exit 1; }
