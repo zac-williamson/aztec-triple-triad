@@ -12,6 +12,8 @@
  * waiting for a join_game that's stuck behind it.
  */
 
+import { diag } from './diagnostics';
+
 export type TxType = 'deploy_account' | 'create_game' | 'join_game' | 'settle_game' | 'purchase_card_pack' | 'claim_abandoned_game' | 'settle_abandoned_game';
 
 /**
@@ -217,7 +219,7 @@ class TxManager {
       // cost a long production hunt, where a join sat behind an abandonment
       // sweep and every log was silent.
       if (this.pxeItems.length > 1 || this.pxeProcessing) {
-        console.log(`[pxe-queue] ${label ?? 'op'} queued behind ${this.pxeItems.length - 1} ` +
+        diag(`[pxe-queue] ${label ?? 'op'} queued behind ${this.pxeItems.length - 1} ` +
           `item(s)${this.pxeProcessing ? ' + one running' : ''}`);
       }
 
@@ -234,7 +236,7 @@ class TxManager {
       const item = this.pxeItems.shift()!;
       const waited = item.enqueuedAt ? Date.now() - item.enqueuedAt : 0;
       if (waited > 5_000) {
-        console.log(`[pxe-queue] ${item.label ?? 'op'} starting after ${Math.round(waited / 1000)}s in the queue`);
+        diag(`[pxe-queue] ${item.label ?? 'op'} starting after ${Math.round(waited / 1000)}s in the queue`);
       }
       const startedAt = Date.now();
       try {
@@ -252,7 +254,7 @@ class TxManager {
         // Anything holding the single serial queue this long is starving
         // everything else, which is worth a line whether it succeeded or not.
         if (ran > 30_000) {
-          console.log(`[pxe-queue] ${item.label ?? 'op'} held the queue for ${Math.round(ran / 1000)}s`);
+          diag(`[pxe-queue] ${item.label ?? 'op'} held the queue for ${Math.round(ran / 1000)}s`);
         }
       }
     }
