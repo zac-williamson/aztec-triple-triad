@@ -218,12 +218,22 @@ async function main() {
         await shot(page, 'settled');
       }
     } else {
-      log('the bot won — waiting for it to settle and hand our cards back');
-      const got = await page.waitForFunction(() => {
+      // A draw is not a loss. Player 1 settles it by convention — the app does
+      // so on its own — and only if they don't does the bot step in after 120s.
+      // Waiting on `opponentSettled` for a draw watches the wrong side: the
+      // game settled correctly and the harness reported it had not.
+      const isDraw = winner === 'draw';
+      log(isDraw
+        ? 'a draw — whichever side settles it, one settlement ends the game'
+        : 'the bot won — waiting for it to settle and hand our cards back');
+      const got = await page.waitForFunction(draw => {
         const p = window.__triadTest?.phase();
-        return p?.chain.opponentSettled === true && p.chain.takenCardId !== null;
-      }, undefined, { timeout: 25 * 60_000, polling: 2000 }).then(() => true).catch(() => false);
-      log(got ? 'opponent settled and returned our cards' : 'opponent settlement not observed');
+        if (!p) return false;
+        const theirs = p.chain.opponentSettled === true && p.chain.takenCardId !== null;
+        // On a draw either side may be the settler, so accept our own tx too.
+        return draw ? (theirs || p.chain.settleTxStatus === 'confirmed') : theirs;
+      }, isDraw, { timeout: 25 * 60_000, polling: 2000 }).then(() => true).catch(() => false);
+      log(got ? 'settlement observed' : 'settlement NOT observed');
       await shot(page, 'settled');
     }
 
@@ -232,7 +242,10 @@ async function main() {
     // re-minted ones being imported, which reads as zero cards — a correct run
     // and a catastrophic one look identical there. A winner ends with six, a
     // loser with four; anything else is real and worth failing on.
-    const want = iWon ? 6 : 4;
+    // Three outcomes, three answers. A DRAW is not a loss: nothing changes
+    // hands and both sides keep their five. Expecting four there would have
+    // failed a perfectly good game.
+    const want = winner === 'draw' ? 5 : iWon ? 6 : 4;
     const reached = await page.waitForFunction(n => {
       const p = window.__triadTest?.phase();
       return (p?.ownedCardIds.length ?? 0) === n;

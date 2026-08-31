@@ -81,6 +81,24 @@ app, settlement included.
 
 ---
 
+### 13. Sweep retries a claim that cannot succeed · `OPEN` (found 31 Aug)
+The abandonment sweep repeatedly attempts a game with 7/9 moves and fails:
+
+    sweep: 0x141176f6… abandoned (242min, 7/9 moves) — claiming
+    sweep: 0x141176f6… FAILED — Assertion failed:
+      It must be opponent's turn to claim abandonment
+
+Every fifteen minutes, indefinitely, each attempt spending a proof and a
+transaction on something the contract will always reject. The claim is only
+valid when it is the ABSENT player's turn; the sweep does not check the move
+parity before trying.
+
+**Done when:** the sweep checks whose turn it is before claiming, and either
+waits for a claimable state or reports the game as not-claimable once — the
+same treatment as the missing-hand-proof case in item 2.
+
+---
+
 ## P3 — Operability
 
 ### 6. An abandoned game locks the bot for 30 minutes · `OPEN`

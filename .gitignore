@@ -50,3 +50,6 @@ packages/bot/.artifacts/
 # Node-side PXE/wallet LMDB stores, written by scripts that run a wallet
 # outside the browser (provision-arena-bot, deploy-contracts). Local state.
 aztec-wallet-data/
+
+# Production smoke-test logs and screenshots (scripts/prod-smoke.sh)
+.artifacts/
