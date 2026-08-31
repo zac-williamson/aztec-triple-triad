@@ -17,6 +17,13 @@
 # remainder, so the standing cost is gas only — a few thousandths of an ETH.
 set -uo pipefail
 
+# Bash reads a script incrementally, by byte offset, WHILE running it — so
+# editing this file during a long series corrupts the parse of whatever it has
+# not read yet. That happened: a two-run series died on `syntax error near
+# unexpected token 'fi'` after both games had actually passed. Wrapping the
+# body in a function makes bash parse all of it up front, so a series that
+# takes an hour survives someone improving the script during it.
+main() {
 cd "$(dirname "$0")/.."
 RUNS="${RUNS:-1}"
 OUT="${PROD_SMOKE_DIR:-.artifacts/prod-smoke}"
@@ -24,7 +31,9 @@ mkdir -p "$OUT"
 
 pass=0
 fail=0
-for i in $(seq 1 "$RUNS"); do
+# NOT `seq 1 $RUNS`: BSD seq counts DOWN when the end is below the start, so
+# RUNS=0 ran a real game against production instead of nothing.
+for ((i = 1; i <= RUNS; i++)); do
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   log="$OUT/$stamp.log"
   echo "── run $i/$RUNS → $log"
@@ -56,3 +65,6 @@ echo "prod-smoke: $pass passed, $fail failed of $RUNS"
 # A history worth grepping when someone asks "when did this last work".
 printf '%s  pass=%d fail=%d\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pass" "$fail" >> "$OUT/history.txt"
 [ "$fail" -eq 0 ]
+}
+
+main "$@"

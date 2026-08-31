@@ -12,7 +12,7 @@
  * funded from the treasury — the user's own Chrome, their own browser engine,
  * but never their profile or their money.
  */
-import { chromium, type Page } from '@playwright/test';
+import { chromium, type Browser, type Page } from '@playwright/test';
 import { createFundedL1Account, refundTreasury, type InjectedWallet } from '../src/walletShim.js';
 
 const SHOT = process.env.SHOT_DIR!;
@@ -37,13 +37,63 @@ async function until(page: Page, what: string, re: RegExp, ms: number): Promise<
   throw new Error(`timed out waiting for ${what} after ${ms / 1000}s`);
 }
 
+/**
+ * The throwaway key is generated in-process and never written down, so a run
+ * that is killed — Ctrl-C, a timeout, a series aborted halfway — leaves its
+ * funding stranded in an account nobody can reach again.
+ *
+ * Taking the signal back from Playwright is the whole trick. Playwright
+ * installs a process-level SIGINT handler that tears down its browsers and
+ * then calls `process.exit(130)`, and `handleSIGINT: false` does not stop it —
+ * that option only decides whether a given browser is in the set it closes.
+ * So an interrupt exited the process about two seconds in, with the refund's
+ * RPC call still in flight. Five interrupted runs left five accounts holding
+ * their 0.02 ETH; the on-chain balances are what identified this, because from
+ * the log it looked like a refund that simply never printed.
+ *
+ * Hence: launch first, then remove Playwright's listeners and install ours.
+ * Refunding also comes BEFORE closing the browser, because `browser.close()`
+ * on an interrupted run often never settles, and once nothing is left holding
+ * the event loop node exits silently, refund and all.
+ */
+let liveWallet: InjectedWallet | null = null;
+let liveBrowser: Browser | null = null;
+let shuttingDown = false;
+
+function ownShutdownSignals(): void {
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+    process.removeAllListeners(sig);
+    process.on(sig, () => {
+      if (shuttingDown) process.exit(130);   // asked twice: stop arguing
+      shuttingDown = true;
+      log(`interrupted by ${sig} — refunding, then closing the browser`);
+      void (async () => {
+        if (liveWallet) await refundTreasury(liveWallet.privateKey, log);
+        await Promise.race([
+          liveBrowser?.close().catch(() => {}) ?? Promise.resolve(),
+          new Promise(r => setTimeout(r, 5_000)),
+        ]);
+        process.exit(130);
+      })();
+    });
+  }
+}
+
 async function main() {
   let wallet: InjectedWallet | null = null;
   let page: Awaited<ReturnType<Awaited<ReturnType<typeof browser.newContext>>['newPage']>> | null = null;
-  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  // See the signal handler above: Playwright's own handlers would exit the
+  // process out from under the refund.
+  const browser = await chromium.launch({
+    channel: 'chrome', headless: true,
+    handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
+  });
+  liveBrowser = browser;
+  ownShutdownSignals();   // must be AFTER launch: Playwright installs its own
   try {
     log('creating a funded Ethereum account (throwaway key)…');
     wallet = await createFundedL1Account({ log });
+    liveWallet = wallet;
 
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     page = await ctx.newPage();
@@ -293,7 +343,7 @@ async function main() {
       }
     } catch { /* best effort: the browser may already be gone */ }
     await browser.close();
-    if (wallet) await refundTreasury(wallet.privateKey, log);
+    if (wallet && !shuttingDown) await refundTreasury(wallet.privateKey, log);
   }
 }
 
