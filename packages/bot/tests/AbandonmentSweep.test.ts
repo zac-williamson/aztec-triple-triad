@@ -395,3 +395,57 @@ describe('yielding to live games', () => {
     expect(h.logs.join(' ')).toMatch(/a game started mid-pass/);
   });
 });
+
+describe('yielding between chain steps', () => {
+  /**
+   * Deferring only at the top of a pass is not enough. A recovery is claim →
+   * dispute window → settle → import, and each chain step holds the shared PXE
+   * queue for minutes. Production measured sixteen minutes from the bot
+   * deciding to join to the join actually starting — while the join transaction
+   * itself took forty-four seconds. It was queued behind a sweep, not stuck.
+   */
+  it('stops after the claim when a game starts, leaving settle for later', async () => {
+    let busy = false;
+    const logs: string[] = [];
+    const steps: string[] = [];
+    const rec = {
+      onChainGameId: '0xaaa', relayGameId: 'g', botAddress: '0xbot', opponentAddress: '0xopp',
+      botIsPlayer1: false, cardIds: [1, 2, 3, 4, 5], randomness: ['0x1'], blindingFactor: '0xb',
+      opponentCardIds: [], myHandProof: { proof: 'p', publicInputs: [] },
+      opponentHandProof: { proof: 'p', publicInputs: [] }, moveProofs: [],
+      committedAt: 0, updatedAt: 0,
+    };
+    const sweep = new AbandonmentSweep({
+      journal: {
+        outstanding: () => [rec], forget: () => {}, write: () => {}, read: () => rec,
+        markSettled: () => {}, pruneSettled: () => 0,
+      } as never,
+      chain: {
+        address: '0xbot', nodeClient: {},
+        pxe: {
+          readGameStatus: async () => 2,
+          sendClaimAbandonedGame: async () => {
+            steps.push('claim');
+            busy = true;          // a player is matched while the claim mines
+            return '0x' + 'c'.repeat(64);
+          },
+          sendSettleAbandonedGame: async () => { steps.push('settle'); return '0xdead'; },
+          importCardNotes: async () => [],
+        },
+      } as never,
+      proofs: {
+        verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
+        dummyVerificationKey: async () => new Uint8Array([3]),
+        proveDummy: async () => 'ZHVtbXk=',
+      } as never,
+      log: (m: string) => logs.push(m),
+      minAgeMs: 0,
+      isBusy: () => busy,
+    });
+
+    await sweep.run();
+
+    expect(steps, 'claimed, but did not go on to settle').toEqual(['claim']);
+    expect(logs.join(' ')).toMatch(/settle deferred/);
+  });
+});

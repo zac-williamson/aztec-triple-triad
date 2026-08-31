@@ -126,10 +126,7 @@ export class AbandonmentSweep {
       for (const rec of outstanding) {
         // Re-check between games: a pass can span many minutes of chain work,
         // and a player may have been matched since it started.
-        if (this.deps.isBusy?.()) {
-          this.log('sweep: a game started mid-pass — stopping, the rest waits');
-          break;
-        }
+        if (this.yieldToGame('a game started mid-pass — the rest waits')) break;
         try {
           await this.recoverOne(rec);
         } catch (err) {
@@ -144,6 +141,16 @@ export class AbandonmentSweep {
     } finally {
       this.running = false;
     }
+  }
+
+  /**
+   * True if a game is live, in which case the sweep must get out of the way.
+   * Logs once per yield so a deferred recovery is visible rather than silent.
+   */
+  private yieldToGame(what: string): boolean {
+    if (!this.deps.isBusy?.()) return false;
+    this.log(`sweep: a game is live — ${what}`);
+    return true;
   }
 
   private async recoverOne(rec: GameRecord): Promise<void> {
@@ -227,6 +234,14 @@ export class AbandonmentSweep {
 
     this.log(`sweep: ${id} abandoned (${Math.round(age / 60_000)}min, ${rec.moveProofs.length}/9 moves) — claiming`);
     await this.claim(rec);
+    // Between steps, not merely between games. A recovery is claim -> wait out
+    // the dispute window -> settle -> import, and each chain step holds the
+    // shared PXE queue for minutes. Checking only at the top of a pass left a
+    // matched player waiting behind the whole sequence: production measured
+    // sixteen minutes from "joining" to the join actually starting, while the
+    // join transaction itself took forty-four seconds. The claim is already
+    // on-chain, so stopping here is safe — the next pass resumes at settle.
+    if (this.yieldToGame(`${short(rec.onChainGameId)} claimed; settle deferred`)) return;
     await this.settle(rec);
   }
 
@@ -285,6 +300,10 @@ export class AbandonmentSweep {
 
     this.log(`sweep: waiting ${DISPUTE_BLOCKS} blocks for the dispute window`);
     await waitForDisputeWindow(this.deps.chain.nodeClient);
+    // That wait is minutes long and touches only the node, so a game can start
+    // during it. Settling now would seize the PXE queue for several more
+    // minutes; the claim stands, so the next pass picks this up.
+    if (this.yieldToGame('settle deferred after the dispute window')) return;
 
     // Recovery returns OUR stake and nothing else. It used to also take one of
     // the opponent's cards, from a list nothing verified — which meant naming
