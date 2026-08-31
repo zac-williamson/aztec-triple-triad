@@ -227,8 +227,22 @@ async function main() {
       await shot(page, 'settled');
     }
 
+    // Poll for the card list to SETTLE. Reading it the instant settlement is
+    // announced catches the window between the old notes being spent and the
+    // re-minted ones being imported, which reads as zero cards — a correct run
+    // and a catastrophic one look identical there. A winner ends with six, a
+    // loser with four; anything else is real and worth failing on.
+    const want = iWon ? 6 : 4;
+    const reached = await page.waitForFunction(n => {
+      const p = window.__triadTest?.phase();
+      return (p?.ownedCardIds.length ?? 0) === n;
+    }, want, { timeout: 10 * 60_000, polling: 2000 }).then(() => true).catch(() => false);
+
     const end = (await phase())!;
-    log(`final: ${end.ownedCardIds.length} cards, ${end.tokenBalance} tokens`);
+    const finalCards = [...end.ownedCardIds].sort((a, b) => a - b);
+    log(`final: ${end.ownedCardIds.length} cards [${finalCards}], ${end.tokenBalance} tokens` +
+      (reached ? '' : `  — EXPECTED ${want}, the wager did not complete`));
+    if (!reached) { await shot(page, 'cards-missing'); process.exitCode = 1; }
   } finally {
     // Leave the game rather than just closing the tab. An abandoned game holds
     // the bot until its 30-minute watchdog fires, and with one bot that is
