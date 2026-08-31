@@ -199,6 +199,25 @@ jobs:
           echo "$HOME/.aztec/current/bin" >> "$GITHUB_PATH"
           echo "$HOME/.aztec/current/node_modules/.bin" >> "$GITHUB_PATH"
           echo "$HOME/.aztec/bin" >> "$GITHUB_PATH"
+          # internal-bin holds the bare-named tools (nargo, bb, ...). The
+          # installer keeps it OFF PATH deliberately, so they cannot shadow a
+          # developer's own toolchain, and the `aztec` wrapper is supposed to
+          # add it for its own subprocesses. On this runner that did not happen:
+          # `aztec compile` died on `spawn nargo ENOENT` with nargo present and
+          # executable in internal-bin. A hermetic CI box has no user toolchain
+          # to shadow, so put it on PATH and stop depending on the wrapper.
+          echo "$HOME/.aztec/current/internal-bin" >> "$GITHUB_PATH"
+
+      # Because three separate guesses at the previous step were wrong, and
+      # guessing again without seeing the box is how a fourth would go.
+      - name: Toolchain layout
+        run: |
+          echo "PATH=$PATH"
+          echo "--- which ---"; which aztec nargo aztec-nargo bb 2>&1 || true
+          echo "--- current/bin ---"; ls -la "$HOME/.aztec/current/bin" || true
+          echo "--- internal-bin ---"; ls -la "$HOME/.aztec/current/internal-bin" || true
+          echo "--- aztec wrapper ---"; cat "$HOME/.aztec/current/bin/aztec" || true
+          aztec --version || true
 
       # aztec compile, NOT nargo compile — nargo misses AVM transpilation + VKs.
       - name: Compile contracts
