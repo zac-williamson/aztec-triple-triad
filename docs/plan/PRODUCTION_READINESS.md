@@ -86,19 +86,33 @@ minutes of runner time per run. The ten-minute uptime probe (item 4) answers
 "is it up"; this answers "does it still work", on a human's decision to ship.
 Worth revisiting if releases become frequent.
 
-### 4. The uptime probe runs on the box it monitors · `DONE` (31 Aug)
-`.github/workflows/uptime.yml` runs every ten minutes on GitHub's
-infrastructure, so it survives anything that takes the box with it. It checks
+### 4. The uptime probe runs on the box it monitors · `DONE` (31 Aug) — with a caveat
+`.github/workflows/uptime.yml` runs on GitHub's infrastructure, so it survives
+anything that takes the box with it. It checks
 only what an outsider can see — the relay answers, the site serves an app
 bundle, and the testnet has not re-genesised (a pinned `rollupVersion`, since
 that failure looks like a perfectly healthy site with a game that can never
 start). The bot's internals stay with the on-box probe, whose /health is bound
 to localhost on purpose.
 
-**One thing to know:** scheduled workflows only run from the DEFAULT branch,
-which is `main` — 507 commits behind `testnet`. The file therefore has to be
-on `main` to fire at all. It needs no checkout, so a stale `main` costs it
-nothing.
+**Two things to know.**
+
+Scheduled workflows only run from the DEFAULT branch, which is `main` — 507
+commits behind `testnet`. The file has to be on `main` to fire at all. It needs
+no checkout, so a stale `main` costs it nothing.
+
+And **the schedule is a hope, not a guarantee.** At `*/10` it did not fire once
+in three and a half hours — zero scheduled runs repo-wide — while a manual
+dispatch of the same file passed in ten seconds. Nothing was misconfigured: the
+workflow is active, on the default branch, in a public non-fork repo with
+Actions fully enabled. GitHub's scheduler is best-effort and drops runs under
+load. It is now on `7,22,37,52`, which follows GitHub's own advice to avoid the
+hour boundary and the shortest interval, but **it has not yet been observed
+firing on its own** and that should be checked before this is relied on.
+
+What this does deliver either way is a probe that runs somewhere other than the
+box it watches. The on-box `deploy/triad-health.timer` is the one on a real
+timer; this covers the failure that one can never report.
 
 ### 5. Player-vs-player never exercised on production · `DONE` (31 Aug)
 Two browsers, two throwaway accounts, one game on the deployed app.
