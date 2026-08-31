@@ -35,6 +35,7 @@ function makeConfig(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     sweepIntervalMs: 900_000,
     drawFallbackMs: 0,
     gameTimeoutMs: 1_800_000,
+    opponentGraceMs: 90_000,
     healthPort: 0,
     ...over,
   };
@@ -1075,6 +1076,134 @@ describe('ArenaBot stuck-game watchdog', () => {
     expect(bot.getStats().abandonedGames).toBe(1);
     expect(cancels).toHaveLength(0);
     bot.stop();
+  });
+});
+
+/**
+ * A disconnect the relay WITNESSED is different information from silence, and
+ * the bot used to throw it away: it ignored OPPONENT_DISCONNECTED entirely and
+ * sat in `playing` until the 30-minute stuck-game watchdog fired. With one bot
+ * in the arena that is thirty minutes in which nobody can get an opponent.
+ *
+ * Every test here leaves `gameTimeoutMs` at its 30-minute default, so nothing
+ * below can be the watchdog firing early.
+ */
+describe('ArenaBot opponent disconnect', () => {
+  const mk = (over: Partial<ArenaBotConfig> = {}) => {
+    const socket = new FakeSocket();
+    const f = fakeChain();
+    const clock = { t: 1_000_000 };
+    // `proofs` is not optional scaffolding here: without it the GAME_OVER
+    // handler takes the "somebody else settles" branch and resets to idle, so
+    // a test meaning to exercise settlement would quietly exercise nothing.
+    const proofs = {
+      cardCommitHash: async () => FIELD(0x1),
+      verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
+      proveHand: async () => ({ proof: 'p', publicInputs: ['a', 'b'], cardCommit: FIELD(0x1) }),
+      proveMove: async () => ({ proof: 'p', publicInputs: [], startStateHash: 's' }),
+    };
+    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 50, ...over }), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 0, oldestWaitMs: 0, entries: [] }),
+      chain: f.chain as any, proofs: proofs as any, log: () => {}, now: () => clock.t,
+    });
+    return { bot, socket, f, clock };
+  };
+
+  async function inGame(h: ReturnType<typeof mk>) {
+    h.bot.start();
+    h.socket.emit('open');
+    h.socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    h.socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(100);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.bot.getStats().state).toBe('playing');
+  }
+
+  it('holds the game open while the opponent might still reconnect', async () => {
+    const h = mk({ opponentGraceMs: 90_000 });
+    await inGame(h);
+    h.socket.deliver({ type: 'OPPONENT_DISCONNECTED', gameId: 'g1' });
+    // The relay itself holds a 60s window for a resumed session. Bailing inside
+    // it would forfeit games to a wifi blip and strand the cards for nothing.
+    h.clock.t += 60_000;
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.bot.getStats().state).toBe('playing');
+    expect(h.bot.getStats().abandonedGames).toBe(0);
+    h.bot.stop();
+  });
+
+  it('gives up once the window has passed, not thirty minutes later', async () => {
+    const h = mk({ opponentGraceMs: 90_000 });
+    await inGame(h);
+    h.socket.deliver({ type: 'OPPONENT_DISCONNECTED', gameId: 'g1' });
+    h.clock.t += 91_000;
+    await vi.advanceTimersByTimeAsync(200);
+    // Back in service: idle, or already re-queued for the next waiting player.
+    expect(['idle', 'queued']).toContain(h.bot.getStats().state);
+    expect(h.bot.getStats().abandonedGames).toBe(1);
+    // Same ending as the watchdog's — the cards are locked, not lost, and the
+    // count is what makes that visible on /health.
+    expect(h.bot.getStats().cardsStranded).toBe(5);
+    h.bot.stop();
+  });
+
+  it('a reconnecting opponent cancels the countdown', async () => {
+    const h = mk({ opponentGraceMs: 90_000 });
+    await inGame(h);
+    h.socket.deliver({ type: 'OPPONENT_DISCONNECTED', gameId: 'g1' });
+    h.clock.t += 60_000;
+    await vi.advanceTimersByTimeAsync(100);
+    h.socket.deliver({ type: 'OPPONENT_RECONNECTED', gameId: 'g1' });
+    // Well past the grace: if the countdown had merely been paused rather than
+    // cancelled, the bot would walk out on a game that is still being played.
+    h.clock.t += 120_000;
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.bot.getStats().state).toBe('playing');
+    expect(h.bot.getStats().abandonedGames).toBe(0);
+    h.bot.stop();
+  });
+
+  it('does not walk out on a game it is in the middle of settling', async () => {
+    // The loser closing their tab the moment the result appears is ORDINARY,
+    // and it arrives while the winner is still assembling an 11-proof
+    // transcript. Abandoning there would throw away a game already won.
+    const h = mk({ opponentGraceMs: 90_000, drawFallbackMs: 600_000 });
+    h.f.chain.pxe.readGameStatus = async () => 2;   // still active, so it waits
+    await inGame(h);
+    h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'draw', gameState: freshState() });
+    await vi.advanceTimersByTimeAsync(50);
+    h.socket.deliver({ type: 'OPPONENT_DISCONNECTED', gameId: 'g1' });
+    h.clock.t += 200_000;
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.bot.getStats().abandonedGames).toBe(0);
+    h.bot.stop();
+  });
+
+  it('does not walk out when the tab closed BEFORE the result arrived', async () => {
+    // The likelier ordering, and the one the message handler's own guard does
+    // not cover: they close the tab on their last move, so the disconnect is
+    // already counting down when GAME_OVER lands and settlement begins. The
+    // countdown has to notice that the game is now being settled.
+    const h = mk({ opponentGraceMs: 90_000, drawFallbackMs: 600_000 });
+    h.f.chain.pxe.readGameStatus = async () => 2;
+    await inGame(h);
+    h.socket.deliver({ type: 'OPPONENT_DISCONNECTED', gameId: 'g1' });
+    h.clock.t += 10_000;
+    await vi.advanceTimersByTimeAsync(100);
+    h.socket.deliver({ type: 'GAME_OVER', gameId: 'g1', winner: 'draw', gameState: freshState() });
+    await vi.advanceTimersByTimeAsync(50);
+    h.clock.t += 200_000;
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.bot.getStats().abandonedGames).toBe(0);
+    h.bot.stop();
+  });
+
+  it('defaults to just over the relay\'s 60s reconnection window', async () => {
+    const { configFromEnv } = await import('../src/config.js');
+    expect(configFromEnv({ ARENA_BOT_TOKEN: 't' } as NodeJS.ProcessEnv).opponentGraceMs).toBe(90_000);
   });
 });
 

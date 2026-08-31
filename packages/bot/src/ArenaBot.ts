@@ -171,6 +171,15 @@ export class ArenaBot {
   private handShortageLogged = false;
   /** When the current game started, for the stuck-game watchdog. */
   private gameStartedAt = 0;
+  /**
+   * When the relay told us the opponent's socket dropped, or null while they
+   * are present. The stuck-game watchdog is a timer for SILENCE — it cannot
+   * tell a slow player from a departed one, so it has to be generous. A
+   * disconnect is not silence: the relay saw it happen and says so, and with
+   * one bot every minute spent waiting is a minute the arena has no opponent
+   * for anybody.
+   */
+  private opponentGoneSince: number | null = null;
   /** True once OUR cards are committed on-chain. Gates play in chain mode. */
   private committed = false;
   /**
@@ -281,18 +290,15 @@ export class ArenaBot {
     // and leaving our five committed cards stranded.
     if (this.state === 'playing' && this.gameStartedAt > 0
         && this.now() - this.gameStartedAt > this.cfg.gameTimeoutMs) {
-      this.log(`game exceeded ${Math.round(this.cfg.gameTimeoutMs / 60_000)}min — abandoning`);
-      this.stats.abandonedGames += 1;
-      // If we had committed, those five cards stay locked until the game is
-      // resolved through the abandonment-claim path. We cannot cancel: that is
-      // creator-only and the bot never creates. Surfaced so an operator can see
-      // inventory draining rather than discovering it when the bot runs dry.
-      if (this.committed) {
-        this.log('WARNING: 5 cards remain committed to the abandoned game — ' +
-                 'recoverable only via the abandonment claim');
-        this.stats.cardsStranded += 5;
-      }
-      this.resetToIdle();
+      this.abandonGame(`game exceeded ${Math.round(this.cfg.gameTimeoutMs / 60_000)}min`);
+      return;
+    }
+
+    // A departure the relay already witnessed. Same ending as the watchdog's,
+    // reached in a minute and a half instead of thirty.
+    if (this.state === 'playing' && !this.settling && this.opponentGoneSince !== null
+        && this.now() - this.opponentGoneSince > this.cfg.opponentGraceMs) {
+      this.abandonGame('opponent disconnected and did not come back');
       return;
     }
 
@@ -466,6 +472,25 @@ export class ArenaBot {
             this.recordError('prove-move', err as Error);
           });
           this.maybeMove(msg.gameState);
+        }
+        break;
+
+      // The relay holds a 60s window for a dropped player to resume their
+      // session, so a blip is not a departure; we wait that out plus a margin
+      // before giving up. Reconnecting cancels it outright.
+      case 'OPPONENT_DISCONNECTED':
+        if (this.state === 'playing' && !this.settling && this.opponentGoneSince === null) {
+          this.opponentGoneSince = this.now();
+          this.log(`opponent disconnected — giving them ` +
+            `${Math.round(this.cfg.opponentGraceMs / 1000)}s to come back`);
+        }
+        break;
+
+      case 'OPPONENT_RECONNECTED':
+        if (this.opponentGoneSince !== null) {
+          this.log(`opponent reconnected after ` +
+            `${Math.round((this.now() - this.opponentGoneSince) / 1000)}s — carrying on`);
+          this.opponentGoneSince = null;
         }
         break;
 
@@ -1193,12 +1218,32 @@ export class ArenaBot {
     }
   }
 
+  /**
+   * End the current game without a settlement, for whatever reason found it.
+   *
+   * Committed cards are NOT lost here but they are locked: releasing them
+   * needs the abandonment claim, which is creator-only, and the bot never
+   * creates. Counting them is what makes inventory drain visible on /health
+   * instead of being discovered when the bot runs out of cards.
+   */
+  private abandonGame(reason: string): void {
+    this.log(`${reason} — abandoning`);
+    this.stats.abandonedGames += 1;
+    if (this.committed) {
+      this.log('WARNING: 5 cards remain committed to the abandoned game — ' +
+               'recoverable only via the abandonment claim');
+      this.stats.cardsStranded += 5;
+    }
+    this.resetToIdle();
+  }
+
   private resetToIdle(): void {
     this.state = 'idle';
     this.gameId = null;
     this.myPlayer = null;
     this.queuedAt = 0;
     this.gameStartedAt = 0;
+    this.opponentGoneSince = null;
     // Per-game proof inputs MUST NOT leak into the next game: a stale blinding
     // factor or opponent randomness would produce a proof that verifies against
     // the wrong commitment and be rejected at settlement.

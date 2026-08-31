@@ -43,6 +43,7 @@ function cfg(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     sweepIntervalMs: 900_000,
     drawFallbackMs: 0,
     gameTimeoutMs: 1_800_000,
+    opponentGraceMs: 90_000,
     healthPort: 0,
     ...over,
   };
