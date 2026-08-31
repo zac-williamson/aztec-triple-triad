@@ -232,6 +232,29 @@ export class AbandonmentSweep {
     // their first move. The bot is always player 2, which is exactly who the
     // contract permits to make a zero-move claim.
 
+    // Whose turn is it? The claim is for an opponent who walked away, so the
+    // contract requires it to be THEIR turn: player 1 plays the even turns, so
+    // a player-2 claimant needs an even move count. With an odd count the next
+    // move is ours — nobody abandoned anything, we stalled — and the claim can
+    // only ever fail:
+    //
+    //   sweep: 0x141176f6… abandoned (242min, 7/9 moves) — claiming
+    //   sweep: 0x141176f6… FAILED — It must be opponent's turn to claim
+    //
+    // It retried that every fifteen minutes for hours, spending a proof and a
+    // transaction each time on an assertion that cannot pass. Say it once.
+    if (rec.moveProofs.length % 2 !== 0) {
+      this.stats.skipped += 1;
+      this.stats.unrecoverable += rec.cardIds.length;
+      if (!this.reportedUnrecoverable.has(id)) {
+        this.reportedUnrecoverable.add(id);
+        this.log(`sweep: ${id} NOT CLAIMABLE BY US — ${rec.moveProofs.length} moves means it is ` +
+                 `our turn, so the contract will not accept an abandonment claim from us ` +
+                 `(${rec.cardIds.length} cards locked until the opponent claims; not reported again)`);
+      }
+      return;
+    }
+
     this.log(`sweep: ${id} abandoned (${Math.round(age / 60_000)}min, ${rec.moveProofs.length}/9 moves) — claiming`);
     await this.claim(rec);
     // Between steps, not merely between games. A recovery is claim -> wait out

@@ -41,7 +41,11 @@ function record(over: Partial<GameRecord> = {}): GameRecord {
     opponentCardIds: [10, 11, 12, 13, 14],
     myHandProof: { proof: 'h', publicInputs: ['0x1', '0x0'] },
     opponentHandProof: { proof: 'oh', publicInputs: ['0x2', '0x0'] },
-    moveProofs: [PROOF, PROOF, PROOF],
+    // FOUR, not three. The bot is always player 2, and the contract only
+    // accepts an abandonment claim when it is the OTHER side's turn — an even
+    // move count. A three-move fixture described a game the chain would always
+    // refuse to let us claim.
+    moveProofs: [PROOF, PROOF, PROOF, PROOF],
     committedAt: 0,
     updatedAt: 0,
     ...over,
@@ -447,5 +451,74 @@ describe('yielding between chain steps', () => {
 
     expect(steps, 'claimed, but did not go on to settle').toEqual(['claim']);
     expect(logs.join(' ')).toMatch(/settle deferred/);
+  });
+});
+
+describe('claims only when the chain would accept one', () => {
+  /**
+   * The claim is for an opponent who walked away, so the contract requires it
+   * to be THEIR turn: player 1 takes the even turns, so a player-2 claimant
+   * needs an even move count. With an odd count the next move is ours — we
+   * stalled, nobody abandoned — and the assertion can never pass.
+   *
+   * Production retried exactly that every fifteen minutes for hours, spending
+   * a proof and a transaction each time.
+   */
+  function sweepFor(moves: number) {
+    const logs: string[] = [];
+    const claims: string[] = [];
+    const rec = {
+      onChainGameId: '0xabc', relayGameId: 'g', botAddress: '0xbot', opponentAddress: '0xopp',
+      botIsPlayer1: false, cardIds: [1, 2, 3, 4, 5], randomness: ['0x1'], blindingFactor: '0xb',
+      opponentCardIds: [], myHandProof: { proof: 'p', publicInputs: [] },
+      opponentHandProof: { proof: 'p', publicInputs: [] },
+      moveProofs: Array(moves).fill({ proof: 'p', publicInputs: [] }),
+      committedAt: 0, updatedAt: 0,
+    };
+    const sweep = new AbandonmentSweep({
+      journal: {
+        outstanding: () => [rec], forget: () => {}, write: () => {}, read: () => rec,
+        markSettled: () => {}, pruneSettled: () => 0,
+      } as never,
+      chain: {
+        address: '0xbot', nodeClient: {},
+        pxe: {
+          readGameStatus: async () => 2,
+          sendClaimAbandonedGame: async () => { claims.push('claim'); return '0x' + 'c'.repeat(64); },
+          sendSettleAbandonedGame: async () => '0xdead',
+          importCardNotes: async () => [],
+        },
+      } as never,
+      proofs: {
+        verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
+        dummyVerificationKey: async () => new Uint8Array([3]),
+        proveDummy: async () => 'ZHVtbXk=',
+      } as never,
+      log: (m: string) => logs.push(m),
+      minAgeMs: 0,
+    });
+    return { sweep, logs, claims };
+  }
+
+  it('does not claim when it is our own turn', async () => {
+    const h = sweepFor(7);           // odd: player 2 is next, so we stalled
+    await h.sweep.run();
+    expect(h.claims, 'no transaction spent on a certain revert').toHaveLength(0);
+    expect(h.logs.join(' ')).toMatch(/NOT CLAIMABLE BY US/);
+  });
+
+  it('says so once, not every pass', async () => {
+    const h = sweepFor(7);
+    await h.sweep.run();
+    await h.sweep.run();
+    await h.sweep.run();
+    expect(h.logs.filter(l => /NOT CLAIMABLE BY US/.test(l))).toHaveLength(1);
+    expect(h.sweep.stats.unrecoverable).toBe(5);
+  });
+
+  it('still claims when it really is the opponent who left', async () => {
+    const h = sweepFor(4);           // even: player 1 is next and absent
+    await h.sweep.run();
+    expect(h.claims).toEqual(['claim']);
   });
 });

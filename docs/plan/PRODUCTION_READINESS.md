@@ -81,7 +81,7 @@ app, settlement included.
 
 ---
 
-### 13. Sweep retries a claim that cannot succeed · `OPEN` (found 31 Aug)
+### 13. Sweep retries a claim that cannot succeed · `DONE` (31 Aug)
 The abandonment sweep repeatedly attempts a game with 7/9 moves and fails:
 
     sweep: 0x141176f6… abandoned (242min, 7/9 moves) — claiming
@@ -93,9 +93,14 @@ transaction on something the contract will always reject. The claim is only
 valid when it is the ABSENT player's turn; the sweep does not check the move
 parity before trying.
 
-**Done when:** the sweep checks whose turn it is before claiming, and either
-waits for a claimable state or reports the game as not-claimable once — the
-same treatment as the missing-hand-proof case in item 2.
+**Fixed.** The bot is always player 2, and the contract accepts an
+abandonment claim only when it is the OTHER side's turn — an even move count.
+An odd count means the next move is ours: we stalled, nobody abandoned, and
+the assertion can never pass. The sweep now checks parity, reports the game as
+not claimable by us once, and counts the locked cards instead of retrying.
+
+The test fixture had encoded the same misunderstanding — a three-move record
+for a player-2 claimant describes a game the chain would always refuse.
 
 ---
 
