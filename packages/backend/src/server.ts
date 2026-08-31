@@ -1007,21 +1007,21 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
             if (isBotPlayerId(entry1.playerId) || isBotPlayerId(entry2.playerId)) {
               metrics.increment('botMatchesFormed');
             }
-            // Each side is told whether ITS opponent is the bot — never whether
-            // it is itself, so the flag reads the same way for both.
+            // Deliberately says nothing about who the opponent is. The bot is
+            // a fallback for when nobody else is queuing, and a player meeting
+            // one should not be able to tell — not from the UI, and not by
+            // reading this frame in devtools either.
             await sendToPlayer(entry1.playerId, {
               type: 'MATCH_FOUND',
               gameId: room.id,
               playerNumber: 1,
               gameState: sanitizeGameStateForPlayer(room.state, entry1.playerId, room),
-              opponentIsBot: isBotPlayerId(entry2.playerId),
             });
             await sendToPlayer(entry2.playerId, {
               type: 'MATCH_FOUND',
               gameId: room.id,
               playerNumber: 2,
               gameState: sanitizeGameStateForPlayer(room.state, entry2.playerId, room),
-              opponentIsBot: isBotPlayerId(entry1.playerId),
             });
           }
         } catch (err: any) {

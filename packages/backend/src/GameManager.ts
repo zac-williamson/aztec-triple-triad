@@ -481,7 +481,7 @@ export class GameManager {
    * `humansWaiting` / `botsQueued` exist so a POOL does not stampede: every bot
    * polls the same endpoint and would otherwise all queue for the same lone
    * player. Publishing which entries are bots costs nothing here — the bot is
-   * disclosed anyway, via `opponentIsBot` and the HUD badge.
+   * not disclosed: the bot is a fallback opponent, not a labelled one.
    */
   async queueSnapshot(now = Date.now(), isBot: (playerId: string) => boolean = () => false): Promise<{
     length: number;

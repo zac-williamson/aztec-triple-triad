@@ -386,23 +386,17 @@ describe('useWebSocket', () => {
       expect(result.current.playerNumber).toBe(1);
     });
 
-    it('MATCH_FOUND discloses a bot opponent', async () => {
+    it('never exposes who the opponent is, even if a server sends the old flag', async () => {
+      // The bot is a fallback for when nobody else is queuing, and a player
+      // should not be able to tell they got one. An older relay may still put
+      // opponentIsBot on the wire; the client must not surface it anywhere.
       const { result, ws } = await setupConnectedHook();
       const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
       act(() => {
         ws.simulateMessage({ type: 'MATCH_FOUND', gameId: 'm', playerNumber: 1, gameState: state, opponentIsBot: true });
       });
-      expect(result.current.opponentIsBot).toBe(true);
-    });
-
-    it('MATCH_FOUND treats a missing/false disclosure flag as a human opponent', async () => {
-      const { result, ws } = await setupConnectedHook();
-      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
-      // A server that predates the flag must not make players think they face a bot.
-      act(() => {
-        ws.simulateMessage({ type: 'MATCH_FOUND', gameId: 'm', playerNumber: 1, gameState: state });
-      });
-      expect(result.current.opponentIsBot).toBe(false);
+      expect(result.current.matchmakingStatus).toBe('matched');
+      expect('opponentIsBot' in result.current).toBe(false);
     });
 
     it('MATCHMAKING_CANCELLED resets matchmaking state', async () => {

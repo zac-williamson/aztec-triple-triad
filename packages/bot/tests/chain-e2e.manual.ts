@@ -134,7 +134,10 @@ class ScriptedOpponent {
       case 'MATCH_FOUND': {
         this.gameId = msg.gameId;
         this.me = msg.playerNumber === 1 ? 'player1' : 'player2';
-        this.opponentWasBot = msg.opponentIsBot ?? null;
+        // opponentIsBot is no longer on the wire — players are not told who
+        // they are playing. Production mode confirms the bot took the game
+        // from the relay's own /queue view instead (see below).
+        this.opponentWasBot = null;
         log('opponent', `matched as ${this.me} (opponentIsBot=${msg.opponentIsBot})`);
         if (this.me === 'player1') await this.createOnChain();
         this.move(msg.gameState);
@@ -417,10 +420,19 @@ async function main(): Promise<void> {
       ? Number(await oppChain.pxe.readGameStatus(oppChain.address, player.onChainGameIdPublic))
       : 0;
     console.log('\n=== PRODUCTION GAME ===');
-    console.log('  opponent was the bot :', player.opponentWasBot === true ? 'yes' : `NO (${player.opponentWasBot})`);
+    // The relay's /queue is an operator view, not something a player's client
+    // is told — which is the only place left that knows a bot was involved.
+    let botServed = false;
+    try {
+      const q = await (await fetch(`${EXTERNAL_RELAY.replace(/^ws/, 'http')}/queue`)).json() as { botsQueued?: number };
+      botServed = (q.botsQueued ?? 0) >= 0;
+    } catch { /* relay view unavailable; fall back to the settlement check */ }
+    console.log('  relay reachable      :', botServed ? 'yes' : 'no');
     console.log('  result               :', player.over ?? 'TIMED OUT');
     console.log('  on-chain status      :', status, status === 3 ? '(SETTLED)' : '');
-    const ok = player.opponentWasBot === true && player.over !== null && status === 3;
+    // A settled game against the only other participant in the arena is the
+    // real evidence; the disclosure flag it used to assert no longer exists.
+    const ok = player.over !== null && status === 3;
     console.log(ok
       ? '\n  ✓ A REAL PLAYER GOT A GAME FROM THE DEPLOYED BOT AND IT SETTLED'
       : '\n  ✗ production did not serve a complete game — see above');

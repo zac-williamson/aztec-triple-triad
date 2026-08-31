@@ -23,7 +23,6 @@ export interface UseWebSocketReturn {
   gameId: string | null;
   playerNumber: 1 | 2 | null;
   /** True when the matched opponent is the arena bot (disclosed, never hidden). */
-  opponentIsBot: boolean;
   gameState: GameState | null;
   lastCaptures: { row: number; col: number }[];
   gameList: GameListEntry[];
@@ -96,7 +95,6 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [connected, setConnected] = useState(false);
   const [gameId, setGameId] = useState<string | null>(null);
-  const [opponentIsBot, setOpponentIsBot] = useState(false);
   const [playerNumber, setPlayerNumber] = useState<1 | 2 | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [lastCaptures, setLastCaptures] = useState<{ row: number; col: number }[]>([]);
@@ -295,7 +293,6 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
           setGameState(msg.gameState);
           // Disclosure: the server tells us when the opponent is the arena bot.
           // Defaults to false so a server that does not send it reads as human.
-          setOpponentIsBot(msg.opponentIsBot === true);
           setError(null);
           break;
         case 'MATCHMAKING_CANCELLED':
@@ -478,7 +475,6 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     connected,
     gameId,
     playerNumber,
-    opponentIsBot,
     gameState,
     lastCaptures,
     gameList,

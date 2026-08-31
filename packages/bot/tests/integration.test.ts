@@ -194,7 +194,9 @@ describe('arena bot end-to-end', () => {
 
     await waitFor(() => human.gameId !== null, 15_000, 'match to form');
     // The human must be TOLD the opponent is a bot.
-    expect(human.opponentIsBot, 'bot opponent is disclosed to the human').toBe(true);
+    // The bot is a fallback for when nobody else is queuing; a player must not
+    // be able to tell they got one — not from the UI, and not from this frame.
+    expect(human.opponentIsBot, 'the human is NOT told the opponent is a bot').toBeNull();
 
     await waitFor(() => human.over !== null, 30_000, 'game to finish');
     expect(['player1', 'player2', 'draw']).toContain(human.over!.winner);
@@ -282,7 +284,7 @@ describe('a pool of arena bots', () => {
     // that it did not.
     await new Promise(r => setTimeout(r, 1_000));
 
-    expect(human.opponentIsBot).toBe(true);
+    expect(human.opponentIsBot, 'still not disclosed').toBeNull();
     // The extras must not be parked in the queue holding five committed cards
     // each, waiting to time out.
     // "Engaged" rather than "playing": with moveDelayMs 0 the nine relay moves
@@ -330,8 +332,8 @@ describe('a pool of arena bots', () => {
 
     // The bot is a fallback for an empty queue, not a competitor for players.
     expect(h1.gameId).toBe(h2.gameId);
-    expect(h1.opponentIsBot).toBe(false);
-    expect(h2.opponentIsBot).toBe(false);
+    expect(h1.opponentIsBot).toBeNull();
+    expect(h2.opponentIsBot).toBeNull();
     expect(pool.every(b => b.getStats().gamesPlayed === 0)).toBe(true);
 
     h1.close(); h2.close();

@@ -117,8 +117,7 @@ export type ServerMessage =
    */
   | { type: 'OPPONENT_BLINDING'; gameId: string; blindingFactor: string }
   | { type: 'QUEUE_DECLINED'; reason: 'already-covered' | 'nobody-waiting'; humansWaiting: number; botsQueued: number }
-  /** `opponentIsBot` is the disclosure flag: the UI labels the opponent. */
-  | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState; opponentIsBot: boolean }
+  | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState }
   | { type: 'BOT_REGISTERED' }
   | { type: 'MATCHMAKING_CANCELLED' }
   | { type: 'PONG' }
