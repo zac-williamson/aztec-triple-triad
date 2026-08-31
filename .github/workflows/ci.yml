@@ -140,13 +140,16 @@ jobs:
       # bare nargo lives in internal-bin, off PATH) — see
       # docs/plan/LANE_1_CHAIN.md ASSUMPTIONS #3/#4.
       # The stock installer is BROKEN on the 5.2 line and fails this job every
-      # time: it `mv`s foundryup's bin/<tool> — which are symlinks into a temp
-      # dir — into internal-bin and then deletes that temp dir, so every foundry
-      # binary lands dangling and the next step's existence check fails with
-      #   Error: expected bundled binary 'forge' missing from …/internal-bin
-      # Re-running does not help. Copying the link TARGET does. Same workaround
-      # as CLAUDE.md's, using the versioned installer URL so the sed has
-      # something stable to patch.
+      # time. It installs tools into a temp dir, `mv`s them into internal-bin,
+      # then deletes the temp dir — but what it moves are SYMLINKS pointing back
+      # into that dir, so every one lands dangling. Copying the link target
+      # instead (`cp -L`) fixes it; re-running does not.
+      #
+      # It happens in three places, not one — nargo, noir-profiler and each
+      # foundry binary — so the substitution is general rather than the
+      # single-line workaround in CLAUDE.md. Patching only foundry gets you past
+      # `expected bundled binary 'forge' missing` and into `spawn nargo ENOENT`
+      # two steps later, which is a dangling symlink wearing a different hat.
       #
       # This job had been red on every push since the 5.2 migration, which meant
       # no contract or circuit test had run in CI since — the kind of check that
@@ -156,11 +159,14 @@ jobs:
         run: |
           V='${{ steps.pin.outputs.version }}'
           curl -fsSL "https://install.aztec-labs.com/$V/install" -o /tmp/aztec-install.sh
-          sed -i.bak 's|mv "$temp_foundry_dir/bin/$binary"|cp -L "$temp_foundry_dir/bin/$binary"|' /tmp/aztec-install.sh
-          # Fail loudly if upstream fixed the bug and the anchor moved, rather
-          # than silently installing the broken layout again.
-          if ! grep -q 'cp -L "$temp_foundry_dir/bin/$binary"' /tmp/aztec-install.sh; then
-            echo "::warning::the foundry-symlink patch did not apply — installer may be fixed upstream"
+          sed -i.bak -E 's|mv "\$temp_([A-Za-z_]+)/bin/([^"]+)"|cp -L "$temp_\1/bin/\2"|g' /tmp/aztec-install.sh
+          # Three call sites are expected. Fewer means upstream changed the
+          # code — possibly fixing it — and we should look rather than install
+          # a layout we no longer understand.
+          patched=$(grep -cE 'cp -L "\$temp_[A-Za-z_]+/bin/' /tmp/aztec-install.sh || true)
+          echo "patched $patched mv-from-temp call sites"
+          if [ "$patched" -lt 3 ]; then
+            echo "::warning::expected 3 patched call sites, found $patched — installer may have changed upstream"
           fi
           rm -rf "$HOME/.aztec/versions/$V"
           VERSION="$V" bash /tmp/aztec-install.sh
@@ -181,6 +187,12 @@ jobs:
             || { echo "aztec missing from current/bin"; ls -la "$HOME/.aztec/current/bin" || true; exit 1; }
           test -x "$HOME/.aztec/current/bin/aztec-nargo" \
             || { echo "aztec-nargo missing"; ls -la "$HOME/.aztec/current/bin" || true; exit 1; }
+          # `test -x` follows symlinks, so this fails on a DANGLING one — which
+          # is the whole failure mode above. `aztec compile` spawns bare nargo
+          # from internal-bin via the wrapper's PATH, so it has to resolve.
+          test -x "$HOME/.aztec/versions/$V/internal-bin/nargo" \
+            || { echo "internal-bin/nargo missing or dangling";
+                 ls -la "$HOME/.aztec/versions/$V/internal-bin" || true; exit 1; }
 
       - name: Add Aztec to PATH
         run: |
