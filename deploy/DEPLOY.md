@@ -403,10 +403,40 @@ that only bites when the ninth proof lands after the relay has declared the
 game over.
 
 **Not yet scheduled.** Doing so means putting a funding key into CI and paying
-~25 minutes of runner time per run; the ten-minute uptime probe
-(`.github/workflows/uptime.yml`) covers "is it up", and this covers "does it
-still work", on a human's decision to ship. Worth revisiting if releases
-become frequent.
+~25 minutes of runner time per run. The uptime workflow covers "is it up" and
+this covers "does it still work", on a human's decision to ship. Worth
+revisiting if releases become frequent.
+
+### Uptime monitoring — read this before relying on the workflow
+
+`.github/workflows/uptime.yml` works when triggered and **has never once run on
+its schedule.** Two cron expressions, five and a half hours, zero scheduled
+runs, while `gh workflow run uptime.yml --ref main` passes in ten seconds. The
+workflow is active, on the default branch, in a public non-fork repo with
+Actions enabled and the enable endpoint called explicitly. GitHub's scheduler is
+best-effort and drops runs; there is nothing left to configure.
+
+So today the arena has no reliable off-box monitoring, and the failure that
+leaves is the one that matters most: the box being gone, which the on-box
+`triad-health.timer` can never report.
+
+The five-minute fix is a hosted checker (UptimeRobot, Better Stack,
+Healthchecks.io — any of them, free tier). Point it at:
+
+| Check | URL | Expect |
+|---|---|---|
+| Relay | `https://ws.aztec-arena.com/health` | keyword `"status":"ok"` |
+| Site | `https://www.aztec-arena.com` | HTTP 200 |
+
+Those two cover "is anyone able to play". The third check in the workflow — that
+the testnet has not re-genesised, by POSTing `node_getNodeInfo` and comparing
+`rollupVersion` to 1821665230 — is the one a generic service usually cannot
+express, and it is worth keeping the workflow around for, triggered by hand
+after any Aztec upgrade. That failure looks like a perfectly healthy site whose
+games can never start.
+
+Whoever sets the checker up should also point its alerts somewhere a person
+actually reads.
 
 ### Ship a backend change
 
