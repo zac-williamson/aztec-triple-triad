@@ -3,6 +3,7 @@ import { AztecProvider, useAztecContext } from './aztec/AztecContext';
 import { useGame } from './hooks/useGame';
 import { MenuScene } from './components3d/MenuScene';
 import { MainMenu } from './components/MainMenu';
+import { StaleBuildBanner } from './components/StaleBuildBanner';
 import { CardSelector } from './components/CardSelector';
 import { FindingOpponent } from './components/FindingOpponent';
 import { CardPacks } from './components/CardPacks';
@@ -79,6 +80,10 @@ function AppInner() {
   return (
     <div className="app">
       <div className="app__bg" />
+
+      {/* Above everything: a stale tab fails silently at the next lazy import,
+          and here that import is the proving code. */}
+      <StaleBuildBanner />
 
       {showMenuScene && <MenuScene />}
 

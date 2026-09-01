@@ -1,0 +1,35 @@
+/* Sits above everything: the failure it reports is silent otherwise, and the
+   player's next action costs them a game. */
+.stale-build {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 12px 18px;
+  background: #4a2a1e;
+  border-bottom: 1px solid rgba(196, 162, 101, 0.55);
+  font-family: 'Nunito', sans-serif;
+  color: #e8e4d8;
+}
+
+.stale-build__text { display: flex; flex-direction: column; gap: 2px; }
+.stale-build__text strong { font-size: 14px; }
+.stale-build__text span { font-size: 12px; color: rgba(232, 228, 216, 0.75); }
+
+.stale-build__btn {
+  padding: 8px 20px;
+  border: 1px solid rgba(196, 162, 101, 0.6);
+  border-radius: 4px;
+  background: rgba(196, 162, 101, 0.18);
+  color: #e8e4d8;
+  font-family: 'Nunito', sans-serif;
+  font-size: 13px;
+  cursor: pointer;
+}
+.stale-build__btn:hover { background: rgba(196, 162, 101, 0.3); }
