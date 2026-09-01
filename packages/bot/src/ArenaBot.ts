@@ -250,6 +250,38 @@ export class ArenaBot {
     }, this.cfg.pollIntervalMs);
   }
 
+  /**
+   * Leave cleanly enough that our cards stay recoverable.
+   *
+   * We do not resume sessions, so a restart mid-game orphans it: the relay
+   * game is gone and the move we owed can never be made. And an abandonment
+   * claim is only valid for the player who is NOT next to move, so dying
+   * mid-turn leaves the sole claim with the opponent — who has no reason to
+   * use it. Deploys and reboots are routine, which makes this an ordinary path
+   * rather than a rare one.
+   *
+   * So play the move we owe, wait for its proof to reach the journal — that is
+   * what the claim is built from — and only then go. Bounded well inside
+   * systemd's 90s stop timeout, because being killed halfway is worse than
+   * leaving promptly.
+   */
+  async shutdown(maxMs = 60_000): Promise<void> {
+    if (this.state === 'playing' && this.committed && this.oweAMove()) {
+      this.log('shutting down mid-turn — playing our move first so the cards stay claimable');
+      const before = this.moveProofs.size;
+      const deadline = this.now() + maxMs;
+      this.maybeMove(this.lastState ?? undefined);
+      while (this.now() < deadline && this.moveProofs.size === before) {
+        await new Promise(r => setTimeout(r, 250));
+      }
+      this.log(this.moveProofs.size > before
+        ? 'owed move proved and journalled — cards remain claimable'
+        : 'WARNING: could not prove the owed move before exit; these 5 cards ' +
+          'can now only be recovered by the opponent');
+    }
+    this.stop();
+  }
+
   stop(): void {
     this.stopped = true;
     if (this.pollTimer) clearInterval(this.pollTimer);

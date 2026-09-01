@@ -1345,6 +1345,39 @@ describe('ArenaBot opponent disconnect', () => {
     h.bot.stop();
   });
 
+  it('plays the move it owes before shutting down', async () => {
+    // Deploys and reboots are routine. We do not resume sessions, so a restart
+    // mid-turn orphans the game — the move can never be made afterwards, and
+    // the abandonment claim belongs to whoever is NOT next to move. Dying
+    // mid-turn therefore hands it to the opponent and strands five cards.
+    const h = mk({ opponentGraceMs: 90_000 });
+    await inGame(h);
+    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.socket.countOfType('PLACE_CARD')).toBe(1);
+    // Same trick as owingAMove: re-send the state so the move is owed but the
+    // one-move-per-turn guard has already fired.
+    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
+    await vi.advanceTimersByTimeAsync(20);
+
+    const done = h.bot.shutdown(1_000);
+    await vi.advanceTimersByTimeAsync(50);
+    // It is trying, not exiting on the spot.
+    expect(h.bot.getStats().state).toBe('playing');
+
+    h.clock.t += 2_000;
+    await vi.advanceTimersByTimeAsync(1_500);
+    await done;
+  });
+
+  it('shuts down immediately when it owes nothing', async () => {
+    const h = mk();
+    await inGame(h);
+    const done = h.bot.shutdown(60_000);
+    await vi.advanceTimersByTimeAsync(20);
+    await done;   // resolves without burning the budget
+  });
+
   it('defaults to just over the relay\'s 60s reconnection window', async () => {
     const { configFromEnv } = await import('../src/config.js');
     expect(configFromEnv({ ARENA_BOT_TOKEN: 't' } as NodeJS.ProcessEnv).opponentGraceMs).toBe(90_000);

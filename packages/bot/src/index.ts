@@ -112,13 +112,21 @@ async function main(): Promise<void> {
     sweepTimer.unref?.();
   }
 
+  // Shutting down mid-turn strands five cards: see ArenaBot.shutdown. Asked
+  // twice, we stop arguing and go.
+  let leaving = false;
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     process.on(sig, () => {
+      if (leaving) { process.exit(0); }
+      leaving = true;
       console.log(`[arena-bot] ${sig} — shutting down`);
-      bot.stop();
-      if (sweepTimer) clearInterval(sweepTimer);
-      void health?.close().finally(() => process.exit(0));
-      if (!health) process.exit(0);
+      void bot.shutdown().catch(err => {
+        console.error(`[arena-bot] shutdown: ${err?.message ?? err}`);
+      }).finally(() => {
+        if (sweepTimer) clearInterval(sweepTimer);
+        if (!health) process.exit(0);
+        void health.close().finally(() => process.exit(0));
+      });
     });
   }
 }
