@@ -10,6 +10,13 @@
 Description=Axolotl Arena health probe
 After=network-online.target
 
+# A failed probe is the whole point of the unit — and this line has to live in
+# [Unit]. It sat at the bottom of [Service] for months, where systemd silently
+# ignores it: `systemctl cat` showed it, `systemctl show -p OnFailure` came back
+# empty, and the alert never fired once. The probe was detecting real failures
+# the whole time — including a bot stuck for 22 minutes — and telling nobody.
+OnFailure=triad-health-alert@%n.service
+
 [Service]
 Type=oneshot
 User=ubuntu
@@ -20,6 +27,3 @@ Environment=CARD_FLOOR=25
 Environment=FEE_JUICE_FLOOR=50
 Environment=UNIMPORTED_CEILING=0
 Environment=STRANDED_CEILING=25
-
-# A failed probe is the whole point of the unit.
-OnFailure=triad-health-alert@%n.service
