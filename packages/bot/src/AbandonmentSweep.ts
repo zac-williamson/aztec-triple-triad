@@ -350,6 +350,20 @@ export class AbandonmentSweep {
     // minutes; the claim stands, so the next pass picks this up.
     if (this.yieldToGame('settle deferred after the dispute window')) return;
 
+    // The other player may have CONTESTED during the window, which puts the
+    // game back to active and cancels our claim. That is them saying "I am
+    // still here", not a failure — so check before spending a proof and a
+    // transaction on a settle the contract will refuse, and leave the game in
+    // the journal so it can be claimed again if they go quiet a second time.
+    const status = await this.deps.chain.pxe.readGameStatus(
+      this.deps.chain.address, rec.onChainGameId,
+    );
+    if (status !== 5) {
+      this.log(`sweep: ${short(rec.onChainGameId)} claim was contested (status ${status}) — ` +
+               'the opponent is back, leaving the game to them');
+      return;
+    }
+
     // Recovery returns OUR stake and nothing else. It used to also take one of
     // the opponent's cards, from a list nothing verified — which meant naming
     // any card and having it minted to us. Nobody wins a card because an

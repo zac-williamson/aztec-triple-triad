@@ -8,6 +8,20 @@ use aztec::macros::aztec;
 /// placed yet). Shared by process_game and claim_abandoned_game so the two
 /// anchors can never drift apart. (The abandoned chained-mask C2 design used a
 /// 23-field preimage; it was replaced by the original-owner check, BUG_C2_REPLAY_2.)
+/// Blocks after a game goes ACTIVE before an abandonment claim is honest.
+///
+/// Without a bar like this a claim can be RACED: a losing player watches the
+/// winner start settling and files a claim first, and since recovery returns
+/// only each side's own stake, the winner is robbed of the card they won. At
+/// roughly twelve seconds a block this is about an hour — far longer than a
+/// game plus a settlement, and short enough that a genuinely stranded hand
+/// comes back the same afternoon.
+pub global MIN_ABANDON_BLOCKS: u32 = 300;
+
+/// Blocks a claim sits before it can be settled, during which the other player
+/// may contest it. Short, because it only has to outlast a page load.
+pub global DISPUTE_BLOCKS: u32 = 5;
+
 pub fn compute_initial_state_hash() -> Field {
     let mut initial_inputs: [Field; 30] = [0; 30];
     initial_inputs[18] = 5;
@@ -68,6 +82,13 @@ pub contract TripleTriadGame {
         card_commit_hash: Field,
     }
 
+    /// A standing abandonment claim was cancelled by the other player.
+    #[event]
+    struct AbandonmentContested {
+        game_id: Field,
+        contester: AztecAddress,
+    }
+
     #[event]
     struct GameSettled {
         game_id: Field,
@@ -119,6 +140,14 @@ pub contract TripleTriadGame {
         dummy_vk_hash: PublicImmutable<Field, Context>,
         game_claim_player: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
         game_claim_block: Map<Field, PublicMutable<Field, Context>, Context>,
+        /// Block the game became ACTIVE (both hands committed). An abandonment
+        /// claim is only honest once a game has had time to finish; without
+        /// this, a claim can be raced against the opponent's settlement.
+        game_active_block: Map<Field, PublicMutable<Field, Context>, Context>,
+        /// Per-(game, player) contest flag, keyed by poseidon2([game_id,
+        /// player]). One contest each: enough to say "I am still here", not
+        /// enough to hold the other side's cards hostage indefinitely.
+        game_contested: Map<Field, PublicMutable<bool, Context>, Context>,
     }
 
     // --- Constructor ---
@@ -211,6 +240,8 @@ pub contract TripleTriadGame {
         self.storage.game_card_commit_2.at(game_id).write(card_commit_hash);
         self.storage.game_player_state_2.at(game_id).write(player_state_hash);
         self.storage.game_status.at(game_id).write(2); // active
+        // When the clock starts for abandonment. See MIN_ABANDON_BLOCKS.
+        self.storage.game_active_block.at(game_id).write(self.context.block_number() as Field);
 
         self.emit(GameJoined { game_id, player2, card_commit_hash });
     }
@@ -303,7 +334,21 @@ pub contract TripleTriadGame {
         // prevent. Every per-move check below is already guarded on `n`, and
         // section 8 requires it to be the opponent's turn, which at n == 0 means
         // only player 2 may claim (player 1 is the one who failed to move).
-        assert(n <= 8, "Use process_game for complete games");
+        //
+        // n == 9 IS ALSO ALLOWED, and for the same reason at the other end of
+        // the game. A COMPLETE game can only be resolved by its winner:
+        // settle_game binds the caller to the winning side. If the winner never
+        // comes back — their tab closed on the result screen, which is the most
+        // ordinary moment to close a tab — both hands stayed locked with no
+        // route out for anybody. Production had exactly that.
+        //
+        // A finished game owes nobody a move, so section 8's turn rule does not
+        // apply and either player may claim. Neither wins a card: recovery is
+        // per-player and returns only the caller's own stake. The winner
+        // forfeits the prize card by never claiming it, which is the cost of
+        // walking away, and MIN_ABANDON_BLOCKS gives them a long window to
+        // settle properly first.
+        assert(n <= 9, "num_valid_moves cannot exceed 9");
 
         // ===== 1. Verify both hand proofs =====
         verify_honk_proof(hand_vk, hand_proof_1, hand_proof_1_inputs, stored_hand_vk_hash);
@@ -344,8 +389,10 @@ pub contract TripleTriadGame {
         let hash_8 = if n > 7 { stored_move_vk_hash } else { stored_dummy_vk_hash };
         verify_honk_proof(vk_8, move_proof_8, move_inputs_8, hash_8);
 
-        // Move 9 is always dummy (max valid is 8)
-        verify_honk_proof(dummy_vk, move_proof_9, move_inputs_9, stored_dummy_vk_hash);
+        // Move 9 is real only for a COMPLETE transcript; dummy otherwise.
+        let vk_9 = if n > 8 { move_vk } else { dummy_vk };
+        let hash_9 = if n > 8 { stored_move_vk_hash } else { stored_dummy_vk_hash };
+        verify_honk_proof(vk_9, move_proof_9, move_inputs_9, hash_9);
 
         // ===== 3. Extract card commits from hand proofs =====
         let card_commit_1 = hand_proof_1_inputs[0];
@@ -392,11 +439,25 @@ pub contract TripleTriadGame {
             );
         }
 
-        // ===== 7. Validate game NOT ended for all valid moves =====
+        // ===== 7. Only the LAST move of a complete game may end it =====
+        // For n < 9 no move ends the game: the point of the claim is that the
+        // game never finished. For n == 9 the ninth move MUST end it and name a
+        // winner, which is what stops a partial transcript being passed off as
+        // a complete one.
+        let complete = n == 9;
         for i in 0..9 {
             if (i as u32) < n {
-                assert(move_inputs[i][4] == 0, "Valid move should not end game");
-                assert(move_inputs[i][5] == 0, "Valid move should not have a winner");
+                let is_final = complete & (i == 8);
+                if is_final {
+                    assert(move_inputs[i][4] == 1, "The ninth move must end the game");
+                    assert(
+                        (move_inputs[i][5] == 1) | (move_inputs[i][5] == 2) | (move_inputs[i][5] == 3),
+                        "The ninth move must name a valid winner",
+                    );
+                } else {
+                    assert(move_inputs[i][4] == 0, "Only the ninth move may end the game");
+                    assert(move_inputs[i][5] == 0, "Only the ninth move may have a winner");
+                }
             }
         }
 
@@ -404,12 +465,17 @@ pub contract TripleTriadGame {
         // P1 plays turns 0, 2, 4, 6, 8. P2 plays turns 1, 3, 5, 7.
         // After N moves, the next player is: if N is even -> P1, if N is odd -> P2.
         // The claimant must NOT be the next player (they didn't abandon).
-        if caller_is_player1 {
-            // P1 is claiming -> must be P2's turn -> N must be odd
-            assert(n % 2 == 1, "It must be opponent's turn to claim abandonment");
-        } else {
-            // P2 is claiming -> must be P1's turn -> N must be even
-            assert(n % 2 == 0, "It must be opponent's turn to claim abandonment");
+        // A COMPLETE game owes nobody a move, so there is no "opponent's turn"
+        // to require and either side may claim. Skipping the rule is the whole
+        // point of allowing n == 9: the loser is usually the one still present.
+        if !complete {
+            if caller_is_player1 {
+                // P1 is claiming -> must be P2's turn -> N must be odd
+                assert(n % 2 == 1, "It must be opponent's turn to claim abandonment");
+            } else {
+                // P2 is claiming -> must be P1's turn -> N must be even
+                assert(n % 2 == 0, "It must be opponent's turn to claim abandonment");
+            }
         }
 
         // ===== 9. Enqueue public claim =====
@@ -446,6 +512,17 @@ pub contract TripleTriadGame {
         let p2 = self.storage.game_player2.at(game_id).read();
         assert((claimant == p1) | (claimant == p2), "Claimant must be a player in this game");
 
+        // A game has to have had time to finish before walking away from it is
+        // believable. Without this a claim can be RACED against the opponent's
+        // settlement — file first and the winner loses the card they won —
+        // which is the risk a complete-game claim would otherwise introduce.
+        let active_block = self.storage.game_active_block.at(game_id).read() as u32;
+        let now = self.context.block_number() as u32;
+        assert(
+            now - active_block >= crate::MIN_ABANDON_BLOCKS,
+            "Too soon to call this game abandoned",
+        );
+
         self.storage.game_claim_player.at(game_id).write(claimant);
         self.storage.game_claim_block.at(game_id).write(self.context.block_number() as Field);
         self.storage.game_status.at(game_id).write(5); // abandoned_claimed
@@ -458,6 +535,59 @@ pub contract TripleTriadGame {
     /// Settle an abandoned game after the dispute window has elapsed.
     ///
     /// The claiming player gets their 5 cards back privately.
+    /**
+     * Contest an abandonment claim: "I am still here."
+     *
+     * The dispute window existed from the start, but nothing could act during
+     * it — it was a delay, not a dispute. This is the other half. While a claim
+     * is inside its window the OTHER player may cancel it, returning the game
+     * to active so it can be played or settled normally.
+     *
+     * One contest per player per game. That is enough to say you are present,
+     * and not enough to hold the other side's cards hostage: contest, and you
+     * are expected to finish the game. Let it go stale again and the next claim
+     * stands, because you have spent your objection.
+     */
+    #[external("private")]
+    fn contest_abandonment(game_id: Field) {
+        self.enqueue_self.contest_abandonment_public(game_id, self.msg_sender());
+    }
+
+    #[external("public")]
+    #[only_self]
+    fn contest_abandonment_public(game_id: Field, contester: AztecAddress) {
+        let status = self.storage.game_status.at(game_id).read();
+        assert(status == 5, "Nothing to contest: no claim is standing");
+
+        let p1 = self.storage.game_player1.at(game_id).read();
+        let p2 = self.storage.game_player2.at(game_id).read();
+        assert((contester == p1) | (contester == p2), "Contester must be a player in this game");
+
+        // The claimant cannot contest their own claim.
+        let claimant = self.storage.game_claim_player.at(game_id).read();
+        assert(contester != claimant, "A claimant cannot contest their own claim");
+
+        // Only inside the window. Afterwards the claim may already have settled,
+        // and reopening a resolved game would let cards be minted twice.
+        let claim_block = self.storage.game_claim_block.at(game_id).read() as u32;
+        let current_block = self.context.block_number() as u32;
+        assert(
+            current_block - claim_block < crate::DISPUTE_BLOCKS,
+            "Dispute window has closed",
+        );
+
+        let key = poseidon2_hash([game_id, contester.to_field()]);
+        assert(!self.storage.game_contested.at(key).read(), "Already contested once");
+        self.storage.game_contested.at(key).write(true);
+
+        // Back to active, claim cleared: the game is live again.
+        self.storage.game_status.at(game_id).write(2);
+        self.storage.game_claim_player.at(game_id).write(AztecAddress::zero());
+        self.storage.game_claim_block.at(game_id).write(0);
+
+        self.emit(AbandonmentContested { game_id, contester });
+    }
+
     /// Recovers ONLY the caller's own five cards, proving they are the ones it
     /// committed. Each side recovers independently, whenever it returns; nobody
     /// wins a card because an opponent disconnected.
@@ -525,7 +655,10 @@ pub contract TripleTriadGame {
         // returning later has long since passed it; the claimant must wait it out.
         let claim_block = self.storage.game_claim_block.at(game_id).read() as u32;
         let current_block = self.context.block_number() as u32;
-        assert(current_block - claim_block >= 5, "Dispute window not elapsed (wait ~1 minute)");
+        assert(
+            current_block - claim_block >= crate::DISPUTE_BLOCKS,
+            "Dispute window not elapsed (wait ~1 minute)",
+        );
 
         // Verify the recoverer is a player, and that BOTH the randomness they
         // used to re-mint and the card ids they minted are the ones their side
