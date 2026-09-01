@@ -42,6 +42,10 @@ export interface UseGameReturn {
 
   // Game state
   cardIds: number[];
+  /** A game still holding this player's cards on-chain, if any. */
+  stuckGame: { onChainGameId: string } | null;
+  isRecovering: boolean;
+  handleRecoverStuckGame: () => Promise<void>;
   packResult: { location: string; cardIds: number[] } | null;
   hasGameInProgress: boolean;
 
@@ -116,6 +120,17 @@ export function useGame(wsUrl: string): UseGameReturn {
   const [cardIds, setCardIds] = useState<number[]>([]);
   const [packResult, setPackResult] = useState<{ location: string; cardIds: number[] } | null>(null);
   const [hasGameInProgress, setHasGameInProgress] = useState(() => storage.hasGame());
+  /**
+   * A game that still holds this player's cards on-chain.
+   *
+   * Committing cards is the easy half; getting them back needs somebody to
+   * settle or claim. If a player closes the tab mid-game their five cards stay
+   * locked, and until now nothing in the app told them so or offered a way
+   * out — the claim button lives on the game screen, which they can no longer
+   * reach. The bot had exactly this problem and it cost thirty cards.
+   */
+  const [stuckGame, setStuckGame] = useState<{ onChainGameId: string } | null>(null);
+  const [isRecovering, setIsRecovering] = useState(false);
 
   // --- On-chain session: phase machine, create/join pipeline, settlement info ---
   const session = useGameSession({ ws, screen, cardIds });
@@ -125,6 +140,56 @@ export function useGame(wsUrl: string): UseGameReturn {
 
   // --- Settlement: process_game, loser note import, abandoned-game flow ---
   const settlement = useGameSettlement({ ws, cardIds, session, play });
+
+  // Look for cards stranded in an unfinished game whenever we are sitting on
+  // the menu. Status 2 is ACTIVE: created, joined, and neither settled nor
+  // claimed, which is exactly the state where cards are locked.
+  useEffect(() => {
+    if (screen !== 'main-menu' || !aztec.accountAddress) { return; }
+    let cancelled = false;
+    void (async () => {
+      const saved = storage.loadGame();
+      if (!saved?.onChainGameId) { if (!cancelled) setStuckGame(null); return; }
+      try {
+        const { pxe } = await import('../aztec/pxe');
+        const status = await pxe.readGameStatus(aztec.accountAddress!, saved.onChainGameId);
+        if (!cancelled) setStuckGame(status === 2 ? { onChainGameId: saved.onChainGameId } : null);
+      } catch (err) {
+        // A read failure must not invent a stuck game, nor hide a real one —
+        // leave whatever we last knew and try again next time we are here.
+        console.warn('[useGame] could not check for a stuck game:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+    // `storage.loadGame`, not `storage`: depending on the hook's object
+    // identity re-runs this on every render, and the setState inside it makes
+    // that a loop.
+  }, [screen, aztec.accountAddress, storage.loadGame]);
+
+  /**
+   * Get the cards back out of a game nobody finished.
+   *
+   * Restores the saved proofs into the session first — the claim needs both
+   * hand proofs, the move proofs so far, and our blinding factor, and all of
+   * those are on disk from when the game was live.
+   */
+  const handleRecoverStuckGame = useCallback(async () => {
+    const saved = storage.loadGame();
+    if (!saved || isRecovering) return;
+    setIsRecovering(true);
+    try {
+      setCardIds(saved.selectedCardIds);
+      play.restoreFromSave(saved);
+      session.restoreFromSave(saved);
+      await settlement.handleAbandonedGame();
+      setStuckGame(null);
+    } catch (err) {
+      console.error('[useGame] recovering the stuck game failed:', err);
+    } finally {
+      setIsRecovering(false);
+    }
+  }, [storage.loadGame, isRecovering, play.restoreFromSave,
+      session.restoreFromSave, settlement.handleAbandonedGame]);
 
   // --- Effects ---
 
@@ -294,6 +359,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     collectedMoveProofs: play.collectedMoveProofs,
     settleTxHash: settlement.settleTxHash,
     cardIds, packResult, hasGameInProgress,
+    stuckGame, isRecovering, handleRecoverStuckGame,
     opponentSettled: settlement.opponentSettled,
     takenCardId: settlement.takenCardId,
     isClaimingAbandoned: settlement.isClaimingAbandoned,

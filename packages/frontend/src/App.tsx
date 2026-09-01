@@ -115,6 +115,9 @@ function AppInner() {
           tokenBalance={aztec.tokenBalance ?? 0}
           accountAddress={aztec.accountAddress}
           hasGameInProgress={game.hasGameInProgress}
+          stuckGame={game.stuckGame}
+          isRecovering={game.isRecovering}
+          onRecoverStuckGame={() => { void game.handleRecoverStuckGame(); }}
           onPlay={game.handlePlay}
           onTutorial={handleTutorial}
           onPractice={() => setPracticeScreen(true)}

@@ -131,6 +131,9 @@ describe('main-menu practice entry', () => {
       <MainMenu
         connected aztecConnecting={false} aztecReady cardCount={0} tokenBalance={0}
         accountAddress={null} hasGameInProgress={false}
+        stuckGame={null}
+        isRecovering={false}
+        onRecoverStuckGame={() => {}}
         onPlay={() => {}} onTutorial={() => {}} onPractice={onPractice} onCardPacks={() => {}}
       />,
     );

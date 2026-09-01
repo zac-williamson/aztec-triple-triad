@@ -9,6 +9,10 @@ interface MainMenuProps {
   tokenBalance: number;
   accountAddress: string | null;
   hasGameInProgress: boolean;
+  /** A game still holding this player's cards on-chain, if any. */
+  stuckGame: { onChainGameId: string } | null;
+  isRecovering: boolean;
+  onRecoverStuckGame: () => void;
   onPlay: () => void;
   onTutorial: () => void;
   onPractice: () => void;
@@ -23,6 +27,9 @@ export function MainMenu({
   tokenBalance,
   accountAddress,
   hasGameInProgress,
+  stuckGame,
+  isRecovering,
+  onRecoverStuckGame,
   onPlay,
   onTutorial,
   onPractice,
@@ -114,6 +121,29 @@ export function MainMenu({
 
       {aztecConnecting && (
         <p className="main-menu__card-status">Loading your cards from Aztec...</p>
+      )}
+
+      {/* Cards locked in a game nobody finished. Before this the only claim
+          button lived on the game screen, so a player who closed the tab had
+          no route back to their own cards. */}
+      {stuckGame && (
+        <div className="main-menu__stuck" data-testid="stuck-game">
+          <p className="main-menu__stuck-text">
+            Five of your cards are still committed to an unfinished game.
+          </p>
+          <button
+            className="main-menu__btn main-menu__btn--recover"
+            data-testid="recover-stuck-game"
+            onClick={onRecoverStuckGame}
+            disabled={isRecovering || !connected}
+          >
+            {isRecovering ? 'Recovering your cards…' : 'Recover My Cards'}
+          </button>
+          <p className="main-menu__stuck-note">
+            This proves the game was abandoned and returns your hand. It takes a
+            few minutes and includes a short dispute window.
+          </p>
+        </div>
       )}
 
       {/* Both were `position: fixed; bottom: 16px; right: 16px`, so they sat on
