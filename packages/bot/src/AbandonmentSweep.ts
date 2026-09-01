@@ -376,6 +376,13 @@ export class AbandonmentSweep {
 
     this.stats.recovered += 1;
     this.stats.cardsRecovered += rec.cardIds.length;
+    // The bot caches its card list, so without this the recovered cards do not
+    // appear in `spendableCards` until something else happens to invalidate it.
+    // That number is what an operator alerts on — a bot running out of cards
+    // goes quietly idle — so a stale one can hide both a real shortage and, as
+    // here, a successful recovery: ten cards came back and the count did not
+    // move.
+    (this.deps.chain as { invalidateCards?: () => void }).invalidateCards?.();
     this.deps.journal.forget(rec.onChainGameId);
     this.log(
       `sweep: ${short(rec.onChainGameId)} RECOVERED ${rec.cardIds.length} card(s) ${String(tx).slice(0, 18)}…`,

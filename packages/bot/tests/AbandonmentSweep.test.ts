@@ -454,6 +454,49 @@ describe('yielding between chain steps', () => {
   });
 });
 
+describe('the card count after a recovery', () => {
+  it('invalidates the cached card list so the recovery is visible', async () => {
+    // `spendableCards` is the number an operator alerts on, and the bot caches
+    // the list it comes from. Ten cards came back on production and the count
+    // did not move — a stale count hides a real shortage just as easily.
+    let invalidated = 0;
+    const rec = {
+      onChainGameId: '0xabc', relayGameId: 'g', botAddress: '0xbot', opponentAddress: '0xopp',
+      botIsPlayer1: false, cardIds: [1, 2, 3, 4, 5], randomness: ['0x1'], blindingFactor: '0xb',
+      opponentCardIds: [], myHandProof: { proof: 'p', publicInputs: [] },
+      opponentHandProof: { proof: 'p', publicInputs: [] },
+      moveProofs: Array(4).fill({ proof: 'p', publicInputs: [] }),
+      committedAt: 0, updatedAt: 0,
+    };
+    const sweep = new AbandonmentSweep({
+      journal: {
+        outstanding: () => [rec], forget: () => {}, write: () => {}, read: () => rec,
+        markSettled: () => {}, pruneSettled: () => 0,
+      } as never,
+      chain: {
+        address: '0xbot', nodeClient: {},
+        invalidateCards: () => { invalidated += 1; },
+        pxe: {
+          readGameStatus: async () => 2,
+          sendClaimAbandonedGame: async () => '0x' + 'c'.repeat(64),
+          sendSettleAbandonedGame: async () => '0xdead',
+          importCardNotes: async () => [1, 2, 3, 4, 5],
+        },
+      } as never,
+      proofs: {
+        verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
+        dummyVerificationKey: async () => new Uint8Array([3]),
+        proveDummy: async () => 'ZHVtbXk=',
+      } as never,
+      log: () => {},
+      minAgeMs: 0,
+    });
+    await sweep.run();
+    expect(sweep.stats.recovered).toBe(1);
+    expect(invalidated, 'the cached count must be dropped after cards come back').toBe(1);
+  });
+});
+
 describe('claims only when the chain would accept one', () => {
   /**
    * The claim is for an opponent who walked away, so the contract requires it
