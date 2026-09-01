@@ -180,6 +180,8 @@ export class ArenaBot {
    * for anybody.
    */
   private opponentGoneSince: number | null = null;
+  /** When we first wanted to abandon but still owed a move. See wantAbandon(). */
+  private abandonWantedSince: number | null = null;
   /** True once OUR cards are committed on-chain. Gates play in chain mode. */
   private committed = false;
   /**
@@ -290,7 +292,7 @@ export class ArenaBot {
     // and leaving our five committed cards stranded.
     if (this.state === 'playing' && this.gameStartedAt > 0
         && this.now() - this.gameStartedAt > this.cfg.gameTimeoutMs) {
-      this.abandonGame(`game exceeded ${Math.round(this.cfg.gameTimeoutMs / 60_000)}min`);
+      this.wantAbandon(`game exceeded ${Math.round(this.cfg.gameTimeoutMs / 60_000)}min`);
       return;
     }
 
@@ -298,7 +300,7 @@ export class ArenaBot {
     // reached in a minute and a half instead of thirty.
     if (this.state === 'playing' && !this.settling && this.opponentGoneSince !== null
         && this.now() - this.opponentGoneSince > this.cfg.opponentGraceMs) {
-      this.abandonGame('opponent disconnected and did not come back');
+      this.wantAbandon('opponent disconnected and did not come back');
       return;
     }
 
@@ -1235,6 +1237,48 @@ export class ArenaBot {
     }
   }
 
+  /** True when the game is waiting on US to move. */
+  private oweAMove(): boolean {
+    const s = this.lastState;
+    return !!s && s.status === 'playing' && s.currentTurn === this.myPlayer;
+  }
+
+  /**
+   * Give up on a game — but never while we still owe a move.
+   *
+   * `claim_abandoned_game` is only valid for the player who is NOT next to
+   * move: "It must be opponent's turn to claim abandonment". Walking away
+   * mid-turn therefore hands the sole claim to the opponent — who, in every
+   * case that gets us here, has just left and is not coming back. The result
+   * is a game nobody can claim and ten cards locked for good. Production had
+   * six such games; at least two are unrecoverable because the opponent was a
+   * throwaway account that no longer exists.
+   *
+   * Playing the move we owe flips the parity, so the claim becomes ours and
+   * the sweep can recover the cards. It costs one move and one proof.
+   *
+   * Bounded: if we cannot get that move out within `moveCatchUpMs` we abandon
+   * regardless — holding the arena open forever is its own failure — but we
+   * say plainly what it cost.
+   */
+  private wantAbandon(reason: string): void {
+    if (this.committed && this.oweAMove()) {
+      if (this.abandonWantedSince === null) {
+        this.abandonWantedSince = this.now();
+        this.log(`${reason} — but it is our turn, and abandoning now would leave ` +
+                 'the only claim with the player who left. Playing our move first.');
+      }
+      if (this.now() - this.abandonWantedSince < this.cfg.moveCatchUpMs) {
+        this.maybeMove(this.lastState ?? undefined);
+        return;
+      }
+      this.log('WARNING: could not play the move we owed within ' +
+               `${Math.round(this.cfg.moveCatchUpMs / 1000)}s — abandoning anyway. ` +
+               'These 5 cards are recoverable only by the opponent.');
+    }
+    this.abandonGame(reason);
+  }
+
   /**
    * End the current game without a settlement, for whatever reason found it.
    *
@@ -1261,6 +1305,7 @@ export class ArenaBot {
     this.queuedAt = 0;
     this.gameStartedAt = 0;
     this.opponentGoneSince = null;
+    this.abandonWantedSince = null;
     // Per-game proof inputs MUST NOT leak into the next game: a stale blinding
     // factor or opponent randomness would produce a proof that verifies against
     // the wrong commitment and be rejected at settlement.

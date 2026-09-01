@@ -81,6 +81,12 @@ export interface ArenaBotConfig {
    * hour.
    */
   opponentGraceMs: number;
+  /**
+   * How long to keep trying to play a move we owe before abandoning anyway.
+   * An abandonment claim is only valid for the player who is NOT next to move,
+   * so leaving mid-turn makes the game unclaimable by us.
+   */
+  moveCatchUpMs: number;
   /** How often to sweep the journal for games whose cards need reclaiming. */
   sweepIntervalMs: number;
   /**
@@ -154,6 +160,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ArenaBotCon
     settleWaitMs: int(env.ARENA_BOT_SETTLE_WAIT_MS, 300_000),
     gameTimeoutMs: int(env.ARENA_BOT_GAME_TIMEOUT_MS, 1_800_000),
     opponentGraceMs: int(env.ARENA_BOT_OPPONENT_GRACE_MS, 90_000),
+    moveCatchUpMs: int(env.ARENA_BOT_MOVE_CATCHUP_MS, 120_000),
     // Recovery is not urgent — the cards are not going anywhere — and each pass
     // may prove and wait out a dispute window, so a slow cadence is correct.
     sweepIntervalMs: int(env.ARENA_BOT_SWEEP_INTERVAL_MS, 900_000),

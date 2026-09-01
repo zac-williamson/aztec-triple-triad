@@ -36,6 +36,7 @@ function makeConfig(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     drawFallbackMs: 0,
     gameTimeoutMs: 1_800_000,
     opponentGraceMs: 90_000,
+    moveCatchUpMs: 120_000,
     healthPort: 0,
     ...over,
   };
@@ -1197,7 +1198,10 @@ describe('ArenaBot opponent disconnect', () => {
     };
     const bot = new ArenaBot(makeConfig({ pollIntervalMs: 50, ...over }), {
       connect: () => socket as unknown as any,
-      fetchQueue: async () => ({ length: 0, oldestWaitMs: 0, entries: [] }),
+      // A waiting human, so the bot QUEUES and thereby picks its hand. Without
+      // one it holds no cards and can never take a turn — which silently makes
+      // "does it play the move it owes?" untestable.
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
       chain: f.chain as any, proofs: proofs as any, log: () => {}, now: () => clock.t,
     });
     return { bot, socket, f, clock };
@@ -1291,6 +1295,53 @@ describe('ArenaBot opponent disconnect', () => {
     h.clock.t += 200_000;
     await vi.advanceTimersByTimeAsync(200);
     expect(h.bot.getStats().abandonedGames).toBe(0);
+    h.bot.stop();
+  });
+
+  /**
+   * Leaves the bot owing a move it cannot yet play: it takes its turn, then the
+   * relay re-sends the SAME state, which `maybeMove` declines (one move per
+   * turn) while `currentTurn` still points at us.
+   */
+  async function owingAMove(h: ReturnType<typeof mk>) {
+    await inGame(h);
+    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(h.socket.countOfType('PLACE_CARD')).toBe(1);
+    h.socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
+    await vi.advanceTimersByTimeAsync(20);
+  }
+
+  it('will not abandon while the game is waiting on OUR move', async () => {
+    // The one that matters. `claim_abandoned_game` is only valid for the player
+    // who is NOT next to move, so abandoning mid-turn hands the sole claim to
+    // the opponent who has just left, and ten cards are locked for good.
+    // Production had six games in that state, two of them unrecoverable.
+    const h = mk({ opponentGraceMs: 90_000, moveCatchUpMs: 120_000 });
+    await owingAMove(h);
+
+    h.socket.deliver({ type: 'OPPONENT_DISCONNECTED', gameId: 'g1' });
+    h.clock.t += 91_000;
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(h.bot.getStats().abandonedGames, 'must not leave the claim with the departed player').toBe(0);
+    expect(h.bot.getStats().state).toBe('playing');
+    h.bot.stop();
+  });
+
+  it('abandons anyway once the owed move has had long enough', async () => {
+    // Holding the arena open forever is its own failure, so the wait is bounded.
+    const h = mk({ opponentGraceMs: 90_000, moveCatchUpMs: 120_000 });
+    await owingAMove(h);
+
+    h.socket.deliver({ type: 'OPPONENT_DISCONNECTED', gameId: 'g1' });
+    h.clock.t += 91_000;
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.bot.getStats().abandonedGames).toBe(0);
+
+    h.clock.t += 121_000;
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.bot.getStats().abandonedGames).toBe(1);
     h.bot.stop();
   });
 
