@@ -141,6 +141,29 @@ describe('HTTP REST endpoints', () => {
     expect(body.games).toBe(0);
   });
 
+  describe('/arena-health', () => {
+    /**
+     * The bot's own /health is localhost-only by design, which leaves the
+     * failure that matters most invisible from outside: a bot that is up and
+     * cannot play. That state lasted eight hours unnoticed. This endpoint is
+     * what an off-box uptime check can watch.
+     */
+    it('reports the bot unreachable rather than pretending things are fine', async () => {
+      // No bot listening in tests, which is exactly the outage case.
+      const { status, body } = await httpGet('/arena-health');
+      expect(status).toBe(503);
+      expect(body.botHealthy).toBe(false);
+      expect(body.status).toBe('bot-unreachable');
+    });
+
+    it('never leaks anything a stranger should not have', async () => {
+      const { body } = await httpGet('/arena-health');
+      const keys = Object.keys(body).join(',');
+      // Addresses, card ids and raw error text can all name a player or a game.
+      expect(keys).not.toMatch(/address|cardIds|hand|secret|key|lastError/i);
+    });
+  });
+
   it('should return empty game list', async () => {
     const { status, body } = await httpGet('/games');
     expect(status).toBe(200);

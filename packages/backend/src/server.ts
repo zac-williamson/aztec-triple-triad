@@ -102,6 +102,8 @@ export interface CardGameServer {
 }
 
 export function createServer(options: ServerOptions = {}): CardGameServer {
+  // Where the arena bot serves its own health. Same box, localhost only.
+  const botHealthPort = Number(process.env.ARENA_BOT_HEALTH_PORT ?? 5175);
   const port = options.port ?? DEFAULT_PORT;
   const host = options.host ?? '0.0.0.0';
   const store = options.store ?? new MemoryGameStore();
@@ -187,6 +189,44 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       const count = await gameManager.getGameCount();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok', games: count }));
+      return;
+    }
+
+    // Whether the ARENA is playable, visible from outside the box.
+    //
+    // The bot's own /health is bound to localhost on purpose — it carries
+    // counters an operator needs and nothing a stranger should have — but that
+    // means the one failure that matters most is invisible off-box: a bot that
+    // is up, healthy-looking and unable to play. That state lasted eight hours
+    // unnoticed, because the only thing watching it wrote to a file on the same
+    // machine.
+    //
+    // So this republishes the few fields an outside checker needs to answer "is
+    // the arena playable?" and nothing else: no addresses, no card ids, no
+    // errors that might carry them. Any uptime service can watch it.
+    if (req.method === 'GET' && req.url === '/arena-health') {
+      try {
+        const upstream = await fetch(`http://127.0.0.1:${botHealthPort}/health`, {
+          signal: AbortSignal.timeout(3000),
+        });
+        const bot = await upstream.json() as Record<string, unknown>;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status: 'ok',
+          botHealthy: bot.healthy === true,
+          botState: bot.state,
+          spendableCards: bot.spendableCards,
+          cardsStranded: bot.cardsStranded,
+          totalFailures: bot.totalFailures,
+          // The message can name a game or an address; the fact of it cannot.
+          hasError: bot.lastError !== null && bot.lastError !== undefined,
+        }));
+      } catch {
+        // The bot being unreachable IS the answer, and a 503 is what an uptime
+        // service acts on.
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'bot-unreachable', botHealthy: false }));
+      }
       return;
     }
 
