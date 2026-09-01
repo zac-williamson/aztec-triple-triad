@@ -229,6 +229,38 @@ describe('useWebSocket', () => {
     });
   });
 
+  describe('leaving a game', () => {
+    it('tells the relay, so the player is not left bound to it', async () => {
+      // The relay releases both players at GAME OVER. A game left before that
+      // keeps its binding until the stale-game sweep, and until then every
+      // queue attempt is refused with "You are already in an active game" —
+      // the bot spent 22 minutes and 578 attempts in exactly that state.
+      const { result } = renderHook(() => useWebSocket('ws://test'));
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      act(() => { ws.simulateSessionEstablished(); });
+      // GAME_CREATED is what sets gameId; GAME_START only carries the board.
+      act(() => { ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 }); });
+      expect(result.current.gameId).toBe('g1');
+
+      act(() => { result.current.leaveGame(); });
+      const sent = ws.sentMessages.map((m: string) => JSON.parse(m));
+      expect(sent.some((m: any) => m.type === 'LEAVE_GAME' && m.gameId === 'g1')).toBe(true);
+      expect(result.current.gameId).toBeNull();
+    });
+
+    it('sends nothing when there is no game to leave', async () => {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      act(() => { ws.simulateSessionEstablished(); });
+
+      act(() => { result.current.leaveGame(); });
+      const sent = ws.sentMessages.map((m: string) => JSON.parse(m));
+      expect(sent.some((m: any) => m.type === 'LEAVE_GAME')).toBe(false);
+    });
+  });
+
   // --- OPPONENT_RECONNECTED ---
 
   describe('opponent reconnection', () => {

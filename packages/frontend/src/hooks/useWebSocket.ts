@@ -90,6 +90,8 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const messageListenersRef = useRef<Set<(msg: ServerMessage) => void>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
   const playerNumberRef = useRef<1 | 2 | null>(null);
+  /** Mirrors gameId so leaveGame can read it without depending on the state. */
+  const gameIdRef = useRef<string | null>(null);
   const intentionalCloseRef = useRef(false);
   const reconnectDelayRef = useRef(INITIAL_RECONNECT_DELAY_MS);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -436,8 +438,22 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     return () => { messageListenersRef.current.delete(cb); };
   }, []);
 
-  /** Reset all game-related state but keep the WebSocket connection open. */
+  useEffect(() => { gameIdRef.current = gameId; }, [gameId]);
+
+  /**
+   * Reset all game-related state but keep the WebSocket connection open.
+   *
+   * Tells the relay too. It releases both players at GAME OVER, but a game
+   * left before that — abandoned, or walked away from — keeps its binding
+   * until the stale-game sweep, and every queue attempt until then is refused
+   * with "You are already in an active game". The bot spent 22 minutes and 578
+   * attempts in exactly that state; a player would simply be unable to start
+   * another game. Only the sender is released — the game itself stays, because
+   * its committed cards still need the abandonment claim.
+   */
   const leaveGame = useCallback(() => {
+    const leaving = gameIdRef.current;
+    if (leaving) send({ type: 'LEAVE_GAME', gameId: leaving });
     setGameId(null);
     setPlayerNumber(null);
     setGameState(null);

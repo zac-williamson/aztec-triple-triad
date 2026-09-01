@@ -86,6 +86,8 @@ export type ClientMessage =
   | { type: 'TX_CONFIRMED'; gameId: string; txType: 'create_game' | 'join_game'; txHash: string }
   | { type: 'TX_FAILED'; gameId: string; txType: 'create_game' | 'join_game'; error: string }
   | { type: 'CANCEL_GAME'; gameId: string }
+  /** "I am done with this game" — releases only the sender's binding. */
+  | { type: 'LEAVE_GAME'; gameId: string }
   // Aztec info exchange
   | { type: 'SHARE_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string; gameRandomness?: string[] }
   /** Sent at GAME OVER only — earlier would let the opponent brute-force your
