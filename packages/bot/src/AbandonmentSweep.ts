@@ -243,20 +243,42 @@ export class AbandonmentSweep {
     //
     // It retried that every fifteen minutes for hours, spending a proof and a
     // transaction each time on an assertion that cannot pass. Say it once.
-    if (rec.moveProofs.length % 2 !== 0) {
+    // An odd count is NOT a dead end, which is what this used to assume.
+    //
+    // The contract needs the first n move proofs to chain and n to have the
+    // right parity. It does not need n to be the whole game — nothing on-chain
+    // records how far the game actually got, because moves are off-chain. So
+    // when the count has the wrong parity, claim the largest PREFIX that has
+    // the right one.
+    //
+    // Nobody loses by the shorter n. `settle_abandoned_game` recovers only the
+    // caller's OWN stake, proved with their own blinding factor, and does so
+    // per player — each side gets its five cards back whenever it returns. The
+    // parity rule decides who may FILE the claim, not who gets what. Refusing
+    // to file left both sides locked out for nothing: six games, thirty cards.
+    const held = Math.min(rec.moveProofs.length, 8);
+    const wantOdd = rec.botIsPlayer1;   // p1 claims on p2's turn: odd n
+    const n = (held % 2 === (wantOdd ? 1 : 0)) ? held : held - 1;
+    if (n < 0) {
+      // Only reachable as player 1 with no moves at all, which the contract
+      // reserves for player 2 — we are the one who owes the first move.
       this.stats.skipped += 1;
       this.stats.unrecoverable += rec.cardIds.length;
       if (!this.reportedUnrecoverable.has(id)) {
         this.reportedUnrecoverable.add(id);
-        this.log(`sweep: ${id} NOT CLAIMABLE BY US — ${rec.moveProofs.length} moves means it is ` +
-                 `our turn, so the contract will not accept an abandonment claim from us ` +
-                 `(${rec.cardIds.length} cards locked until the opponent claims; not reported again)`);
+        this.log(`sweep: ${id} NOT CLAIMABLE BY US — no move has been made and we owe the ` +
+                 `first one (${rec.cardIds.length} cards await the opponent's claim)`);
       }
       return;
     }
 
-    this.log(`sweep: ${id} abandoned (${Math.round(age / 60_000)}min, ${rec.moveProofs.length}/9 moves) — claiming`);
-    await this.claim(rec);
+    const trimmed = n === rec.moveProofs.length
+      ? rec
+      : { ...rec, moveProofs: rec.moveProofs.slice(0, n) };
+    this.log(`sweep: ${id} abandoned (${Math.round(age / 60_000)}min, ${rec.moveProofs.length}/9 moves)` +
+      (n === rec.moveProofs.length ? '' : ` — claiming at the first ${n}, for the turn parity`) +
+      ' — claiming');
+    await this.claim(trimmed);
     // Between steps, not merely between games. A recovery is claim -> wait out
     // the dispute window -> settle -> import, and each chain step holds the
     // shared PXE queue for minutes. Checking only at the top of a pass left a

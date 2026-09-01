@@ -458,18 +458,26 @@ describe('claims only when the chain would accept one', () => {
   /**
    * The claim is for an opponent who walked away, so the contract requires it
    * to be THEIR turn: player 1 takes the even turns, so a player-2 claimant
-   * needs an even move count. With an odd count the next move is ours — we
-   * stalled, nobody abandoned — and the assertion can never pass.
+   * needs an even move count.
    *
-   * Production retried exactly that every fifteen minutes for hours, spending
-   * a proof and a transaction each time.
+   * Getting that wrong cost twice. First the sweep retried an odd count every
+   * fifteen minutes for hours, spending a proof and a transaction on an
+   * assertion that cannot pass. Then it gave up on odd counts entirely — also
+   * wrong, because the contract needs the first n proofs to CHAIN and n to
+   * have the right parity, not n to be the whole game; nothing on-chain
+   * records how far the game got. The answer is the largest prefix with the
+   * right parity, which is always available.
+   *
+   * Nobody is short-changed by the shorter n: settle_abandoned_game returns
+   * only the caller's own stake and works per player, so parity decides who
+   * may FILE the claim, not who gets what.
    */
-  function sweepFor(moves: number) {
+  function sweepFor(moves: number, botIsPlayer1 = false) {
     const logs: string[] = [];
     const claims: string[] = [];
     const rec = {
       onChainGameId: '0xabc', relayGameId: 'g', botAddress: '0xbot', opponentAddress: '0xopp',
-      botIsPlayer1: false, cardIds: [1, 2, 3, 4, 5], randomness: ['0x1'], blindingFactor: '0xb',
+      botIsPlayer1, cardIds: [1, 2, 3, 4, 5], randomness: ['0x1'], blindingFactor: '0xb',
       opponentCardIds: [], myHandProof: { proof: 'p', publicInputs: [] },
       opponentHandProof: { proof: 'p', publicInputs: [] },
       moveProofs: Array(moves).fill({ proof: 'p', publicInputs: [] }),
@@ -500,20 +508,37 @@ describe('claims only when the chain would accept one', () => {
     return { sweep, logs, claims };
   }
 
-  it('does not claim when it is our own turn', async () => {
-    const h = sweepFor(7);           // odd: player 2 is next, so we stalled
-    await h.sweep.run();
-    expect(h.claims, 'no transaction spent on a certain revert').toHaveLength(0);
-    expect(h.logs.join(' ')).toMatch(/NOT CLAIMABLE BY US/);
-  });
-
-  it('says so once, not every pass', async () => {
+  it('claims the largest even prefix when the count is odd', async () => {
+    // 7 proofs as player 2: claiming at 7 is a certain revert, so claim at 6.
+    // Giving up here is what left thirty cards locked across six games.
     const h = sweepFor(7);
     await h.sweep.run();
+    expect(h.claims, 'an odd count is not a dead end').toHaveLength(1);
+    expect(h.logs.join(' ')).toMatch(/claiming at the first 6/);
+    expect(h.sweep.stats.unrecoverable).toBe(0);
+  });
+
+  it('claims at the full count when the parity already suits', async () => {
+    const h = sweepFor(6);
     await h.sweep.run();
+    expect(h.claims).toHaveLength(1);
+    expect(h.logs.join(' ')).not.toMatch(/claiming at the first/);
+  });
+
+  it('as player 1, trims to an ODD prefix instead', async () => {
+    const h = sweepFor(4, true);
     await h.sweep.run();
-    expect(h.logs.filter(l => /NOT CLAIMABLE BY US/.test(l))).toHaveLength(1);
-    expect(h.sweep.stats.unrecoverable).toBe(5);
+    expect(h.claims).toHaveLength(1);
+    expect(h.logs.join(' ')).toMatch(/claiming at the first 3/);
+  });
+
+  it('cannot claim as player 1 before anyone has moved', async () => {
+    // The one genuinely unclaimable case, and the contract says so: at zero
+    // moves the first move is player 1's, so only player 2 may claim.
+    const h = sweepFor(0, true);
+    await h.sweep.run();
+    expect(h.claims).toHaveLength(0);
+    expect(h.logs.join(' ')).toMatch(/NOT CLAIMABLE BY US/);
   });
 
   it('still claims when it really is the opponent who left', async () => {
