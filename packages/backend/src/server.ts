@@ -47,7 +47,7 @@ const SESSION_STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const VALID_MESSAGE_TYPES = new Set([
   'CREATE_GAME', 'JOIN_GAME', 'PLACE_CARD', 'LIST_GAMES', 'GET_GAME',
   'SUBMIT_HAND_PROOF', 'SUBMIT_MOVE_PROOF',
-  'TX_CONFIRMED', 'TX_FAILED', 'CANCEL_GAME',
+  'TX_CONFIRMED', 'TX_FAILED', 'CANCEL_GAME', 'LEAVE_GAME',
   'SHARE_AZTEC_INFO',
   'SHARE_BLINDING',
   'RELAY_NOTE_DATA',
@@ -394,6 +394,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         if (msg.txType !== 'create_game' && msg.txType !== 'join_game') return 'txType must be create_game or join_game';
         if (!msg.error || typeof msg.error !== 'string') return 'error is required';
         break;
+      case 'LEAVE_GAME':
       case 'CANCEL_GAME':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
         break;
@@ -856,6 +857,15 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         } else {
           send(ws, { type: 'ERROR', message: 'Game not found or player not in game' }, playerId);
         }
+        break;
+      }
+
+      case 'LEAVE_GAME': {
+        // Only the sender is released; the game and its committed cards stay,
+        // because the abandonment claim still needs them. Without this a player
+        // who walks away from an abandoned game stays bound to it until the
+        // stale-game sweep, and every queue attempt in between is rejected.
+        await gameManager.releasePlayer(playerId);
         break;
       }
 

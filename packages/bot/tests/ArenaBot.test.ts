@@ -1378,6 +1378,25 @@ describe('ArenaBot opponent disconnect', () => {
     await done;   // resolves without burning the budget
   });
 
+  it('tells the relay it has left, so it can queue again', async () => {
+    // The relay releases both players at GAME OVER, but an abandoned game never
+    // reaches game over. Without an explicit leave the bot stays bound and
+    // every queue attempt is rejected with "You are already in an active game"
+    // until the stale-game sweep — production burned 578 attempts over 22
+    // minutes in that state, with no opponent available to anyone.
+    const h = mk({ opponentGraceMs: 90_000 });
+    await inGame(h);
+    h.socket.deliver({ type: 'OPPONENT_DISCONNECTED', gameId: 'g1' });
+    h.clock.t += 91_000;
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(h.bot.getStats().abandonedGames).toBe(1);
+    const left: any = h.socket.lastOfType('LEAVE_GAME');
+    expect(left, 'the relay must be told, or we stay bound to a game we left').toBeDefined();
+    expect(left.gameId).toBe('g1');
+    h.bot.stop();
+  });
+
   it('defaults to just over the relay\'s 60s reconnection window', async () => {
     const { configFromEnv } = await import('../src/config.js');
     expect(configFromEnv({ ARENA_BOT_TOKEN: 't' } as NodeJS.ProcessEnv).opponentGraceMs).toBe(90_000);

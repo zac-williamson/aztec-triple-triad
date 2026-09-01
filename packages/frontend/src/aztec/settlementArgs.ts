@@ -135,7 +135,8 @@ export async function buildProcessGameArgs(inputs: ProcessGameInputs): Promise<u
 // ---------------------------------------------------------------------------
 
 /** Blocks that must elapse between claim and settle (contract-enforced). */
-export const DISPUTE_BLOCKS = 5;
+/** Mirrors DISPUTE_SECONDS in the game contract. */
+export const DISPUTE_SECONDS = 600;
 
 export interface ClaimAbandonedInputs {
   Fr: any;
@@ -235,33 +236,50 @@ export function buildSettleAbandonedArgs(inputs: SettleAbandonedInputs): Promise
 }
 
 /**
- * Block-height wait for the dispute window.
+ * Wait out the dispute window on the CHAIN's clock.
  *
- * Deliberately NOT a wall-clock sleep: block time varies from instant (sandbox)
- * to ~40s (testnet), and a fixed wait settles EARLY on a slow chain — the tx
- * then reverts "Dispute window not elapsed" after all the proving work. Fails
- * loudly at the ceiling rather than waiting forever.
+ * This used to count blocks, for a good reason that has since stopped being
+ * true: the contract compared block heights, and a wall-clock sleep settles
+ * early on a slow chain. The contract now compares TIMESTAMPS, and block rate
+ * is not a clock — measured on this testnet it ranges from 27 to 72 seconds,
+ * so a five-block wait is anywhere from two to six minutes against a ten-minute
+ * window. Production duly failed with "Dispute window not elapsed" after doing
+ * all the proving work.
+ *
+ * So: poll the chain's own timestamp and compare it against the claim's. Immune
+ * to block-rate variance and to local clock skew, which a wall-clock sleep is
+ * not. Fails loudly at the ceiling rather than waiting forever.
  */
 export async function waitForDisputeWindow(
-  node: { getBlockNumber: () => Promise<number | bigint> },
-  opts: { maxMs?: number; pollMs?: number; onProgress?: (blocks: number) => void } = {},
+  node: {
+    getBlockNumber: () => Promise<number | bigint>;
+    getBlock: (n: number) => Promise<any>;
+  },
+  claimedAtSeconds: number,
+  opts: { maxMs?: number; pollMs?: number; onProgress?: (secondsLeft: number) => void } = {},
 ): Promise<void> {
-  const maxMs = opts.maxMs ?? 20 * 60 * 1000;
-  const pollMs = opts.pollMs ?? 3000;
-  const baseline = Number(await node.getBlockNumber());
+  const maxMs = opts.maxMs ?? 30 * 60 * 1000;
+  const pollMs = opts.pollMs ?? 5000;
   const started = Date.now();
-  let elapsed = 0;
-  while (elapsed < DISPUTE_BLOCKS) {
+
+  const chainNow = async (): Promise<number> => {
+    const height = Number(await node.getBlockNumber());
+    const block = await node.getBlock(height);
+    return Number(block?.header?.globalVariables?.timestamp ?? 0);
+  };
+
+  for (;;) {
+    const now = await chainNow();
+    const elapsed = now - claimedAtSeconds;
+    if (elapsed >= DISPUTE_SECONDS) return;
     if (Date.now() - started > maxMs) {
       throw new Error(
-        `Dispute window did not open: ${elapsed}/${DISPUTE_BLOCKS} blocks in ` +
-        `${Math.round((Date.now() - started) / 1000)}s (baseline block ${baseline}). ` +
+        `Dispute window did not open: ${elapsed}/${DISPUTE_SECONDS}s of chain time in ` +
+        `${Math.round((Date.now() - started) / 1000)}s of ours. ` +
         `Refusing to settle early or wait indefinitely.`,
       );
     }
+    opts.onProgress?.(Math.max(0, DISPUTE_SECONDS - elapsed));
     await new Promise(r => setTimeout(r, pollMs));
-    const current = Number(await Promise.resolve(node.getBlockNumber()).catch(() => baseline + elapsed));
-    elapsed = Math.max(0, current - baseline);
-    opts.onProgress?.(elapsed);
   }
 }

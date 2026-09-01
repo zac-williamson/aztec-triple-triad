@@ -70,6 +70,9 @@ export interface SweepDeps {
 /** How long a settled game's randomness is kept for manual recovery. */
 export const SETTLED_RETENTION_MS = 7 * 24 * 60 * 60_000;
 
+/** Mirrors MIN_ABANDON_SECONDS in the game contract. */
+const MIN_ABANDON_SECONDS = 3600;
+
 export class AbandonmentSweep {
   /** Games already reported as permanently unrecoverable; reported once each. */
   private readonly reportedUnrecoverable = new Set<string>();
@@ -261,6 +264,22 @@ export class AbandonmentSweep {
     // per player — each side gets its five cards back whenever it returns. The
     // parity rule decides who may FILE the claim, not who gets what. Refusing
     // to file left both sides locked out for nothing: six games, thirty cards.
+    // The contract measures staleness from when IT saw the game go active, and
+    // our journal's timestamp is not the same number. Trusting ours produced a
+    // claim the contract rejected as "Too soon" — a wasted proof and a wasted
+    // transaction. Ask the chain.
+    const chainInfo = await this.deps.chain.pxe.readAbandonmentInfo(
+      this.deps.chain.address, rec.onChainGameId,
+    );
+    const activeAt = chainInfo.activeAt;
+    const chainAge = Math.floor(Date.now() / 1000) - activeAt;
+    if (activeAt > 0 && chainAge < MIN_ABANDON_SECONDS) {
+      this.stats.skipped += 1;
+      this.log(`sweep: ${id} the chain calls it ${Math.round(chainAge / 60)}min old — ` +
+               `not claimable for another ${Math.ceil((MIN_ABANDON_SECONDS - chainAge) / 60)}min`);
+      return;
+    }
+
     const held = Math.min(rec.moveProofs.length, 8);
     const wantOdd = rec.botIsPlayer1;   // p1 claims on p2's turn: odd n
     const n = (held % 2 === (wantOdd ? 1 : 0)) ? held : held - 1;
@@ -344,12 +363,20 @@ export class AbandonmentSweep {
   }
 
   private async settle(rec: GameRecord): Promise<void> {
-    const { buildSettleAbandonedArgs, waitForDisputeWindow, DISPUTE_BLOCKS } =
+    const { buildSettleAbandonedArgs, waitForDisputeWindow, DISPUTE_SECONDS } =
       await import('../../frontend/src/aztec/settlementArgs.js');
     const { Fr } = await import('@aztec/aztec.js/fields');
 
-    this.log(`sweep: waiting ${DISPUTE_BLOCKS} blocks for the dispute window`);
-    await waitForDisputeWindow(this.deps.chain.nodeClient);
+    // Measured against the CHAIN's record of when the claim was filed, not our
+    // own clock and no longer a block count: the contract compares timestamps,
+    // and block rate on this testnet runs 27-72s, so "5 blocks" was between two
+    // and six minutes against a ten-minute window. Production failed on exactly
+    // that, after paying for the proving.
+    const { claimAt: claimedAt } = await this.deps.chain.pxe.readAbandonmentInfo(
+      this.deps.chain.address, rec.onChainGameId,
+    );
+    this.log(`sweep: waiting out the ${DISPUTE_SECONDS}s dispute window`);
+    await waitForDisputeWindow(this.deps.chain.nodeClient, claimedAt);
     // That wait is minutes long and touches only the node, so a game can start
     // during it. Settling now would seize the PXE queue for several more
     // minutes; the claim stands, so the next pass picks this up.

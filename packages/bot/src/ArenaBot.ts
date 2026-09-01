@@ -1322,6 +1322,12 @@ export class ArenaBot {
   private abandonGame(reason: string): void {
     this.log(`${reason} — abandoning`);
     this.stats.abandonedGames += 1;
+    // Tell the relay, or it keeps us bound to a game we have left and rejects
+    // every queue attempt with "You are already in an active game" until its
+    // stale-game sweep gets round to it. Production spent 22 minutes and 578
+    // rejected attempts in exactly that state, with no opponent available to
+    // anybody. The game itself stays: the abandonment claim still needs it.
+    if (this.gameId) this.send({ type: 'LEAVE_GAME', gameId: this.gameId });
     if (this.committed) {
       this.log('WARNING: 5 cards remain committed to the abandoned game — ' +
                'recoverable only via the abandonment claim');

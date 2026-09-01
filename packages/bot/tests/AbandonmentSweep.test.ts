@@ -14,7 +14,7 @@ vi.mock('../../frontend/src/aztec/settlementArgs.js', () => ({
   buildClaimAbandonedArgs: vi.fn(async () => ['claim-args']),
   buildSettleAbandonedArgs: vi.fn(async () => ['settle-args']),
   waitForDisputeWindow: vi.fn(async () => {}),
-  DISPUTE_BLOCKS: 5,
+  DISPUTE_SECONDS: 600,
 }));
 vi.mock('../../frontend/src/aztec/noteImporter.js', () => ({
   fetchTxEffectData: vi.fn(async () => ({ noteHashes: ['0x1'], firstNullifier: '0x2' })),
@@ -65,6 +65,7 @@ function harness(status: number, over: Record<string, any> = {}) {
     nodeClient: { getBlockNumber: async () => 100 },
     pxe: {
       readGameStatus: over.readGameStatus ?? (async () => (claimed ? 5 : status)),
+      readAbandonmentInfo: async () => ({ status: claimed ? 5 : status, activeAt: Math.floor(Date.now()/1000) - 7200, claimAt: claimed ? Math.floor(Date.now()/1000) - 1200 : 0, claimPlayer: '0x0' }),
       sendClaimAbandonedGame: async () => { claimed = true; calls.push('claim'); return '0xclaimtx'; },
       sendSettleAbandonedGame: async () => { calls.push('settle'); return '0xsettletx'; },
       importCardNotes: async (_o: string, _t: string, notes: any[]) => {
@@ -331,7 +332,7 @@ describe('permanently unrecoverable games', () => {
       // sweep as far as inspecting the transcript.
       chain: {
         address: '0xbot', nodeClient: {},
-        pxe: { readGameStatus: async () => 2 },
+        pxe: { readGameStatus: async () => 2, readAbandonmentInfo: async () => ({ status: 2, activeAt: Math.floor(Date.now()/1000) - 7200, claimAt: 0, claimPlayer: '0x0' }) },
       } as never,
       proofs: {} as never,
       log: (m: string) => logs.push(m),
@@ -441,6 +442,7 @@ describe('yielding between chain steps', () => {
         address: '0xbot', nodeClient: {},
         pxe: {
           readGameStatus: async () => 2,
+          readAbandonmentInfo: async () => ({ status: 2, activeAt: Math.floor(Date.now()/1000) - 7200, claimAt: Math.floor(Date.now()/1000) - 1200, claimPlayer: '0x0' }),
           sendClaimAbandonedGame: async () => {
             steps.push('claim');
             busy = true;          // a player is matched while the claim mines
@@ -492,6 +494,7 @@ describe('the card count after a recovery', () => {
         invalidateCards: () => { invalidated += 1; },
         pxe: {
           readGameStatus: async () => (claimed ? 5 : 2),
+          readAbandonmentInfo: async () => ({ status: claimed ? 5 : 2, activeAt: Math.floor(Date.now()/1000) - 7200, claimAt: claimed ? Math.floor(Date.now()/1000) - 1200 : 0, claimPlayer: '0x0' }),
           sendClaimAbandonedGame: async () => { claimed = true; return '0x' + 'c'.repeat(64); },
           sendSettleAbandonedGame: async () => '0xdead',
           importCardNotes: async () => [1, 2, 3, 4, 5],
@@ -549,6 +552,7 @@ describe('claims only when the chain would accept one', () => {
         address: '0xbot', nodeClient: {},
         pxe: {
           readGameStatus: async () => 2,
+          readAbandonmentInfo: async () => ({ status: 2, activeAt: Math.floor(Date.now()/1000) - 7200, claimAt: Math.floor(Date.now()/1000) - 1200, claimPlayer: '0x0' }),
           sendClaimAbandonedGame: async () => { claims.push('claim'); return '0x' + 'c'.repeat(64); },
           sendSettleAbandonedGame: async () => '0xdead',
           importCardNotes: async () => [],

@@ -242,6 +242,23 @@ export class GameManager {
     return { gameId, room };
   }
 
+  /**
+   * Release ONE player's binding to whatever game they are in.
+   *
+   * `releasePlayersFromGame` runs at GAME OVER and frees both sides, but a game
+   * that is abandoned never reaches game over — so the binding survived until
+   * the stale-game sweep got to it. A bot that walked away from an abandoned
+   * game then had every queue attempt rejected with "You are already in an
+   * active game": 578 of them across 22 minutes, during which the arena had no
+   * opponent at all.
+   *
+   * The game itself is left alone. It still holds committed cards, and the
+   * abandonment claim needs it.
+   */
+  async releasePlayer(playerId: string): Promise<void> {
+    await this.store.deletePlayerGame(playerId);
+  }
+
   async releasePlayersFromGame(gameId: string): Promise<void> {
     const room = await this.store.getGame(gameId);
     if (room) {
