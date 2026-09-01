@@ -29,6 +29,19 @@ RUNS="${RUNS:-1}"
 OUT="${PROD_SMOKE_DIR:-.artifacts/prod-smoke}"
 mkdir -p "$OUT"
 
+# Sweep anything a previous run left funded before starting a new one.
+#
+# A run that dies without unwinding — a laptop losing power mid-series, which
+# is exactly how this was learned — leaves ~0.02 ETH in an account nobody can
+# reach again unless its key was written down. It is, in
+# .artifacts/throwaway-keys.jsonl, and this collects it. Doing it here means a
+# crashed run heals on the next invocation instead of waiting for someone to
+# remember.
+#
+# Safe because nothing of ours is in flight yet. Do NOT run two of these at
+# once: the second would refund the first's live account out from under it.
+npx tsx packages/playtest/scripts/sweep-throwaways.mts 2>&1 | grep -vE "^nothing pending" || true
+
 pass=0
 fail=0
 # NOT `seq 1 $RUNS`: BSD seq counts DOWN when the end is below the start, so
