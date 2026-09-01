@@ -106,7 +106,24 @@ describe('cards stranded in an unfinished game', () => {
 
   it('tells the player when a game is still holding their cards', async () => {
     const { result } = renderHook(() => useGame('ws://test'));
-    await waitFor(() => expect(result.current.stuckGame).toEqual({ onChainGameId: '0xSTUCK' }));
+    await waitFor(() => expect(result.current.stuckGame)
+      .toEqual({ onChainGameId: '0xSTUCK', kind: 'claimable' }));
+  });
+
+  it('does not offer to claim a game that is merely unsettled', async () => {
+    // Nine moves means the game FINISHED. claim_abandoned_game asserts n <= 8
+    // and settle_game binds the caller to the winner, so there is no action
+    // here that would succeed — and a button that spends a proof and a
+    // transaction to fail is the mistake the bot's sweep already made.
+    hoisted.loadGameMock.mockReturnValue({
+      ...SAVED, collectedMoveProofs: Array(9).fill({ proof: 'p', publicInputs: [] }),
+    });
+    const { result } = renderHook(() => useGame('ws://test'));
+    await waitFor(() => expect(result.current.stuckGame?.kind).toBe('awaiting-winner'));
+
+    await act(async () => { await result.current.handleRecoverStuckGame(); });
+    expect(hoisted.handleAbandonedGameMock, 'must not attempt a claim that cannot pass')
+      .not.toHaveBeenCalled();
   });
 
   it('says nothing about a game that already settled', async () => {

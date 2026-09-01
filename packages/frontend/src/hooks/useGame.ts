@@ -8,6 +8,22 @@ import { useGameSettlement, type TxStatus } from './useGameSettlement';
 import { useUnloadGuard } from './useUnloadGuard';
 import { useAztecContext } from '../aztec/AztecContext';
 import type { Screen, HandProofData, MoveProofData } from '../types';
+import { TOTAL_MOVES } from '../aztec/gameConstants';
+
+/**
+ * A game that still holds this player's cards on-chain.
+ *
+ * `claimable` — fewer than nine moves, so the abandonment claim applies and we
+ * can get the cards back from here.
+ * `awaiting-winner` — the game finished but nobody settled it. The contract
+ * offers no route out for anyone but the winner: claim_abandoned_game asserts
+ * n <= 8, and settle_game binds the caller to the winning side. Worth telling
+ * the player about; not worth offering them a button that cannot work.
+ */
+export interface StuckGame {
+  onChainGameId: string;
+  kind: 'claimable' | 'awaiting-winner';
+}
 
 // Re-export types consumers need
 export type { TxStatus, ProofStatus };
@@ -43,7 +59,7 @@ export interface UseGameReturn {
   // Game state
   cardIds: number[];
   /** A game still holding this player's cards on-chain, if any. */
-  stuckGame: { onChainGameId: string } | null;
+  stuckGame: StuckGame | null;
   isRecovering: boolean;
   handleRecoverStuckGame: () => Promise<void>;
   packResult: { location: string; cardIds: number[] } | null;
@@ -129,7 +145,7 @@ export function useGame(wsUrl: string): UseGameReturn {
    * out — the claim button lives on the game screen, which they can no longer
    * reach. The bot had exactly this problem and it cost thirty cards.
    */
-  const [stuckGame, setStuckGame] = useState<{ onChainGameId: string } | null>(null);
+  const [stuckGame, setStuckGame] = useState<StuckGame | null>(null);
   const [isRecovering, setIsRecovering] = useState(false);
 
   // --- On-chain session: phase machine, create/join pipeline, settlement info ---
@@ -153,7 +169,18 @@ export function useGame(wsUrl: string): UseGameReturn {
       try {
         const { pxe } = await import('../aztec/pxe');
         const status = await pxe.readGameStatus(aztec.accountAddress!, saved.onChainGameId);
-        if (!cancelled) setStuckGame(status === 2 ? { onChainGameId: saved.onChainGameId } : null);
+        if (cancelled) return;
+        if (status !== 2) { setStuckGame(null); return; }
+        // A COMPLETE game is not claimable and never will be:
+        // claim_abandoned_game asserts n <= 8, and settle_game binds the caller
+        // to the winner. Offering a "recover" button here would spend a proof
+        // and a transaction on a certain revert — the same mistake the bot's
+        // sweep made for hours. Say what is true instead.
+        const moves = saved.collectedMoveProofs?.length ?? 0;
+        setStuckGame({
+          onChainGameId: saved.onChainGameId,
+          kind: moves >= TOTAL_MOVES ? 'awaiting-winner' : 'claimable',
+        });
       } catch (err) {
         // A read failure must not invent a stuck game, nor hide a real one —
         // leave whatever we last knew and try again next time we are here.
@@ -175,7 +202,9 @@ export function useGame(wsUrl: string): UseGameReturn {
    */
   const handleRecoverStuckGame = useCallback(async () => {
     const saved = storage.loadGame();
-    if (!saved || isRecovering) return;
+    // Guarded, not merely hidden: a complete game cannot be claimed, so this
+    // must refuse even if something else calls it.
+    if (!saved || isRecovering || stuckGame?.kind !== 'claimable') return;
     setIsRecovering(true);
     try {
       setCardIds(saved.selectedCardIds);
@@ -188,7 +217,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     } finally {
       setIsRecovering(false);
     }
-  }, [storage.loadGame, isRecovering, play.restoreFromSave,
+  }, [storage.loadGame, isRecovering, stuckGame?.kind, play.restoreFromSave,
       session.restoreFromSave, settlement.handleAbandonedGame]);
 
   // --- Effects ---

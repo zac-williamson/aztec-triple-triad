@@ -10,7 +10,7 @@ interface MainMenuProps {
   accountAddress: string | null;
   hasGameInProgress: boolean;
   /** A game still holding this player's cards on-chain, if any. */
-  stuckGame: { onChainGameId: string } | null;
+  stuckGame: { onChainGameId: string; kind: 'claimable' | 'awaiting-winner' } | null;
   isRecovering: boolean;
   onRecoverStuckGame: () => void;
   onPlay: () => void;
@@ -126,7 +126,7 @@ export function MainMenu({
       {/* Cards locked in a game nobody finished. Before this the only claim
           button lived on the game screen, so a player who closed the tab had
           no route back to their own cards. */}
-      {stuckGame && (
+      {stuckGame?.kind === 'claimable' && (
         <div className="main-menu__stuck" data-testid="stuck-game">
           <p className="main-menu__stuck-text">
             Five of your cards are still committed to an unfinished game.
@@ -142,6 +142,21 @@ export function MainMenu({
           <p className="main-menu__stuck-note">
             This proves the game was abandoned and returns your hand. It takes a
             few minutes and includes a short dispute window.
+          </p>
+        </div>
+      )}
+
+      {/* No button, because there is no action that would work: a finished game
+          can only be settled by its winner. Saying so beats a button that
+          spends a proof and a transaction to fail. */}
+      {stuckGame?.kind === 'awaiting-winner' && (
+        <div className="main-menu__stuck" data-testid="stuck-game-awaiting">
+          <p className="main-menu__stuck-text">
+            Your last game finished but was never settled, so its cards are still held.
+          </p>
+          <p className="main-menu__stuck-note">
+            Only the winner can settle a completed game. If that was you, reopen
+            it from Play; otherwise the cards are released when they do.
           </p>
         </div>
       )}
