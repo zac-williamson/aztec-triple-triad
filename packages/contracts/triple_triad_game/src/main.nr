@@ -8,19 +8,28 @@ use aztec::macros::aztec;
 /// placed yet). Shared by process_game and claim_abandoned_game so the two
 /// anchors can never drift apart. (The abandoned chained-mask C2 design used a
 /// 23-field preimage; it was replaced by the original-owner check, BUG_C2_REPLAY_2.)
-/// Blocks after a game goes ACTIVE before an abandonment claim is honest.
+/// Seconds after a game goes ACTIVE before an abandonment claim is honest.
 ///
 /// Without a bar like this a claim can be RACED: a losing player watches the
 /// winner start settling and files a claim first, and since recovery returns
-/// only each side's own stake, the winner is robbed of the card they won. At
-/// roughly twelve seconds a block this is about an hour — far longer than a
-/// game plus a settlement, and short enough that a genuinely stranded hand
-/// comes back the same afternoon.
-pub global MIN_ABANDON_BLOCKS: u32 = 300;
+/// only each side's own stake, the winner is robbed of the card they won.
+///
+/// SECONDS, not blocks. Measured on this testnet, block time ranges from 27 to
+/// 72 seconds depending on load — so the "5 blocks is about a minute" this
+/// contract used to assume is really four, and a 300-block bar would have been
+/// anywhere from two to six hours. aztec-nr says the same in more words:
+/// "Timestamps of Aztec blocks are not at reliably-fixed intervals ... use
+/// context.timestamp() for more-reliable time-based logic."
+///
+/// An hour comfortably exceeds a game plus a settlement (~25 minutes at worst)
+/// and still returns a stranded hand the same afternoon.
+pub global MIN_ABANDON_SECONDS: u64 = 3600;
 
-/// Blocks a claim sits before it can be settled, during which the other player
-/// may contest it. Short, because it only has to outlast a page load.
-pub global DISPUTE_BLOCKS: u32 = 5;
+/// Seconds a claim sits before it can be settled, during which the other
+/// player may contest it. Ten minutes: long enough that someone who returns
+/// mid-claim can object, short enough not to punish an honest claimant who has
+/// already waited an hour.
+pub global DISPUTE_SECONDS: u64 = 600;
 
 pub fn compute_initial_state_hash() -> Field {
     let mut initial_inputs: [Field; 30] = [0; 30];
@@ -139,11 +148,12 @@ pub contract TripleTriadGame {
         token_contract: PublicImmutable<AztecAddress, Context>,
         dummy_vk_hash: PublicImmutable<Field, Context>,
         game_claim_player: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
-        game_claim_block: Map<Field, PublicMutable<Field, Context>, Context>,
-        /// Block the game became ACTIVE (both hands committed). An abandonment
-        /// claim is only honest once a game has had time to finish; without
-        /// this, a claim can be raced against the opponent's settlement.
-        game_active_block: Map<Field, PublicMutable<Field, Context>, Context>,
+        game_claim_at: Map<Field, PublicMutable<Field, Context>, Context>,
+        /// Timestamp the game became ACTIVE (both hands committed). An
+        /// abandonment claim is only honest once a game has had time to
+        /// finish; without this, a claim can be raced against the opponent's
+        /// settlement. Seconds, because block rate is not a clock.
+        game_active_at: Map<Field, PublicMutable<Field, Context>, Context>,
         /// Per-(game, player) contest flag, keyed by poseidon2([game_id,
         /// player]). One contest each: enough to say "I am still here", not
         /// enough to hold the other side's cards hostage indefinitely.
@@ -240,8 +250,8 @@ pub contract TripleTriadGame {
         self.storage.game_card_commit_2.at(game_id).write(card_commit_hash);
         self.storage.game_player_state_2.at(game_id).write(player_state_hash);
         self.storage.game_status.at(game_id).write(2); // active
-        // When the clock starts for abandonment. See MIN_ABANDON_BLOCKS.
-        self.storage.game_active_block.at(game_id).write(self.context.block_number() as Field);
+        // When the clock starts for abandonment. See MIN_ABANDON_SECONDS.
+        self.storage.game_active_at.at(game_id).write(self.context.timestamp() as Field);
 
         self.emit(GameJoined { game_id, player2, card_commit_hash });
     }
@@ -346,7 +356,7 @@ pub contract TripleTriadGame {
         // apply and either player may claim. Neither wins a card: recovery is
         // per-player and returns only the caller's own stake. The winner
         // forfeits the prize card by never claiming it, which is the cost of
-        // walking away, and MIN_ABANDON_BLOCKS gives them a long window to
+        // walking away, and MIN_ABANDON_SECONDS gives them a long window to
         // settle properly first.
         assert(n <= 9, "num_valid_moves cannot exceed 9");
 
@@ -516,15 +526,15 @@ pub contract TripleTriadGame {
         // believable. Without this a claim can be RACED against the opponent's
         // settlement — file first and the winner loses the card they won —
         // which is the risk a complete-game claim would otherwise introduce.
-        let active_block = self.storage.game_active_block.at(game_id).read() as u32;
-        let now = self.context.block_number() as u32;
+        let active_at = self.storage.game_active_at.at(game_id).read() as u64;
+        let now = self.context.timestamp();
         assert(
-            now - active_block >= crate::MIN_ABANDON_BLOCKS,
+            now - active_at >= crate::MIN_ABANDON_SECONDS,
             "Too soon to call this game abandoned",
         );
 
         self.storage.game_claim_player.at(game_id).write(claimant);
-        self.storage.game_claim_block.at(game_id).write(self.context.block_number() as Field);
+        self.storage.game_claim_at.at(game_id).write(self.context.timestamp() as Field);
         self.storage.game_status.at(game_id).write(5); // abandoned_claimed
 
         self.emit(GameAbandoned { game_id, claimant, num_valid_moves });
@@ -569,10 +579,10 @@ pub contract TripleTriadGame {
 
         // Only inside the window. Afterwards the claim may already have settled,
         // and reopening a resolved game would let cards be minted twice.
-        let claim_block = self.storage.game_claim_block.at(game_id).read() as u32;
-        let current_block = self.context.block_number() as u32;
+        let claim_at = self.storage.game_claim_at.at(game_id).read() as u64;
+        let now = self.context.timestamp();
         assert(
-            current_block - claim_block < crate::DISPUTE_BLOCKS,
+            now - claim_at < crate::DISPUTE_SECONDS,
             "Dispute window has closed",
         );
 
@@ -583,7 +593,7 @@ pub contract TripleTriadGame {
         // Back to active, claim cleared: the game is live again.
         self.storage.game_status.at(game_id).write(2);
         self.storage.game_claim_player.at(game_id).write(AztecAddress::zero());
-        self.storage.game_claim_block.at(game_id).write(0);
+        self.storage.game_claim_at.at(game_id).write(0);
 
         self.emit(AbandonmentContested { game_id, contester });
     }
@@ -653,11 +663,11 @@ pub contract TripleTriadGame {
 
         // The dispute window is measured from the claim for everyone. A player
         // returning later has long since passed it; the claimant must wait it out.
-        let claim_block = self.storage.game_claim_block.at(game_id).read() as u32;
-        let current_block = self.context.block_number() as u32;
+        let claim_at = self.storage.game_claim_at.at(game_id).read() as u64;
+        let now = self.context.timestamp();
         assert(
-            current_block - claim_block >= crate::DISPUTE_BLOCKS,
-            "Dispute window not elapsed (wait ~1 minute)",
+            now - claim_at >= crate::DISPUTE_SECONDS,
+            "Dispute window not elapsed",
         );
 
         // Verify the recoverer is a player, and that BOTH the randomness they
@@ -980,6 +990,20 @@ pub contract TripleTriadGame {
         caller_cards_commit: Field,
         opponent_cards_commit: Field,
     ) {
+        // A game that has been CLAIMED as abandoned (status 5) must not also be
+        // settled normally. `game_settled` alone does not cover it: the
+        // abandonment path never sets that flag — it records recovery per
+        // player — so a claimed game still reads as unsettled here.
+        //
+        // That gap only became reachable when complete games became claimable.
+        // Before, a claim required n <= 8 and process_game required a finished
+        // nine-move transcript, so no game could be eligible for both. Now one
+        // can be, and without this a loser could claim and recover their five
+        // while the returning winner separately settles and is minted six —
+        // the loser's wagered card issued TWICE.
+        let status = self.storage.game_status.at(game_id).read();
+        assert(status == 2, "Game is not active: it has been settled, cancelled or claimed");
+
         let settled = self.storage.game_settled.at(game_id).read();
         assert(!settled, "Game already settled");
 
@@ -1056,6 +1080,20 @@ pub contract TripleTriadGame {
         caller_cards_commit: Field,
         opponent_cards_commit: Field,
     ) {
+        // A game that has been CLAIMED as abandoned (status 5) must not also be
+        // settled normally. `game_settled` alone does not cover it: the
+        // abandonment path never sets that flag — it records recovery per
+        // player — so a claimed game still reads as unsettled here.
+        //
+        // That gap only became reachable when complete games became claimable.
+        // Before, a claim required n <= 8 and process_game required a finished
+        // nine-move transcript, so no game could be eligible for both. Now one
+        // can be, and without this a loser could claim and recover their five
+        // while the returning winner separately settles and is minted six —
+        // the loser's wagered card issued TWICE.
+        let status = self.storage.game_status.at(game_id).read();
+        assert(status == 2, "Game is not active: it has been settled, cancelled or claimed");
+
         let settled = self.storage.game_settled.at(game_id).read();
         assert(!settled, "Game already settled");
 
@@ -1113,6 +1151,39 @@ pub contract TripleTriadGame {
     #[view]
     fn get_game_status(game_id: Field) -> Field {
         self.storage.game_status.at(game_id).read()
+    }
+
+    /// Who filed the standing abandonment claim, if any. A client needs this
+    /// to know whether the claim is theirs or the one they may contest.
+    #[external("public")]
+    #[view]
+    fn get_game_claim_player(game_id: Field) -> AztecAddress {
+        self.storage.game_claim_player.at(game_id).read()
+    }
+
+    /// The timestamp a claim was filed. With DISPUTE_SECONDS this is what tells a
+    /// client whether contesting is still possible — without it the only way
+    /// to find out is to send a transaction and watch it revert.
+    #[external("public")]
+    #[view]
+    fn get_game_claim_at(game_id: Field) -> Field {
+        self.storage.game_claim_at.at(game_id).read()
+    }
+
+    /// The timestamp both hands were committed. With MIN_ABANDON_SECONDS this says
+    /// when a game becomes claimable, so a client can show the wait rather
+    /// than offering a button that cannot work yet.
+    #[external("public")]
+    #[view]
+    fn get_game_active_at(game_id: Field) -> Field {
+        self.storage.game_active_at.at(game_id).read()
+    }
+
+    /// Whether this player has already spent their one contest on this game.
+    #[external("public")]
+    #[view]
+    fn has_contested(game_id: Field, player: AztecAddress) -> bool {
+        self.storage.game_contested.at(poseidon2_hash([game_id, player.to_field()])).read()
     }
 
     #[external("public")]

@@ -91,7 +91,12 @@ export class AbandonmentSweep {
     // A game in progress looks exactly like an abandoned one from the journal's
     // point of view. Only age separates them, and claiming a LIVE game would be
     // both wrong and rejected ("It must be opponent's turn to claim").
-    this.minAgeMs = deps.minAgeMs ?? 30 * 60_000;
+    // Must not be SHORTER than the contract's own bar, or every claim in the
+    // gap reverts with "Too soon to call this game abandoned" and the sweep
+    // retries a certain failure — the exact mistake this file already made once
+    // with turn parity. The contract requires MIN_ABANDON_SECONDS (1 hour); a
+    // few minutes of headroom covers clock skew between the node and us.
+    this.minAgeMs = deps.minAgeMs ?? 65 * 60_000;
     this.txTimeoutMs = deps.txTimeoutMs ?? 600_000;
   }
 

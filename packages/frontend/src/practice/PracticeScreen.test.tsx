@@ -134,6 +134,7 @@ describe('main-menu practice entry', () => {
         stuckGame={null}
         isRecovering={false}
         onRecoverStuckGame={() => {}}
+        onContestClaim={() => {}}
         onPlay={() => {}} onTutorial={() => {}} onPractice={onPractice} onCardPacks={() => {}}
       />,
     );

@@ -10,6 +10,9 @@ import { useAztecContext } from '../aztec/AztecContext';
 import type { Screen, HandProofData, MoveProofData } from '../types';
 import { TOTAL_MOVES } from '../aztec/gameConstants';
 
+/** Chain time is in seconds; so is everything compared against it here. */
+const nowSeconds = () => Math.floor(Date.now() / 1000);
+
 /**
  * A game that still holds this player's cards on-chain.
  *
@@ -22,8 +25,27 @@ import { TOTAL_MOVES } from '../aztec/gameConstants';
  */
 export interface StuckGame {
   onChainGameId: string;
-  kind: 'claimable' | 'awaiting-winner';
+  kind: StuckGameKind;
+  /** Seconds until a claim becomes possible; only for 'too-soon'. */
+  waitSeconds?: number;
 }
+
+export type StuckGameKind =
+  /** Old enough, incomplete: the claim will work. */
+  | 'claimable'
+  /** Still holding cards, but the contract's abandonment bar has not passed. */
+  | 'too-soon'
+  /** Nine moves: only the winner can settle, so no action here would succeed. */
+  | 'awaiting-winner'
+  /** The opponent has claimed it and the dispute window is still open. */
+  | 'contestable'
+  /** Claimed, window closed: nothing left to do but let it complete. */
+  | 'claimed-by-opponent';
+
+/** Mirrors MIN_ABANDON_SECONDS in the game contract. */
+const MIN_ABANDON_SECONDS = 3600;
+/** Mirrors DISPUTE_SECONDS in the game contract. */
+const DISPUTE_SECONDS = 600;
 
 // Re-export types consumers need
 export type { TxStatus, ProofStatus };
@@ -62,6 +84,7 @@ export interface UseGameReturn {
   stuckGame: StuckGame | null;
   isRecovering: boolean;
   handleRecoverStuckGame: () => Promise<void>;
+  handleContestClaim: () => Promise<void>;
   packResult: { location: string; cardIds: number[] } | null;
   hasGameInProgress: boolean;
 
@@ -168,19 +191,41 @@ export function useGame(wsUrl: string): UseGameReturn {
       if (!saved?.onChainGameId) { if (!cancelled) setStuckGame(null); return; }
       try {
         const { pxe } = await import('../aztec/pxe');
-        const status = await pxe.readGameStatus(aztec.accountAddress!, saved.onChainGameId);
+        const info = await pxe.readAbandonmentInfo(aztec.accountAddress!, saved.onChainGameId);
         if (cancelled) return;
-        if (status !== 2) { setStuckGame(null); return; }
+
+        // 5 = claimed as abandoned. Somebody has moved on our game.
+        if (info.status === 5) {
+          const mine = info.claimPlayer === aztec.accountAddress;
+          const open = nowSeconds() - info.claimAt < DISPUTE_SECONDS;
+          setStuckGame({
+            onChainGameId: saved.onChainGameId,
+            kind: !mine && open ? 'contestable' : 'claimed-by-opponent',
+          });
+          return;
+        }
+        if (info.status !== 2) { setStuckGame(null); return; }
+
         // A COMPLETE game is not claimable and never will be:
-        // claim_abandoned_game asserts n <= 8, and settle_game binds the caller
-        // to the winner. Offering a "recover" button here would spend a proof
-        // and a transaction on a certain revert — the same mistake the bot's
-        // sweep made for hours. Say what is true instead.
+        // claim_abandoned_game requires the game to be unfinished for anyone
+        // but the winner, and settle_game binds the caller to the winner.
         const moves = saved.collectedMoveProofs?.length ?? 0;
-        setStuckGame({
-          onChainGameId: saved.onChainGameId,
-          kind: moves >= TOTAL_MOVES ? 'awaiting-winner' : 'claimable',
-        });
+        if (moves >= TOTAL_MOVES) {
+          setStuckGame({ onChainGameId: saved.onChainGameId, kind: 'awaiting-winner' });
+          return;
+        }
+
+        // And the contract will not accept a claim before its own bar, so do
+        // not offer one. Showing the wait is honest; a button that reverts is
+        // not, and this file has already made that mistake once.
+        const age = nowSeconds() - info.activeAt;
+        setStuckGame(age >= MIN_ABANDON_SECONDS
+          ? { onChainGameId: saved.onChainGameId, kind: 'claimable' }
+          : {
+              onChainGameId: saved.onChainGameId,
+              kind: 'too-soon',
+              waitSeconds: MIN_ABANDON_SECONDS - age,
+            });
       } catch (err) {
         // A read failure must not invent a stuck game, nor hide a real one —
         // leave whatever we last knew and try again next time we are here.
@@ -219,6 +264,21 @@ export function useGame(wsUrl: string): UseGameReturn {
     }
   }, [storage.loadGame, isRecovering, stuckGame?.kind, play.restoreFromSave,
       session.restoreFromSave, settlement.handleAbandonedGame]);
+
+  /** Object to a standing claim: "I am still here." */
+  const handleContestClaim = useCallback(async () => {
+    if (stuckGame?.kind !== 'contestable' || !aztec.accountAddress || isRecovering) return;
+    setIsRecovering(true);
+    try {
+      const { pxe } = await import('../aztec/pxe');
+      await pxe.sendContestAbandonment(aztec.accountAddress, stuckGame.onChainGameId);
+      setStuckGame(null);
+    } catch (err) {
+      console.error('[useGame] contesting the claim failed:', err);
+    } finally {
+      setIsRecovering(false);
+    }
+  }, [stuckGame, aztec.accountAddress, isRecovering]);
 
   // --- Effects ---
 
@@ -388,7 +448,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     collectedMoveProofs: play.collectedMoveProofs,
     settleTxHash: settlement.settleTxHash,
     cardIds, packResult, hasGameInProgress,
-    stuckGame, isRecovering, handleRecoverStuckGame,
+    stuckGame, isRecovering, handleRecoverStuckGame, handleContestClaim,
     opponentSettled: settlement.opponentSettled,
     takenCardId: settlement.takenCardId,
     isClaimingAbandoned: settlement.isClaimingAbandoned,

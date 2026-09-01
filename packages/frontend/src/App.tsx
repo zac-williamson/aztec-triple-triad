@@ -118,6 +118,7 @@ function AppInner() {
           stuckGame={game.stuckGame}
           isRecovering={game.isRecovering}
           onRecoverStuckGame={() => { void game.handleRecoverStuckGame(); }}
+          onContestClaim={() => { void game.handleContestClaim(); }}
           onPlay={game.handlePlay}
           onTutorial={handleTutorial}
           onPractice={() => setPracticeScreen(true)}

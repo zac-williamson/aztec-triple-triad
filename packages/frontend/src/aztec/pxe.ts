@@ -208,6 +208,48 @@ function makeOps(schedule: Schedule) {
         return ids;
       }),
 
+    /**
+     * Everything the UI needs to decide what it may honestly offer for a game
+     * that still holds cards: how long it has been active, whether a claim is
+     * standing, who filed it and when.
+     *
+     * Read together because a button offered on stale facts is a button that
+     * reverts, and that has already happened here more than once.
+     */
+    readAbandonmentInfo: (
+      owner: string,
+      gameId: string,
+    ): Promise<{ status: number; activeAt: number; claimAt: number; claimPlayer: string }> =>
+      schedule(async () => {
+        const { gameContract, Fr, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromStringUnsafe(owner);
+        const id = toFr(Fr, gameId);
+        const [status, activeAt, claimAt, claimPlayer] = await Promise.all([
+          gameContract.methods.get_game_status(id).simulate({ from: addr }),
+          gameContract.methods.get_game_active_at(id).simulate({ from: addr }),
+          gameContract.methods.get_game_claim_at(id).simulate({ from: addr }),
+          gameContract.methods.get_game_claim_player(id).simulate({ from: addr }),
+        ]);
+        return {
+          status: Number((status as any).result),
+          activeAt: Number((activeAt as any).result),
+          claimAt: Number((claimAt as any).result),
+          claimPlayer: String((claimPlayer as any).result),
+        };
+      }),
+
+    /** Contest a standing abandonment claim: "I am still here." */
+    sendContestAbandonment: (owner: string, gameId: string): Promise<string> =>
+      schedule(async () => {
+        const { gameContract, Fr, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromStringUnsafe(owner);
+        const sent = await gameContract.methods
+          .contest_abandonment(toFr(Fr, gameId))
+          .send({ from: addr })
+          .wait();
+        return String((sent as any).txHash);
+      }),
+
     /** Card-pack preview: the IDs a purchase would mint + the note nonce that
      *  derives their randomness (captured BEFORE the purchase advances it). */
     previewCardPack: (owner: string, count: number): Promise<{ cardIds: number[]; nonce: string }> =>

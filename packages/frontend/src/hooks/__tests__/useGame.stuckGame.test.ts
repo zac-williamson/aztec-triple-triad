@@ -15,7 +15,8 @@ import { renderHook, waitFor, act } from '@testing-library/react';
 
 const hoisted = vi.hoisted(() => ({
   loadGameMock: vi.fn(),
-  readGameStatusMock: vi.fn(),
+  readInfoMock: vi.fn(),
+  contestMock: vi.fn().mockResolvedValue('0xtx'),
   handleAbandonedGameMock: vi.fn().mockResolvedValue(undefined),
   restorePlayMock: vi.fn(),
   restoreSessionMock: vi.fn(),
@@ -54,7 +55,10 @@ const storageStub = {
 vi.mock('../useGameStorage', () => ({ useGameStorage: () => storageStub }));
 
 vi.mock('../../aztec/pxe', () => ({
-  pxe: { readGameStatus: hoisted.readGameStatusMock },
+  pxe: {
+    readAbandonmentInfo: hoisted.readInfoMock,
+    sendContestAbandonment: hoisted.contestMock,
+  },
   runPxeTx: vi.fn(), warmupPxe: vi.fn(),
 }));
 
@@ -89,6 +93,8 @@ vi.mock('../useGameSettlement', () => ({
   }),
 }));
 
+const nowS = () => Math.floor(Date.now() / 1000);
+
 const SAVED = {
   gameId: 'g1', playerNumber: 1 as const, selectedCardIds: [1, 2, 3, 4, 5],
   onChainGameId: '0xSTUCK',
@@ -100,7 +106,9 @@ describe('cards stranded in an unfinished game', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     hoisted.loadGameMock.mockReturnValue(SAVED);
-    hoisted.readGameStatusMock.mockResolvedValue(2);
+    hoisted.readInfoMock.mockResolvedValue({
+      status: 2, activeAt: nowS() - 5400, claimAt: 0, claimPlayer: '0x0',
+    });
     ({ useGame } = await import('../useGame'));
   });
 
@@ -118,6 +126,9 @@ describe('cards stranded in an unfinished game', () => {
     hoisted.loadGameMock.mockReturnValue({
       ...SAVED, collectedMoveProofs: Array(9).fill({ proof: 'p', publicInputs: [] }),
     });
+    hoisted.readInfoMock.mockResolvedValue({
+      status: 2, activeAt: nowS() - 5400, claimAt: 0, claimPlayer: '0x0',
+    });
     const { result } = renderHook(() => useGame('ws://test'));
     await waitFor(() => expect(result.current.stuckGame?.kind).toBe('awaiting-winner'));
 
@@ -127,9 +138,11 @@ describe('cards stranded in an unfinished game', () => {
   });
 
   it('says nothing about a game that already settled', async () => {
-    hoisted.readGameStatusMock.mockResolvedValue(3);   // 3 = SETTLED
+    hoisted.readInfoMock.mockResolvedValue({
+      status: 3, activeAt: nowS() - 5400, claimAt: 0, claimPlayer: '0x0',
+    });   // 3 = SETTLED
     const { result } = renderHook(() => useGame('ws://test'));
-    await waitFor(() => expect(hoisted.readGameStatusMock).toHaveBeenCalled());
+    await waitFor(() => expect(hoisted.readInfoMock).toHaveBeenCalled());
     expect(result.current.stuckGame).toBeNull();
   });
 
@@ -137,14 +150,58 @@ describe('cards stranded in an unfinished game', () => {
     hoisted.loadGameMock.mockReturnValue(null);
     const { result } = renderHook(() => useGame('ws://test'));
     await waitFor(() => expect(result.current.stuckGame).toBeNull());
-    expect(hoisted.readGameStatusMock).not.toHaveBeenCalled();
+    expect(hoisted.readInfoMock).not.toHaveBeenCalled();
   });
 
   it('does not invent a stuck game when the chain read fails', async () => {
-    hoisted.readGameStatusMock.mockRejectedValue(new Error('node unreachable'));
+    hoisted.readInfoMock.mockRejectedValue(new Error('node unreachable'));
     const { result } = renderHook(() => useGame('ws://test'));
-    await waitFor(() => expect(hoisted.readGameStatusMock).toHaveBeenCalled());
+    await waitFor(() => expect(hoisted.readInfoMock).toHaveBeenCalled());
     expect(result.current.stuckGame).toBeNull();
+  });
+
+  it('shows the wait instead of a button the contract would reject', async () => {
+    // The contract will not accept a claim inside MIN_ABANDON_SECONDS, so
+    // offering one would revert. Saying how long is honest; a dead button is
+    // the mistake this codebase has made three times.
+    hoisted.readInfoMock.mockResolvedValue({
+      status: 2, activeAt: nowS() - 600, claimAt: 0, claimPlayer: '0x0',
+    });
+    const { result } = renderHook(() => useGame('ws://test'));
+    await waitFor(() => expect(result.current.stuckGame?.kind).toBe('too-soon'));
+    expect(result.current.stuckGame?.waitSeconds).toBeGreaterThan(0);
+
+    await act(async () => { await result.current.handleRecoverStuckGame(); });
+    expect(hoisted.handleAbandonedGameMock).not.toHaveBeenCalled();
+  });
+
+  it('offers a contest while the opponent\'s claim is still open', async () => {
+    hoisted.readInfoMock.mockResolvedValue({
+      status: 5, activeAt: nowS() - 7200, claimAt: nowS() - 60, claimPlayer: '0xOPPONENT',
+    });
+    const { result } = renderHook(() => useGame('ws://test'));
+    await waitFor(() => expect(result.current.stuckGame?.kind).toBe('contestable'));
+
+    await act(async () => { await result.current.handleContestClaim(); });
+    expect(hoisted.contestMock).toHaveBeenCalledWith('0xACCOUNT', '0xSTUCK');
+  });
+
+  it('does not offer a contest once the window has closed', async () => {
+    hoisted.readInfoMock.mockResolvedValue({
+      status: 5, activeAt: nowS() - 7200, claimAt: nowS() - 3600, claimPlayer: '0xOPPONENT',
+    });
+    const { result } = renderHook(() => useGame('ws://test'));
+    await waitFor(() => expect(result.current.stuckGame?.kind).toBe('claimed-by-opponent'));
+    await act(async () => { await result.current.handleContestClaim(); });
+    expect(hoisted.contestMock).not.toHaveBeenCalled();
+  });
+
+  it('does not offer to contest our OWN claim', async () => {
+    hoisted.readInfoMock.mockResolvedValue({
+      status: 5, activeAt: nowS() - 7200, claimAt: nowS() - 60, claimPlayer: '0xACCOUNT',
+    });
+    const { result } = renderHook(() => useGame('ws://test'));
+    await waitFor(() => expect(result.current.stuckGame?.kind).toBe('claimed-by-opponent'));
   });
 
   it('restores the saved proofs before claiming — the claim needs them', async () => {

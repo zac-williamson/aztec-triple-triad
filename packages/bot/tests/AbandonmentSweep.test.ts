@@ -55,12 +55,17 @@ function record(over: Partial<GameRecord> = {}): GameRecord {
 function harness(status: number, over: Record<string, any> = {}) {
   const calls: string[] = [];
   const journal = new GameJournal(dir);
+  // A successful claim moves the game to 5 (abandoned_claimed), and the sweep
+  // re-reads the status before settling so that a CONTEST — which puts it back
+  // to 2 — is noticed rather than spent a proof on. A mock that answers 2
+  // forever would make every settle look contested.
+  let claimed = false;
   const chain = {
     address: '0xbot',
     nodeClient: { getBlockNumber: async () => 100 },
     pxe: {
-      readGameStatus: over.readGameStatus ?? (async () => status),
-      sendClaimAbandonedGame: async () => { calls.push('claim'); return '0xclaimtx'; },
+      readGameStatus: over.readGameStatus ?? (async () => (claimed ? 5 : status)),
+      sendClaimAbandonedGame: async () => { claimed = true; calls.push('claim'); return '0xclaimtx'; },
       sendSettleAbandonedGame: async () => { calls.push('settle'); return '0xsettletx'; },
       importCardNotes: async (_o: string, _t: string, notes: any[]) => {
         calls.push(`import:${notes.map(n => n.tokenId).join(',')}`);
@@ -211,8 +216,16 @@ describe('AbandonmentSweep', () => {
   it('does not run concurrently with itself', async () => {
     let release!: () => void;
     const gate = new Promise<void>(r => { release = r; });
+    // Two status reads per game: once to see it is still active, and once
+    // after the claim to check nobody contested it. Answering "active" both
+    // times would read as a contest and skip the settle.
+    let reads = 0;
     const h = harness(GAME_STATUS.active, {
-      readGameStatus: async () => { await gate; return GAME_STATUS.active; },
+      readGameStatus: async () => {
+        await gate;
+        reads += 1;
+        return reads === 1 ? GAME_STATUS.active : 5;
+      },
     });
     h.journal.write(record());
 
@@ -460,6 +473,7 @@ describe('the card count after a recovery', () => {
     // the list it comes from. Ten cards came back on production and the count
     // did not move — a stale count hides a real shortage just as easily.
     let invalidated = 0;
+    let claimed = false;   // a claim moves the game to status 5
     const rec = {
       onChainGameId: '0xabc', relayGameId: 'g', botAddress: '0xbot', opponentAddress: '0xopp',
       botIsPlayer1: false, cardIds: [1, 2, 3, 4, 5], randomness: ['0x1'], blindingFactor: '0xb',
@@ -477,8 +491,8 @@ describe('the card count after a recovery', () => {
         address: '0xbot', nodeClient: {},
         invalidateCards: () => { invalidated += 1; },
         pxe: {
-          readGameStatus: async () => 2,
-          sendClaimAbandonedGame: async () => '0x' + 'c'.repeat(64),
+          readGameStatus: async () => (claimed ? 5 : 2),
+          sendClaimAbandonedGame: async () => { claimed = true; return '0x' + 'c'.repeat(64); },
           sendSettleAbandonedGame: async () => '0xdead',
           importCardNotes: async () => [1, 2, 3, 4, 5],
         },

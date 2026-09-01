@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { StuckGame } from '../hooks/useGame';
 import './MainMenu.css';
 
 interface MainMenuProps {
@@ -10,9 +11,10 @@ interface MainMenuProps {
   accountAddress: string | null;
   hasGameInProgress: boolean;
   /** A game still holding this player's cards on-chain, if any. */
-  stuckGame: { onChainGameId: string; kind: 'claimable' | 'awaiting-winner' } | null;
+  stuckGame: StuckGame | null;
   isRecovering: boolean;
   onRecoverStuckGame: () => void;
+  onContestClaim: () => void;
   onPlay: () => void;
   onTutorial: () => void;
   onPractice: () => void;
@@ -30,6 +32,7 @@ export function MainMenu({
   stuckGame,
   isRecovering,
   onRecoverStuckGame,
+  onContestClaim,
   onPlay,
   onTutorial,
   onPractice,
@@ -157,6 +160,56 @@ export function MainMenu({
           <p className="main-menu__stuck-note">
             Only the winner can settle a completed game. If that was you, reopen
             it from Play; otherwise the cards are released when they do.
+          </p>
+        </div>
+      )}
+
+      {/* The contract will not accept a claim yet, so we do not offer one —
+          we say how long. */}
+      {stuckGame?.kind === 'too-soon' && (
+        <div className="main-menu__stuck" data-testid="stuck-game-too-soon">
+          <p className="main-menu__stuck-text">
+            Five of your cards are committed to a game that has not finished.
+          </p>
+          <p className="main-menu__stuck-note">
+            You can recover them if your opponent does not come back. That
+            becomes available about {Math.max(1, Math.round((stuckGame.waitSeconds ?? 0) / 60))}
+            {' '}minutes from now — the wait is what stops a claim being used to
+            cut a live game short.
+          </p>
+        </div>
+      )}
+
+      {/* The other half of the dispute window: somebody has claimed our game
+          as abandoned and we are here to say otherwise. */}
+      {stuckGame?.kind === 'contestable' && (
+        <div className="main-menu__stuck" data-testid="stuck-game-contestable">
+          <p className="main-menu__stuck-text">
+            Your opponent has claimed your last game was abandoned.
+          </p>
+          <button
+            className="main-menu__btn main-menu__btn--recover"
+            data-testid="contest-claim"
+            onClick={onContestClaim}
+            disabled={isRecovering || !connected}
+          >
+            {isRecovering ? 'Contesting…' : "I'm Still Here — Contest"}
+          </button>
+          <p className="main-menu__stuck-note">
+            Contesting cancels their claim and puts the game back in play. You
+            can do this once per game, so finish the game afterwards.
+          </p>
+        </div>
+      )}
+
+      {stuckGame?.kind === 'claimed-by-opponent' && (
+        <div className="main-menu__stuck" data-testid="stuck-game-claimed">
+          <p className="main-menu__stuck-text">
+            Your last game was claimed as abandoned and the window to object has closed.
+          </p>
+          <p className="main-menu__stuck-note">
+            Your own five cards are still yours to recover — they are returned
+            per player, so nobody took them.
           </p>
         </div>
       )}
