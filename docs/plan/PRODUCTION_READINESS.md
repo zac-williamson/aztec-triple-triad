@@ -95,6 +95,20 @@ The 180s stays — proving does take time, and player-vs-player needs the
 headroom — but it was never the bug. Two runs of this check are what separated
 the two.
 
+**Fixed and verified on production**, with the race landing the wrong way both
+times, which is what makes it proof rather than luck:
+
+    23:58:01  game over: player1 (bot was player2)
+    23:58:01  move proof 7 submitted (after game over)
+    00:00:06  imported 4 card(s) returned by the winner
+
+    prod-smoke: 2 passed, 0 failed of 2
+
+Both runs were WINS — the settling side, the one that used to strand — and both
+settled. Under the old code those two games would have cost ten cards. The
+`(after game over)` marker exists so the fixed branch is visible in the log
+rather than inferred from timestamps.
+
 It also cried wolf once, which was worse than useless: it decided pass/fail by
 grepping for settlement wording that the losing path never prints, and reported
 a perfect game as a failure. prod-play now prints one fixed-shape verdict line
