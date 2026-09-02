@@ -365,6 +365,34 @@ Two traps, both hit for real:
 
 ## Operational runbook
 
+### Redeploying a contract instance
+
+One command, because doing it by hand cost two outages in a single night:
+
+```bash
+./deploy/redeploy-instance.sh              # contracts, site, box, bot cards
+./deploy/redeploy-instance.sh --no-cards   # skip the ~25 min re-mint
+```
+
+It compiles, deploys, fixes the local `VITE_WS_URL` the deploy script writes,
+commits and pushes the artifacts, syncs Vercel, repoints and rebuilds the box,
+re-mints the bot's stock, and verifies at the end.
+
+Two steps in it exist because their absence broke production:
+
+- **`git pull` on the box.** Without it the bot runs a contract artifact whose
+  class id no longer exists and fails EVERY join — the arena looks up and
+  matches nobody.
+- **Substituting `__REPO_DIR__` in the systemd units.** They are templates. A
+  raw `cp` installs the placeholder literally and the unit will not load; that
+  is how the health probe went down.
+
+**Do not deploy while a game is in progress.** A deploy replaces the
+content-hashed chunks an open tab is still using, its next lazy import 404s,
+and the proof it needed silently never arrives — with five cards committed
+behind it. The app now detects this and offers a reload, but the game in flight
+is still lost.
+
 ### Before announcing a release: play a real game
 
 Nothing about a deploy is proven by it building. Run the production check
