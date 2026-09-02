@@ -121,6 +121,16 @@ function httpGet(path: string): Promise<{ status: number; body: any }> {
   });
 }
 
+/** Like httpGet, but keeps the response headers — CORS lives there. */
+function httpGetRaw(path: string): Promise<{ status: number; headers: Record<string, any> }> {
+  return new Promise((resolve, reject) => {
+    http.get(`${getHttpUrl()}${path}`, (res) => {
+      res.resume();
+      res.on('end', () => resolve({ status: res.statusCode!, headers: res.headers as any }));
+    }).on('error', reject);
+  });
+}
+
 beforeEach(async () => {
   port = 3100 + Math.floor(Math.random() * 900);
   server = createServer({ port, sessionHandshakeMs: 50 }); // Fast handshake for tests
@@ -154,6 +164,13 @@ describe('HTTP REST endpoints', () => {
       expect(status).toBe(503);
       expect(body.botHealthy).toBe(false);
       expect(body.status).toBe('bot-unreachable');
+    });
+
+    it('can be read from anywhere — a dashboard is the point', async () => {
+      // Every other route is origin-allowlisted. This one cannot be, or it
+      // cannot be watched from a phone or a hosted checker.
+      const { headers } = await httpGetRaw('/arena-health');
+      expect(headers['access-control-allow-origin']).toBe('*');
     });
 
     it('never leaks anything a stranger should not have', async () => {

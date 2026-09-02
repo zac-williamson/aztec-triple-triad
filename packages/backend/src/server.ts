@@ -205,6 +205,12 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     // the arena playable?" and nothing else: no addresses, no card ids, no
     // errors that might carry them. Any uptime service can watch it.
     if (req.method === 'GET' && req.url === '/arena-health') {
+      // Readable from anywhere, unlike every other route here. A monitoring
+      // endpoint that only an allowlisted origin can read cannot be watched
+      // from a dashboard, a phone, or a hosted uptime service — which is the
+      // entire reason it exists. Safe because the payload is deliberately
+      // redacted (see below) and the route is read-only.
+      res.setHeader('Access-Control-Allow-Origin', '*');
       try {
         const upstream = await fetch(`http://127.0.0.1:${botHealthPort}/health`, {
           signal: AbortSignal.timeout(3000),
