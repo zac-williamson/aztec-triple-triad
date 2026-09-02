@@ -228,14 +228,16 @@ export class AbandonmentSweep {
       }
       return;
     }
-    if (rec.moveProofs.length >= 9) {
-      this.stats.skipped += 1;
-      // A complete game is settled by its winner, not claimed. If the winner
-      // never settles, the cards wait for them — there is no abandonment to
-      // claim, because nobody abandoned anything.
-      this.log(`sweep: ${id} complete (9 moves) — settled by its winner, not claimable`);
-      return;
-    }
+    // A COMPLETE game used to be refused here — "settled by its winner, not
+    // claimed" — and that was true of the old contract, which capped a claim at
+    // eight moves. It left the cards of anyone whose opponent won and then
+    // vanished locked with no route out for either side, because settle_game
+    // binds the caller to the winning side.
+    //
+    // The contract now accepts n == 9. A finished game owes nobody a move, so
+    // the turn-parity rule does not apply and either player may claim; each
+    // recovers only their own stake, so the winner who walked away forfeits
+    // nothing but the card they never came back for.
     // ZERO move proofs is claimable: the opponent abandoned between our join and
     // their first move. The bot is always player 2, which is exactly who the
     // contract permits to make a zero-move claim.
@@ -280,9 +282,12 @@ export class AbandonmentSweep {
       return;
     }
 
-    const held = Math.min(rec.moveProofs.length, 8);
+    // A complete transcript claims at nine: parity is irrelevant to a finished
+    // game, so there is nothing to trim to.
+    const complete = rec.moveProofs.length >= 9;
+    const held = complete ? 9 : Math.min(rec.moveProofs.length, 8);
     const wantOdd = rec.botIsPlayer1;   // p1 claims on p2's turn: odd n
-    const n = (held % 2 === (wantOdd ? 1 : 0)) ? held : held - 1;
+    const n = complete ? 9 : ((held % 2 === (wantOdd ? 1 : 0)) ? held : held - 1);
     if (n < 0) {
       // Only reachable as player 1 with no moves at all, which the contract
       // reserves for player 2 — we are the one who owes the first move.
@@ -300,6 +305,7 @@ export class AbandonmentSweep {
       ? rec
       : { ...rec, moveProofs: rec.moveProofs.slice(0, n) };
     this.log(`sweep: ${id} abandoned (${Math.round(age / 60_000)}min, ${rec.moveProofs.length}/9 moves)` +
+      (complete ? ' — complete but never settled by its winner' : '') +
       (n === rec.moveProofs.length ? '' : ` — claiming at the first ${n}, for the turn parity`) +
       ' — claiming');
     await this.claim(trimmed);

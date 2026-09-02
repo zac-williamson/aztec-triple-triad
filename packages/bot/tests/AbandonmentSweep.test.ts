@@ -175,14 +175,23 @@ describe('AbandonmentSweep', () => {
       .toMatchObject({ myCardIds: [1, 2, 3, 4, 5] });
   });
 
-  it('refuses a full 9-move chain — that is a normal settlement, not an abandonment', async () => {
+  it('recovers a full 9-move game whose winner never settled', async () => {
+    // This used to be refused as "a normal settlement, not an abandonment",
+    // which was right about the OLD contract: a claim capped at eight moves,
+    // and settle_game binds the caller to the winning side. So when a winner
+    // closed their tab on the result screen, both hands stayed locked with no
+    // route out for anybody.
+    //
+    // The contract accepts n == 9 now. A finished game owes nobody a move, so
+    // the turn rule does not apply and either side may claim; recovery is
+    // per-player, so each gets back exactly its own stake.
     const h = harness(GAME_STATUS.active);
     h.journal.write(record({ moveProofs: Array(9).fill(PROOF) }));
 
     const stats = await h.sweep.run();
 
-    expect(h.calls).toEqual([]);
-    expect(stats.skipped).toBe(1);
+    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5']);
+    expect(stats.recovered).toBe(1);
   });
 
   it('never takes an opponent card, however much they played', async () => {
@@ -568,6 +577,20 @@ describe('claims only when the chain would accept one', () => {
     });
     return { sweep, logs, claims };
   }
+
+  it('claims a COMPLETE game whose winner never settled', async () => {
+    // This used to be refused outright — "settled by its winner, not claimed" —
+    // which was true of the old contract, and left both sides locked out when
+    // the winner closed their tab on the result screen. The contract takes
+    // n == 9 now: a finished game owes nobody a move, so either player may
+    // claim, and each recovers only their own stake.
+    const h = sweepFor(9);
+    await h.sweep.run();
+    expect(h.claims, 'a finished game nobody settled is exactly what this is for').toHaveLength(1);
+    expect(h.logs.join(' ')).toMatch(/complete but never settled/);
+    // Nine, not trimmed: parity is irrelevant once the game is over.
+    expect(h.logs.join(' ')).not.toMatch(/claiming at the first/);
+  });
 
   it('claims the largest even prefix when the count is odd', async () => {
     // 7 proofs as player 2: claiming at 7 is a certain revert, so claim at 6.
