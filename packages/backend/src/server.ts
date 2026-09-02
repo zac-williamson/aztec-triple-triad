@@ -211,11 +211,16 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       // entire reason it exists. Safe because the payload is deliberately
       // redacted (see below) and the route is read-only.
       res.setHeader('Access-Control-Allow-Origin', '*');
+      // Nothing here is worth a stale second. A dashboard that polls this and
+      // gets a cached body reports the past as the present, which is the exact
+      // failure this endpoint exists to end.
+      res.setHeader('Cache-Control', 'no-store');
       try {
         const upstream = await fetch(`http://127.0.0.1:${botHealthPort}/health`, {
           signal: AbortSignal.timeout(3000),
         });
-        const bot = await upstream.json() as Record<string, unknown>;
+        const bot = await upstream.json() as Record<string, any>;
+        const game = bot.game as Record<string, any> | null;
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           status: 'ok',
@@ -226,12 +231,61 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
           totalFailures: bot.totalFailures,
           // The message can name a game or an address; the fact of it cannot.
           hasError: bot.lastError !== null && bot.lastError !== undefined,
+          uptimeMs: bot.uptimeMs,
+          // Stamped by the relay, not the reader's clock: a dashboard can only
+          // honestly say "12s old" if the server says when it answered.
+          generatedAt: Date.now(),
+          record: {
+            gamesPlayed: bot.gamesPlayed,
+            wins: bot.wins,
+            losses: bot.losses,
+            draws: bot.draws,
+            settlements: bot.settlements,
+            abandonedGames: bot.abandonedGames,
+            cardsUnimported: bot.cardsUnimported,
+          },
+          failures: {
+            join: bot.joinFailures,
+            move: bot.moveFailures,
+            commit: bot.commitFailures,
+            proof: bot.proofFailures,
+            settle: bot.settleFailures,
+          },
+          // The live game, minus the relay session id — that one names a
+          // socket, and on-chain ids are public chain state anyone can read.
+          game: game === null || game === undefined ? null : {
+            onChainGameId: game.onChainGameId,
+            playerNumber: game.playerNumber,
+            committed: game.committed,
+            moveProofs: game.moveProofs,
+            handProofs: (game.myHandProof ? 1 : 0) + (game.opponentHandProof ? 1 : 0),
+            oweAMove: game.oweAMove,
+            opponentGoneFor: game.opponentGoneFor,
+            ageSeconds: game.ageSeconds,
+            settling: game.settling,
+          },
+          // Every game still holding our cards, and why each one is not moving.
+          journal: Array.isArray(bot.journal) ? bot.journal : [],
+          relay: {
+            connectedClients: clients.size,
+            queueLength: await gameManager.getQueueLength(),
+            activeGames: await gameManager.getGameCount(),
+          },
         }));
       } catch {
         // The bot being unreachable IS the answer, and a 503 is what an uptime
         // service acts on.
         res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'bot-unreachable', botHealthy: false }));
+        res.end(JSON.stringify({
+          status: 'bot-unreachable',
+          botHealthy: false,
+          generatedAt: Date.now(),
+          relay: {
+            connectedClients: clients.size,
+            queueLength: await gameManager.getQueueLength(),
+            activeGames: await gameManager.getGameCount(),
+          },
+        }));
       }
       return;
     }

@@ -199,6 +199,138 @@ describe('HTTP REST endpoints', () => {
   });
 });
 
+/**
+ * The endpoint with a bot actually answering behind it.
+ *
+ * The rest of the suite runs with no bot listening, which only ever exercises
+ * the 503 branch — so the passthrough could drop every interesting field and
+ * stay green. It did: for a while this reported seven booleans and counters,
+ * none of which could answer "what is the bot doing right now", and answering
+ * that meant SSHing to the box and grepping a journal.
+ */
+describe('/arena-health with a bot behind it', () => {
+  let bot: http.Server;
+  let botPort: number;
+  let relay: CardGameServer;
+  let relayPort: number;
+  let previousEnv: string | undefined;
+
+  // Everything the bot's own /health serves, so the test fails if the relay
+  // stops forwarding a field rather than silently thinning the payload.
+  const BOT_HEALTH = {
+    healthy: true,
+    uptimeMs: 987_000,
+    state: 'playing',
+    spendableCards: 952,
+    cardsStranded: 0,
+    cardsUnimported: 0,
+    totalFailures: 0,
+    lastError: null,
+    gamesPlayed: 12, wins: 7, losses: 4, draws: 1,
+    settlements: 12, abandonedGames: 0,
+    joinFailures: 0, moveFailures: 0, commitFailures: 0,
+    proofFailures: 0, settleFailures: 0,
+    game: {
+      onChainGameId: '0x1234abcd',
+      relayGameId: 'relay-session-should-not-escape',
+      playerNumber: 2,
+      committed: true,
+      moveProofs: 5,
+      myHandProof: true,
+      opponentHandProof: true,
+      oweAMove: false,
+      opponentGoneFor: null,
+      ageSeconds: 143,
+      settling: false,
+    },
+    journal: [
+      { onChainGameId: '0xdeadbeef', moveProofs: 9, settled: false, ageSeconds: 900, blockedBy: 'too young (45min to go)' },
+    ],
+  };
+
+  beforeEach(async () => {
+    bot = http.createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(BOT_HEALTH));
+    });
+    await new Promise<void>(resolve => bot.listen(0, resolve));
+    botPort = (bot.address() as any).port;
+
+    previousEnv = process.env.ARENA_BOT_HEALTH_PORT;
+    process.env.ARENA_BOT_HEALTH_PORT = String(botPort);
+    relayPort = 4100 + Math.floor(Math.random() * 800);
+    relay = createServer({ port: relayPort, sessionHandshakeMs: 50 });
+    await new Promise<void>(resolve => relay.httpServer.listen(relayPort, resolve));
+  });
+
+  afterEach(async () => {
+    if (previousEnv === undefined) delete process.env.ARENA_BOT_HEALTH_PORT;
+    else process.env.ARENA_BOT_HEALTH_PORT = previousEnv;
+    await relay.close();
+    bot.closeAllConnections?.();
+    await new Promise<void>(resolve => bot.close(() => resolve()));
+  });
+
+  const read = (): Promise<any> => new Promise((resolve, reject) => {
+    http.get(`http://localhost:${relayPort}/arena-health`, res => {
+      let body = '';
+      res.on('data', c => { body += c; });
+      res.on('end', () => resolve(JSON.parse(body)));
+    }).on('error', reject);
+  });
+
+  it('says what the bot is doing right now, not just whether it is alive', async () => {
+    const body = await read();
+    expect(body.botState).toBe('playing');
+    expect(body.game).not.toBeNull();
+    expect(body.game.onChainGameId).toBe('0x1234abcd');
+    expect(body.game.moveProofs).toBe(5);
+    // Both hands proven collapses to a count — the fact, not the proofs.
+    expect(body.game.handProofs).toBe(2);
+    expect(body.game.ageSeconds).toBe(143);
+    expect(body.game.oweAMove).toBe(false);
+  });
+
+  it('lists every game still holding cards, and why each is stuck', async () => {
+    const body = await read();
+    expect(body.journal).toHaveLength(1);
+    expect(body.journal[0].onChainGameId).toBe('0xdeadbeef');
+    expect(body.journal[0].blockedBy).toBe('too young (45min to go)');
+  });
+
+  it('carries the record, the failure breakdown and the relay counts', async () => {
+    const body = await read();
+    expect(body.record).toMatchObject({ gamesPlayed: 12, wins: 7, losses: 4, draws: 1, settlements: 12 });
+    expect(body.failures).toMatchObject({ join: 0, move: 0, commit: 0, proof: 0, settle: 0 });
+    expect(body.relay).toMatchObject({ connectedClients: 0, queueLength: 0, activeGames: 0 });
+  });
+
+  it('stamps the time it answered, so a reader can tell fresh from frozen', async () => {
+    // A dashboard cannot honestly show "12s old" off its own clock; a page left
+    // open on a dead connection would keep rendering the last body as current.
+    const before = Date.now();
+    const body = await read();
+    expect(body.generatedAt).toBeGreaterThanOrEqual(before);
+    expect(body.generatedAt).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('drops the relay session id — it names a socket, not a public game', async () => {
+    const body = await read();
+    expect(JSON.stringify(body)).not.toContain('relay-session-should-not-escape');
+  });
+
+  it('is never cached — a stale body reports the past as the present', async () => {
+    const headers = await new Promise<Record<string, any>>((resolve, reject) => {
+      http.get(`http://localhost:${relayPort}/arena-health`, res => {
+        res.resume();
+        res.on('end', () => resolve(res.headers as any));
+      }).on('error', reject);
+    });
+    expect(headers['cache-control']).toBe('no-store');
+    expect(headers['access-control-allow-origin']).toBe('*');
+  });
+});
+
 describe('WebSocket game flow', () => {
   it('should accept connections', async () => {
     const ws = await createClient();
