@@ -358,6 +358,16 @@ pub contract TripleTriadGame {
         // forfeits the prize card by never claiming it, which is the cost of
         // walking away, and MIN_ABANDON_SECONDS gives them a long window to
         // settle properly first.
+        //
+        // KNOWN TRADE-OFF, and the one to weigh in an audit. A loser can claim a
+        // completed game and thereby BLOCK the winner's settlement, because
+        // settle_game requires status 2. It costs the loser nothing and denies
+        // the winner their prize. Three things bound it: the game must be an
+        // hour old, which a winner settling normally never is; the winner may
+        // contest inside the dispute window and then settle properly; and the
+        // loser gains no card either, recovering only their own stake. The
+        // alternative — both hands locked forever when a winner closes their tab
+        // on the result screen — is strictly worse, and is what this replaced.
         assert(n <= 9, "num_valid_moves cannot exceed 9");
 
         // ===== 1. Verify both hand proofs =====
