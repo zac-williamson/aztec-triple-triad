@@ -68,8 +68,51 @@ export interface BotChainLike {
 
 export type BotState = 'idle' | 'queued' | 'playing';
 
+/**
+ * What the bot is doing RIGHT NOW, as opposed to what it has done.
+ *
+ * The counters below answer "has anything broken". They cannot answer "what is
+ * happening", and that gap cost real time: diagnosing a live game meant
+ * grepping the journal and the systemd log after the fact and inferring the
+ * state, which was wrong as often as right — seven proofs read as nine, a
+ * sweep assumed to have run that had not.
+ */
+export interface LiveGame {
+  onChainGameId: string | null;
+  relayGameId: string | null;
+  /** 1 or 2. The bot only ever joins, so in practice 2. */
+  playerNumber: 1 | 2 | null;
+  /** Cards are at stake from here on. */
+  committed: boolean;
+  /** Move proofs held for THIS game — the number a claim would be built from. */
+  moveProofs: number;
+  myHandProof: boolean;
+  opponentHandProof: boolean;
+  /** True when the board is waiting on us. Decides whether abandoning is safe. */
+  oweAMove: boolean;
+  /** Seconds since the opponent's socket dropped, or null while they are here. */
+  opponentGoneFor: number | null;
+  /** Seconds since the game started, so a stuck one is visible as a number. */
+  ageSeconds: number;
+  settling: boolean;
+}
+
+/** One outstanding game the sweep is still responsible for. */
+export interface JournalEntry {
+  onChainGameId: string;
+  moveProofs: number;
+  settled: boolean;
+  ageSeconds: number;
+  /** Why the sweep cannot act yet, or null when it can. */
+  blockedBy: string | null;
+}
+
 export interface BotStats {
   state: BotState;
+  /** The game in progress, or null when idle. */
+  game: LiveGame | null;
+  /** Games still holding our cards. The sweep's whole worklist. */
+  journal: JournalEntry[];
   gamesPlayed: number;
   wins: number;
   losses: number;
@@ -137,6 +180,8 @@ export interface ArenaBotDeps {
     write(rec: any): void;
     forget(id: string): void;
     markSettled(id: string): void;
+    /** Games still holding our cards. Optional so a stub journal stays cheap. */
+    outstanding?(): any[];
   };
   /** Proof generator. Required alongside `chain`; ignored without it. */
   proofs?: BotProofsLike;
@@ -212,6 +257,7 @@ export class ArenaBot {
   private readonly stats: BotStats = {
     state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
     joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0, settleFailures: 0, settlements: 0,
+    game: null, journal: [],
     lastOnChainGameId: null, abandonedGames: 0, cardsStranded: 0, spendableCards: -1,
     cardsUnimported: 0, feeJuice: '-1', lastError: null,
   };
@@ -234,7 +280,63 @@ export class ArenaBot {
   }
 
   getStats(): BotStats {
-    return { ...this.stats, state: this.state };
+    // Built fresh on every read, not accumulated: the point of these two fields
+    // is that they describe NOW. A cached snapshot of "what is happening" is
+    // the thing that misled me in the first place.
+    return {
+      ...this.stats,
+      state: this.state,
+      game: this.liveGame(),
+      journal: this.journalSummary(),
+    };
+  }
+
+  private liveGame(): LiveGame | null {
+    if (this.state !== 'playing' || !this.gameId) return null;
+    const secs = (since: number) => Math.max(0, Math.round((this.now() - since) / 1000));
+    return {
+      onChainGameId: this.onChainGameId,
+      relayGameId: this.gameId,
+      playerNumber: this.myPlayer === 'player1' ? 1 : this.myPlayer === 'player2' ? 2 : null,
+      committed: this.committed,
+      moveProofs: this.moveProofs.size,
+      myHandProof: this.myHandProof !== null,
+      opponentHandProof: this.opponentHandProof !== null,
+      oweAMove: this.oweAMove(),
+      opponentGoneFor: this.opponentGoneSince === null ? null : secs(this.opponentGoneSince),
+      ageSeconds: this.gameStartedAt > 0 ? secs(this.gameStartedAt) : 0,
+      settling: this.settling,
+    };
+  }
+
+  /**
+   * The sweep's worklist, and WHY each entry is not moving.
+   *
+   * "Why not yet" is the part that was invisible: a game sitting untouched
+   * looks identical whether it is too young, missing a hand proof, or waiting
+   * out a dispute window, and telling those apart meant reading the log.
+   */
+  private journalSummary(): JournalEntry[] {
+    if (!this.journal) return [];
+    const now = this.now();
+    const outstanding = this.journal.outstanding?.() ?? [];
+    return outstanding.map((rec: {
+      onChainGameId: string; committedAt: number; settled?: boolean;
+      myHandProof: unknown; opponentHandProof: unknown; moveProofs: unknown[];
+    }) => {
+      const ageSeconds = Math.max(0, Math.round((now - rec.committedAt) / 1000));
+      let blockedBy: string | null = null;
+      if (rec.settled) blockedBy = 'already settled';
+      else if (!rec.myHandProof || !rec.opponentHandProof) blockedBy = 'missing a hand proof — unrecoverable';
+      else if (ageSeconds < 3600) blockedBy = `too young (${Math.ceil((3600 - ageSeconds) / 60)}min to go)`;
+      return {
+        onChainGameId: rec.onChainGameId,
+        moveProofs: rec.moveProofs.length,
+        settled: rec.settled === true,
+        ageSeconds,
+        blockedBy,
+      };
+    });
   }
 
   start(): void {

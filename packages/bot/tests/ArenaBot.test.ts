@@ -1182,6 +1182,104 @@ describe('ArenaBot stuck-game watchdog', () => {
  * Every test here leaves `gameTimeoutMs` at its 30-minute default, so nothing
  * below can be the watchdog firing early.
  */
+/**
+ * What the bot is doing RIGHT NOW.
+ *
+ * The counters answer "has anything broken"; they cannot answer "what is
+ * happening". Without that, diagnosing a live game meant grepping the journal
+ * and the systemd log after the fact and inferring — which was wrong as often
+ * as right: seven move proofs read as nine, a sweep assumed to have run that
+ * had not, a game believed committed that never was.
+ */
+describe('ArenaBot live state', () => {
+  const mk = () => {
+    const socket = new FakeSocket();
+    const f = fakeChain();
+    const clock = { t: 1_000_000 };
+    const outstanding: any[] = [];
+    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 50 }), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, log: () => {}, now: () => clock.t,
+      journal: {
+        read: () => null, write: () => {}, forget: () => {}, markSettled: () => {},
+        outstanding: () => outstanding,
+      },
+    });
+    return { bot, socket, clock, outstanding };
+  };
+
+  it('reports no game when idle, rather than a stale one', async () => {
+    const h = mk();
+    h.bot.start();
+    h.socket.emit('open');
+    h.socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    h.socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.bot.getStats().game).toBeNull();
+    h.bot.stop();
+  });
+
+  it('shows the live game: whether cards are at stake and whose turn it is', async () => {
+    const h = mk();
+    h.bot.start();
+    h.socket.emit('open');
+    h.socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    h.socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(100);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
+    await vi.advanceTimersByTimeAsync(100);
+
+    const g = h.bot.getStats().game!;
+    expect(g.relayGameId).toBe('g1');
+    expect(g.playerNumber).toBe(2);
+    // The two facts that decide whether walking away is safe.
+    expect(typeof g.committed).toBe('boolean');
+    expect(typeof g.oweAMove).toBe('boolean');
+    expect(g.opponentGoneFor).toBeNull();
+    h.bot.stop();
+  });
+
+  it('counts how long the opponent has been gone', async () => {
+    const h = mk();
+    h.bot.start();
+    h.socket.emit('open');
+    h.socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    h.socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(100);
+    h.socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(h.socket);
+    await vi.advanceTimersByTimeAsync(100);
+    h.socket.deliver({ type: 'OPPONENT_DISCONNECTED', gameId: 'g1' });
+    h.clock.t += 30_000;
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(h.bot.getStats().game!.opponentGoneFor).toBe(30);
+    h.bot.stop();
+  });
+
+  it('says WHY each outstanding game is not moving', async () => {
+    // A game sitting untouched looks identical whether it is too young, missing
+    // a hand proof, or already settled. Telling those apart meant reading logs.
+    const h = mk();
+    h.outstanding.push(
+      { onChainGameId: '0xyoung', committedAt: 1_000_000 - 60_000, moveProofs: [1, 2],
+        myHandProof: {}, opponentHandProof: {} },
+      { onChainGameId: '0xnohands', committedAt: 1_000_000 - 7_200_000, moveProofs: [],
+        myHandProof: {}, opponentHandProof: null },
+      { onChainGameId: '0xready', committedAt: 1_000_000 - 7_200_000, moveProofs: [1, 2, 3, 4],
+        myHandProof: {}, opponentHandProof: {} },
+    );
+    const j = h.bot.getStats().journal;
+    expect(j.find(e => e.onChainGameId === '0xyoung')!.blockedBy).toMatch(/too young/);
+    expect(j.find(e => e.onChainGameId === '0xnohands')!.blockedBy).toMatch(/hand proof/);
+    expect(j.find(e => e.onChainGameId === '0xready')!.blockedBy).toBeNull();
+    expect(j.find(e => e.onChainGameId === '0xready')!.moveProofs).toBe(4);
+    h.bot.stop();
+  });
+});
+
 describe('ArenaBot opponent disconnect', () => {
   const mk = (over: Partial<ArenaBotConfig> = {}) => {
     const socket = new FakeSocket();
