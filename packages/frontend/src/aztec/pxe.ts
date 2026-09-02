@@ -238,16 +238,29 @@ function makeOps(schedule: Schedule) {
         };
       }),
 
-    /** Contest a standing abandonment claim: "I am still here." */
-    sendContestAbandonment: (owner: string, gameId: string): Promise<string> =>
+    /**
+     * Contest a standing abandonment claim: "I am still here."
+     *
+     * Same shape as every other send here, and for the same reasons: gas
+     * headroom, because a base fee that moves between simulate and send makes
+     * the tx fail; a bounded wait on a 15s poll, because the default receipt
+     * poll is fast enough to trip the node's per-IP rate cap, whose 429s the
+     * browser mis-reports as CORS errors. An unbounded `.wait()` also hangs the
+     * UI forever on a tx that never mines — and this one runs against a clock,
+     * since the dispute window closes.
+     */
+    sendContestAbandonment: (owner: string, gameId: string, opts: SendOpts): Promise<string> =>
       schedule(async () => {
         const { gameContract, Fr, AztecAddress } = await resolveContracts();
         const addr = AztecAddress.fromStringUnsafe(owner);
-        const sent = await gameContract.methods
+        const { receipt } = await gameContract.methods
           .contest_abandonment(toFr(Fr, gameId))
-          .send({ from: addr })
-          .wait();
-        return String((sent as any).txHash);
+          .send({
+            from: addr,
+            fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) },
+            wait: { timeout: opts.timeoutMs, interval: 15 },
+          });
+        return requireTxHash(receipt, 'contest_abandonment');
       }),
 
     /** Card-pack preview: the IDs a purchase would mint + the note nonce that

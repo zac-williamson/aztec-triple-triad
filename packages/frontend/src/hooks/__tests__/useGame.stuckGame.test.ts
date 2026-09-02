@@ -183,7 +183,13 @@ describe('cards stranded in an unfinished game', () => {
     await waitFor(() => expect(result.current.stuckGame?.kind).toBe('contestable'));
 
     await act(async () => { await result.current.handleContestClaim(); });
-    expect(hoisted.contestMock).toHaveBeenCalledWith('0xACCOUNT', '0xSTUCK');
+    // Gas headroom and a bounded wait, like every other send: a base fee that
+    // moves between simulate and send fails the tx, and an unbounded wait hangs
+    // a flow that is racing the dispute window shut.
+    expect(hoisted.contestMock).toHaveBeenCalledWith(
+      '0xACCOUNT', '0xSTUCK',
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
   });
 
   it('does not offer a contest once the window has closed', async () => {

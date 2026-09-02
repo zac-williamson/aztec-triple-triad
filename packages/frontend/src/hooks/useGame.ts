@@ -271,7 +271,11 @@ export function useGame(wsUrl: string): UseGameReturn {
     setIsRecovering(true);
     try {
       const { pxe } = await import('../aztec/pxe');
-      await pxe.sendContestAbandonment(aztec.accountAddress, stuckGame.onChainGameId);
+      const { AZTEC_TX_TIMEOUT } = await import('../aztec/gameConstants');
+      await pxe.sendContestAbandonment(aztec.accountAddress, stuckGame.onChainGameId, {
+        node: aztec.nodeClient,
+        timeoutMs: AZTEC_TX_TIMEOUT,
+      });
       setStuckGame(null);
     } catch (err) {
       console.error('[useGame] contesting the claim failed:', err);
