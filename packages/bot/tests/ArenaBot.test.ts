@@ -2151,3 +2151,76 @@ describe('ArenaBot worklist reports a claim in progress', () => {
     expect(bot.getStats().journal[0].blockedBy).toBeNull();
   });
 });
+
+/**
+ * Our OWN last proof, finishing after the game ended, has to be kept as well
+ * as sent.
+ *
+ * Sending it is what lets the opponent settle, and that was fixed first. But a
+ * proof that is sent and not journaled leaves US one short: the live map is
+ * cleared by resetToIdle, so unless it lands in the journal it is gone, and
+ * the journal is the only thing a claim can be built from. Production showed
+ * this as a game finishing at 8/9 when every move had in fact been proved.
+ */
+describe('ArenaBot keeps its own late proof, not just sends it', () => {
+  it('journals a proof that finishes after GAME_OVER', async () => {
+    const socket = new FakeSocket();
+    const f = fakeChain();
+    const store = new Map<string, any>();
+    const journal = {
+      read: (id: string) => store.get(id) ?? null,
+      write: (rec: any) => { store.set(rec.onChainGameId, rec); },
+      forget: (id: string) => { store.delete(id); },
+      markSettled: () => {},
+      outstanding: () => [...store.values()],
+    };
+    let release: (v: any) => void = () => {};
+    const proofs = {
+      cardCommitHash: async () => FIELD(0x1),
+      verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
+      proveHand: async () => ({ proof: 'p', publicInputs: ['a', 'b'], cardCommit: FIELD(0x1) }),
+      proveMove: () => new Promise(res => { release = res; }),
+    };
+    const bot = new ArenaBot(makeConfig({ pollIntervalMs: 20 }), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, proofs: proofs as any, journal: journal as any,
+      log: () => {}, now: () => 1_000_000,
+    });
+
+    bot.start();
+    socket.emit('open');
+    socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(socket);
+    socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 1, handProof: { proof: 'q', publicInputs: [], cardCommit: FIELD(0x2) } });
+    socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: botTurnState() });
+    await vi.advanceTimersByTimeAsync(50);
+
+    const placed: any = socket.lastOfType('PLACE_CARD');
+    expect(placed, 'the bot should have taken its turn').toBeDefined();
+    const after: any = botTurnState();
+    after.board[placed.row][placed.col] = { card: { id: 1 }, owner: 'player2', originalOwner: 'player2' };
+    socket.deliver({ type: 'GAME_STATE', gameId: 'g1', gameState: after });
+    await vi.advanceTimersByTimeAsync(20);
+
+    // The game ends while our proof is still generating — the ordinary case.
+    socket.deliver({
+      type: 'GAME_OVER', gameId: 'g1', winner: 'player1', gameState: after,
+      player1CardIds: [1, 2, 3, 4, 5], player2CardIds: [6, 7, 8, 9, 10],
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    const before = ([...store.values()][0]?.moveProofs ?? []).length;
+
+    release({ proof: 'p', publicInputs: [], startStateHash: 'ours-last' });
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(socket.lastOfType('SUBMIT_MOVE_PROOF'), 'still sent — the opponent needs it').toBeDefined();
+    const rec = [...store.values()][0];
+    expect(rec.moveProofs.length, 'and kept — we need it to claim').toBe(before + 1);
+    expect(rec.moveProofs.map((p: any) => p.startStateHash)).toContain('ours-last');
+    bot.stop();
+  });
+});

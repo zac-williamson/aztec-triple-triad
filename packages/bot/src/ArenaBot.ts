@@ -948,6 +948,15 @@ export class ArenaBot {
       // transcript by state hash, and duplicates from a relay replay collapse.
       this.moveProofs.set(String(moveProof.startStateHash), moveProof);
       this.journalGame();
+    } else {
+      // Late, so the live map is gone — but this proof is part of OUR
+      // transcript and the journal is the only place a claim can read it from.
+      //
+      // Sending it without keeping it was half a fix: the opponent could
+      // settle, and we were left one proof short of being able to claim if
+      // they never did. Seen on production as a journal that finished a game
+      // at 8/9 when both hands and every move had in fact been proved.
+      this.absorbLateMoveProof(gameId, moveProof);
     }
     this.send({
       type: 'SUBMIT_MOVE_PROOF', gameId,
