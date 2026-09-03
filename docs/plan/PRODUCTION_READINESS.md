@@ -435,6 +435,84 @@ read as nine, a sweep assumed to have run that had not.
 read, `/arena-health` republishes them CORS-open and uncached with a
 server-stamped `generatedAt`, and there is a dashboard that polls it.
 
+### 21. Nobody who LOST could recover a stuck game · `DONE` (3 Sep)
+One bug in four places, and it took all four being wrong to hide it: **state
+needed for recovery was discarded the moment the happy path ended.**
+
+Moves are 0-indexed, so player 1 plays 0,2,4,6,8 and player 2 plays 1,3,5,7 —
+the final proof of every game belongs to player 1 and arrives AFTER game over,
+while their browser is still proving it. Everything below is about that proof.
+
+- The bot dropped it on SEND: a proof that finished after it had left the game
+  was discarded (item 18, fixed 1 Sep).
+- The bot dropped it on RECEIVE: `MOVE_PROVEN` was gated on
+  `msg.gameId === this.gameId`, and GAME_OVER nulls `gameId` first. The bot only
+  ever joins, so it is always player 2 — it therefore depended on this proof in
+  EVERY game and never once kept it. Its journal froze at 8 of 9.
+- The frontend deleted the whole transcript at GAME_OVER (`storage.clearGame()`),
+  destroying the player's only copy of their own proofs at the exact moment
+  they stopped needing the game and started needing the evidence.
+- The frontend also expired any record after two hours. Two hours is how long a
+  game is worth RESUMING; a claim cannot even be attempted for one hour, and
+  people come back the next day. Reading for one purpose destroyed the data the
+  other purpose needed.
+- And the frontend's save effect only runs on the game screen, so a proof
+  arriving after the player clicked back to the menu was not persisted — the
+  likeliest case of all, since a loser leaves promptly.
+
+Each looked local. Together they meant that if a winner walked away, the loser
+could never claim, in the one situation where the whole transcript exists and
+settlement is provably owed.
+
+Fixed with `loadClaimable()` (recovery-side reader: ignores the resume window,
+requires an on-chain id, keeps thirty days), `markFinished()` (not resumable,
+not deleted, cleared only when the chain says the game resolved),
+`mergeMoveProof()` (persists a proof from any screen, deduped), and the bot's
+`absorbLateMoveProof` (fifteen minutes past game over, straight into the
+journal the sweep claims from).
+
+Confirmed on production: a game finished with the bot's journal reading 9/9,
+which an hour earlier would have read 8/9 forever.
+
+### 22. The human half of the n == 9 claim was never wired · `DONE` (3 Sep)
+Item 15 changed the contract and the bot. The browser still enforced the old
+rule in two places: a complete game was reported as `awaiting-winner` — a dead
+end with no button, whose text told the player only the winner could act — and
+`buildClaimAbandonedArgs` threw outright for nine proofs. So the fix existed on
+chain and was unreachable from the app.
+
+A finished game is now offered as `claimable`, on the same one-hour terms as
+any other; claiming earlier would race the winner's settlement and take the
+card they had won.
+
+### 23. The dispute wait counted blocks · `DONE` (3 Sep)
+The contract measures `DISPUTE_SECONDS` (600) of chain time. The settle path
+waited 5 BLOCKS, left over from when the contract counted blocks too — 135-360s
+at this testnet's real 27-72s intervals, against a 600s requirement. Every
+human recovery would have reverted at the last step and reported failure.
+
+`waitForDisputeWindow`, which polls the chain's own timestamp and is immune to
+block-rate variance and local clock skew alike, was written when the contract
+moved to seconds — and never called. Dead code sitting beside the bug it was
+written to fix. Item 16 fixed the constant and missed the caller.
+
+### 24. A reverting claim retried forever · `DONE` (3 Sep)
+The auto-trigger gated on the flow's IN-FLIGHT guard, which the `finally` block
+clears on failure as well as success, and the effect re-runs whenever
+`handleAbandonedGame`'s identity changes — which any state update does. Every
+failure re-armed the trigger.
+
+Against a claim that reverts for a persistent reason — "Too soon to call this
+game abandoned", "Game must be in active state" — that is an unbounded loop,
+and each turn of it builds a recursive proof and sends a transaction. The
+ground rule against masking failures with retries was being broken by a loop
+nobody wrote on purpose.
+
+One automatic attempt per game now; a deliberate retry from the menu still
+works. The test that should have caught this rejected only the FIRST claim, so
+a succeeding one ran behind it and it asserted nothing about the failure it was
+named for.
+
 ### 20. Two systemd keys were in the wrong section · `DONE` (2 Sep)
 `OnFailure=` in `[Service]` meant the health alert never fired. Then
 `StartLimitIntervalSec` / `StartLimitBurst` in `[Service]` meant the bot ran
