@@ -341,13 +341,22 @@ export class ArenaBot {
     const now = this.now();
     const outstanding = this.journal.outstanding?.() ?? [];
     return outstanding.map((rec: {
-      onChainGameId: string; committedAt: number; settled?: boolean;
+      onChainGameId: string; committedAt: number; settled?: boolean; claimedAt?: number;
       myHandProof: unknown; opponentHandProof: unknown; moveProofs: unknown[];
     }) => {
       const ageSeconds = Math.max(0, Math.round((now - rec.committedAt) / 1000));
       let blockedBy: string | null = null;
       if (rec.settled) blockedBy = 'already settled';
       else if (!rec.myHandProof || !rec.opponentHandProof) blockedBy = 'missing a hand proof — unrecoverable';
+      else if (rec.claimedAt) {
+        // Claimed and serving out its dispute window. Without this the entry
+        // reports nothing blocking it, which reads as "nobody has touched this"
+        // — the opposite of the truth, during the ten minutes it matters most.
+        const left = Math.ceil((rec.claimedAt + 600 - Math.floor(now / 1000)) / 60);
+        blockedBy = left > 0
+          ? `claimed — dispute window, ~${left}min left`
+          : 'claimed — settling';
+      }
       else if (ageSeconds < 3600) blockedBy = `too young (${Math.ceil((3600 - ageSeconds) / 60)}min to go)`;
       return {
         onChainGameId: rec.onChainGameId,

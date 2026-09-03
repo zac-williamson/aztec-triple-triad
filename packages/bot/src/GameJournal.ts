@@ -48,6 +48,16 @@ export interface GameRecord {
   updatedAt: number;
   /** Set once we have seen it settled, so a stale file cannot resurrect it. */
   settled?: boolean;
+  /**
+   * Chain time at which WE filed an abandonment claim on this game, if we have.
+   *
+   * Recorded so the worklist can say what is actually happening. Without it a
+   * claimed game sitting out its dispute window is indistinguishable from one
+   * nobody has touched — both report "nothing blocking it" — which is exactly
+   * the kind of confident-but-wrong status that made reading the bot's state
+   * unreliable in the first place.
+   */
+  claimedAt?: number;
 }
 
 export class GameJournal {

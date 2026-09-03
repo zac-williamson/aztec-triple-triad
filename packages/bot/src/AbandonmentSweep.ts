@@ -381,6 +381,13 @@ export class AbandonmentSweep {
     const { claimAt: claimedAt } = await this.deps.chain.pxe.readAbandonmentInfo(
       this.deps.chain.address, rec.onChainGameId,
     );
+    // Put it in the journal before the wait, not after: the wait is ten
+    // minutes long, and for those ten minutes the worklist would otherwise
+    // report this game as untouched and claimable.
+    try {
+      const fresh = this.deps.journal.read(rec.onChainGameId);
+      if (fresh) this.deps.journal.write({ ...fresh, claimedAt });
+    } catch { /* bookkeeping must never stop a recovery in progress */ }
     this.log(`sweep: waiting out the ${DISPUTE_SECONDS}s dispute window`);
     await waitForDisputeWindow(this.deps.chain.nodeClient, claimedAt);
     // That wait is minutes long and touches only the node, so a game can start

@@ -2103,3 +2103,49 @@ describe('ArenaBot late move proofs from the opponent', () => {
     h.bot.stop();
   });
 });
+
+/**
+ * The worklist has to say when a game is mid-recovery.
+ *
+ * A claim is followed by a ten-minute dispute window. During it the record is
+ * unsettled, old enough, and has both hand proofs — so every "why is this
+ * stuck" test passed and the entry reported nothing blocking it, which reads
+ * as "nobody has touched this". For the ten minutes the state matters most,
+ * the worklist said the opposite of the truth.
+ */
+describe('ArenaBot worklist reports a claim in progress', () => {
+  const withJournal = (rec: any) => {
+    const socket = new FakeSocket();
+    const bot = new ArenaBot(makeConfig(), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 0, oldestWaitMs: 0, entries: [] }),
+      journal: { outstanding: () => [rec], read: () => rec, write: () => {}, forget: () => {}, markSettled: () => {} } as any,
+      log: () => {}, now: () => 2_000_000_000,
+    });
+    return bot;
+  };
+
+  const base = {
+    onChainGameId: '0xabc',
+    committedAt: 2_000_000_000 - 7200_000,   // two hours old: past the bar
+    myHandProof: { proof: 'p' }, opponentHandProof: { proof: 'q' },
+    moveProofs: Array(9).fill({ proof: 'm' }),
+  };
+
+  it('says the dispute window is running, not that nothing is blocking it', () => {
+    const bot = withJournal({ ...base, claimedAt: 2_000_000_000 / 1000 - 120 });
+    const [entry] = bot.getStats().journal;
+    expect(entry.blockedBy).toMatch(/dispute window/);
+    expect(entry.blockedBy).not.toBeNull();
+  });
+
+  it('says it is settling once the window has passed', () => {
+    const bot = withJournal({ ...base, claimedAt: 2_000_000_000 / 1000 - 900 });
+    expect(bot.getStats().journal[0].blockedBy).toBe('claimed — settling');
+  });
+
+  it('still reports an unclaimed, old-enough game as ready', () => {
+    const bot = withJournal({ ...base });
+    expect(bot.getStats().journal[0].blockedBy).toBeNull();
+  });
+});
