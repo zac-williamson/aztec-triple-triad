@@ -24,6 +24,19 @@ absence.
 A row with no artifact is `UNVERIFIED` no matter how obvious it looks. Findings
 1 and 4 both looked obvious and were both wrong.
 
+## A gap this list had
+
+There were no rows for `cancel_game` at all until the mutation survivors
+(`:300`, `:303`) mapped to nothing. Cancel re-mints the creator's five committed
+cards; it is a supply-affecting path with an authorization check, and the
+register simply omitted it.
+
+That is the failure this document is meant to catch and did not, and it is why
+the instruction at the top is "ask what is MISSING" rather than "check each row".
+A missing row is invisible to every tool here: mutation testing can tell you an
+assertion is untested, but nothing can tell you a property was never written
+down. Only a person re-reading the protocol against this list can.
+
 ## Rules
 
 1. **A finding is an executable artifact or it does not exist.** Not a
@@ -148,6 +161,8 @@ intuition, in one example.**
 | L1 | A game can be settled at most once, by any route. | `VERIFIED` | `status == 2` + `game_settled` on both settle paths |
 | L2 | A `game_id` is never reusable. | `VERIFIED` | `create_game_public` requires status 0; no path writes 0 |
 | L3 | A claimed game cannot also be settled normally. | `VERIFIED` | `status == 2` guard (the double-mint fix) |
+| L5 | Only the creator can cancel a game. | `UNVERIFIED` | `player == player1` exists; `:303` survives mutation. **Cancel re-mints the creator's five cards, so this is an authorization check on a supply-affecting path.** |
+| L6 | A game can only be cancelled before it is joined. | `UNVERIFIED` | `status == 1` exists; `:300` survives. Cancelling a JOINED game would re-mint the creator's cards while the opponent's stay committed — supply inflation on one side and permanent loss on the other. |
 | L4 | A player cannot join their own game. | `UNVERIFIED` | `player2 != player1` exists but `:267` survives mutation — nothing tests it. **Downgraded: this row was wrongly marked VERIFIED on the strength of reading. See F7.** |
 
 ### Authorization
