@@ -149,21 +149,6 @@ export function MainMenu({
         </div>
       )}
 
-      {/* No button, because there is no action that would work: a finished game
-          can only be settled by its winner. Saying so beats a button that
-          spends a proof and a transaction to fail. */}
-      {stuckGame?.kind === 'awaiting-winner' && (
-        <div className="main-menu__stuck" data-testid="stuck-game-awaiting">
-          <p className="main-menu__stuck-text">
-            Your last game finished but was never settled, so its cards are still held.
-          </p>
-          <p className="main-menu__stuck-note">
-            Only the winner can settle a completed game. If that was you, reopen
-            it from Play; otherwise the cards are released when they do.
-          </p>
-        </div>
-      )}
-
       {/* The contract will not accept a claim yet, so we do not offer one —
           we say how long. */}
       {stuckGame?.kind === 'too-soon' && (

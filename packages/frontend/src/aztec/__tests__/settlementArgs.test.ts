@@ -44,3 +44,61 @@ describe('sortProofChain', () => {
     expect(sortProofChain(chain, 2, 'a')).toHaveLength(2);
   });
 });
+
+/**
+ * A COMPLETE transcript is a legal abandonment claim.
+ *
+ * It used to throw here, mirroring a contract that capped `num_valid_moves` at
+ * 8. That cap made the single most recoverable situation unrecoverable: a game
+ * that ran all nine moves and whose winner then vanished has a whole transcript
+ * and a settlement that is provably owed, yet neither side could act — the
+ * loser was refused, and the winner was gone. Ten cards locked forever.
+ *
+ * The contract now accepts 9 and skips its turn-parity check there, because a
+ * finished game has nobody whose turn it is. This guard has to agree, or the
+ * claim is refused in the browser before it ever reaches the chain.
+ */
+describe('buildClaimAbandonedArgs move-count guard', () => {
+  const moves = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      proof: '', publicInputs: [], startStateHash: `${i}`, endStateHash: `${i + 1}`,
+    }));
+
+  /** Reach the guard and report only whether it let us past. */
+  async function rejectsAt(n: number): Promise<boolean> {
+    const { buildClaimAbandonedArgs } = await import('../settlementArgs');
+    try {
+      await buildClaimAbandonedArgs({
+        Fr: FakeFr as any,
+        onChainGameId: '0x1',
+        callerIsPlayer1: true,
+        handVk: new Uint8Array(), moveVk: new Uint8Array(), dummyVk: new Uint8Array(),
+        handProof1: { proof: '', publicInputs: [] },
+        handProof2: { proof: '', publicInputs: [] },
+        validMoveProofs: moves(n),
+        makeDummyProof: async () => '',
+      } as any);
+      return false;
+    } catch (err) {
+      // Only the guard's own message counts as a rejection; anything else means
+      // we got PAST it and failed later on the fake Fr, which is a pass.
+      return /valid move proofs/.test((err as Error).message);
+    }
+  }
+
+  it('accepts a complete nine-move transcript', async () => {
+    expect(await rejectsAt(9), 'a finished game is exactly what n == 9 is for').toBe(false);
+  });
+
+  it('still accepts a partial transcript', async () => {
+    expect(await rejectsAt(4)).toBe(false);
+  });
+
+  it('accepts zero moves — someone who left before their first turn', async () => {
+    expect(await rejectsAt(0)).toBe(false);
+  });
+
+  it('rejects more moves than a board can hold', async () => {
+    expect(await rejectsAt(10)).toBe(true);
+  });
+});

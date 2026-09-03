@@ -69,6 +69,8 @@ vi.mock('../useGameStorage', () => ({
     saveGame: vi.fn(),
     loadGame: vi.fn().mockReturnValue(null),
     clearGame: vi.fn(),
+    markFinished: vi.fn(),
+    loadClaimable: vi.fn(() => null),
     hasGame: vi.fn().mockReturnValue(false),
   }),
 }));

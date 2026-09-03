@@ -147,7 +147,7 @@ export interface ClaimAbandonedInputs {
   dummyVk: Uint8Array;
   handProof1: { proof: string; publicInputs: string[] };
   handProof2: { proof: string; publicInputs: string[] };
-  /** The moves that DID complete — 0..8 of them, in any order. */
+  /** The moves that DID complete — 0..9 of them, in any order. */
   validMoveProofs: { proof: string; publicInputs: string[]; startStateHash: string; endStateHash: string }[];
   /** Generates one dummy proof, base64-encoded, to pad the chain. */
   makeDummyProof: () => Promise<string>;
@@ -169,12 +169,17 @@ export async function buildClaimAbandonedArgs(inputs: ClaimAbandonedInputs): Pro
   const toFrHex = (hex: string) => hexToFr(Fr, hex);
 
   const numValid = inputs.validMoveProofs.length;
-  if (numValid >= TOTAL_MOVES) {
-    // A complete chain is a normal settlement, not an abandonment.
+  if (numValid > TOTAL_MOVES) {
     throw new Error(
-      `claim_abandoned_game needs 0..${TOTAL_MOVES - 1} valid move proofs, got ${numValid}`,
+      `claim_abandoned_game takes 0..${TOTAL_MOVES} valid move proofs, got ${numValid}`,
     );
   }
+  // A COMPLETE chain (nine) is a legal claim, and the important one: a game
+  // that ran to the end and whose winner then vanished is the case where the
+  // whole transcript exists and settlement is provably owed. This used to
+  // throw, because the contract capped n at 8 — it no longer does, and the
+  // contract skips the turn-parity check when n == 9 precisely because a
+  // finished game has nobody whose turn it is.
   // ZERO is valid: a player can abandon between joining and their first move,
   // and refusing that claim leaves both hands locked with no route back. The
   // contract restricts a zero-move claim to player 2 — the party that did not

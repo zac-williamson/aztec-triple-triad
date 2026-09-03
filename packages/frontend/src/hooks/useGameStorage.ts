@@ -34,6 +34,14 @@ export interface PersistedGameState {
   blindingFactor?: string;
   /** Timestamp when the game was saved (for staleness checks) */
   savedAt: number;
+  /**
+   * When the game ended, if it has.
+   *
+   * A finished game is not resumable, but it is still the ONLY copy of the
+   * transcript this player can claim with — so it is marked rather than
+   * deleted. See loadClaimable().
+   */
+  finishedAt?: number;
 }
 
 const STORAGE_PREFIX = 'aztec_tt_game_';
@@ -54,11 +62,26 @@ function storageKey(suffix: string): string {
 export function useGameStorage() {
   const gameKey = useMemo(() => storageKey('current_game'), []);
 
-  /** Save (or update) the in-progress game. */
+  /**
+   * Save (or update) the game.
+   *
+   * `finishedAt` survives a save that does not mention it. The per-field save
+   * effect in useGame rebuilds this record from live state on every change,
+   * and a move proof arriving AFTER the game ended triggers exactly that —
+   * so without this merge the record would silently revert to "in progress"
+   * at the moment it stops being one.
+   */
   const saveGame = useCallback(
     (state: PersistedGameState) => {
       try {
-        localStorage.setItem(gameKey, JSON.stringify(state));
+        let finishedAt = state.finishedAt;
+        if (finishedAt === undefined) {
+          const prior = localStorage.getItem(gameKey);
+          if (prior) {
+            try { finishedAt = (JSON.parse(prior) as PersistedGameState).finishedAt; } catch { /* corrupt: ignore */ }
+          }
+        }
+        localStorage.setItem(gameKey, JSON.stringify(finishedAt === undefined ? state : { ...state, finishedAt }));
       } catch (e) {
         console.warn('[useGameStorage] Failed to save game:', e);
       }
@@ -66,23 +89,72 @@ export function useGameStorage() {
     [gameKey],
   );
 
-  /** Load any previously saved game (or null if none). */
-  const loadGame = useCallback((): PersistedGameState | null => {
+  /** The stored record exactly as written, with no policy applied. */
+  const readRaw = useCallback((): PersistedGameState | null => {
     try {
       const raw = localStorage.getItem(gameKey);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as PersistedGameState;
-      // Reject saves older than 2 hours — the WS game has certainly expired
-      const TWO_HOURS = 2 * 60 * 60 * 1000;
-      if (Date.now() - parsed.savedAt > TWO_HOURS) {
-        localStorage.removeItem(gameKey);
-        return null;
-      }
-      return parsed;
+      return raw ? (JSON.parse(raw) as PersistedGameState) : null;
     } catch {
       return null;
     }
   }, [gameKey]);
+
+  /**
+   * Load a game that can be RESUMED (or null if none).
+   *
+   * Two hours is right for this question and only this one: the relay's game
+   * is long gone by then, so "Resume" would lead nowhere. It is emphatically
+   * NOT how long the record is worth keeping — see loadClaimable().
+   */
+  const loadGame = useCallback((): PersistedGameState | null => {
+    const parsed = readRaw();
+    if (!parsed) return null;
+    if (parsed.finishedAt !== undefined) return null;   // over: nothing to resume
+    const TWO_HOURS = 2 * 60 * 60 * 1000;
+    if (Date.now() - parsed.savedAt > TWO_HOURS) return null;
+    return parsed;
+  }, [readRaw]);
+
+  /**
+   * Load the record as CLAIM EVIDENCE, whether or not the game is resumable.
+   *
+   * This is the only copy a player has of their own transcript, and it is what
+   * every recovery path reads. Two things used to destroy it at precisely the
+   * moment it started to matter: GAME_OVER deleted it outright, and the resume
+   * TTL above expired it after two hours — while a claim cannot even be
+   * attempted for one hour (MIN_ABANDON_SECONDS) and, realistically, people
+   * come back the next day. A player who lost and whose opponent then walked
+   * away had no way to recover their cards at all.
+   *
+   * Thirty days is the retention, because that is a "come back next week and
+   * get your cards" window rather than a session.
+   */
+  const loadClaimable = useCallback((): PersistedGameState | null => {
+    const parsed = readRaw();
+    if (!parsed) return null;
+    if (!parsed.onChainGameId) return null;             // nothing was ever at stake
+    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+    if (Date.now() - parsed.savedAt > THIRTY_DAYS) {
+      try { localStorage.removeItem(gameKey); } catch { /* ignore */ }
+      return null;
+    }
+    return parsed;
+  }, [readRaw, gameKey]);
+
+  /**
+   * Mark the game over WITHOUT discarding the transcript.
+   *
+   * A game with no on-chain id never staked anything, so there is nothing to
+   * keep and it is removed as before.
+   */
+  const markFinished = useCallback((at: number = Date.now()) => {
+    const parsed = readRaw();
+    if (!parsed) return;
+    try {
+      if (!parsed.onChainGameId) localStorage.removeItem(gameKey);
+      else localStorage.setItem(gameKey, JSON.stringify({ ...parsed, finishedAt: at }));
+    } catch { /* ignore */ }
+  }, [readRaw, gameKey]);
 
   /** Clear the saved game (on game end or explicit leave). */
   const clearGame = useCallback(() => {
@@ -98,5 +170,5 @@ export function useGameStorage() {
     return loadGame() !== null;
   }, [loadGame]);
 
-  return { saveGame, loadGame, clearGame, hasGame };
+  return { saveGame, loadGame, loadClaimable, clearGame, hasGame, markFinished };
 }

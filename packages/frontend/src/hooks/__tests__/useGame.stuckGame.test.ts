@@ -50,6 +50,10 @@ vi.mock('../../aztec/AztecContext', () => ({
 // a fresh object per render would re-run every effect that depends on it.
 const storageStub = {
   saveGame: vi.fn(), loadGame: hoisted.loadGameMock,
+  // Recovery reads loadClaimable, not loadGame: the game it looks for is over,
+  // and loadGame deliberately hides finished games. Same fixture behind both.
+  loadClaimable: hoisted.loadGameMock,
+  markFinished: vi.fn(),
   clearGame: vi.fn(), hasGame: () => !!hoisted.loadGameMock(),
 };
 vi.mock('../useGameStorage', () => ({ useGameStorage: () => storageStub }));
@@ -118,11 +122,13 @@ describe('cards stranded in an unfinished game', () => {
       .toEqual({ onChainGameId: '0xSTUCK', kind: 'claimable' }));
   });
 
-  it('does not offer to claim a game that is merely unsettled', async () => {
-    // Nine moves means the game FINISHED. claim_abandoned_game asserts n <= 8
-    // and settle_game binds the caller to the winner, so there is no action
-    // here that would succeed — and a button that spends a proof and a
-    // transaction to fail is the mistake the bot's sweep already made.
+  it('offers a claim on a FINISHED game whose winner never came back', async () => {
+    // Nine moves means the game ran to the end, and its winner then vanished.
+    // This used to be reported as a dead end, because claim_abandoned_game
+    // capped n at 8 — so the one case where the whole transcript exists and
+    // settlement is provably owed was the one case nobody could recover from.
+    // The contract now takes n == 9 and skips its turn-parity check there,
+    // since a finished game has nobody whose turn it is.
     hoisted.loadGameMock.mockReturnValue({
       ...SAVED, collectedMoveProofs: Array(9).fill({ proof: 'p', publicInputs: [] }),
     });
@@ -130,11 +136,27 @@ describe('cards stranded in an unfinished game', () => {
       status: 2, activeAt: nowS() - 5400, claimAt: 0, claimPlayer: '0x0',
     });
     const { result } = renderHook(() => useGame('ws://test'));
-    await waitFor(() => expect(result.current.stuckGame?.kind).toBe('awaiting-winner'));
+    await waitFor(() => expect(result.current.stuckGame?.kind).toBe('claimable'));
 
     await act(async () => { await result.current.handleRecoverStuckGame(); });
-    expect(hoisted.handleAbandonedGameMock, 'must not attempt a claim that cannot pass')
-      .not.toHaveBeenCalled();
+    expect(hoisted.handleAbandonedGameMock, 'ten cards ride on this claim being offered')
+      .toHaveBeenCalled();
+  });
+
+  it('makes a finished game wait out the same hour as any other', async () => {
+    // Completeness does not exempt it from the staleness bar: claiming early
+    // would race the winner's own settlement and take the card they won.
+    hoisted.loadGameMock.mockReturnValue({
+      ...SAVED, collectedMoveProofs: Array(9).fill({ proof: 'p', publicInputs: [] }),
+    });
+    hoisted.readInfoMock.mockResolvedValue({
+      status: 2, activeAt: nowS() - 60, claimAt: 0, claimPlayer: '0x0',
+    });
+    const { result } = renderHook(() => useGame('ws://test'));
+    await waitFor(() => expect(result.current.stuckGame?.kind).toBe('too-soon'));
+
+    await act(async () => { await result.current.handleRecoverStuckGame(); });
+    expect(hoisted.handleAbandonedGameMock).not.toHaveBeenCalled();
   });
 
   it('says nothing about a game that already settled', async () => {

@@ -18,10 +18,11 @@ const nowSeconds = () => Math.floor(Date.now() / 1000);
  *
  * `claimable` — fewer than nine moves, so the abandonment claim applies and we
  * can get the cards back from here.
- * `awaiting-winner` — the game finished but nobody settled it. The contract
- * offers no route out for anyone but the winner: claim_abandoned_game asserts
- * n <= 8, and settle_game binds the caller to the winning side. Worth telling
- * the player about; not worth offering them a button that cannot work.
+ * A COMPLETE game is claimable too, and is the case that matters most: the
+ * whole transcript exists, so settlement is provably owed, and a winner who
+ * never returns would otherwise lock both hands forever. That used to be a
+ * dead end ('awaiting-winner') because the contract capped a claim at eight
+ * moves. It no longer does.
  */
 export interface StuckGame {
   onChainGameId: string;
@@ -35,8 +36,6 @@ export type StuckGameKind =
   | 'claimable'
   /** Still holding cards, but the contract's abandonment bar has not passed. */
   | 'too-soon'
-  /** Nine moves: only the winner can settle, so no action here would succeed. */
-  | 'awaiting-winner'
   /** The opponent has claimed it and the dispute window is still open. */
   | 'contestable'
   /** Claimed, window closed: nothing left to do but let it complete. */
@@ -187,7 +186,10 @@ export function useGame(wsUrl: string): UseGameReturn {
     if (screen !== 'main-menu' || !aztec.accountAddress) { return; }
     let cancelled = false;
     void (async () => {
-      const saved = storage.loadGame();
+      // loadClaimable, not loadGame: the game we are looking for is OVER, and
+      // the resume-oriented loader hides exactly those. This is the whole
+      // point — a stuck game is by definition one that is not resumable.
+      const saved = storage.loadClaimable();
       if (!saved?.onChainGameId) { if (!cancelled) setStuckGame(null); return; }
       try {
         const { pxe } = await import('../aztec/pxe');
@@ -204,18 +206,18 @@ export function useGame(wsUrl: string): UseGameReturn {
           });
           return;
         }
-        if (info.status !== 2) { setStuckGame(null); return; }
-
-        // A COMPLETE game is not claimable and never will be:
-        // claim_abandoned_game requires the game to be unfinished for anyone
-        // but the winner, and settle_game binds the caller to the winner.
-        const moves = saved.collectedMoveProofs?.length ?? 0;
-        if (moves >= TOTAL_MOVES) {
-          setStuckGame({ onChainGameId: saved.onChainGameId, kind: 'awaiting-winner' });
+        if (info.status !== 2) {
+          // Resolved on chain — settled, cancelled, or already recovered. The
+          // record has done its job and can finally go.
+          storage.clearGame();
+          setStuckGame(null);
           return;
         }
 
-        // And the contract will not accept a claim before its own bar, so do
+        // A complete transcript is claimable on the same terms as a partial
+        // one; the contract skips its turn-parity check when n == 9.
+
+        // The contract will not accept a claim before its own bar, so do
         // not offer one. Showing the wait is honest; a button that reverts is
         // not, and this file has already made that mistake once.
         const age = nowSeconds() - info.activeAt;
@@ -233,10 +235,10 @@ export function useGame(wsUrl: string): UseGameReturn {
       }
     })();
     return () => { cancelled = true; };
-    // `storage.loadGame`, not `storage`: depending on the hook's object
+    // `storage.loadClaimable`, not `storage`: depending on the hook's object
     // identity re-runs this on every render, and the setState inside it makes
     // that a loop.
-  }, [screen, aztec.accountAddress, storage.loadGame]);
+  }, [screen, aztec.accountAddress, storage.loadClaimable]);
 
   /**
    * Get the cards back out of a game nobody finished.
@@ -246,9 +248,9 @@ export function useGame(wsUrl: string): UseGameReturn {
    * those are on disk from when the game was live.
    */
   const handleRecoverStuckGame = useCallback(async () => {
-    const saved = storage.loadGame();
-    // Guarded, not merely hidden: a complete game cannot be claimed, so this
-    // must refuse even if something else calls it.
+    const saved = storage.loadClaimable();
+    // Guarded, not merely hidden: only a game the contract will actually
+    // accept a claim for, so this refuses even if something else calls it.
     if (!saved || isRecovering || stuckGame?.kind !== 'claimable') return;
     setIsRecovering(true);
     try {
@@ -262,7 +264,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     } finally {
       setIsRecovering(false);
     }
-  }, [storage.loadGame, isRecovering, stuckGame?.kind, play.restoreFromSave,
+  }, [storage.loadClaimable, isRecovering, stuckGame?.kind, play.restoreFromSave,
       session.restoreFromSave, settlement.handleAbandonedGame]);
 
   /** Object to a standing claim: "I am still here." */
@@ -317,10 +319,18 @@ export function useGame(wsUrl: string): UseGameReturn {
     storage,
   ]);
 
-  // Clear saved game on GAME_OVER
+  // Mark the game over — but KEEP the transcript.
+  //
+  // This used to delete it, which destroyed the player's only copy of their
+  // own proofs at the exact moment they stopped needing the game and started
+  // needing the evidence. Every recovery path reads this record, so a player
+  // who lost and whose opponent then walked away had no route back to their
+  // cards at all. markFinished stops it being offered as "Resume" without
+  // throwing away what a claim is built from; it is cleared for real once the
+  // chain says the game resolved (see the stuck-game check above).
   useEffect(() => {
     if (ws.gameOver) {
-      storage.clearGame();
+      storage.markFinished();
       setHasGameInProgress(false);
     }
   }, [ws.gameOver, storage]);
