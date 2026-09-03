@@ -196,6 +196,29 @@ for (const name of names) {
 
   const backup = `/tmp/mutate-${basename(t.src)}.bak`;
   copyFileSync(t.src, backup);
+
+  // RESTORE ON SIGNAL, not only on normal exit.
+  //
+  // The finally below does not run when node is killed. A `pkill -f mutate.mjs`
+  // — which is the obvious way to stop a two-hour sweep — therefore left the
+  // MUTATED source on disk, and it was committed four times before a routine
+  // `git status` caught it. The assertion left neutered was the binding of a
+  // player's move proof to their committed hand: with it gone, a player can
+  // play cards they never staked.
+  //
+  // A tool that edits security-critical source in place must put restoring it
+  // ahead of everything else, including its own exit code.
+  const rescue = (sig) => {
+    try { copyFileSync(backup, t.src); } catch { /* nothing better to do */ }
+    console.error(`\n  ${sig}: restored ${t.src} before exiting.`);
+    process.exit(130);
+  };
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => rescue(sig));
+  process.on('uncaughtException', (e) => {
+    try { copyFileSync(backup, t.src); } catch { /* ignore */ }
+    console.error(`\n  crashed, restored ${t.src}: ${e.message}`);
+    process.exit(1);
+  });
   const survivors = [];
   const invalid = [];
   try {

@@ -128,7 +128,7 @@ fn main(
 
     // Verify it matches the correct card_commit (1 or 2 based on current_player)
     if current_player == 1 {
-        assert(true);
+        assert(recomputed_commit == card_commit_1, "Player 1 card commit mismatch");
     } else {
         assert(recomputed_commit == card_commit_2, "Player 2 card commit mismatch");
     }
