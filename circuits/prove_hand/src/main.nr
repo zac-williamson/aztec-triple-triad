@@ -191,3 +191,43 @@ fn test_fail_wrong_opponent_randomness() {
     // Provide wrong opponent randomness
     main(commit, opp_state, card_ids, blinding_factor, wrong_randomness);
 }
+
+/// The constraint the bot's hand selection has to respect.
+///
+/// A hand that repeats a card cannot be proved. That is easy to miss from the
+/// outside — the game CONTRACT tolerates duplicates (process_game removes only
+/// the first match of the transferred card, because a loser may hold two
+/// copies), so "duplicates are fine" is true of the contract and false of this
+/// circuit. BotChain.selectHand fell into exactly that gap: it fell back to a
+/// duplicated hand when short of types, its comment asserted such a hand "still
+/// plays", and join_game commits before this proof runs — so the cards were
+/// gone before the rejection.
+#[test(should_fail)]
+fn rejects_a_hand_that_repeats_a_card() {
+    let card_ids: [Field; 5] = [7, 8, 7, 8, 7];
+    let blinding: Field = 111;
+    let opponent_randomness: [Field; 6] = [1, 2, 3, 4, 5, 6];
+
+    let mut to_hash: [Field; 6] = [0; 6];
+    for i in 0..5 { to_hash[i] = card_ids[i]; }
+    to_hash[5] = blinding;
+    let commit = Poseidon2::hash(to_hash, 6);
+    let opp_state = Poseidon2::hash(opponent_randomness, 6);
+
+    main(commit, opp_state, card_ids, blinding, opponent_randomness);
+}
+
+#[test]
+fn accepts_five_distinct_cards() {
+    let card_ids: [Field; 5] = [1, 2, 3, 4, 5];
+    let blinding: Field = 111;
+    let opponent_randomness: [Field; 6] = [1, 2, 3, 4, 5, 6];
+
+    let mut to_hash: [Field; 6] = [0; 6];
+    for i in 0..5 { to_hash[i] = card_ids[i]; }
+    to_hash[5] = blinding;
+    let commit = Poseidon2::hash(to_hash, 6);
+    let opp_state = Poseidon2::hash(opponent_randomness, 6);
+
+    main(commit, opp_state, card_ids, blinding, opponent_randomness);
+}

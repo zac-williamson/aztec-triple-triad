@@ -25,8 +25,8 @@ describe('BotChain.selectHand with duplicates', () => {
   });
 
   it('never names more copies of a card than it holds', async () => {
-    // Two types, three cards total beyond the hand: the hand must be drawable.
-    const stock = [1, 1, 1, 2, 2, 2, 3];
+    // Five types so a legal hand exists; the point is the count per type.
+    const stock = [1, 1, 1, 2, 2, 2, 3, 4, 5];
     const hand = await chainHolding(stock).selectHand(5);
     expect(hand).toHaveLength(5);
     for (const id of new Set(hand)) {
@@ -34,11 +34,20 @@ describe('BotChain.selectHand with duplicates', () => {
     }
   });
 
-  it('falls back to duplicates when it holds fewer than five types', async () => {
+  /**
+   * This used to assert the opposite — that a hand of fewer than five types
+   * "falls back to duplicates" — and the implementation comment called such a
+   * hand playable. Both were wrong, and the test pinned the bug in place.
+   *
+   * prove_hand asserts card_ids[i] != card_ids[j], so a duplicated hand cannot
+   * be proved; and join_game commits BEFORE the bot proves its own hand. The
+   * fallback therefore committed five cards and then could not prove them,
+   * which the sweep classifies "missing a hand proof — unrecoverable". It also
+   * fires exactly when types are scarce, burning five more each time.
+   */
+  it('refuses to field a hand that repeats a card, rather than stranding it', async () => {
     const stock = [7, 7, 7, 8, 8, 8];
-    const hand = await chainHolding(stock).selectHand(5);
-    expect(hand).toHaveLength(5);
-    expect(new Set(hand).size).toBe(2);
+    await expect(chainHolding(stock).selectHand(5)).rejects.toThrow(/distinct type/i);
   });
 
   it('still refuses to field a short hand', async () => {
@@ -83,5 +92,43 @@ describe('BotChain rate-limit retries', () => {
       throw new Error('fetch failed');
     }, () => {}, 3, 0)).rejects.toThrow(/fetch failed/);
     expect(calls).toBe(3);
+  });
+});
+
+/**
+ * A hand that repeats a card cannot be proved, and the cards are gone by then.
+ *
+ * The round-robin takes a second copy of a type once it runs out of types, so a
+ * stock of fewer than five distinct types produces something like [A,B,A,B,A].
+ * `prove_hand` asserts card_ids[i] != card_ids[j] and rejects it — while
+ * join_game has already committed the cards, because the commit precedes the
+ * bot's own hand proof (confirmed against a production log: "committing" at
+ * 06:23:25, "Generating prove_hand proof" at 06:24:08). With no hand proof the
+ * sweep calls the game "missing a hand proof — unrecoverable". Five cards, for
+ * good, every time it happens.
+ */
+describe('selectHand refuses a hand it could not prove', () => {
+  const chainWith = (held: number[]) => {
+    const c = Object.create(BotChain.prototype) as any;
+    c.readCards = async () => held;
+    return c as { selectHand: (n?: number) => Promise<number[]> };
+  };
+
+  it('throws rather than returning a duplicated hand', async () => {
+    // Plenty of cards, only two types — the exact shape of the spiral.
+    const held = [...Array(10).fill(7), ...Array(10).fill(8)];
+    await expect(chainWith(held).selectHand(5)).rejects.toThrow(/distinct type/i);
+  });
+
+  it('names the real cause, so the operator knows to add TYPES not cards', async () => {
+    const held = [...Array(40).fill(7)];
+    await expect(chainWith(held).selectHand(5)).rejects.toThrow(/prove_hand rejects duplicate/i);
+  });
+
+  it('still returns a hand whenever five distinct types exist', async () => {
+    const held = [1, 1, 1, 2, 2, 3, 4, 5, 5, 5];
+    const hand = await chainWith(held).selectHand(5);
+    expect(hand).toHaveLength(5);
+    expect(new Set(hand).size, 'five distinct types were available').toBe(5);
   });
 });

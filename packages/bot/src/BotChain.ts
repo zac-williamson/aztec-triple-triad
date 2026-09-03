@@ -482,7 +482,36 @@ export class BotChain {
       // a hand must not spin forever.
       if (!tookOne) break;
     }
-    return hand.slice(0, size);
+    const picked = hand.slice(0, size);
+
+    // A DUPLICATED hand cannot be proved, and by then the cards are gone.
+    //
+    // The round-robin above takes a second copy of a type once it runs out of
+    // types, so a stock of fewer than `size` distinct types yields something
+    // like [A,B,A,B,A]. prove_hand asserts `card_ids[i] != card_ids[j]` and
+    // rejects exactly that — while join_game has ALREADY committed the cards,
+    // because the commit precedes our own hand proof. No hand proof means the
+    // sweep classifies the game "missing a hand proof — unrecoverable", which
+    // is permanent: five cards destroyed.
+    //
+    // Worse, it is a spiral. The fallback fires precisely when types are
+    // scarce, and each occurrence burns five more cards, narrowing the stock
+    // further. An earlier comment here reasoned that "a duplicated hand still
+    // plays"; it does not, and the circuit has always said so.
+    //
+    // Refusing to play is strictly better. The bot idles and the arena has no
+    // opponent, which is visible and repairable; the alternative is silent,
+    // permanent loss.
+    if (new Set(picked).size !== picked.length) {
+      const types = new Set(held).size;
+      throw new Error(
+        `Arena bot holds ${held.length} card(s) but only ${types} distinct type(s), so a hand of ` +
+        `${size} would repeat one. prove_hand rejects duplicate card ids, and join_game commits ` +
+        `BEFORE that proof — playing this hand would strand five cards unrecoverably. ` +
+        `Re-provision with more card types.`,
+      );
+    }
+    return picked;
   }
 }
 
