@@ -21,11 +21,13 @@ snapshot() {
     'curl -s --max-time 8 http://127.0.0.1:5175/health' 2>/dev/null
 }
 
+# The health JSON arrives as ARGV, not stdin: the python program itself comes
+# in on stdin via the heredoc, so sys.stdin.read() returns the script.
 render() {
-  python3 - "$@" <<'PY'
+  python3 - "$1" <<'PY'
 import sys, json, datetime
 
-raw = sys.stdin.read().strip()
+raw = (sys.argv[1] if len(sys.argv) > 1 else '').strip()
 now = datetime.datetime.now().strftime('%H:%M:%S')
 if not raw:
     print(f"[{now}]  BOT UNREACHABLE — it is down, or still importing notes at startup")
@@ -68,12 +70,12 @@ PY
 }
 
 if [ "${ONCE:-0}" = "1" ]; then
-  snapshot | render
+  render "$(snapshot)"
   exit 0
 fi
 
 echo "watching ${BOX} — ctrl-c to stop"
 while true; do
-  snapshot | render
+  render "$(snapshot)"
   sleep "$EVERY"
 done

@@ -6,6 +6,17 @@ Description=Axolotl Arena bot (backend opponent)
 After=network.target triad-backend.service
 Wants=triad-backend.service
 
+# Rate-limit restarts: 5 starts in 300s, then systemd gives up rather than
+# spinning on a misconfigured bot forever. These MUST sit in [Unit] — systemd
+# parses StartLimit* nowhere else and merely logs "Unknown key ... in section
+# [Service], ignoring" if you put them with Restart=, which is where they read
+# as if they belong. They sat in [Service] here and did nothing; the same
+# mistake with OnFailure= in triad-health.service cost an alert that never
+# fired. `systemctl show -p StartLimitBurst triad-bot` is the check that the
+# unit file itself cannot give you.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=ubuntu
@@ -28,8 +39,9 @@ ExecStart=/usr/bin/npx tsx packages/bot/src/index.ts
 # on-failure. StartLimit stops a misconfigured bot from spinning forever.
 Restart=always
 RestartSec=15
-StartLimitIntervalSec=300
-StartLimitBurst=5
+# NOTE: the StartLimit* keys that pair with these live in [Unit] above.
+# systemd parses them ONLY there and ignores them here with a warning that is
+# easy to scroll past — see the comment on them.
 
 # The bot proves recursively, which is both CPU- and memory-hungry, and it
 # shares this box with the relay. A cap means an over-large proof kills the BOT

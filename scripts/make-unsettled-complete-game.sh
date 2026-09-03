@@ -4,59 +4,59 @@
 #
 # It is genuinely hard to reach by hand. A draw is always settled — player 1
 # does it, and the bot settles it as fallback if they do not. A win is settled
-# by the winner within about a minute. So the only route is to let the winner
-# finish the game, wait for its last move proof to reach the opponent, and cut
-# it off before the settlement transaction is built.
+# by the winner within about a minute.
 #
-# Three earlier attempts missed that window, each leaving 7 or 8 proofs instead
-# of 9, because they triggered off the harness's own log. This triggers off the
-# BOT's live state instead — moveProofs == 9 is the exact moment — which is why
-# the bot had to be made observable first.
+# Four earlier attempts tried to RACE that: run a normal game and kill the
+# harness the instant the bot reported nine move proofs. Every one lost. Three
+# cut at seven or eight proofs (an INCOMPLETE transcript — a different contract
+# branch that looks identical in the log) and the fourth was beaten to the
+# punch by the winner's own settlement. Polling something every five seconds
+# over SSH cannot win a race against a decision made in-process.
+#
+# So the harness now decides not to settle: STOP_BEFORE_SETTLE=1 makes it wait
+# until the bot confirms it holds all nine move proofs, then walk away. This
+# script only has to run it and read the verdict.
+#
+# A run is only useful if WE win — the bot settles anything else. That is a
+# coin flip, so retry a few times.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-BOX="${ARENA_BOX:-ubuntu@13.42.161.225}"
-KEY="${ARENA_KEY:-$HOME/.ssh/aztec_deploy}"
 OUT="${OUT_DIR:-.artifacts/unsettled}"
+ATTEMPTS="${ATTEMPTS:-4}"
 mkdir -p "$OUT"
-LOG="$OUT/run-$(date -u +%Y%m%dT%H%M%SZ).log"
 
-bot_field() {  # $1 = python expression over the health dict `d`
-  ssh -i "$KEY" -o ConnectTimeout=10 -o BatchMode=yes "$BOX" \
-    'curl -s --max-time 8 http://127.0.0.1:5175/health' 2>/dev/null \
-  | python3 -c "
-import sys, json
-raw = sys.stdin.read().strip()
-try: d = json.loads(raw)
-except Exception: print(''); sys.exit(0)
-try: print($1)
-except Exception: print('')
-"
-}
+for attempt in $(seq 1 "$ATTEMPTS"); do
+  LOG="$OUT/run-$(date -u +%Y%m%dT%H%M%SZ).log"
+  echo "── attempt $attempt/$ATTEMPTS → $LOG"
 
-echo "── starting a game → $LOG"
-SHOT_DIR="$OUT/shots" PROOF_THREADS="${PROOF_THREADS:-6}" \
-  nohup npx tsx packages/playtest/scripts/prod-play.mts > "$LOG" 2>&1 &
-sleep 5
+  STOP_BEFORE_SETTLE=1 SHOT_DIR="$OUT/shots" PROOF_THREADS="${PROOF_THREADS:-6}" \
+    npx tsx packages/playtest/scripts/prod-play.mts > "$LOG" 2>&1
+  code=$?
 
-for _ in $(seq 1 360); do
-  pgrep -f prod-play.mts >/dev/null || { echo "the run ended on its own — see $LOG"; exit 1; }
+  verdict="$(grep '^RESULT:' "$LOG" | tail -1)"
+  echo "   $verdict"
 
-  proofs="$(bot_field "d.get('game',{}).get('moveProofs') if d.get('game') else ''")"
-  if [ "$proofs" = "9" ]; then
-    # Every proof is in. The winner has not built its settlement yet, so cutting
-    # here leaves a complete transcript that nobody has settled.
-    pkill -f prod-play.mts
-    echo "CUT at 9/9 proofs — the game is complete and unsettled"
-    grep -E "game over|claiming" "$LOG" | tail -2
-    exit 0
-  fi
-  if grep -q "^RESULT:" "$LOG" 2>/dev/null; then
-    # A draw, or a win settled faster than we could cut it. Both are fine
-    # outcomes for the arena and useless for this test.
-    echo "settled before the cut: $(grep '^RESULT:' "$LOG" | tail -1)"
-    exit 2
-  fi
-  sleep 5
+  case "$verdict" in
+    RESULT:\ cut*)
+      echo
+      echo "COMPLETE UNSETTLED GAME CREATED."
+      grep -E "game over|STOP_BEFORE_SETTLE" "$LOG" | tail -3
+      echo
+      echo "The bot's sweep will claim it with n=9 once it passes MIN_ABANDON_SECONDS"
+      echo "(3600s). Watch it at https://ws.aztec-arena.com/arena-health — it appears"
+      echo "under journal[] with the countdown in blockedBy."
+      exit 0
+      ;;
+    RESULT:\ skip*)
+      echo "   not usable — retrying"
+      ;;
+    *)
+      echo "   run failed (exit $code) — see $LOG"
+      tail -5 "$LOG"
+      ;;
+  esac
 done
-echo "timed out waiting for a complete game"; exit 1
+
+echo "no attempt produced a win we could walk away from; run again"
+exit 1

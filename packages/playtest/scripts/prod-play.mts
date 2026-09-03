@@ -250,6 +250,64 @@ async function main() {
     const winner = result.ws.gameOver?.winner ?? 'unknown';
     log(`game over: ${winner} — board ${result.game?.board.flat().filter(c => c.cardId !== null).length}/9`);
 
+    // STOP_BEFORE_SETTLE walks away from a game we won, on purpose.
+    //
+    // It builds the one state nothing could be tested against: a COMPLETE
+    // game — all nine moves played, all eleven proofs exchanged — that nobody
+    // ever settles. That is the n == 9 branch of claim_abandoned_game, and it
+    // is unreachable in normal play because the winner always settles within
+    // about a minute and a draw is settled by convention.
+    //
+    // Three earlier attempts tried to RACE the settlement, polling the bot
+    // every five seconds and killing this process when it saw nine proofs.
+    // They lost the race, or cut at seven or eight proofs and produced an
+    // incomplete transcript instead — which exercises a different branch and
+    // looks the same in the log. Deciding not to settle is deterministic.
+    //
+    // The wait is not optional: leaving the moment "Game Over" renders can
+    // beat our final move proof to the bot, and a bot holding eight proofs
+    // cannot claim a complete game either. So we confirm from the bot's own
+    // health — over the public /arena-health, the endpoint that exists for
+    // exactly this — that all nine landed before we walk.
+    if (process.env.STOP_BEFORE_SETTLE === '1') {
+      if (winner !== 'player1') {
+        log(`STOP_BEFORE_SETTLE: we did not win (${winner}) — the bot settles this one, ` +
+            'so it cannot become an unsettled complete game. Retry.');
+        console.log(`RESULT: skip winner=${winner} reason=not-our-win`);
+        process.exitCode = 2;
+        return;
+      }
+      const health = process.env.ARENA_HEALTH_URL ?? 'https://ws.aztec-arena.com/arena-health';
+      let proofs = -1;
+      for (let i = 0; i < 60; i++) {
+        proofs = await fetch(health, { cache: 'no-store' })
+          .then(r => r.json())
+          .then((d: any) => {
+            // While the game is live it is in `game`; once the bot leaves the
+            // board it is in the journal, still holding our committed cards.
+            if (d?.game?.moveProofs !== undefined) return d.game.moveProofs;
+            const j = (d?.journal ?? [])[0];
+            return j ? j.moveProofs : -1;
+          })
+          .catch(() => -1);
+        if (proofs >= 9) break;
+        await new Promise(r => setTimeout(r, 2000));
+      }
+      if (proofs < 9) {
+        log(`STOP_BEFORE_SETTLE: the bot reports ${proofs} move proofs, not 9 — ` +
+            'walking away now would leave an INCOMPLETE transcript, which tests ' +
+            'the wrong branch. Settling normally instead.');
+        console.log(`RESULT: skip winner=${winner} reason=bot-holds-${proofs}-proofs`);
+        process.exitCode = 2;
+        return;
+      }
+      await shot(page, 'walked-away-complete');
+      log('STOP_BEFORE_SETTLE: bot holds 9/9 move proofs. Walking away WITHOUT settling — ' +
+          'this game is now complete and unsettled.');
+      console.log(`RESULT: cut winner=${winner} moveProofs=9 settled=false`);
+      return;
+    }
+
     // Settlement is the point of the wager, and the winner's half is the
     // common case: claim a card, hand the rest back. Stopping at "Game Over"
     // proved the game, not the settlement.
