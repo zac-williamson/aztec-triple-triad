@@ -142,6 +142,30 @@ export function useGameStorage() {
   }, [readRaw, gameKey]);
 
   /**
+   * Add one move proof to the stored record, wherever the player happens to be.
+   *
+   * The main save effect only runs on the game screen, so a proof that arrives
+   * after the player has clicked back to the menu is not persisted — and the
+   * proof most likely to do that is the OPPONENT'S LAST ONE, which is proved
+   * in their browser for several seconds after the board fills. A losing
+   * player who leaves promptly would keep 8 of 9 and be unable to claim.
+   *
+   * Deduped by startStateHash, so replaying the relay's buffer is harmless.
+   */
+  const mergeMoveProof = useCallback((proof: MoveProofData) => {
+    const rec = readRaw();
+    if (!rec?.onChainGameId) return;               // nothing was ever at stake
+    const have = rec.collectedMoveProofs ?? [];
+    if (have.some(p => p.startStateHash === proof.startStateHash)) return;
+    try {
+      localStorage.setItem(gameKey, JSON.stringify({
+        ...rec,
+        collectedMoveProofs: [...have, proof],
+      }));
+    } catch { /* ignore */ }
+  }, [readRaw, gameKey]);
+
+  /**
    * Mark the game over WITHOUT discarding the transcript.
    *
    * A game with no on-chain id never staked anything, so there is nothing to
@@ -170,5 +194,5 @@ export function useGameStorage() {
     return loadGame() !== null;
   }, [loadGame]);
 
-  return { saveGame, loadGame, loadClaimable, clearGame, hasGame, markFinished };
+  return { saveGame, loadGame, loadClaimable, clearGame, hasGame, markFinished, mergeMoveProof };
 }

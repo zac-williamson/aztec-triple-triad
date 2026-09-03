@@ -108,6 +108,53 @@ describe('useGameStorage', () => {
       expect(result.current.loadClaimable()).toBeNull();
     });
 
+    it('merges a proof that arrives after the player left the game screen', () => {
+      // The main save effect only runs on the game screen. The proof most
+      // likely to arrive outside it is the opponent's LAST one — proved in
+      // their browser for seconds after the board fills, which is exactly when
+      // a losing player clicks back to the menu.
+      const { result } = renderHook(() => useGameStorage());
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(makeSavedGame({
+        onChainGameId: '0xabc',
+        collectedMoveProofs: Array.from({ length: 8 }, (_, i) => ({
+          proof: 'p', publicInputs: [], startStateHash: `s${i}`, endStateHash: `s${i + 1}`,
+        })),
+      } as any)));
+      act(() => result.current.markFinished());
+
+      act(() => result.current.mergeMoveProof({
+        proof: 'p', publicInputs: [], startStateHash: 's8', endStateHash: 's9',
+      } as any));
+
+      expect(result.current.loadClaimable()!.collectedMoveProofs).toHaveLength(9);
+    });
+
+    it('ignores a proof it already holds', () => {
+      const { result } = renderHook(() => useGameStorage());
+      const one = { proof: 'p', publicInputs: [], startStateHash: 's0', endStateHash: 's1' };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(makeSavedGame({
+        onChainGameId: '0xabc', collectedMoveProofs: [one],
+      } as any)));
+
+      act(() => result.current.mergeMoveProof(one as any));
+      act(() => result.current.mergeMoveProof(one as any));
+
+      expect(result.current.loadClaimable()!.collectedMoveProofs).toHaveLength(1);
+    });
+
+    it('does not start a record for a game that staked nothing', () => {
+      const { result } = renderHook(() => useGameStorage());
+      const noStake = makeSavedGame();
+      delete (noStake as any).onChainGameId;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(noStake));
+
+      act(() => result.current.mergeMoveProof({
+        proof: 'p', publicInputs: [], startStateHash: 's0', endStateHash: 's1',
+      } as any));
+
+      expect(result.current.loadClaimable()).toBeNull();
+    });
+
     it('a later save does not resurrect a finished game', () => {
       // The save effect rebuilds this record from live state whenever anything
       // changes — and a move proof arriving AFTER the game ended does exactly

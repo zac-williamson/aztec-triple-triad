@@ -319,6 +319,17 @@ export function useGame(wsUrl: string): UseGameReturn {
     storage,
   ]);
 
+  // Catch a move proof that lands after we left the game screen.
+  //
+  // The save effect above is gated on being IN a game, and the proof most
+  // likely to arrive outside that gate is the opponent's last one — proved in
+  // their browser for seconds after the board fills, which is exactly when a
+  // losing player clicks back to the menu. Missing it leaves 8 of 9 and no way
+  // to claim. Deduped, so this costs nothing during normal play.
+  useEffect(() => {
+    if (ws.lastMoveProof?.moveProof) storage.mergeMoveProof(ws.lastMoveProof.moveProof);
+  }, [ws.lastMoveProof, storage]);
+
   // Mark the game over — but KEEP the transcript.
   //
   // This used to delete it, which destroyed the player's only copy of their

@@ -54,6 +54,7 @@ const storageStub = {
   // and loadGame deliberately hides finished games. Same fixture behind both.
   loadClaimable: hoisted.loadGameMock,
   markFinished: vi.fn(),
+  mergeMoveProof: vi.fn(),
   clearGame: vi.fn(), hasGame: () => !!hoisted.loadGameMock(),
 };
 vi.mock('../useGameStorage', () => ({ useGameStorage: () => storageStub }));
