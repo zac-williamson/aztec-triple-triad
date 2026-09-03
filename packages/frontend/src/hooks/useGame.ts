@@ -353,6 +353,23 @@ export function useGame(wsUrl: string): UseGameReturn {
     }
   }, [ws.matchmakingStatus, screen]);
 
+  // Pull the settlement modules in as soon as a game opens.
+  //
+  // Settlement imports the SDK, the proving backend and the circuit loader
+  // dynamically, and those resolve to hashed chunks that a deploy replaces —
+  // so a tab opened before a deploy asks for a file that no longer exists and
+  // settlement dies with "Failed to fetch dynamically imported module", with
+  // the wager already committed. That happened during this project's own
+  // testing: a deploy landed between the last move and the settle, and the
+  // game had to go through the hour-long abandonment claim instead.
+  //
+  // Importing here puts them in the tab's module registry while nothing is at
+  // stake yet; a later deploy cannot take them back.
+  useEffect(() => {
+    if (screen !== 'game' && screen !== 'finding-opponent') return;
+    void import('../aztec/warmSettlementModules').then(m => m.warmSettlementModules());
+  }, [screen]);
+
   // Matchmaking ping
   useEffect(() => {
     if (screen !== 'finding-opponent') return;
