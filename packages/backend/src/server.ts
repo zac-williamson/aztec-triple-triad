@@ -271,6 +271,14 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
             abandonedGames: bot.abandonedGames,
             cardsUnimported: bot.cardsUnimported,
           },
+          // Whole Fee Juice, not wei: it exceeds Number's safe range, and the
+          // question this answers is "can it still pay to settle", which does
+          // not need the last eighteen digits. A bot that runs out goes quietly
+          // idle exactly like one that runs out of cards — the failure this
+          // panel exists to catch — and an unsettled game locks ten cards.
+          feeJuice: typeof bot.feeJuice === 'string' && /^\d+$/.test(bot.feeJuice)
+            ? Number(BigInt(bot.feeJuice) / (10n ** 18n))
+            : null,
           failures: {
             join: bot.joinFailures,
             move: bot.moveFailures,

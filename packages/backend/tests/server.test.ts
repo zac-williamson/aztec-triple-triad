@@ -226,6 +226,7 @@ describe('/arena-health with a bot behind it', () => {
     cardsUnimported: 0,
     totalFailures: 0,
     lastError: null,
+    feeJuice: '832976136304307151998',
     gamesPlayed: 12, wins: 7, losses: 4, draws: 1,
     settlements: 12, abandonedGames: 0,
     joinFailures: 0, moveFailures: 0, commitFailures: 0,
@@ -296,6 +297,25 @@ describe('/arena-health with a bot behind it', () => {
     expect(body.journal).toHaveLength(1);
     expect(body.journal[0].onChainGameId).toBe('0xdeadbeef');
     expect(body.journal[0].blockedBy).toBe('too young (45min to go)');
+  });
+
+  it('reports Fee Juice in whole units — wei overflows a JS number', async () => {
+    // A bot that cannot pay cannot settle, and an unsettled game locks ten
+    // cards. It fails the same silent way as running out of cards: idle.
+    const body = await read();
+    expect(body.feeJuice).toBe(832);
+  });
+
+  it('reports null Fee Juice rather than guessing when the bot omits it', async () => {
+    // An off-chain bot has no balance at all; inventing a 0 would read as an
+    // outage that is not happening.
+    const prior = { ...BOT_HEALTH } as any;
+    delete (BOT_HEALTH as any).feeJuice;
+    try {
+      expect((await read()).feeJuice).toBeNull();
+    } finally {
+      Object.assign(BOT_HEALTH, prior);
+    }
   });
 
   it('names the commit it is running — deploys diverge from the working tree', async () => {
