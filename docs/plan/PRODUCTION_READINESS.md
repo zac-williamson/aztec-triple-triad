@@ -14,10 +14,15 @@ between two people, which is the intended primary path and exercises a
 settlement relay the bot otherwise stands in for:
 `packages/playtest/scripts/prod-pvp.mts`.
 
-Everything on this list is now closed except the contract audit (item 11),
-which is a decision for the project rather than a defect to fix, and two
-entries marked ACCEPTED where the honest answer was a stated limit rather than
-a change.
+Items 1–13 are closed except the contract audit (item 11), which is a decision
+for the project rather than a defect to fix, and two entries marked ACCEPTED
+where the honest answer was a stated limit rather than a change.
+
+**The contracts those items were verified against no longer exist.** They were
+replaced on 1 Sep to fix a double-mint defect and to make a completed game
+claimable; items 14–20 cover that work and what it is still missing, which is
+one production verification (item 15). Re-read item 11 with 14–20 in hand: two
+of its five audit areas changed.
 
 ---
 
@@ -327,15 +332,121 @@ unrecoverable, in rough order of how much a mistake would cost:
    recursively. The question is not whether each proof verifies but whether a
    set of proofs that all verify can describe a game that never happened —
    reordering, replaying a move, or colliding on a board-state hash.
-3. **Abandonment and recovery.** The claim turns on move parity, and recovery
-   on a five-block dispute window plus a per-player `game_recovered` flag. Both
-   players recovering the same cards, or a claim inside the window, would mint
-   value from nothing.
+3. **Abandonment and recovery.** The claim turns on move parity, EXCEPT when
+   the transcript is complete (`n == 9`), where parity is deliberately skipped
+   because a finished game has no next mover. Recovery then rests on a
+   ten-minute dispute window (`DISPUTE_SECONDS`), a one-hour staleness bar
+   (`MIN_ABANDON_SECONDS`), `contest_abandonment`, and a per-player
+   `game_recovered` flag. Both players recovering the same cards, a claim
+   inside the window, or a contest accepted from a non-player would each mint
+   value from nothing. The `n == 9` exemption is the newest of these and the
+   one with the least production mileage.
 4. **Idempotence.** `settled`, and the status transitions around it. Settling
-   twice must be impossible, not merely unlikely.
+   twice must be impossible, not merely unlikely. This is not hypothetical: a
+   version deployed on 1 Sep guarded `settle_game` on the `game_settled` flag
+   alone, which a claimed game does not set — so a game already claimed through
+   the abandonment path could be settled again and mint the wagered card a
+   second time. Both settle paths now assert `status == 2` (see item 14). An
+   auditor should treat every status transition as a place the same mistake
+   can recur, not just the two that were fixed.
 5. **The draw path**, which is the one settlement route where nothing changes
    hands — and therefore the one where a coerced transfer would be least
    expected.
+
+## September — contract changes and what they cost
+
+Everything above was closed against the contracts deployed on 31 Aug. Those
+contracts have since been replaced, so this section carries what changed and
+what is and is not yet proven against the running instance. Current addresses:
+NFT `0x246276ad…`, Game `0x25dac7c3…`, Token `0x1407ddf7…`.
+
+### 14. `settle_game` could mint a second time · `DONE` (1 Sep) — a defect I shipped
+`settle_game` asserted only on `game_settled`. A game recovered through
+`claim_abandoned_game` never sets that flag — it moves the status instead — so
+a claimed game remained settleable, and settling it minted the wagered card
+again from a transcript that had already paid out.
+
+Both `settle_game` and `settle_game_draw` now assert `status == 2` ("active")
+before doing anything. That is the invariant the flag was standing in for, and
+it holds across every path that ends a game rather than only the one that was
+in mind when the flag was written.
+
+Found while writing the abandonment tests, not by the tests that existed — the
+suite covered settling twice and claiming twice, and never the pair.
+
+### 15. A finished game nobody settles was unclaimable · `DONE` (1 Sep) · **verification IN PROGRESS**
+`claim_abandoned_game` capped the transcript at eight moves and required the
+claimant not to be next to move. A completed game has no next mover, so a game
+that ran the full nine moves and whose winner then vanished could not be
+claimed by anyone — ten cards locked forever, in the one case where the whole
+transcript exists and settlement is provably owed.
+
+`num_valid_moves` now accepts 9; the ninth move may end the game and must name
+a valid winner; parity is skipped when `n == 9` because there is nobody whose
+turn it is.
+
+**Verification is the open part.** Reaching this state on production is
+genuinely hard — winners settle within a minute, and draws are settled by
+convention — and four attempts to race it by killing the harness on a health
+poll produced three incomplete transcripts (7 or 8 proofs, a DIFFERENT contract
+branch that reads identically in the log) and one game settled out from under
+the cut. `STOP_BEFORE_SETTLE=1` now makes the harness decline to settle a game
+it won, after confirming from `/arena-health` that the bot holds all nine move
+proofs. `scripts/make-unsettled-complete-game.sh` drives it.
+
+**Done when:** a game with `moveProofs == 9` and no settlement is claimed by
+the bot's sweep with `n = 9` on the deployed instance, and the cards come back.
+
+### 16. Abandonment measured time in blocks · `DONE` (1 Sep)
+`MIN_ABANDON_BLOCKS = 300` assumed 12-second blocks. Measured testnet intervals
+ran 27–72 seconds, so the intended one-hour bar was somewhere between two and
+six hours, varying with load. aztec-nr says outright that block intervals are
+not a reliable clock.
+
+Now `MIN_ABANDON_SECONDS = 3600` and `DISPUTE_SECONDS = 600` off
+`context.timestamp()`. Two callers assumed the old units and were fixed with
+it: the sweep's `minAgeMs` and the frontend's recovery button.
+
+### 17. The contest window was designed and never built · `DONE` (1 Sep)
+The original intent for abandonment was a challenge window — the opponent gets
+to say "I am still here" before their cards are taken. The claim path shipped;
+the contest half never did, so a claim was unanswerable.
+
+`contest_abandonment` asserts the game is claimed (status 5), the contester is
+a player and not the claimant, the window is still open, and they have not
+contested already; it returns the game to active and clears the claim. The
+frontend surfaces it as one of five stuck-game states.
+
+### 18. The bot dropped its final move proof · `DONE` (1 Sep)
+A proof that finished after the bot had already left the game was discarded,
+because the handler returned early when the game id no longer matched. The
+opponent then held 8 of 9 and could not settle — which presented as the 30s
+`MOVE_PROOF_WAIT_TIMEOUT` being too tight, and survived being raised to 180s.
+
+The proof is now always sent; only the local bookkeeping is skipped when the
+game has moved on. Observed firing twice on production.
+
+### 19. Nothing could see what the bot was doing · `DONE` (2 Sep)
+Diagnosing a live game meant SSHing to the box and reading a journal after the
+fact, and inferring state that way was wrong as often as right — seven proofs
+read as nine, a sweep assumed to have run that had not.
+
+`getStats()` now builds the live game and the sweep's worklist fresh on every
+read, `/arena-health` republishes them CORS-open and uncached with a
+server-stamped `generatedAt`, and there is a dashboard that polls it.
+
+### 20. Two systemd keys were in the wrong section · `DONE` (2 Sep)
+`OnFailure=` in `[Service]` meant the health alert never fired. Then
+`StartLimitIntervalSec` / `StartLimitBurst` in `[Service]` meant the bot ran
+`Restart=always` with no rate limit. systemd logs "Unknown key … ignoring" and
+carries on; `systemctl cat` still shows the key, so the file reads correct
+while the service is not.
+
+`scripts/systemdUnits.test.ts` now parses every unit in `deploy/` and fails on
+a section-only key in the wrong section. The check that catches this on a live
+box is `systemctl show -p <Key>`, never the unit file.
+
+---
 
 ### 12. `DEFAULT_FEE_JUICE_TARGET` uncalibrated · `DONE` (31 Aug)
 Measured, and the old number was not merely unproven — it was wrong by about
