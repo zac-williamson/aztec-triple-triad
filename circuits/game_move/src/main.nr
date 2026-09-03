@@ -1595,3 +1595,244 @@ fn test_proof_chain_assembles_across_player_boundary() {
         p2_card_ids(), P2_BLINDING,
     );
 }
+
+// ====================== FORGERY ATTEMPTS ======================
+//
+// The circuit takes board_after, scores_after, original_owners_after, game_ended
+// and winner_id as PROVER-SUPPLIED inputs. Its entire security job is to
+// constrain that they follow from board_before and the move. Any field that is
+// under-constrained is a forged game outcome that the contract will accept,
+// because the contract verifies the proof and reads these as public inputs
+// without re-deriving anything.
+//
+// Every test above proves the circuit ACCEPTS honest play. These prove it
+// REJECTS specific lies, which is the actual security property and was
+// untested.
+//
+// DISCIPLINE: where a tampered value is part of the hashed state, the end hash
+// is recomputed FROM THE TAMPERED VALUES. Otherwise the hash assert catches the
+// lie first and the test proves nothing about the rule it is named for — a
+// should_fail test that fails for the wrong reason is worse than no test.
+//
+// Baseline for most of these is test_equal_ranks_no_capture: P1 card 1
+// (right rank 4) at (0,0) against P2 card 10 (left rank 4) at (0,1). Equal, so
+// no capture. Every honest field below is identical to that passing test; only
+// the named lie differs.
+
+/// Take a card the ranks do not beat.
+#[test(should_fail)]
+fn forge_capture_that_ranks_do_not_earn() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[2] = 10; board_before[3] = 2;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1; board_after[1] = 1;
+    board_after[2] = 10; board_after[3] = 1;   // THE LIE: 4 vs 4 is not a capture
+    let scores_after: [Field; 2] = [6, 4];     // and the score that would follow
+
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
+        1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p1_card_ids(), P1_BLINDING,
+    );
+}
+
+/// Award yourself points with no capture at all.
+#[test(should_fail)]
+fn forge_score_without_capture() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[2] = 10; board_before[3] = 2;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1; board_after[1] = 1;
+    board_after[2] = 10; board_after[3] = 2;   // board honest: no capture
+    let scores_after: [Field; 2] = [6, 4];     // THE LIE: score says otherwise
+
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
+        1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p1_card_ids(), P1_BLINDING,
+    );
+}
+
+/// Play a card that is not in the committed hand.
+#[test(should_fail)]
+fn forge_card_not_in_hand() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[2] = 10; board_before[3] = 2;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 99; board_after[1] = 1;   // THE LIE: 99 is not in p1_card_ids
+    board_after[2] = 10; board_after[3] = 2;
+    let scores_after: [Field; 2] = [5, 5];
+
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
+        1, 99, 0, 0, board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p1_card_ids(), P1_BLINDING,
+    );
+}
+
+/// Drop a card onto a cell that is already occupied.
+#[test(should_fail)]
+fn forge_placement_on_occupied_cell() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[2] = 10; board_before[3] = 2;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[2] = 1; board_after[3] = 1;    // THE LIE: overwrite P2's card at (0,1)
+    let scores_after: [Field; 2] = [6, 4];
+
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
+        1, 1, 0, 1, board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p1_card_ids(), P1_BLINDING,
+    );
+}
+
+/// Move when it is the other player's turn.
+#[test(should_fail)]
+fn forge_move_out_of_turn() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[2] = 10; board_before[3] = 2;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    // Hash with turn = 2, so the state is honestly "player 2 to move".
+    let start_hash = hash_board_state(board_before, scores_before, 2, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1; board_after[1] = 1;
+    board_after[2] = 10; board_after[3] = 2;
+    let scores_after: [Field; 2] = [5, 5];
+
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
+        1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
+        2, oob, ooa, p1_card_ids(), P1_BLINDING,   // THE LIE: player 1 moves on P2's turn
+    );
+}
+
+/// Rewrite who ORIGINALLY placed a card — the C2 replay guard.
+#[test(should_fail)]
+fn forge_original_owner_rewrite() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[2] = 10; board_before[3] = 2;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1; board_after[1] = 1;
+    board_after[2] = 10; board_after[3] = 2;
+    let scores_after: [Field; 2] = [5, 5];
+
+    let mut ooa = orig_after(board_before, board_after, oob);
+    ooa[1] = 1;   // THE LIE: claim P1 originally placed P2's card at (0,1)
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
+        1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p1_card_ids(), P1_BLINDING,
+    );
+}
+
+/// Declare the game over, and won, on a board with two cards on it.
+#[test(should_fail)]
+fn forge_early_game_end() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[2] = 10; board_before[3] = 2;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1; board_after[1] = 1;
+    board_after[2] = 10; board_after[3] = 2;
+    let scores_after: [Field; 2] = [5, 5];
+
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash, end_hash,
+        1, 1,   // THE LIE: game_ended = 1, winner = P1, on a 3-card board
+        1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p1_card_ids(), P1_BLINDING,
+    );
+}
+
+/// Put the card somewhere other than the (row, col) being proved.
+#[test(should_fail)]
+fn forge_placement_elsewhere_than_row_col() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[2] = 10; board_before[3] = 2;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[8] = 1; board_after[9] = 1;    // THE LIE: lands at (1,1), not (0,0)
+    board_after[2] = 10; board_after[3] = 2;
+    let scores_after: [Field; 2] = [5, 5];
+
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
+        1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p1_card_ids(), P1_BLINDING,
+    );
+}
+
+/// Delete an opponent's card from the board.
+#[test(should_fail)]
+fn forge_erase_opponent_card() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[2] = 10; board_before[3] = 2;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1; board_after[1] = 1;
+    // THE LIE: cell (0,1) simply emptied — P2's card gone.
+    let scores_after: [Field; 2] = [5, 5];
+
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
+        1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p1_card_ids(), P1_BLINDING,
+    );
+}
