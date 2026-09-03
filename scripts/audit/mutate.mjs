@@ -34,7 +34,7 @@
  * than none — it invites you to dismiss a real survivor as noise.
  */
 import { readFileSync, writeFileSync, copyFileSync, existsSync } from 'fs';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { join, basename } from 'path';
 
 const NARGO = `${process.env.HOME}/.aztec/current/internal-bin/nargo`;
@@ -60,21 +60,83 @@ const TARGETS = {
 function mutationsFor(src) {
   const lines = readFileSync(src, 'utf8').split('\n');
   const out = [];
-  // Track whether we are inside a #[test] function: mutating a test's own
-  // assertion proves nothing about the code, and it inflates the survivor count
-  // with noise. (game_move:1581 was exactly that.)
-  let inTest = false;
-  lines.forEach((line, i) => {
-    if (/^\s*#\[test/.test(line)) { inTest = true; return; }
-    // A top-level `fn` with no #[test] above it ends the test body.
-    if (/^(pub )?fn /.test(line)) inTest = false;
-    if (inTest) return;
-    if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;
-    const m = line.match(/^(\s*)assert\((.+)$/);
-    if (!m) return;
-    out.push({ line: i, original: line, mutated: `${m[1]}assert(true);` });
-  });
+  // #[test] applies to the NEXT fn. Setting the flag on the attribute alone
+  // was wrong: the test's own `fn test_x()` line then matched the "a new
+  // function ends the test body" rule and cleared it immediately, so every
+  // assertion inside every test was mutated. card_data reported 6 survivors of
+  // 7 that way, and all but one were assertions in its own tests.
+  let inTest = false, pendingTest = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*#\[test/.test(line)) { pendingTest = true; continue; }
+    if (/^\s*(pub )?(unconstrained )?fn /.test(line)) {
+      inTest = pendingTest;
+      pendingTest = false;
+    }
+    if (inTest) continue;
+    if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+
+    const m = line.match(/^(\s*)assert\(/);
+    if (!m) continue;
+
+    // An assert may span several lines. Consume until the parens balance, or
+    // the mutation leaves dangling continuation lines and the file stops
+    // compiling — which the classifier used to score as a KILL. That inflated
+    // the kill rate, which is the dangerous direction for an audit tool: it
+    // makes coverage look better than it is. 18 of 78 asserts in the game
+    // contract are multi-line.
+    let depth = 0, end = i;
+    for (let j = i; j < lines.length; j++) {
+      for (const ch of lines[j]) {
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+      }
+      if (depth <= 0) { end = j; break; }
+    }
+    out.push({ line: i, endLine: end, original: line.trim(), indent: m[1] });
+    i = end;
+  }
   return out;
+}
+
+/**
+ * TXE degrades over a long run. Measured: after ~116 mutants the unmutated
+ * contract suite went from 12 passed to 3 passed / 9 failed, consistently, and
+ * a restart fixed it. Every mutant scored after that point read as KILLED,
+ * because the classifier cannot tell a mutation-induced failure from an
+ * environment-induced one — so the run reported 14 survivors of 78 when the
+ * true number was unknown. False kills overstate coverage, which is the
+ * direction that gets an audit trusted when it should not be.
+ *
+ * A fresh TXE per mutant costs about 8 seconds and removes the failure mode.
+ */
+function restartTxe() {
+  try { execSync('pkill -f "aztec start --txe"', { stdio: 'ignore' }); } catch { /* none running */ }
+  spawn(`${process.env.HOME}/.aztec/current/bin/aztec`, ['start', '--txe', '--port', '8081'],
+        { detached: true, stdio: 'ignore' }).unref();
+  for (let i = 0; i < 60; i++) {
+    try {
+      execSync('curl -s --max-time 2 http://127.0.0.1:8081', { stdio: 'ignore' });
+      return true;
+    } catch { execSync('sleep 2'); }
+  }
+  return false;
+}
+
+/**
+ * A mutation run against an already-failing suite measures nothing. Prove the
+ * baseline is green before touching anything, and abort loudly if it is not.
+ */
+function baselineIsGreen(t) {
+  try {
+    const oracle = t.txe ? ' --oracle-resolver http://127.0.0.1:8081' : '';
+    const out = execSync(`${NARGO} test --package ${t.pkg}${oracle}`,
+      { cwd: t.cwd, encoding: 'utf8', timeout: 20 * 60_000, stdio: 'pipe' });
+    return /tests? passed/.test(out) && !/tests? failed/.test(out);
+  } catch {
+    return false;
+  }
 }
 
 function runTests(t) {
@@ -86,8 +148,13 @@ function runTests(t) {
     return 'passed';            // suite green WITH the mutation => survived
   } catch (e) {
     const out = String(e.stdout ?? '') + String(e.stderr ?? '');
-    if (/tests? failed|Failed assertion|error:/i.test(out)) return 'killed';
-    return 'error';             // did not compile or ran out of time
+    // ORDER MATTERS. A mutant that does not COMPILE is not a killed mutant — it
+    // is no evidence at all, and counting it as a kill overstates coverage.
+    // Test failures are reported by nargo as "N tests failed" / "Failed
+    // assertion"; anything else carrying a compiler diagnostic is invalid.
+    if (/\d+ tests? failed|Failed assertion/i.test(out)) return 'killed';
+    if (/error(\[|:)|Aborting|could not compile|expected .* but found/i.test(out)) return 'invalid';
+    return 'error';
   }
 }
 
@@ -110,27 +177,47 @@ for (const name of names) {
   const chosen = muts.slice(0, limit);
   console.log(`\n${name}: mutating ${chosen.length} of ${muts.length} assert(s) in ${basename(t.src)}`);
 
+  if (t.txe) restartTxe();
+  if (!baselineIsGreen(t)) {
+    console.error(`  ABORT: ${name}'s test suite is RED before any mutation.`);
+    console.error('  Mutation verdicts against a failing suite are meaningless — fix the');
+    console.error('  suite (or the environment) first. For TXE targets, a restart usually does it.');
+    process.exit(2);
+  }
+
   const backup = `/tmp/mutate-${basename(t.src)}.bak`;
   copyFileSync(t.src, backup);
   const survivors = [];
+  const invalid = [];
   try {
     for (const [n, mut] of chosen.entries()) {
       const lines = readFileSync(backup, 'utf8').split('\n');
-      lines[mut.line] = mut.mutated;
+      lines[mut.line] = `${mut.indent}assert(true);`;
+      // Blank the rest of the span rather than deleting, so every later line
+      // keeps its number and a survivor's location stays quotable.
+      for (let k = mut.line + 1; k <= mut.endLine; k++) lines[k] = '';
       writeFileSync(t.src, lines.join('\n'));
+      // Fresh TXE per mutant: see restartTxe(). Without it a degraded TXE turns
+      // every later mutant into a false kill.
+      if (t.txe) restartTxe();
       const verdict = runTests(t);
       if (verdict === 'passed') {
         survivors.push(mut);
-        console.log(`  SURVIVED  ${t.src}:${mut.line + 1}  ${mut.original.trim().slice(0, 78)}`);
+        console.log(`  SURVIVED  ${t.src}:${mut.line + 1}  ${mut.original.slice(0, 78)}`);
+      } else if (verdict === 'invalid') {
+        invalid.push(mut);
+        console.log(`  invalid   ${t.src}:${mut.line + 1}  (did not compile — no evidence)`);
       } else {
-        process.stdout.write(`  [${n + 1}/${chosen.length}] ${verdict}\r`);
+        process.stdout.write(`  [${n + 1}/${chosen.length}] ${verdict}      \r`);
       }
     }
   } finally {
     copyFileSync(backup, t.src);   // always restore, including on Ctrl-C paths
   }
 
-  console.log(`\n${name}: ${survivors.length} survivor(s) of ${chosen.length}`);
+  const evaluated = chosen.length - invalid.length;
+  console.log(`\n${name}: ${survivors.length} survivor(s) of ${evaluated} evaluated` +
+              (invalid.length ? ` (${invalid.length} invalid, not counted either way)` : ''));
   if (survivors.length) {
     console.log('  Survivors are assertions no test UNIQUELY depends on. Each is either');
     console.log('  genuinely untested (a hole) or redundantly enforced (fine). Triage each;');

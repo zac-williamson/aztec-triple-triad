@@ -51,11 +51,34 @@ node scripts/audit/mutate.mjs --list     # assert sites per target
 
 | Target | Asserts | Survivors | Notes |
 |---|---|---|---|
-| `circuits/prove_hand` | 4 | 0 of 4 | every assertion uniquely load-bearing |
-| `circuits/game_move` | 24 | 12 of 24 | was 16; four were genuine holes, now closed |
-| `circuits/card_data` | 7 | not run | |
-| `packages/contracts/triple_triad_game` | 60 | not run | 3 findings here were found by hand; expect more |
-| `packages/contracts/triple_triad_nft` | 38 | not run | |
+| `circuits/prove_hand` | 5 | **0** | every assertion load-bearing |
+| `circuits/card_data` | 1 | **0** | |
+| `circuits/game_move` | 28 | **0** | was 16 of 24; differential tests closed the rest |
+| `packages/contracts/triple_triad_game` | 78 | re-running | first run INVALID — see below |
+| `packages/contracts/triple_triad_nft` | 38 | not run | largest remaining gap |
+
+**All three circuits are fully mutation-covered and no defect was found in any of
+them.** The contract is the opposite: see F5.
+
+### The first contract sweep measured nothing
+
+It reported 14 survivors of 78 — 82% coverage from twelve tests that cannot reach
+the code in question. Implausible, so the baseline was checked: the *unmutated*
+suite was failing 3 passed / 9 failed, identically over three runs. TXE had
+degraded mid-sweep, and a classifier cannot tell a mutation-induced failure from
+an environment-induced one, so everything after that point scored as KILLED.
+
+A clean restart returned it to 12 passed. The harness now proves the baseline is
+green before mutating, aborts otherwise, and gives each contract mutant a fresh
+TXE.
+
+**Four defects were found in the harness itself during this audit, and every one
+failed toward "covered":** compile failures scored as kills (18 of 78 contract
+asserts are multi-line and were being truncated); assertions inside test bodies
+mutated (`card_data` showed 6 survivors of 7, five of them its own tests); the
+differential generator reporting 351 tests written while writing none; and the
+degraded-baseline run above. A tool that fails toward confidence is worse than no
+tool. Treat every number here as a claim about the tooling as much as the code.
 
 **Read survivors as triage, not as defects.** A survivor means no test *uniquely*
 depends on that assertion, which has two very different causes:
@@ -98,12 +121,12 @@ intuition, in one example.**
 | T1 | Moves chain: each move's end state is the next move's start state. | `VERIFIED` | `process_game` §5 |
 | T2 | The first move starts from the canonical empty board. | `VERIFIED` | §6 + `initial_state` tests |
 | T3 | Only the ninth move may end the game, and must name a valid winner. | `VERIFIED` | §7 + `forge_early_game_end` |
-| T4 | A move proof cannot be reused in a different game. | `PARTIAL` | Holds via per-game blinding in `card_commit`; no test pins the derivation — see finding 6 |
+| T4 | A move proof cannot be reused in a different game. | `PARTIAL` | Holds via per-game blinding in `card_commit`; no test pins the derivation — F8 |
 | T5 | A board position cannot recur, so a move cannot be replayed. | `UNVERIFIED` | Argued from game logic (each move adds a card), not from the hash construction |
 | T6 | The prover cannot forge the post-move board, scores or owners. | `VERIFIED` | 16 forgery tests in `game_move` |
 | T8 | The published start/end state hashes are the board actually operated on. | `VERIFIED` | `forge_start_state_hash_not_matching_board`, `forge_end_state_hash_not_matching_board` — found missing by mutation |
 | T9 | A completed board must be declared finished, with the correct winner. | `PARTIAL` | `forge_wrong_winner_on_completed_board`, `forge_completed_board_declared_unfinished`; the p2-win and draw branches (`:298`, `:300`) remain unkilled |
-| T7 | Cascading multi-captures propagate exactly as far as the rules allow. | `UNVERIFIED` | Positive tests only; no negative or differential coverage |
+| T7 | Cascading multi-captures propagate exactly as far as the rules allow. | `VERIFIED` | 270 differential cases from 30 engine-played games; 81 capture-mutations rejected |
 
 ### Abandonment and recovery
 
@@ -125,7 +148,7 @@ intuition, in one example.**
 | L1 | A game can be settled at most once, by any route. | `VERIFIED` | `status == 2` + `game_settled` on both settle paths |
 | L2 | A `game_id` is never reusable. | `VERIFIED` | `create_game_public` requires status 0; no path writes 0 |
 | L3 | A claimed game cannot also be settled normally. | `VERIFIED` | `status == 2` guard (the double-mint fix) |
-| L4 | A player cannot join their own game. | `VERIFIED` | `player2 != player1` |
+| L4 | A player cannot join their own game. | `UNVERIFIED` | `player2 != player1` exists but `:267` survives mutation — nothing tests it. **Downgraded: this row was wrongly marked VERIFIED on the strength of reading. See F7.** |
 
 ### Authorization
 
@@ -143,11 +166,21 @@ intuition, in one example.**
 | H2 | A hand a client can select is always one it can prove. | `VERIFIED` | Finding 4 fix; `selectHand` refuses duplicates |
 | H3 | A move can only place a card in the committed hand. | `VERIFIED` | `forge_card_not_in_hand` |
 
+### Supply and deployment
+
+| # | Property | Status | Artifact |
+|---|---|---|---|
+| P1 | Every settlement path conserves card supply. | `PARTIAL` | By construction: 10 committed → winner 6 + loser 4, draw 5 + 5, recovery 5 per player behind a per-player flag. Counted, not tested. |
+| P2 | A card note created by settlement is real and in the tree. | `PARTIAL` | `create_and_push_note` derives the macro-compatible hash and calls `push_note_hash`. Read, not tested. |
+| P3 | Card notes cannot be double-spent across games. | `PARTIAL` | Constrained `pop_notes` emits nullifiers; duplicate nullifiers are dropped by the sequencer. Relies on protocol behaviour. |
+| P4 | The deployed VK hashes are the real circuits', not the dummy's. | `VERIFIED` | Empirical: a genuine `game_move` proof only verifies against the real hash, and real settlements succeed on the live instance. |
+| P5 | A deployment cannot register the dummy VK for real proofs. | `UNVERIFIED` | **It can — F10.** The constructor validates nothing; the only defences are in tooling. |
+
 ### Known gaps
 
 | # | Property | Status | Note |
 |---|---|---|---|
-| G1 | Note nullification in the NFT contract cannot double-spend a card. | `UNVERIFIED` | Not examined |
-| G2 | `arena_token` mint paths cannot be driven by a player. | `UNVERIFIED` | Not examined |
-| G3 | The recursive verification primitive and VK pinning are sound. | `UNVERIFIED` | Trusted; not examined |
-| G4 | The board-state hash is collision-resistant for this preimage shape. | `UNVERIFIED` | Assumed from pedersen; no analysis |
+| G1 | NFT note lifecycle beyond P2/P3 — discovery, tagging, `import_note`. | `UNVERIFIED` | `import_note` is `unconstrained utility`, so it cannot forge chain state; the rest is unexamined |
+| G2 | `arena_token` authorization. | `VERIFIED` | All mints gated (admin/NFT/game), `burn_from` NFT-only with the call site passing `msg_sender()`, all trusted addresses `PublicImmutable` |
+| G3 | The recursive verification primitive is sound. | `UNVERIFIED` | Trusted. P4's empirical argument depends on it enforcing the VK hash |
+| G4 | The board-state hash is collision-resistant for this preimage shape. | `UNVERIFIED` | Assumed from pedersen. "Positions cannot recur" is a game-logic argument, not a cryptographic one |
