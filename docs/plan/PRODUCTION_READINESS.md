@@ -20,9 +20,10 @@ where the honest answer was a stated limit rather than a change.
 
 **The contracts those items were verified against no longer exist.** They were
 replaced on 1 Sep to fix a double-mint defect and to make a completed game
-claimable; items 14–20 cover that work and what it is still missing, which is
-one production verification (item 15). Re-read item 11 with 14–20 in hand: two
-of its five audit areas changed.
+claimable. Items 14-25 cover that work. Both recovery paths — the `<= 8` prefix
+and the complete-game `n == 9` — are now verified on the deployed instance
+(item 15), so the contract audit (item 11) is the only thing left open. Re-read
+item 11 with 14-25 in hand: two of its five audit areas changed.
 
 ---
 
@@ -309,6 +310,34 @@ While there: one of them repairs and the other is irreversible, and they looked
 identical. "Clear All State" now gets a distinguishing hover and the title text
 the repair button already had.
 
+### 25. A deploy could kill an in-flight settlement · `DONE` (3 Sep)
+Settlement pulls the SDK, the proving stack, the circuit loader and `pxe` in
+through dynamic `import()`. Those resolve to hashed chunk files, and a deploy
+replaces them — so a tab opened before the deploy asks for a chunk that no
+longer exists and settlement dies with "Failed to fetch dynamically imported
+module", with the game over and the wager already committed. Every open tab is
+exposed for as long as it stays open.
+
+It happened here, to the game that became item 15's test case: a Vercel deploy
+landed between the last move and the settle. It was first misread as RPC
+flakiness — the retry noise was the visible part — until the line above it
+turned out to be the staleBuild warning.
+
+`staleBuild.ts` detects this and asks the player to reload. Detection is not
+mitigation: by the time it fires the settlement has already failed.
+
+A module that has been imported lives in the tab's registry and a deploy cannot
+take it away, so they are now imported as soon as a game screen opens, while
+nothing is at stake. Failures are swallowed — this changes WHEN a module loads
+and must never become a new reason a game cannot start. A test reads
+`useGameSettlement`'s source and fails on any dynamic import the warmer misses;
+it immediately caught `@aztec/bb.js` and `@noir-lang/noir_js`, the two largest
+chunks on the path.
+
+**Still true, and worth stating:** this protects tabs that are already open at
+warm-up time. A player who loads the app DURING a deploy still gets whatever
+the CDN serves, and the staleBuild banner remains the answer for that.
+
 ---
 
 ## Mainnet — beyond testnet-ready
@@ -374,7 +403,7 @@ in mind when the flag was written.
 Found while writing the abandonment tests, not by the tests that existed — the
 suite covered settling twice and claiming twice, and never the pair.
 
-### 15. A finished game nobody settles was unclaimable · `DONE` (1 Sep) · **verification IN PROGRESS**
+### 15. A finished game nobody settles was unclaimable · `DONE` (1 Sep) · **VERIFIED on production (3 Sep)**
 `claim_abandoned_game` capped the transcript at eight moves and required the
 claimant not to be next to move. A completed game has no next mover, so a game
 that ran the full nine moves and whose winner then vanished could not be
@@ -394,8 +423,34 @@ the cut. `STOP_BEFORE_SETTLE=1` now makes the harness decline to settle a game
 it won, after confirming from `/arena-health` that the bot holds all nine move
 proofs. `scripts/make-unsettled-complete-game.sh` drives it.
 
-**Done when:** a game with `moveProofs == 9` and no settlement is claimed by
-the bot's sweep with `n = 9` on the deployed instance, and the cards come back.
+**Verified 3 Sep on the deployed instance.** Game `0x23ab318b…` ran all nine
+moves; its winner's settlement died mid-flight (see item 25) and that account
+was gone for good. The bot, as the loser, held the whole transcript:
+
+```
+sweep: 0x23ab318b… abandoned (67min, 9/9 moves) — complete but never settled
+       by its winner — claiming
+sweep: 0x23ab318b… claimed 0x26497fbd…
+sweep: waiting out the 600s dispute window
+sweep: 0x23ab318b… RECOVERED 5 card(s) 0x22b42984…
+```
+
+The 9/9 in that first line is itself the proof of item 21: an hour earlier the
+same game would have read 8/9 for ever.
+
+The `<= 8` prefix path was verified in the same hour, on `0x2dfec26f…` — also
+claimed, disputed and recovered, 5 cards back.
+
+Two things had to be fixed mid-verification, both found because the run
+refused to fake a pass:
+
+- The harness cut read `journal[0]`, and the bot's worklist is oldest-first, so
+  it read an EARLIER game's 8 proofs and would have discarded a good run.
+- The bot imports the browser's `settlementArgs`, and it had been restarted
+  before the commit that lifted the client-side `0..8` cap — so the first n = 9
+  claim failed with an error string that no longer existed in the source. That
+  is what prompted `deployedCommit` on /arena-health (item 20's sibling):
+  nothing from outside the box could say which code was live.
 
 ### 16. Abandonment measured time in blocks · `DONE` (1 Sep)
 `MIN_ABANDON_BLOCKS = 300` assumed 12-second blocks. Measured testnet intervals

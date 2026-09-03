@@ -2139,9 +2139,11 @@ describe('ArenaBot worklist reports a claim in progress', () => {
     expect(entry.blockedBy).not.toBeNull();
   });
 
-  it('says it is settling once the window has passed', () => {
+  it('says only that the window has passed — not that a settle is under way', () => {
+    // Elapsed time is all claimedAt can tell us. Reporting "settling" would
+    // read the same whether the sweep was working or had died.
     const bot = withJournal({ ...base, claimedAt: 2_000_000_000 / 1000 - 900 });
-    expect(bot.getStats().journal[0].blockedBy).toBe('claimed — settling');
+    expect(bot.getStats().journal[0].blockedBy).toBe('claimed — dispute window passed');
   });
 
   it('still reports an unclaimed, old-enough game as ready', () => {

@@ -353,9 +353,12 @@ export class ArenaBot {
         // reports nothing blocking it, which reads as "nobody has touched this"
         // — the opposite of the truth, during the ten minutes it matters most.
         const left = Math.ceil((rec.claimedAt + 600 - Math.floor(now / 1000)) / 60);
+        // "passed", not "settling": all we know from claimedAt is that the
+        // window is over. Whether the sweep is actually settling is something
+        // else, and a sweep that had died would still read as busy here.
         blockedBy = left > 0
           ? `claimed — dispute window, ~${left}min left`
-          : 'claimed — settling';
+          : 'claimed — dispute window passed';
       }
       else if (ageSeconds < 3600) blockedBy = `too young (${Math.ceil((3600 - ageSeconds) / 60)}min to go)`;
       return {
