@@ -269,17 +269,15 @@ async function main() {
     // cannot claim a complete game either. So we confirm from the bot's own
     // health — over the public /arena-health, the endpoint that exists for
     // exactly this — that all nine landed before we walk.
+    let skipReason: string | null = null;
     if (process.env.STOP_BEFORE_SETTLE === '1') {
-      if (winner !== 'player1') {
-        log(`STOP_BEFORE_SETTLE: we did not win (${winner}) — the bot settles this one, ` +
-            'so it cannot become an unsettled complete game. Retry.');
-        console.log(`RESULT: skip winner=${winner} reason=not-our-win`);
-        process.exitCode = 2;
-        return;
-      }
+      // A skip must still SETTLE. Returning here would leave the bot's five
+      // cards committed to a game nobody ever ends — which is the stranding
+      // this whole feature exists to prevent, and an earlier version of this
+      // block did exactly that while logging "settling normally instead".
       const health = process.env.ARENA_HEALTH_URL ?? 'https://ws.aztec-arena.com/arena-health';
       let proofs = -1;
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; winner === 'player1' && i < 60; i++) {
         proofs = await fetch(health, { cache: 'no-store' })
           .then(r => r.json())
           .then((d: any) => {
@@ -293,19 +291,22 @@ async function main() {
         if (proofs >= 9) break;
         await new Promise(r => setTimeout(r, 2000));
       }
-      if (proofs < 9) {
+      if (winner !== 'player1') {
+        log(`STOP_BEFORE_SETTLE: we did not win (${winner}) — the bot settles this one, ` +
+            'so it cannot become an unsettled complete game. Settling normally.');
+        skipReason = 'not-our-win';
+      } else if (proofs < 9) {
         log(`STOP_BEFORE_SETTLE: the bot reports ${proofs} move proofs, not 9 — ` +
             'walking away now would leave an INCOMPLETE transcript, which tests ' +
-            'the wrong branch. Settling normally instead.');
-        console.log(`RESULT: skip winner=${winner} reason=bot-holds-${proofs}-proofs`);
-        process.exitCode = 2;
+            'the wrong branch AND strands the cards. Settling normally.');
+        skipReason = `bot-holds-${proofs}-proofs`;
+      } else {
+        await shot(page, 'walked-away-complete');
+        log('STOP_BEFORE_SETTLE: bot holds 9/9 move proofs. Walking away WITHOUT settling — ' +
+            'this game is now complete and unsettled.');
+        console.log(`RESULT: cut winner=${winner} moveProofs=9 settled=false`);
         return;
       }
-      await shot(page, 'walked-away-complete');
-      log('STOP_BEFORE_SETTLE: bot holds 9/9 move proofs. Walking away WITHOUT settling — ' +
-          'this game is now complete and unsettled.');
-      console.log(`RESULT: cut winner=${winner} moveProofs=9 settled=false`);
-      return;
     }
 
     // Settlement is the point of the wager, and the winner's half is the
@@ -386,7 +387,7 @@ async function main() {
     // One line, fixed shape, for anything reading this run without a human.
     console.log(`RESULT: ${ok ? 'pass' : 'fail'} winner=${winner} ` +
       `cards=${end.ownedCardIds.length}/${want} tokens=${end.tokenBalance}/${STARTER_TOKENS + GAME_REWARD} ` +
-      `settled=${settlementSeen}`);
+      `settled=${settlementSeen}` + (skipReason ? ` cut=skipped:${skipReason}` : ''));
   } finally {
     // Leave the game rather than just closing the tab. An abandoned game holds
     // the bot until its 30-minute watchdog fires, and with one bot that is

@@ -48,7 +48,9 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
       echo "under journal[] with the countdown in blockedBy."
       exit 0
       ;;
-    RESULT:\ skip*)
+    *cut=skipped:*)
+      # The game still settled — the harness only declines to settle when it
+      # can actually produce the state we want. Nothing is left holding cards.
       echo "   not usable — retrying"
       ;;
     *)
