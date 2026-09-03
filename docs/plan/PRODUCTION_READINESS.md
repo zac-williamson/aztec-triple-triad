@@ -491,7 +491,7 @@ read, `/arena-health` republishes them CORS-open and uncached with a
 server-stamped `generatedAt`, and there is a dashboard that polls it.
 
 ### 21. Nobody who LOST could recover a stuck game · `DONE` (3 Sep)
-One bug in four places, and it took all four being wrong to hide it: **state
+One bug in five places, and it took all of them being wrong to hide it: **state
 needed for recovery was discarded the moment the happy path ended.**
 
 Moves are 0-indexed, so player 1 plays 0,2,4,6,8 and player 2 plays 1,3,5,7 —
@@ -500,6 +500,15 @@ while their browser is still proving it. Everything below is about that proof.
 
 - The bot dropped it on SEND: a proof that finished after it had left the game
   was discarded (item 18, fixed 1 Sep).
+- The bot then SENT that proof but did not KEEP it — found 3 Sep, after this
+  item was first written, which is why the count below says five and not four.
+  `resetToIdle()` clears the live proof map, so a proof taking the late path was
+  delivered to whoever needed it to settle and lost from our OWN transcript,
+  leaving us one short of claiming if they never did. Production showed a game
+  finishing at 8/9 with every move in fact proved. It also means the 9/9
+  verified earlier that day held by timing rather than by correctness — that
+  game's own proofs happened to land before GAME_OVER. Chasing an 8/9 that had
+  been noticed and passed over is what found it.
 - The bot dropped it on RECEIVE: `MOVE_PROVEN` was gated on
   `msg.gameId === this.gameId`, and GAME_OVER nulls `gameId` first. The bot only
   ever joins, so it is always player 2 — it therefore depended on this proof in
@@ -526,8 +535,15 @@ not deleted, cleared only when the chain says the game resolved),
 `absorbLateMoveProof` (fifteen minutes past game over, straight into the
 journal the sweep claims from).
 
-Confirmed on production: a game finished with the bot's journal reading 9/9,
-which an hour earlier would have read 8/9 forever.
+Confirmed on production twice. First a game finished with the journal reading
+9/9 where an hour earlier it would have read 8/9 forever; then, after the
+own-late-proof gap was closed, again — `late move proof absorbed … journal now
+holds 9/9 (transcript COMPLETE — claimable)`.
+
+Both confirmations exercised the RECEIVE-side path. The own-late-proof branch
+is unit-tested and deployed but has not yet been hit on the deployed instance:
+it needs our own proving to run past GAME_OVER, which is a timing accident a
+test run cannot force.
 
 ### 22. The human half of the n == 9 claim was never wired · `DONE` (3 Sep)
 Item 15 changed the contract and the bot. The browser still enforced the old
