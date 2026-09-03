@@ -298,6 +298,19 @@ describe('/arena-health with a bot behind it', () => {
     expect(body.journal[0].blockedBy).toBe('too young (45min to go)');
   });
 
+  it('names the commit it is running — deploys diverge from the working tree', async () => {
+    // Deploying is `git pull` + restart, so the box can be running older code
+    // than the tree you are editing. That happened: a bot restarted before a
+    // fix landed in a module it imports failed in production with an error
+    // string that no longer existed in the source, and nothing short of SSH
+    // could show it.
+    const body = await read();
+    expect(body).toHaveProperty('deployedCommit');
+    if (body.deployedCommit !== null) {
+      expect(body.deployedCommit).toMatch(/^[0-9a-f]{7,40}$/);
+    }
+  });
+
   it('carries the record, the failure breakdown and the relay counts', async () => {
     const body = await read();
     expect(body.record).toMatchObject({ gamesPlayed: 12, wins: 7, losses: 4, draws: 1, settlements: 12 });

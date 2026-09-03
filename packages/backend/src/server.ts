@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import http from 'http';
+import { execFileSync } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { GameManager, MOVE_INACTIVITY_MS, ABANDONMENT_WARN_LEAD_MS } from './GameManager.js';
 import type { ClientMessage, ServerMessage } from './types.js';
@@ -100,6 +101,29 @@ export interface CardGameServer {
   store: GameStore;
   close: () => Promise<void>;
 }
+
+/**
+ * The commit this process is actually running, read once at startup.
+ *
+ * Deploying is `git pull` + restart, so the running code and the working tree
+ * can silently diverge — and did: the bot was restarted before a fix landed in
+ * a module it imports, and the only symptom was a claim failing in production
+ * with an error message that had already been deleted from the source. There
+ * was no way to see that from outside the box.
+ *
+ * Best-effort: a checkout without git, or a git that fails, is not a reason to
+ * refuse to serve health.
+ */
+function readDeployedCommit(): string | null {
+  try {
+    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+const DEPLOYED_COMMIT = readDeployedCommit();
 
 export function createServer(options: ServerOptions = {}): CardGameServer {
   // Where the arena bot serves its own health. Same box, localhost only.
@@ -232,6 +256,9 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
           // The message can name a game or an address; the fact of it cannot.
           hasError: bot.lastError !== null && bot.lastError !== undefined,
           uptimeMs: bot.uptimeMs,
+          // Which commit is actually running here, so "did my fix ship?" is a
+          // question the endpoint answers rather than one you SSH in to guess.
+          deployedCommit: DEPLOYED_COMMIT,
           // Stamped by the relay, not the reader's clock: a dashboard can only
           // honestly say "12s old" if the server says when it answered.
           generatedAt: Date.now(),
@@ -280,6 +307,7 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
           status: 'bot-unreachable',
           botHealthy: false,
           generatedAt: Date.now(),
+          deployedCommit: DEPLOYED_COMMIT,
           relay: {
             connectedClients: clients.size,
             queueLength: await gameManager.getQueueLength(),
