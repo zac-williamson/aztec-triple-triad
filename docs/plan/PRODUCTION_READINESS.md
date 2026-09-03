@@ -540,10 +540,22 @@ Confirmed on production twice. First a game finished with the journal reading
 own-late-proof gap was closed, again — `late move proof absorbed … journal now
 holds 9/9 (transcript COMPLETE — claimable)`.
 
-Both confirmations exercised the RECEIVE-side path. The own-late-proof branch
-is unit-tested and deployed but has not yet been hit on the deployed instance:
-it needs our own proving to run past GAME_OVER, which is a timing accident a
-test run cannot force.
+Then production produced the case itself, on the first repetition run after the
+fix — both late paths in one game:
+
+```
+06:24:18  Generating game_move proof (card 9 at [1,2])...   <- proving our move 7
+06:24:20  game over: player1                                 <- ends WHILE we prove
+06:24:20  game_move proof generated in 1.6s                  <- completes after
+06:24:20  late move proof absorbed - journal now holds 8/9    <- OUR OWN, kept
+06:24:20  move proof 7 submitted (after game over)            <- and sent
+06:24:20  late move proof absorbed - journal now holds 9/9 (COMPLETE - claimable)
+```
+
+Without the keep-our-own fix that game ends at 8/9: one short of claimable, and
+the loser stuck if the winner never returns. It is a timing accident — which is
+precisely why a single green run proved nothing, and why the earlier 9/9 was
+not evidence that this branch worked.
 
 ### 22. The human half of the n == 9 claim was never wired · `DONE` (3 Sep)
 Item 15 changed the contract and the bot. The browser still enforced the old
