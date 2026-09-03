@@ -34,6 +34,10 @@ let warmed: Promise<void> | null = null;
 /** The dynamic imports on the settlement path. Keep in step with useGameSettlement. */
 const SETTLEMENT_IMPORTS: Array<() => Promise<unknown>> = [
   () => import('./pxe'),
+  // pxe pulls this one in dynamically at settlement time, so it is a separate
+  // chunk and exposed to the same race — one level deeper, where it is easy to
+  // miss. The coverage test below follows these transitively for that reason.
+  () => import('./contracts'),
   () => import('./settlementArgs'),
   () => import('./claimParity'),
   () => import('./fieldUtils'),

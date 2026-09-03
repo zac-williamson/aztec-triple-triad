@@ -50,11 +50,27 @@ describe('warmSettlementModules', () => {
     const src = candidates.find(c => existsSync(join(c, 'hooks/useGameSettlement.ts')));
     expect(src, 'could not locate the frontend source tree').toBeTruthy();
 
-    const hook = readFileSync(join(src!, 'hooks/useGameSettlement.ts'), 'utf8');
     const warmer = readFileSync(join(src!, 'aztec/warmSettlementModules.ts'), 'utf8');
 
-    const imports = [...hook.matchAll(/import\(\s*'([^']+)'\s*\)/g)].map(m => m[1]);
-    expect(imports.length, 'the hook should still be importing dynamically').toBeGreaterThan(0);
+    // Scan the hook AND the modules it reaches. A chunk that pxe.ts pulls in
+    // during settlement is exposed exactly as much as one the hook pulls in
+    // directly, and is far easier to miss — ./contracts was.
+    const SCANNED = [
+      'hooks/useGameSettlement.ts',
+      'aztec/pxe.ts',
+      'aztec/settlementArgs.ts',
+      'aztec/proofBackend.ts',
+      'aztec/circuitLoader.ts',
+      'aztec/proofWorker.ts',
+    ];
+    const imports: string[] = [];
+    for (const rel of SCANNED) {
+      const file = join(src!, rel);
+      if (!existsSync(file)) continue;
+      const text = readFileSync(file, 'utf8');
+      for (const m of text.matchAll(/import\(\s*'([^']+)'\s*\)/g)) imports.push(m[1]);
+    }
+    expect(imports.length, 'the settlement path should still be importing dynamically').toBeGreaterThan(0);
 
     const missing = imports.filter(spec => {
       const bare = spec.replace(/^\.\.\/aztec\//, './').replace(/^\.\//, '');
