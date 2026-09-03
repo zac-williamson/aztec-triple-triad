@@ -552,6 +552,30 @@ pub contract TripleTriadGame {
         let p2 = self.storage.game_player2.at(game_id).read();
         assert((claimant == p1) | (claimant == p2), "Claimant must be a player in this game");
 
+        // The turn rule, checked against WHO THE CLAIMANT ACTUALLY IS.
+        //
+        // The private half checks the same thing, but against a
+        // `caller_is_player1` BOOLEAN THE CALLER SUPPLIES, and that flag was
+        // never passed here or compared with anything. So the rule was
+        // defeated by passing whichever value matched the parity of n: the
+        // player who walked away could file the claim as though their opponent
+        // had. Only here are the real addresses readable — game_player1/2 are
+        // PublicMutable, so a private function cannot see them — which is why
+        // the private check can only ever be a fast fail, never the authority.
+        //
+        // Moves are 0-indexed: after n of them the next to move is player 1
+        // when n is even, player 2 when n is odd. A claimant must not be the
+        // one who owes the move. A COMPLETE game (n == 9) owes nobody a move,
+        // so the rule does not apply — see the note in the private half.
+        let n_pub = num_valid_moves as u32;
+        if n_pub != 9 {
+            if claimant == p1 {
+                assert(n_pub % 2 == 1, "It must be opponent's turn to claim abandonment");
+            } else {
+                assert(n_pub % 2 == 0, "It must be opponent's turn to claim abandonment");
+            }
+        }
+
         // A game has to have had time to finish before walking away from it is
         // believable. Without this a claim can be RACED against the opponent's
         // settlement — file first and the winner loses the card they won —
@@ -624,6 +648,21 @@ pub contract TripleTriadGame {
         self.storage.game_status.at(game_id).write(2);
         self.storage.game_claim_player.at(game_id).write(AztecAddress::zero());
         self.storage.game_claim_at.at(game_id).write(0);
+
+        // And the abandonment clock RESTARTS.
+        //
+        // game_active_at was set once at join and never moved, so the staleness
+        // bar was already an hour in the past by the time any claim could be
+        // contested — the claimant could simply re-file in the same block. A
+        // contest means "I am still here, let us carry on", and it bought the
+        // contester no time at all. Worse, contesting is once per player and
+        // never resets, so an opponent who kept re-claiming exhausted the
+        // honest player's single objection and then walked the claim through.
+        //
+        // Restarting the clock gives the contester a full window to actually
+        // play on. It cannot be used to stall forever: each player may contest
+        // only once, so there are at most two resets in a game's life.
+        self.storage.game_active_at.at(game_id).write(self.context.timestamp() as Field);
 
         self.emit(AbandonmentContested { game_id, contester });
     }
