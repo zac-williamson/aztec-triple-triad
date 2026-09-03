@@ -94,7 +94,16 @@ function mutationsFor(src) {
       }
       if (depth <= 0) { end = j; break; }
     }
-    out.push({ line: i, endLine: end, original: line.trim(), indent: m[1] });
+    // Carry the assertion MESSAGE, scanning the whole span. A multi-line
+    // assert puts its message on a later line, and logging only the first left
+    // 16 survivors unattributable to any invariant — which defeats
+    // scripts/audit/reconcile.mjs, whose entire job is mapping message -> row.
+    const span = lines.slice(i, end + 1).join(' ');
+    const msg = span.match(/"([^"]+)"/);
+    out.push({
+      line: i, endLine: end, indent: m[1],
+      original: msg ? `${line.trim()} ... "${msg[1]}"` : line.trim(),
+    });
     i = end;
   }
   return out;
