@@ -40,6 +40,26 @@ export interface BotProofsLike {
 const RETURN_WAIT_MS = 60 * 60_000;
 
 /**
+ * How long we keep absorbing move proofs for a game that has already ended.
+ *
+ * The final move of a nine-move game is always player 1's — moves are
+ * 0-indexed, so P1 plays 0,2,4,6,8 — and the bot only ever joins, so it is
+ * always player 2. Its own last proof is move 7; the ninth is the opponent's
+ * and arrives AFTER GAME_OVER, while their browser is still proving it.
+ *
+ * On the settling path that is covered, because settle() waits for
+ * moveProofs.size >= 9. On the losing path nothing waited: resetToIdle() ran
+ * immediately, the proof arrived to a null gameId and was dropped, and the
+ * journal froze at 8 of 9 — leaving the LOSER unable to claim the game if the
+ * winner then walked away, which is precisely the case claim_abandoned_game's
+ * n == 9 branch exists to serve.
+ *
+ * Fifteen minutes is far beyond any browser proving time and far inside the
+ * one-hour staleness bar, so the journal is complete before the sweep can act.
+ */
+const LATE_PROOF_WINDOW_MS = 15 * 60_000;
+
+/**
  * How long to wait for the opponent's hand proof before declining to commit.
  * Generous: it is a client-side proof over a hand they already hold, so it
  * takes seconds, and the cost of giving up early is a game that could have
@@ -648,6 +668,17 @@ export class ArenaBot {
           this.opponentCardIds = this.myPlayer === 'player1' ? msg.player2CardIds : msg.player1CardIds;
           this.journalGame();
         }
+        // Keep the door open for the opponent's final move proof, which is
+        // still being proved in their browser and will arrive after we have
+        // reset. Registered on BOTH paths: settling waits for it in-process,
+        // but a settle that fails leaves the journal as the only record.
+        if (this.committed && this.gameId && this.onChainGameId) {
+          this.pruneLateProofGames();
+          this.lateProofGames.set(this.gameId, {
+            onChainGameId: this.onChainGameId,
+            deadline: this.now() + LATE_PROOF_WINDOW_MS,
+          });
+        }
         if (this.chain && this.proofs && this.shouldSettle(msg.winner)) {
           // Settle BEFORE resetting: the transcript lives in this game's state.
           void this.settle(msg.winner).catch(err => {
@@ -706,6 +737,13 @@ export class ArenaBot {
         if (msg.gameId === this.gameId && msg.moveProof?.startStateHash) {
           this.moveProofs.set(String(msg.moveProof.startStateHash), msg.moveProof);
           this.journalGame();
+        } else if (msg.moveProof?.startStateHash) {
+          // The ninth proof arrives after the game we just lost has ended —
+          // see LATE_PROOF_WINDOW_MS. Same reasoning as NOTE_DATA above: by
+          // now this.gameId is null, so gating on it drops exactly the proof
+          // that completes the transcript. Straight into the journal, which is
+          // what the sweep claims from.
+          this.absorbLateMoveProof(String(msg.gameId), msg.moveProof);
         }
         break;
 
@@ -1090,6 +1128,45 @@ export class ArenaBot {
    * an opponent who never settles must not leak an entry per game forever.
    */
   private readonly awaitingReturn = new Map<string, number>();
+
+  /** Relay gameId → the on-chain game whose journal entry still wants proofs. */
+  private readonly lateProofGames = new Map<string, { onChainGameId: string; deadline: number }>();
+
+  /**
+   * Merge a move proof for a game that has already ended into its journal
+   * record. The live `moveProofs` map is gone by now — resetToIdle() cleared
+   * it — so the journal is the only place this can land, and it is also the
+   * only place the sweep reads from.
+   */
+  private absorbLateMoveProof(relayGameId: string, proof: { startStateHash?: unknown }): void {
+    this.pruneLateProofGames();
+    const entry = this.lateProofGames.get(relayGameId);
+    if (!entry || !this.journal) return;
+
+    try {
+      const rec = this.journal.read(entry.onChainGameId);
+      if (!rec) return;
+      const key = String(proof.startStateHash);
+      const proofs = (rec.moveProofs ?? []) as Array<{ startStateHash?: unknown }>;
+      if (proofs.some(p => String(p.startStateHash) === key)) return;   // already have it
+
+      const merged = [...proofs, proof];
+      this.journal.write({ ...rec, moveProofs: merged as any, updatedAt: this.now() });
+      this.log(`late move proof absorbed for ${entry.onChainGameId.slice(0, 10)}… — ` +
+        `journal now holds ${merged.length}/9` +
+        (merged.length >= 9 ? ' (transcript COMPLETE — claimable)' : ''));
+      if (merged.length >= 9) this.lateProofGames.delete(relayGameId);
+    } catch (err) {
+      this.log(`WARNING: could not absorb late move proof: ${(err as Error).message}`);
+    }
+  }
+
+  private pruneLateProofGames(): void {
+    const now = this.now();
+    for (const [id, e] of this.lateProofGames) {
+      if (e.deadline <= now) this.lateProofGames.delete(id);
+    }
+  }
 
   private expectReturnedNotes(gameId: string): void {
     this.pruneAwaitingReturn();

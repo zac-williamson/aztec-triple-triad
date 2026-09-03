@@ -1951,3 +1951,155 @@ describe('per-game skill', () => {
     }
   }, 30_000);
 });
+
+/**
+ * The mirror of the bug above, on the RECEIVING side.
+ *
+ * Moves are 0-indexed, so player 1 plays 0,2,4,6,8 and player 2 plays 1,3,5,7.
+ * The bot only ever joins, so it is always player 2 — meaning the ninth and
+ * final proof of every game it plays belongs to the OPPONENT and arrives after
+ * GAME_OVER, while their browser is still proving it.
+ *
+ * When the bot settles, settle() waits for that proof. When it loses, nothing
+ * did: resetToIdle() had already nulled `gameId`, MOVE_PROVEN's
+ * `msg.gameId === this.gameId` guard failed, and the proof was dropped. The
+ * journal froze at 8 of 9 — so if the winner then walked away, the loser could
+ * never claim the game, which is exactly the case claim_abandoned_game's
+ * n == 9 branch was added to serve. Observed on production: the bot finished a
+ * completed game holding 8 proofs.
+ *
+ * The NOTE_DATA handler one case above already carries this reasoning verbatim
+ * for returned cards. MOVE_PROVEN did not.
+ */
+describe('ArenaBot late move proofs from the opponent', () => {
+  function journalSpy() {
+    const store = new Map<string, any>();
+    return {
+      store,
+      journal: {
+        read: (id: string) => store.get(id) ?? null,
+        write: (rec: any) => { store.set(rec.onChainGameId, rec); },
+        forget: (id: string) => { store.delete(id); },
+        markSettled: (id: string) => {
+          const rec = store.get(id);
+          if (rec) store.set(id, { ...rec, settled: true });
+        },
+      },
+    };
+  }
+
+  /**
+   * Play to a loss, leaving the journal one proof short — the production shape.
+   *
+   * The clock is MUTABLE here. Elsewhere in this file `now` is a constant,
+   * which is fine when nothing under test reads a deadline — but the late-proof
+   * window is a deadline, and against a frozen clock it never expires no matter
+   * how far vitest's timers advance.
+   */
+  async function playToLoss() {
+    let clock = 1_000_000;
+    const advanceClock = (ms: number) => { clock += ms; };
+    const socket = new FakeSocket();
+    const f = fakeChain();
+    const j = journalSpy();
+    const proofs = {
+      cardCommitHash: async () => FIELD(0x1),
+      verificationKeys: async () => ({ handVk: new Uint8Array([1]), moveVk: new Uint8Array([2]) }),
+      proveHand: async () => ({ proof: 'p', publicInputs: ['a', 'b'], cardCommit: FIELD(0x1) }),
+      proveMove: async () => ({ proof: 'p', publicInputs: [], startStateHash: 'mine' }),
+    };
+    const bot = new ArenaBot(makeConfig(), {
+      connect: () => socket as unknown as any,
+      fetchQueue: async () => ({ length: 1, oldestWaitMs: 30_000, entries: [] }),
+      chain: f.chain as any, proofs: proofs as any, journal: j.journal,
+      log: () => {}, now: () => clock,
+    });
+    bot.start();
+    socket.emit('open');
+    socket.deliver({ type: 'SESSION_ESTABLISHED', playerId: 'b', sessionToken: 't' });
+    socket.deliver({ type: 'BOT_REGISTERED' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    socket.deliver({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2, gameState: freshState(), opponentIsBot: false });
+    deliverJoinHandshake(socket);
+    socket.deliver({ type: 'HAND_PROOF', gameId: 'g1', fromPlayer: 1, handProof: { proof: 'q', publicInputs: [], cardCommit: FIELD(0x2) } });
+    await vi.advanceTimersByTimeAsync(50);
+
+    // Eight of the nine proofs are in before the game ends.
+    for (let i = 0; i < 8; i++) {
+      socket.deliver({
+        type: 'MOVE_PROVEN', gameId: 'g1',
+        moveProof: { proof: 'p', publicInputs: [], startStateHash: `s${i}` },
+      });
+    }
+    await vi.advanceTimersByTimeAsync(20);
+
+    socket.deliver({
+      type: 'GAME_OVER', gameId: 'g1', winner: 'player1', gameState: freshState(),
+      player1CardIds: [1, 2, 3, 4, 5], player2CardIds: [6, 7, 8, 9, 10],
+    });
+    await vi.advanceTimersByTimeAsync(50);
+    return { socket, bot, j, advanceClock };
+  }
+
+  const record = (j: ReturnType<typeof journalSpy>) => [...j.store.values()][0];
+
+  it('the journal is one proof short when the game ends — the state this fixes', async () => {
+    const h = await playToLoss();
+    expect(h.bot.getStats().state, 'a loss resets to idle').not.toBe('playing');
+    expect(record(h.j).moveProofs).toHaveLength(8);
+    h.bot.stop();
+  });
+
+  it('absorbs the ninth proof that lands after GAME_OVER', async () => {
+    const h = await playToLoss();
+
+    // The winner's final move proof, arriving from a browser that was still
+    // proving when the relay called the game.
+    h.socket.deliver({
+      type: 'MOVE_PROVEN', gameId: 'g1',
+      moveProof: { proof: 'p', publicInputs: [], startStateHash: 'final' },
+    });
+    await vi.advanceTimersByTimeAsync(20);
+
+    const rec = record(h.j);
+    expect(rec.moveProofs, 'without this the loser can never claim a completed game').toHaveLength(9);
+    expect(rec.moveProofs.map((p: any) => p.startStateHash)).toContain('final');
+    h.bot.stop();
+  });
+
+  it('does not double-count a proof the relay redelivers', async () => {
+    const h = await playToLoss();
+    const dup = { proof: 'p', publicInputs: [], startStateHash: 'final' };
+    h.socket.deliver({ type: 'MOVE_PROVEN', gameId: 'g1', moveProof: dup });
+    h.socket.deliver({ type: 'MOVE_PROVEN', gameId: 'g1', moveProof: dup });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(record(h.j).moveProofs).toHaveLength(9);
+    h.bot.stop();
+  });
+
+  it('ignores a proof for a game it never played', async () => {
+    const h = await playToLoss();
+    h.socket.deliver({
+      type: 'MOVE_PROVEN', gameId: 'someone-elses-game',
+      moveProof: { proof: 'p', publicInputs: [], startStateHash: 'final' },
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(record(h.j).moveProofs).toHaveLength(8);
+    h.bot.stop();
+  });
+
+  it('stops absorbing once the window has passed', async () => {
+    // A proof this late is not the game-ending one; accepting it would write a
+    // record whose contents no longer match any transcript we can reason about.
+    const h = await playToLoss();
+    h.advanceClock(16 * 60_000);
+    await vi.advanceTimersByTimeAsync(16 * 60_000);
+    h.socket.deliver({
+      type: 'MOVE_PROVEN', gameId: 'g1',
+      moveProof: { proof: 'p', publicInputs: [], startStateHash: 'final' },
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(record(h.j).moveProofs).toHaveLength(8);
+    h.bot.stop();
+  });
+});
