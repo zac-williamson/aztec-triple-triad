@@ -276,6 +276,10 @@ async function main() {
       // this whole feature exists to prevent, and an earlier version of this
       // block did exactly that while logging "settling normally instead".
       const health = process.env.ARENA_HEALTH_URL ?? 'https://ws.aztec-arena.com/arena-health';
+      // OUR game's id. Both players share it — player 1 derives it in-circuit
+      // and the bot joins that same id — so it is what identifies our entry in
+      // the bot's worklist.
+      const ourGameId = (await phase())?.chain?.onChainGameId ?? null;
       let proofs = -1;
       for (let i = 0; winner === 'player1' && i < 60; i++) {
         proofs = await fetch(health, { cache: 'no-store' })
@@ -284,8 +288,16 @@ async function main() {
             // While the game is live it is in `game`; once the bot leaves the
             // board it is in the journal, still holding our committed cards.
             if (d?.game?.moveProofs !== undefined) return d.game.moveProofs;
-            const j = (d?.journal ?? [])[0];
-            return j ? j.moveProofs : -1;
+            const journal: any[] = d?.journal ?? [];
+            if (journal.length === 0) return -1;
+            // NOT journal[0]. The worklist holds every game still owed a
+            // recovery, oldest first, so entry zero is routinely some earlier
+            // game — reading it reported 8 proofs for a game that had 9 and
+            // would have thrown away a good run as a false negative.
+            const mine = ourGameId
+              ? journal.find(j => j.onChainGameId === ourGameId)
+              : journal.reduce((a, b) => (b.ageSeconds < a.ageSeconds ? b : a));
+            return mine ? mine.moveProofs : -1;
           })
           .catch(() => -1);
         if (proofs >= 9) break;
