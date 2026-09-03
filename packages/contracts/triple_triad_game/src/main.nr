@@ -31,6 +31,26 @@ pub global MIN_ABANDON_SECONDS: u64 = 3600;
 /// already waited an hour.
 pub global DISPUTE_SECONDS: u64 = 600;
 
+/**
+ * Are these the two players of the game, in some order?
+ *
+ * Extracted so it can be tested at all. The draw settlement is `only_self` and
+ * reachable only through process_game's eleven proofs, so nothing in the TXE
+ * suite can call it — which is part of why an unconstrained payout survived
+ * there. A pure predicate can be exercised directly.
+ *
+ * `settler` and `other` are the two mint recipients. Requiring them to be
+ * exactly {p1, p2} rejects both a substituted address and a settler naming
+ * itself twice.
+ *
+ * Takes Fields rather than AztecAddress: this lives outside the contract
+ * module, where the address type is not in scope, and comparing the field
+ * representations is the same comparison.
+ */
+pub fn is_player_pair(settler: Field, other: Field, p1: Field, p2: Field) -> bool {
+    ((settler == p1) & (other == p2)) | ((settler == p2) & (other == p1))
+}
+
 pub fn compute_initial_state_hash() -> Field {
     let mut initial_inputs: [Field; 30] = [0; 30];
     initial_inputs[18] = 5;
@@ -972,7 +992,7 @@ pub contract TripleTriadGame {
                 .call(self.context);
 
             self.enqueue_self.settle_game_draw(
-                game_id, card_commit_1, card_commit_2,
+                game_id, caller, opponent, card_commit_1, card_commit_2,
                 caller_state_hash, opponent_state_hash,
                 opponent_state_from_p1_proof, opponent_state_from_p2_proof,
                 caller_cards_commit, opponent_cards_commit,
@@ -1081,6 +1101,8 @@ pub contract TripleTriadGame {
     #[only_self]
     fn settle_game_draw(
         game_id: Field,
+        caller: AztecAddress,
+        opponent: AztecAddress,
         proof_card_commit_1: Field,
         proof_card_commit_2: Field,
         caller_state_hash: Field,
@@ -1114,23 +1136,54 @@ pub contract TripleTriadGame {
         assert(proof_card_commit_1 == stored_cc1, "card_commit_1 mismatch");
         assert(proof_card_commit_2 == stored_cc2, "card_commit_2 mismatch");
 
-        // Same binding as settle_game. A draw may be settled by EITHER player,
-        // so the pair must match the stored commitments in one order or the
-        // other — the same shape as the state-hash check below.
+        // WHO the cards go to, not just WHICH cards.
+        //
+        // The commitment checks below bind the card IDS. They say nothing about
+        // the recipients, and in the draw branch of process_game both
+        // recipients are caller-supplied: `caller` is msg_sender and `opponent`
+        // is a plain argument. Nothing here used to read the stored player
+        // addresses at all, so a player settling a drawn game could pass an
+        // address they controlled as `opponent` and have the OPPONENT'S five
+        // committed cards minted to themselves. The ids were genuine, every
+        // commitment check passed, and the other player got nothing.
+        //
+        // settle_game constrains its recipients (`winner == player1` etc.).
+        // Only the draw path did not — the one settlement route where nothing
+        // is supposed to change hands, and therefore the one where an
+        // unconstrained transfer is least expected.
+        let p1 = self.storage.game_player1.at(game_id).read();
+        let p2 = self.storage.game_player2.at(game_id).read();
+        let caller_is_p1 = caller == p1;
         assert(
-            ((caller_cards_commit == stored_cc1) & (opponent_cards_commit == stored_cc2))
-            | ((caller_cards_commit == stored_cc2) & (opponent_cards_commit == stored_cc1)),
+            crate::is_player_pair(
+                caller.to_field(), opponent.to_field(), p1.to_field(), p2.to_field(),
+            ),
+            "A draw must pay out to the two players of this game",
+        );
+
+        // Same binding as settle_game, and now pinned to the settler's SIDE
+        // rather than accepting either order: the caller's cards must be the
+        // ones the caller committed, so the pairing of cards to recipient is
+        // fixed rather than merely self-consistent.
+        let caller_expected_cc = if caller_is_p1 { stored_cc1 } else { stored_cc2 };
+        let opponent_expected_cc = if caller_is_p1 { stored_cc2 } else { stored_cc1 };
+        assert(
+            (caller_cards_commit == caller_expected_cc)
+            & (opponent_cards_commit == opponent_expected_cc),
             "Card ids do not match the commitments in a draw",
         );
 
         // Verify player_state_hash values match on-chain records
         let stored_ps1 = self.storage.game_player_state_1.at(game_id).read();
         let stored_ps2 = self.storage.game_player_state_2.at(game_id).read();
-        // For draws, caller could be either player. Verify both state hashes match
-        // (one must be stored_ps1 and the other stored_ps2)
+        // Pinned to the settler's side for the same reason as the commitments
+        // above: an either-order check is satisfied by a swap, and the swap is
+        // exactly what mints one player's stake into the other's hands.
+        let caller_expected_ps = if caller_is_p1 { stored_ps1 } else { stored_ps2 };
+        let opponent_expected_ps = if caller_is_p1 { stored_ps2 } else { stored_ps1 };
         assert(
-            ((caller_state_hash == stored_ps1) & (opponent_state_hash == stored_ps2))
-            | ((caller_state_hash == stored_ps2) & (opponent_state_hash == stored_ps1)),
+            (caller_state_hash == caller_expected_ps)
+            & (opponent_state_hash == opponent_expected_ps),
             "Player state hash mismatch in draw",
         );
 
@@ -1141,10 +1194,13 @@ pub contract TripleTriadGame {
         self.storage.game_settled.at(game_id).write(true);
         self.storage.game_status.at(game_id).write(3); // settled
 
+        // A draw has no winner, but the event should still say who was paid.
+        // Zeros here meant an indexer could not tell a legitimate draw from one
+        // that paid a stranger.
         self.emit(GameSettled {
             game_id,
-            winner: AztecAddress::zero(),
-            loser: AztecAddress::zero(),
+            winner: caller,
+            loser: opponent,
             transferred_card_id: 0,
         });
     }

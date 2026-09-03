@@ -2,6 +2,7 @@ use crate::TripleTriadGame;
 use triple_triad_nft::TripleTriadNFT;
 use crate::test::utils;
 use aztec::note::constants::MAX_NOTES_PER_PAGE;
+use aztec::protocol::traits::ToField;
 
 unconstrained fn count_private_cards(
     env: aztec::test::helpers::test_environment::TestEnvironment,
@@ -97,4 +98,54 @@ unconstrained fn create_game_commits_cards_from_player() {
 
     // All cards committed
     assert(count_private_cards(env, nft_addr, player1) == 0, "P1 should have 0 cards after commit");
+}
+
+// --- Draw payout recipients ---
+
+/**
+ * A draw must pay the two players of THAT game and nobody else.
+ *
+ * The deployed contract did not check this. Both recipients in the draw branch
+ * of process_game are caller-supplied — `caller` is msg_sender and `opponent`
+ * is a plain argument — and settle_game_draw never read the stored player
+ * addresses, so a player settling a drawn game could pass an address they
+ * controlled and have the OPPONENT'S five committed cards minted to
+ * themselves. Every commitment check passed, because the card IDS were
+ * genuine; only the recipient was wrong. settle_game (win/loss) constrained
+ * its recipients all along. The draw path did not.
+ *
+ * These exercise the rule directly, because nothing in TXE can reach the
+ * settlement itself: it is `only_self` and gated behind eleven real proofs,
+ * which is a large part of why this survived.
+ */
+#[test]
+unconstrained fn draw_accepts_the_two_players_either_way_round() {
+    let (_env, _g, _n, _t, p1, p2) = utils::setup_game();
+    let (a, b) = (p1.to_field(), p2.to_field());
+    assert(crate::is_player_pair(a, b, a, b), "p1 settling, paying p2");
+    assert(crate::is_player_pair(b, a, a, b), "p2 settling, paying p1");
+}
+
+#[test]
+unconstrained fn draw_rejects_an_outsider_as_the_payee() {
+    let (_env, _g, _n, _t, p1, p2) = utils::setup_game();
+    let (a, b) = (p1.to_field(), p2.to_field());
+    let outsider: Field = 0xbad;
+    assert(
+        !crate::is_player_pair(a, outsider, a, b),
+        "the settler must not be able to redirect the opponent's stake",
+    );
+    assert(!crate::is_player_pair(outsider, b, a, b), "nor settle as a non-player");
+    assert(!crate::is_player_pair(outsider, outsider, a, b), "nor both");
+}
+
+#[test]
+unconstrained fn draw_rejects_the_settler_naming_itself_twice() {
+    let (_env, _g, _n, _t, p1, p2) = utils::setup_game();
+    let (a, b) = (p1.to_field(), p2.to_field());
+    assert(
+        !crate::is_player_pair(a, a, a, b),
+        "naming yourself as both recipients would mint both hands to you",
+    );
+    assert(!crate::is_player_pair(b, b, a, b), "same, as player 2");
 }
