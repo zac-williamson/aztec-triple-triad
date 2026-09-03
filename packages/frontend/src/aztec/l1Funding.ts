@@ -19,8 +19,17 @@
  *
  * The swap itself is covered separately, because "the only leg that spends real
  * money" and "the only leg no deployment exercises" must not be the same leg:
- * packages/playtest/scripts/swap-leg-live.mts runs swapForFeeAsset against a
- * real Uniswap V3 pool on Sepolia.
+ * packages/playtest/scripts/swap-leg-fork.mts runs swapForFeeAsset against the
+ * real Universal Router, v4 PoolManager, AZTEC token and pool state on a
+ * MAINNET FORK.
+ *
+ * That script is manual — it needs `anvil --fork-url <mainnet>` — so it is not
+ * in CI and nothing runs it on a schedule. Treat the swap as verified against a
+ * fork and never against mainnet itself.
+ *
+ * (This comment previously named a swap-leg-live.mts that does not exist, and
+ * described a Uniswap V3 pool on Sepolia. Anyone checking the claim would have
+ * found nothing — on the one leg where being wrong costs a player money.)
  *
  * We do NOT reuse the SDK's L1FeeJuicePortalManager here: it requires an HTTP
  * transport and a local private-key account (see createExtendedL1Client), and
