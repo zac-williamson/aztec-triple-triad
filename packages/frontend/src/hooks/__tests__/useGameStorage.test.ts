@@ -155,16 +155,41 @@ describe('useGameStorage', () => {
       expect(result.current.loadClaimable()).toBeNull();
     });
 
+    it('a NEW game is not born finished because the last one was', () => {
+      // The finished marker is carried across saves so a late move proof does
+      // not flip a finished record back to "in progress". Carrying it to a
+      // DIFFERENT game would make the new one un-resumable from the start —
+      // refresh mid-game and "Resume" is gone.
+      const { result } = renderHook(() => useGameStorage());
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(makeSavedGame({
+        gameId: 'game-1', onChainGameId: '0xold',
+      })));
+      act(() => result.current.markFinished());
+
+      act(() => result.current.saveGame(makeSavedGame({
+        gameId: 'game-2', onChainGameId: '0xnew',
+      })));
+
+      const resumable = result.current.loadGame();
+      expect(resumable, 'the new game must still be resumable').not.toBeNull();
+      expect(resumable!.gameId).toBe('game-2');
+      expect(result.current.hasGame()).toBe(true);
+    });
+
     it('a later save does not resurrect a finished game', () => {
       // The save effect rebuilds this record from live state whenever anything
       // changes — and a move proof arriving AFTER the game ended does exactly
       // that. Without the merge, the record would flip back to "in progress"
       // at the moment it stopped being one.
       const { result } = renderHook(() => useGameStorage());
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(makeSavedGame({ onChainGameId: '0xabc' })));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(makeSavedGame({
+        gameId: 'game-1', onChainGameId: '0xabc',
+      })));
       act(() => result.current.markFinished());
 
-      act(() => result.current.saveGame(makeSavedGame({ onChainGameId: '0xabc' })));
+      act(() => result.current.saveGame(makeSavedGame({
+        gameId: 'game-1', onChainGameId: '0xabc',
+      })));
 
       expect(result.current.loadGame(), 'still finished').toBeNull();
       expect(result.current.loadClaimable()).not.toBeNull();

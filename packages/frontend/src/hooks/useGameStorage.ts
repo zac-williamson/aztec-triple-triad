@@ -78,7 +78,13 @@ export function useGameStorage() {
         if (finishedAt === undefined) {
           const prior = localStorage.getItem(gameKey);
           if (prior) {
-            try { finishedAt = (JSON.parse(prior) as PersistedGameState).finishedAt; } catch { /* corrupt: ignore */ }
+            try {
+              const before = JSON.parse(prior) as PersistedGameState;
+              // Only carry it across for the SAME game. Without that check a
+              // NEW game inherits the last one's finished marker and is born
+              // un-resumable: refresh mid-game and "Resume" is not offered.
+              if (before.gameId === state.gameId) finishedAt = before.finishedAt;
+            } catch { /* corrupt: ignore */ }
           }
         }
         localStorage.setItem(gameKey, JSON.stringify(finishedAt === undefined ? state : { ...state, finishedAt }));
