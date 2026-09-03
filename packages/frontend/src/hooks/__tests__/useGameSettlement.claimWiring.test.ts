@@ -21,19 +21,35 @@ const hoisted = vi.hoisted(() => ({
   addCardsMock: vi.fn(),
   sendClaimMock: vi.fn().mockResolvedValue('0xCLAIM_TX'),
   sendSettleMock: vi.fn().mockResolvedValue('0xSETTLE_TX'),
+  // The mocked chain clock. It lives here, not in a module-level closure, so
+  // beforeEach can rewind it: shared across tests it drifts past the dispute
+  // window, and a later test then finds the window already open — or worse,
+  // lets a flow parked by an EARLIER test run to completion mid-assertion.
+  chainClock: { t: 1_700_000 },
+  // Chain time at which the claim was recorded; the dispute window runs from here.
+  readAbandonmentInfoMock: vi.fn().mockResolvedValue({
+    status: 5, activeAt: 1_000_000, claimAt: 1_700_000, claimPlayer: '0xME',
+  }),
 }));
 
+
 vi.mock('../../aztec/AztecContext', () => {
-  // Block-aware dispute wait polls node.getBlockNumber() until 5 blocks elapse
-  // since the claim. Advance one block per poll so the window opens and
-  // settle_abandoned_game fires (the real node advances by wall-clock; +1 per
-  // poll is enough to exercise the loop deterministically under fake timers).
-  let block = 1000;
+  // The dispute wait polls CHAIN TIME, not block height: the contract measures
+  // the window in seconds, and blocks on this testnet land anywhere from 27 to
+  // 72 seconds apart. Each poll here advances the chain clock by 120s so the
+  // 600s window opens after a few polls.
   return ({
   useAztecContext: () => ({
     wallet: { fake: 'wallet' },
     accountAddress: '0xME',
-    nodeClient: { fake: 'node', getBlockNumber: () => Promise.resolve(block++) },
+    nodeClient: {
+      fake: 'node',
+      getBlockNumber: () => Promise.resolve(1000),
+      getBlock: () => {
+        hoisted.chainClock.t += 120;
+        return Promise.resolve({ header: { globalVariables: { timestamp: hoisted.chainClock.t } } });
+      },
+    },
     isAvailable: true,
     ownedCardIds: [],
     updateOwnedCards: vi.fn(),
@@ -59,6 +75,9 @@ vi.mock('../../aztec/pxe', () => {
     sendClaimAbandonedGame: hoisted.sendClaimMock,
     sendSettleAbandonedGame: hoisted.sendSettleMock,
     importCardNotes: hoisted.importCardNotesMock,
+    // The settle side reads the claim's chain timestamp to know when the
+    // dispute window opened; a wall-clock guess would settle early and revert.
+    readAbandonmentInfo: hoisted.readAbandonmentInfoMock,
   };
   return {
     pxe: ops,
@@ -171,6 +190,7 @@ const play = {
 
 describe('present-but-idle claim wiring', () => {
   beforeEach(() => {
+    hoisted.chainClock.t = 1_700_000;   // rewind the chain clock for each test
     vi.clearAllMocks();
     vi.useFakeTimers();
   });
@@ -221,15 +241,17 @@ describe('present-but-idle claim wiring', () => {
     const { result } = renderHook(() => useGameSettlement({ ws, cardIds: [1, 2, 3, 4, 5], session, play }));
 
     await act(async () => { result.current.handleAbandonedGame(); });
-    // Advance past the claim tx into the dispute window, but not past it.
-    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    // Into the dispute window but not through it: the mocked chain advances
+    // 120s per poll, so 600s of chain time needs several polls.
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
 
-    // The countdown is now a block-based estimate (~5 blocks × observed s/block,
-    // seeded at 5×40s), not the old fixed 65s — assert it's surfaced + positive
-    // within a sane bound rather than pinning the old wall-clock value.
+    // Chain seconds remaining in the contract's own window — so it counts DOWN
+    // from 600 and can never exceed it. The old version of this counted blocks
+    // and could report a number that had nothing to do with when the contract
+    // would actually let the settle through.
     expect(result.current.abandonedDisputeCountdown).not.toBeNull();
     expect(result.current.abandonedDisputeCountdown!).toBeGreaterThan(0);
-    expect(result.current.abandonedDisputeCountdown!).toBeLessThanOrEqual(5 * 60);
+    expect(result.current.abandonedDisputeCountdown!).toBeLessThan(600);
   });
 
   it('is idempotent — a second call while claiming does not start a second claim', async () => {

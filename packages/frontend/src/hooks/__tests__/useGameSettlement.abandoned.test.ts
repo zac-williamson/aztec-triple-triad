@@ -22,10 +22,18 @@ const hoisted = vi.hoisted(() => ({
   // string), not a raw contract.methods.*.send(...).
   sendClaimMock: vi.fn().mockResolvedValue('0xCLAIM_TX'),
   sendSettleMock: vi.fn().mockResolvedValue('0xSETTLE_TX'),
+  // The mocked chain clock. It lives here, not in a module-level closure, so
+  // beforeEach can rewind it: shared across tests it drifts past the dispute
+  // window, and a later test then finds the window already open — or worse,
+  // lets a flow parked by an EARLIER test run to completion mid-assertion.
+  chainClock: { t: 1_700_000 },
 }));
 
 vi.mock('../../aztec/AztecContext', () => {
-  // Block-aware dispute wait polls node.getBlockNumber() until 5 blocks elapse
+  // The dispute wait polls CHAIN TIME — the contract measures its window in
+  // seconds, not blocks. Advance the chain clock well past DISPUTE_SECONDS on
+  // the first poll so this test gets through the window in one step.
+  // (was: block-aware wait polling getBlockNumber until 5 blocks elapse
   // since the claim. Advance one block per call so the window opens and
   // settle_abandoned_game fires deterministically under fake timers.
   let block = 1000;
@@ -33,7 +41,14 @@ vi.mock('../../aztec/AztecContext', () => {
   useAztecContext: () => ({
     wallet: { fake: 'wallet' },
     accountAddress: '0xME',
-    nodeClient: { fake: 'node', getBlockNumber: () => Promise.resolve(block++) },
+    nodeClient: {
+      fake: 'node',
+      getBlockNumber: () => Promise.resolve(block++),
+      getBlock: () => {
+        hoisted.chainClock.t += 900;   // one poll clears the 600s window
+        return Promise.resolve({ header: { globalVariables: { timestamp: hoisted.chainClock.t } } });
+      },
+    },
     isAvailable: true,
     ownedCardIds: [],
     updateOwnedCards: vi.fn(),
@@ -65,6 +80,9 @@ vi.mock('../../aztec/pxe', () => {
   const ops = {
     sendClaimAbandonedGame: hoisted.sendClaimMock,
     sendSettleAbandonedGame: hoisted.sendSettleMock,
+    readAbandonmentInfo: vi.fn().mockResolvedValue({
+      status: 5, activeAt: 1_000_000, claimAt: 1_700_000, claimPlayer: '0xME',
+    }),
     importCardNotes: hoisted.importCardNotesMock,
   };
   return {
@@ -192,6 +210,7 @@ const play = {
 
 describe('abandoned settlement relay notifications (QA-F3)', () => {
   beforeEach(() => {
+    hoisted.chainClock.t = 1_700_000;   // rewind the chain clock for each test
     vi.clearAllMocks();
     vi.useFakeTimers();
   });
@@ -229,7 +248,11 @@ describe('abandoned settlement relay notifications (QA-F3)', () => {
   });
 
   it('does not send ABANDONED_GAME_SETTLED when the claim tx fails', async () => {
-    hoisted.sendClaimMock.mockRejectedValueOnce(new Error('claim reverted'));
+    // mockRejectedValue, not ...Once: the auto-fire path attempts the claim
+    // more than once, so rejecting only the first left a SUCCEEDING claim
+    // running behind it — and the test then asserted nothing about the failure
+    // case it is named for.
+    hoisted.sendClaimMock.mockRejectedValue(new Error('claim reverted'));
     const ws = makeWs();
     renderHook(() => useGameSettlement({ ws, cardIds: [1, 2, 3, 4, 5], session, play }));
 
@@ -237,6 +260,39 @@ describe('abandoned settlement relay notifications (QA-F3)', () => {
       await vi.advanceTimersByTimeAsync(80_000);
     });
 
+    expect(hoisted.sendSettleMock).not.toHaveBeenCalled();
+    expect(ws.notifyAbandonedGameSettled).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A claim that reverts must not be retried forever.
+ *
+ * The auto-trigger used to gate on the flow's IN-FLIGHT guard, which the
+ * finally block clears on failure as well as success — and the effect re-runs
+ * whenever handleAbandonedGame's identity changes, which any state update
+ * does. So every failure re-armed the trigger. Against a claim that reverts
+ * for a persistent reason — "Too soon to call this game abandoned", "Game must
+ * be in active state" — that is an unbounded loop, and each turn of it builds
+ * a recursive proof and sends a transaction.
+ */
+describe('a reverting claim is attempted once, not forever', () => {
+  beforeEach(() => {
+    hoisted.chainClock.t = 1_700_000;
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('stops after the automatic attempt fails', async () => {
+    hoisted.sendClaimMock.mockRejectedValue(new Error('Too soon to call this game abandoned'));
+    const ws = makeWs();
+    renderHook(() => useGameSettlement({ ws, cardIds: [1, 2, 3, 4, 5], session, play }));
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+
+    expect(hoisted.sendClaimMock.mock.calls.length,
+      'one automatic attempt; the player can retry deliberately').toBe(1);
     expect(hoisted.sendSettleMock).not.toHaveBeenCalled();
     expect(ws.notifyAbandonedGameSettled).not.toHaveBeenCalled();
   });

@@ -9,7 +9,7 @@ import { runPxeTx, pxe, type PxeOps } from '../aztec/pxe';
 import { toFr as toFrUtil, toHexString, bytesToFrArray, base64ToFrArray, hexToFr } from '../aztec/fieldUtils';
 import { AZTEC_TX_TIMEOUT, AZTEC_SETTLE_TX_TIMEOUT, CARDS_PER_HAND, TOTAL_MOVES, MOVE_PROOF_WAIT_TIMEOUT, HAND_PROOF_WAIT_TIMEOUT, GAME_TOKEN_REWARD } from '../aztec/gameConstants';
 import { requireWallet, requireAccountAddress } from '../aztec/walletGuards';
-import { padToHand, sortProofChain, computeCanonicalInitialHash } from '../aztec/settlementArgs';
+import { padToHand, sortProofChain, computeCanonicalInitialHash, waitForDisputeWindow, DISPUTE_SECONDS } from '../aztec/settlementArgs';
 import type { HandProofData, MoveProofData, PlaintextNoteData } from '../types';
 
 /** Lazy-load the field/address SDK classes for building proof-tx arguments.
@@ -102,7 +102,11 @@ export interface UseGameSettlementReturn {
  *
  * Ref-vs-state split (see useGame.ts for the architecture rationale):
  *   noteImportProcessedRef:  Idempotency guard preventing duplicate imports.
- *   abandonedClaimStartedRef: Idempotency guard for the abandoned flow.
+ *   abandonedClaimStartedRef: in-flight guard for the abandoned flow — one run
+ *                             at a time, cleared when it ends either way.
+ *   autoClaimFiredRef: whether the AUTOMATIC trigger has already fired for this
+ *                      game. Never cleared by a failure, only by starting a new
+ *                      game — see the auto-trigger effect for why.
  *   opponentSettleTxIdRef,
  *   opponentSettleResolveRef: Loser-side tracking of the winner's settlement.
  */
@@ -118,6 +122,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
   const [isClaimingAbandoned, setIsClaimingAbandoned] = useState(false);
   const [abandonedDisputeCountdown, setAbandonedDisputeCountdown] = useState<number | null>(null);
   const abandonedClaimStartedRef = useRef(false);
+  const autoClaimFiredRef = useRef(false);
 
   // --- Opponent settlement tracking (for loser UX) ---
   const [opponentSettled, setOpponentSettled] = useState(false);
@@ -719,43 +724,33 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
 
       console.log('[useGameSettlement] claim_abandoned_game mined, waiting for dispute window...');
 
-      // Step 2: Wait the on-chain DISPUTE WINDOW. The contract
-      // (settle_abandoned_game_public) requires
-      //   settle_block - claim_block >= DISPUTE_BLOCKS (5).
-      // A fixed wall-clock wait is WRONG: block time varies enormously (instant
-      // sandbox vs ~40s/block on testnet), so the old fixed 65s only covered 5
-      // blocks at ~13s/block and the settle REVERTED ("Dispute window not
-      // elapsed") on real testnet. Poll the node's block height until 5 blocks
-      // have elapsed since the claim, driving the UX countdown from the OBSERVED
-      // block rate. `claimBaselineBlock` is read right after the claim mined, so
-      // it is >= the contract's stored claim_block — we therefore never settle
-      // EARLY (worst case ~1 extra block of wait). Fail LOUD if the window has
-      // not opened within a sane ceiling (never settle early, never wait forever).
-      const DISPUTE_BLOCKS = 5;
-      const DISPUTE_MAX_MS = 20 * 60 * 1000; // ceiling — abort loudly, never infinite-wait (covers ~4min/block)
-      const disputeNode = aztec.nodeClient as { getBlockNumber: () => Promise<number | bigint> };
-      const claimBaselineBlock = Number(await disputeNode.getBlockNumber());
-      const disputeStart = Date.now();
-      let blocksElapsed = 0;
-      setAbandonedDisputeCountdown(DISPUTE_BLOCKS * 40); // initial estimate (~40s/block), refined in-loop
-      while (blocksElapsed < DISPUTE_BLOCKS) {
-        if (Date.now() - disputeStart > DISPUTE_MAX_MS) {
-          throw new Error(
-            `Abandoned-game dispute window did not open: only ${blocksElapsed}/${DISPUTE_BLOCKS} blocks elapsed in ` +
-            `${Math.round((Date.now() - disputeStart) / 1000)}s (claim baseline block ${claimBaselineBlock}). Aborting — ` +
-            `refusing to settle before the on-chain window or to wait indefinitely.`,
-          );
-        }
-        await new Promise(r => setTimeout(r, 3000));
-        const current = Number(await Promise.resolve(disputeNode.getBlockNumber()).catch(() => claimBaselineBlock + blocksElapsed));
-        blocksElapsed = Math.max(0, current - claimBaselineBlock);
-        // Countdown estimate from the observed block rate (fallback ~40s/block).
-        const elapsedS = (Date.now() - disputeStart) / 1000;
-        const secPerBlock = blocksElapsed > 0 ? elapsedS / blocksElapsed : 40;
-        setAbandonedDisputeCountdown(Math.ceil((DISPUTE_BLOCKS - blocksElapsed) * secPerBlock));
-      }
+      // Step 2: Wait out the on-chain DISPUTE WINDOW.
+      //
+      // The contract measures it in SECONDS of chain time (DISPUTE_SECONDS),
+      // not blocks. This waited five blocks, left over from when the contract
+      // did too — and five blocks at the 27-72s intervals this testnet
+      // actually produces is 135-360s against a 600s requirement, so the
+      // settle that follows would revert as too early and the player would be
+      // told their recovery failed.
+      //
+      // waitForDisputeWindow polls the chain's own timestamp, which is immune
+      // to block-rate variance and to local clock skew alike. It already
+      // existed — written when the contract moved to seconds — and nothing
+      // called it. This is that call.
+      const claimedAt = await (async () => {
+        const { pxe } = await import('../aztec/pxe');
+        const info = await pxe.readAbandonmentInfo(addr, capturedOnChainGameId!);
+        return info.claimAt;
+      })();
+      console.log(`[useGameSettlement] claim recorded at chain time ${claimedAt} — waiting ${DISPUTE_SECONDS}s`);
+      setAbandonedDisputeCountdown(DISPUTE_SECONDS);
+      await waitForDisputeWindow(
+        aztec.nodeClient as any,
+        claimedAt,
+        { onProgress: secondsLeft => setAbandonedDisputeCountdown(secondsLeft) },
+      );
       setAbandonedDisputeCountdown(0);
-      console.log(`[useGameSettlement] dispute window elapsed (${blocksElapsed} blocks since claim) — settling`);
+      console.log('[useGameSettlement] dispute window elapsed — settling');
 
       // Determine which card to claim (first opponent card placed on board, if any)
       // For now claim the first opponent card if any moves were played by opponent
@@ -841,13 +836,26 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
       session.transitionPhase, session.backfillSettlementInfoFromWs,
       play.getMoveProofs, play.getMyHandProof, play.getOpponentHandProof]);
 
-  // Auto-trigger abandoned game flow when opponent disconnects
+  // Auto-trigger the abandoned game flow when the opponent disconnects.
+  //
+  // Latched on its OWN ref, not on the in-flight guard. The in-flight guard is
+  // cleared in the flow's finally — including when the claim reverted — and
+  // this effect re-runs whenever handleAbandonedGame's identity changes, which
+  // any state update does. So gating on it re-armed the trigger on every
+  // failure and retried forever: a claim that reverts for a PERSISTENT reason
+  // ("Too soon to call this game abandoned", "Game must be in active state")
+  // would loop, and every attempt costs a recursive proof and a transaction.
+  //
+  // Once per game is the correct number of automatic attempts. A player can
+  // still retry deliberately from the menu, which goes through the same
+  // function and is only blocked while a run is actually in flight.
   useEffect(() => {
     if (!ws.opponentDisconnected) return;
-    if (abandonedClaimStartedRef.current) return;
+    if (autoClaimFiredRef.current || abandonedClaimStartedRef.current) return;
     if (session.getPhase() !== 'active' && session.getPhase() !== 'awaiting_join') return;
     if (play.getMoveProofs().length === 0) return;
     console.log('[useGameSettlement] Opponent disconnected with moves played, starting abandoned game flow...');
+    autoClaimFiredRef.current = true;
     handleAbandonedGame();
   }, [ws.opponentDisconnected, handleAbandonedGame, session.getPhase, play.getMoveProofs]);
 
@@ -868,6 +876,9 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     setTakenCardId(null);
     opponentSettleTxIdRef.current = null;
     opponentSettleResolveRef.current = null;
+    // A new game gets a fresh automatic attempt; the latch is per-game.
+    autoClaimFiredRef.current = false;
+    abandonedClaimStartedRef.current = false;
   }, []);
 
   return {
