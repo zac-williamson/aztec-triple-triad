@@ -1836,3 +1836,209 @@ fn forge_erase_opponent_card() {
         1, oob, ooa, p1_card_ids(), P1_BLINDING,
     );
 }
+
+// ---- Forgeries aimed at assertions MUTATION TESTING found untested ----
+//
+// The nine forgeries above left 16 of 24 assertions in this circuit unkilled by
+// mutation: neuter them and the whole suite stayed green. Two reasons, both
+// instructive.
+//
+// Every forgery above re-hashes its tampered state, deliberately, so the hash
+// check cannot mask the rule under test. The side effect is that NOTHING ever
+// exercised the hash binding itself — the anchor of the entire chain. And where
+// two assertions can catch the same lie, only the first one fires, so P1's
+// score check hid P2's.
+//
+// Reaching for these by intuition is what failed. They came from a mechanical
+// list.
+
+/// The claimed start state must be the board actually operated on.
+/// Without this the chain anchors to nothing and arbitrary boards splice in.
+#[test(should_fail)]
+fn forge_start_state_hash_not_matching_board() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[2] = 10; board_before[3] = 2;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let honest_start = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1; board_after[1] = 1;
+    board_after[2] = 10; board_after[3] = 2;
+    let scores_after: [Field; 2] = [5, 5];
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(),
+        honest_start + 1,   // THE LIE: a start state unrelated to board_before
+        end_hash, 0, 0,
+        1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p1_card_ids(), P1_BLINDING,
+    );
+}
+
+/// The published end state must be the board this move actually produced.
+#[test(should_fail)]
+fn forge_end_state_hash_not_matching_board() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[2] = 10; board_before[3] = 2;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1; board_after[1] = 1;
+    board_after[2] = 10; board_after[3] = 2;
+    let scores_after: [Field; 2] = [5, 5];
+    let ooa = orig_after(board_before, board_after, oob);
+    let honest_end = hash_board_state(board_after, scores_after, 2, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash,
+        honest_end + 1,     // THE LIE: publish an end state we did not reach
+        0, 0,
+        1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p1_card_ids(), P1_BLINDING,
+    );
+}
+
+/// The OPPONENT's hand commitment must be the one this game is bound to.
+/// Only player 1's was ever exercised; player 2's assertion was untested.
+#[test(should_fail)]
+fn forge_opponent_card_commit() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[2] = 10; board_before[3] = 2;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1; board_after[1] = 1;
+    board_after[2] = 10; board_after[3] = 2;
+    let scores_after: [Field; 2] = [5, 5];
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+
+    // Player 2 moves, so THEIR commit is the one recomputed from the hand.
+    main(
+        get_p1_commit(),
+        get_p2_commit() + 1,   // THE LIE: not the commitment P2 is bound to
+        start_hash, end_hash, 0, 0,
+        2, 10, 0, 1, board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p2_card_ids(), P2_BLINDING,
+    );
+}
+
+/// Understate the OPPONENT's score. P1's assertion fires first on any lie that
+/// moves both, so P2's had never been reached.
+#[test(should_fail)]
+fn forge_opponent_score_only() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[2] = 10; board_before[3] = 2;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1; board_after[1] = 1;
+    board_after[2] = 10; board_after[3] = 2;
+    let scores_after: [Field; 2] = [5, 4];   // THE LIE: P1 honest, P2 short by one
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
+        1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p1_card_ids(), P1_BLINDING,
+    );
+}
+
+/// Claim the wrong winner on a genuinely finished board.
+/// Built from test_final_move_game_ends_p1_wins, which P1 wins 7-3.
+#[test(should_fail)]
+fn forge_wrong_winner_on_completed_board() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[0] = 1; board_before[1] = 1;
+    board_before[2] = 10; board_before[3] = 2;
+    board_before[4] = 2; board_before[5] = 1;
+    board_before[6] = 11; board_before[7] = 2;
+    board_before[8] = 3; board_before[9] = 1;
+    board_before[10] = 12; board_before[11] = 1;
+    board_before[12] = 4; board_before[13] = 1;
+    board_before[14] = 13; board_before[15] = 2;
+    let scores_before: [Field; 2] = [6, 4];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    for i in 0..16 { board_after[i] = board_before[i]; }
+    board_after[16] = 5; board_after[17] = 1;
+    board_after[15] = 1;
+    let scores_after: [Field; 2] = [7, 3];
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash, end_hash,
+        1, 2,       // THE LIE: game ended (true) but P2 won (false — it is 7-3 to P1)
+        1, 5, 2, 2, board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p1_card_ids(), P1_BLINDING,
+    );
+}
+
+/// Claim the game is still running when the board is full.
+#[test(should_fail)]
+fn forge_completed_board_declared_unfinished() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[0] = 1; board_before[1] = 1;
+    board_before[2] = 10; board_before[3] = 2;
+    board_before[4] = 2; board_before[5] = 1;
+    board_before[6] = 11; board_before[7] = 2;
+    board_before[8] = 3; board_before[9] = 1;
+    board_before[10] = 12; board_before[11] = 1;
+    board_before[12] = 4; board_before[13] = 1;
+    board_before[14] = 13; board_before[15] = 2;
+    let scores_before: [Field; 2] = [6, 4];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    for i in 0..16 { board_after[i] = board_before[i]; }
+    board_after[16] = 5; board_after[17] = 1;
+    board_after[15] = 1;
+    let scores_after: [Field; 2] = [7, 3];
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash, end_hash,
+        0, 0,       // THE LIE: a full board declared unfinished, so it never settles
+        1, 5, 2, 2, board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p1_card_ids(), P1_BLINDING,
+    );
+}
+
+/// A column outside the board.
+#[test(should_fail)]
+fn forge_column_out_of_bounds() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[2] = 10; board_before[3] = 2;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1; board_after[1] = 1;
+    board_after[2] = 10; board_after[3] = 2;
+    let scores_after: [Field; 2] = [5, 5];
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
+        1, 1, 0, 7,   // THE LIE: column 7
+        board_before, board_after, scores_before, scores_after,
+        1, oob, ooa, p1_card_ids(), P1_BLINDING,
+    );
+}
