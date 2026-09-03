@@ -161,9 +161,16 @@ const handProof = { proof: 'AA==', publicInputs: ['0x1'], cardCommit: '0xC1' };
 const oppHandProof = { proof: 'AA==', publicInputs: ['0x2'], cardCommit: '0xC2' };
 // Two valid move proofs chained from the canonical initial hash — numValid=2
 // means the opponent played a card, so claimedCardId = opponentCardIds[0].
+// THREE proofs, not two. These tests run as player 1, and the contract refuses
+// a claimant who is next to move — after an even number of 0-indexed moves
+// that is player 1. Two proofs is a count the chain would have rejected, so
+// the fixture was asserting a claim that could never have succeeded; the claim
+// path now trims to the largest workable prefix and a two-proof fixture would
+// silently become one.
 const moveProofs = [
   { proof: 'AA==', publicInputs: ['0x0'], cardCommit1: '0xC1', cardCommit2: '0xC2', startStateHash: '0xINIT', endStateHash: '0xS1', gameEnded: false, winnerId: 0 },
   { proof: 'AA==', publicInputs: ['0x0'], cardCommit1: '0xC1', cardCommit2: '0xC2', startStateHash: '0xS1', endStateHash: '0xS2', gameEnded: false, winnerId: 0 },
+  { proof: 'AA==', publicInputs: ['0x0'], cardCommit1: '0xC1', cardCommit2: '0xC2', startStateHash: '0xS2', endStateHash: '0xS3', gameEnded: false, winnerId: 0 },
 ];
 
 const settlementInfo = {

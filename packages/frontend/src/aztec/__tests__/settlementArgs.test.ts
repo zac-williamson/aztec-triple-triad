@@ -136,3 +136,43 @@ describe('waitForDisputeWindow', () => {
       .rejects.toThrow(/Dispute window did not open/);
   });
 });
+
+/**
+ * Trimming a claim to a parity the contract will accept.
+ *
+ * Holding one proof too many for your side is the NORMAL case — it just means
+ * the opponent moved last. The bot's sweep has always trimmed; the browser
+ * passed everything it held straight through, so a player 1 holding eight
+ * proofs sent n=8, which makes player 1 next to move, and the claim reverted.
+ */
+describe('claimableMoveCount', () => {
+  it('a complete transcript is exempt from parity — nine stands for either side', async () => {
+    const { claimableMoveCount } = await import('../settlementArgs');
+    expect(claimableMoveCount(9, true)).toBe(9);
+    expect(claimableMoveCount(9, false)).toBe(9);
+  });
+
+  it('player 1 claims on an ODD count, trimming down when it holds an even one', async () => {
+    const { claimableMoveCount } = await import('../settlementArgs');
+    expect(claimableMoveCount(8, true)).toBe(7);
+    expect(claimableMoveCount(7, true)).toBe(7);
+    expect(claimableMoveCount(2, true)).toBe(1);
+  });
+
+  it('player 2 claims on an EVEN count', async () => {
+    const { claimableMoveCount } = await import('../settlementArgs');
+    expect(claimableMoveCount(8, false)).toBe(8);
+    expect(claimableMoveCount(7, false)).toBe(6);
+    expect(claimableMoveCount(0, false)).toBe(0);
+  });
+
+  it('never proposes more than the board holds', async () => {
+    const { claimableMoveCount } = await import('../settlementArgs');
+    expect(claimableMoveCount(12, true)).toBe(9);
+  });
+
+  it('reports player 1 with no moves as unclaimable — they owe the first move', async () => {
+    const { claimableMoveCount } = await import('../settlementArgs');
+    expect(claimableMoveCount(0, true)).toBe(-1);
+  });
+});

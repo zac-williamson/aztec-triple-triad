@@ -282,12 +282,13 @@ export class AbandonmentSweep {
       return;
     }
 
-    // A complete transcript claims at nine: parity is irrelevant to a finished
-    // game, so there is nothing to trim to.
+    // Shared with the browser's claim path — one implementation of the
+    // contract's parity rule, because two drifted: the sweep trimmed and the
+    // browser did not, so the same game was claimable by the bot and reverted
+    // for a human.
+    const { claimableMoveCount } = await import('../../frontend/src/aztec/claimParity.js');
     const complete = rec.moveProofs.length >= 9;
-    const held = complete ? 9 : Math.min(rec.moveProofs.length, 8);
-    const wantOdd = rec.botIsPlayer1;   // p1 claims on p2's turn: odd n
-    const n = complete ? 9 : ((held % 2 === (wantOdd ? 1 : 0)) ? held : held - 1);
+    const n = claimableMoveCount(rec.moveProofs.length, rec.botIsPlayer1);
     if (n < 0) {
       // Only reachable as player 1 with no moves at all, which the contract
       // reserves for player 2 — we are the one who owes the first move.

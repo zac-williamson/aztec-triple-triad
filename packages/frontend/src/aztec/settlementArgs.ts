@@ -9,6 +9,7 @@
  * React-free precisely so both callers can share them.
  */
 import { CARDS_PER_HAND, TOTAL_MOVES } from './gameConstants';
+export { claimableMoveCount } from './claimParity';
 
 /** Pad a card-ID list to a full hand of Fr field elements. */
 export function padToHand<F>(Fr: new (v: bigint) => F, ids: number[]): F[] {

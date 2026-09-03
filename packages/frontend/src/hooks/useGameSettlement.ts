@@ -9,7 +9,7 @@ import { runPxeTx, pxe, type PxeOps } from '../aztec/pxe';
 import { toFr as toFrUtil, toHexString, bytesToFrArray, base64ToFrArray, hexToFr } from '../aztec/fieldUtils';
 import { AZTEC_TX_TIMEOUT, AZTEC_SETTLE_TX_TIMEOUT, CARDS_PER_HAND, TOTAL_MOVES, MOVE_PROOF_WAIT_TIMEOUT, HAND_PROOF_WAIT_TIMEOUT, GAME_TOKEN_REWARD } from '../aztec/gameConstants';
 import { requireWallet, requireAccountAddress } from '../aztec/walletGuards';
-import { padToHand, sortProofChain, computeCanonicalInitialHash, waitForDisputeWindow, DISPUTE_SECONDS } from '../aztec/settlementArgs';
+import { padToHand, sortProofChain, computeCanonicalInitialHash, waitForDisputeWindow, DISPUTE_SECONDS, claimableMoveCount } from '../aztec/settlementArgs';
 import type { HandProofData, MoveProofData, PlaintextNoteData } from '../types';
 
 /** Lazy-load the field/address SDK classes for building proof-tx arguments.
@@ -593,10 +593,30 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     const sInfo = session.backfillSettlementInfoFromWs();
     const capturedPlayerNumber = ws.playerNumber;
     const capturedWsGameId = ws.gameId;
-    const validMoveProofs = play.getMoveProofs();
+    // Trim to a count the contract will accept. It refuses a claimant who is
+    // next to move, and holding one proof too many for your side is the NORMAL
+    // case — it just means the opponent moved last. This used to send whatever
+    // it held, so a player 1 with eight proofs claimed n=8, which makes player
+    // 1 next to move, and the claim reverted after paying for the proving. The
+    // bot's sweep has always trimmed; the browser never did.
+    const heldMoveProofs = play.getMoveProofs();
+    const claimableCount = claimableMoveCount(
+      heldMoveProofs.length, ws.playerNumber === 1,
+    );
+    const validMoveProofs = claimableCount < 0 ? [] : heldMoveProofs.slice(0, claimableCount);
 
     if (!sInfo || !sInfo.onChainGameId || !sInfo.gameRandomness.length || !sInfo.opponentAddress) {
       console.error('[useGameSettlement] Cannot claim abandoned game: missing settlement info', { sInfo, wsOpponentAddr: ws.opponentAztecAddress });
+      setIsClaimingAbandoned(false);
+      abandonedClaimStartedRef.current = false;
+      session.transitionPhase('idle');
+      return;
+    }
+    if (claimableCount < 0) {
+      // Player 1 with no moves at all. The contract reserves the zero-move
+      // claim for player 2 — the side that did not fail to move — so there is
+      // no prefix we can send, and sending one anyway just burns a proof.
+      console.error('[useGameSettlement] Cannot claim: no move has been made and we owe the first one');
       setIsClaimingAbandoned(false);
       abandonedClaimStartedRef.current = false;
       session.transitionPhase('idle');
