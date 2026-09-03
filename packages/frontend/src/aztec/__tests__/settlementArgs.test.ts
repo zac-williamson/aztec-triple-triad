@@ -102,3 +102,37 @@ describe('buildClaimAbandonedArgs move-count guard', () => {
     expect(await rejectsAt(10)).toBe(true);
   });
 });
+
+/**
+ * The dispute wait must refuse an unknown claim time.
+ *
+ * `claimAt` is 0 when the contract has no claim on record — which a reader
+ * hits by reading before its own claim is visible at its anchor. Treated as a
+ * timestamp that is 1970, so the elapsed window is astronomical and the wait
+ * returns immediately: settle early, revert, and tell the player their
+ * recovery failed after they paid for the proving.
+ */
+describe('waitForDisputeWindow', () => {
+  const node = (chainSeconds: number) => ({
+    getBlockNumber: async () => 1,
+    getBlock: async () => ({ header: { globalVariables: { timestamp: chainSeconds } } }),
+  });
+
+  it('refuses a zero claim time instead of treating it as long ago', async () => {
+    const { waitForDisputeWindow } = await import('../settlementArgs');
+    await expect(waitForDisputeWindow(node(1_700_000) as any, 0))
+      .rejects.toThrow(/No claim on record/);
+  });
+
+  it('returns once the window has elapsed in CHAIN time', async () => {
+    const { waitForDisputeWindow, DISPUTE_SECONDS } = await import('../settlementArgs');
+    await expect(waitForDisputeWindow(node(1_700_000 + DISPUTE_SECONDS) as any, 1_700_000))
+      .resolves.toBeUndefined();
+  });
+
+  it('does not return early when the window is still open', async () => {
+    const { waitForDisputeWindow } = await import('../settlementArgs');
+    await expect(waitForDisputeWindow(node(1_700_100) as any, 1_700_000, { maxMs: 1, pollMs: 1 }))
+      .rejects.toThrow(/Dispute window did not open/);
+  });
+});

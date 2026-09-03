@@ -263,6 +263,18 @@ export async function waitForDisputeWindow(
   claimedAtSeconds: number,
   opts: { maxMs?: number; pollMs?: number; onProgress?: (secondsLeft: number) => void } = {},
 ): Promise<void> {
+  // A claim time of zero is the contract's "no claim on record", which happens
+  // when this read lands before the claim is visible at the reader's anchor.
+  // Treated as a timestamp it means 1970, so `elapsed` is astronomically past
+  // the window and the wait returns AT ONCE — settling early, reverting, and
+  // reporting a recovery failure after paying for the proving. Both callers
+  // read claimAt straight after their own claim tx, so both can hit it.
+  if (!Number.isFinite(claimedAtSeconds) || claimedAtSeconds <= 0) {
+    throw new Error(
+      `No claim on record for this game (claimAt=${claimedAtSeconds}). ` +
+      'Refusing to start the dispute window from an unknown time — retry the claim.',
+    );
+  }
   const maxMs = opts.maxMs ?? 30 * 60 * 1000;
   const pollMs = opts.pollMs ?? 5000;
   const started = Date.now();
