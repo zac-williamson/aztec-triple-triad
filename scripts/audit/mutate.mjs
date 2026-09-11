@@ -73,6 +73,43 @@ function recoverFromPreviousRun() {
 /** The nargo child, so a signal can take it down with us. */
 let CHILD = null;
 
+/**
+ * Every (src, backup) pair this process has put into a mutated state.
+ *
+ * A registry, and the handlers below are registered ONCE, because the obvious
+ * shape — register a handler per target inside the loop, closing over that
+ * target — is broken in a way that is invisible until it matters. With `--all`
+ * the handlers ACCUMULATE, a signal fires all of them, and the first one to run
+ * calls process.exit(): the process dies inside the handler belonging to a
+ * target that finished ten minutes ago, before the handler owning the file that
+ * is mutated RIGHT NOW ever runs. Observed exactly that — SIGTERM during the
+ * contracts/game sweep restored circuits/game_move, cleared the marker, and
+ * left the contract mutated with its crash-recovery net gone.
+ */
+const DIRTY = new Map();
+
+function restoreAll(why) {
+  for (const [src, backup] of DIRTY) {
+    try { copyFileSync(backup, src); console.error(`  ${why}: restored ${src}`); }
+    catch (e) { console.error(`  ${why}: COULD NOT restore ${src}: ${e.message}`); }
+  }
+  DIRTY.clear();
+  try { unlinkSync(MARKER); } catch { /* already gone */ }
+}
+
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => {
+    if (CHILD) { try { CHILD.kill('SIGKILL'); } catch { /* already gone */ } }
+    restoreAll(sig);
+    process.exit(130);
+  });
+}
+process.on('uncaughtException', (e) => {
+  restoreAll('crashed');
+  console.error(`\n  ${e.message}`);
+  process.exit(1);
+});
+
 /** Targets: a Noir package, the file to mutate, and how to run its tests. */
 const TARGETS = {
   'circuits/game_move':   { src: 'circuits/game_move/src/main.nr',   cwd: 'circuits',          pkg: 'game_move' },
@@ -268,21 +305,7 @@ for (const name of names) {
   // ahead of everything else, including its own exit code.
   writeFileSync(MARKER, JSON.stringify(
     { src: t.src, backup, pid: process.pid, startedAt: new Date().toISOString() }, null, 2));
-
-  const rescue = (sig) => {
-    if (CHILD) { try { CHILD.kill('SIGKILL'); } catch { /* already gone */ } }
-    try { copyFileSync(backup, t.src); } catch { /* nothing better to do */ }
-    try { unlinkSync(MARKER); } catch { /* fine */ }
-    console.error(`\n  ${sig}: restored ${t.src} before exiting.`);
-    process.exit(130);
-  };
-  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => rescue(sig));
-  process.on('uncaughtException', (e) => {
-    try { copyFileSync(backup, t.src); } catch { /* ignore */ }
-    try { unlinkSync(MARKER); } catch { /* ignore */ }
-    console.error(`\n  crashed, restored ${t.src}: ${e.message}`);
-    process.exit(1);
-  });
+  DIRTY.set(t.src, backup);
   const survivors = [];
   const invalid = [];
   try {
@@ -309,6 +332,7 @@ for (const name of names) {
     }
   } finally {
     copyFileSync(backup, t.src);   // always restore, including on Ctrl-C paths
+    DIRTY.delete(t.src);
     try { unlinkSync(MARKER); } catch { /* already gone */ }
   }
 
