@@ -164,6 +164,45 @@ async function main() {
     signingKey = GrumpkinScalar.fromHexString(DEPLOYER_SIGNING_KEY);
   }
 
+  // Refuse to compile a mutated contract.
+  //
+  // scripts/audit/mutate.mjs holds security-critical source in a deliberately
+  // broken state for minutes at a time — one assertion replaced by
+  // `assert(true);` — and the step below compiles whatever is on disk and ships
+  // it. A deploy launched during a sweep, or after one that was killed without
+  // restoring, would put a contract on chain with a protocol rule silently
+  // removed, and nothing downstream would notice: it compiles, it deploys, its
+  // tests are not run here, and the missing check only shows up when somebody
+  // exploits it.
+  //
+  // This is the last point where that is catchable, so it is checked here and
+  // not left to the operator remembering.
+  {
+    const { readdirSync: rd, statSync: st } = await import('fs');
+    const mutated: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of rd(dir)) {
+        if (['target', 'node_modules', '.git'].includes(name)) continue;
+        const full = resolve(dir, name);
+        if (st(full).isDirectory()) walk(full);
+        else if (full.endsWith('.nr')
+          && readFileSync(full, 'utf8').split('\n').some(l => /^\s*assert\(true\);\s*$/.test(l))) {
+          mutated.push(full);
+        }
+      }
+    };
+    walk(resolve(ROOT_DIR, 'packages/contracts'));
+    walk(resolve(ROOT_DIR, 'circuits'));
+    if (mutated.length) {
+      throw new Error(
+        'Refusing to deploy: neutered assertion(s) found in\n  ' + mutated.join('\n  ') +
+        '\nThis is scripts/audit/mutate.mjs mid-sweep, or the wreckage of one that was ' +
+        'killed.\nLet the sweep finish, or restore from /tmp/mutate-<target>.bak — ' +
+        'NOT with git checkout,\nwhich takes any uncommitted work in the file with it.',
+      );
+    }
+  }
+
   // Compile contracts first
   console.log('=== Compiling Contracts ===');
   const { execSync } = await import('child_process');
