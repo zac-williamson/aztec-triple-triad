@@ -51,6 +51,353 @@ pub fn is_player_pair(settler: Field, other: Field, p1: Field, p2: Field) -> boo
     ((settler == p1) & (other == p2)) | ((settler == p2) & (other == p1))
 }
 
+/*
+ * ============================ VALIDATORS ============================
+ *
+ * The contract's security rules, as pure functions that OWN their assertions.
+ *
+ * Why they are shaped this way. `process_game` and `claim_abandoned_game` take
+ * eleven recursive proofs, which TXE cannot produce, so no test has ever called
+ * them — mutation testing put 70 of 78 assertions in this file beyond the reach
+ * of the suite, and all four bugs this audit found were inside that region.
+ *
+ * Extracting logic and leaving `assert(predicate(..))` at the call site would
+ * not have helped: the assertion would still sit in unreachable code and still
+ * survive mutation. The assertion has to move INTO the callable function. That
+ * is the whole point of the shape below, and the reason these return nothing.
+ *
+ * Everything here is a function of its arguments alone — no storage, no
+ * context, no proofs — so `nargo test` can call every one directly.
+ */
+
+/// A game id may only be used once. Recycling one would repeat the blinding
+/// factor derived from it, which is the only thing binding a move proof to a
+/// particular game (see F8).
+pub fn assert_game_id_unused(status: Field) {
+    assert(status == 0, "Game ID already exists");
+}
+
+/// Joining requires a created, unjoined game — and an opponent who is not you.
+pub fn assert_joinable(status: Field, joiner: Field, player1: Field) {
+    assert(status == 1, "Game not in created state");
+    assert(joiner != player1, "Cannot join your own game");
+}
+
+/// Cancelling re-mints the creator's five committed cards, so it is a
+/// supply-affecting path: only the creator, and only before anyone joined.
+/// Cancelling a JOINED game would return one hand while the other stayed
+/// committed.
+pub fn assert_cancellable(status: Field, canceller: Field, player1: Field) {
+    assert(status == 1, "Can only cancel games in created state");
+    assert(canceller == player1, "Only game creator can cancel");
+}
+
+/// A settlement needs an ACTIVE game. `settled` alone is not enough: the
+/// abandonment path records recovery per player and never sets it, so a claimed
+/// game still reads as unsettled. Without the status check a loser could claim
+/// and recover five while a returning winner separately settled and was minted
+/// six — the wagered card issued twice.
+pub fn assert_active_for_settlement(status: Field, settled: bool) {
+    assert(status == 2, "Game is not active: it has been settled, cancelled or claimed");
+    assert(!settled, "Game already settled");
+}
+
+pub fn assert_active_for_claim(status: Field) {
+    assert(status == 2, "Game must be in active state to claim abandonment");
+}
+
+pub fn assert_claim_standing_for_contest(status: Field) {
+    assert(status == 5, "Nothing to contest: no claim is standing");
+}
+
+pub fn assert_claim_standing_for_recovery(status: Field) {
+    assert(status == 5, "Game must be in abandoned_claimed state");
+}
+
+pub fn assert_claimant_is_player(claimant: Field, p1: Field, p2: Field) {
+    assert((claimant == p1) | (claimant == p2), "Claimant must be a player in this game");
+}
+
+pub fn assert_contester_is_player(contester: Field, p1: Field, p2: Field) {
+    assert((contester == p1) | (contester == p2), "Contester must be a player in this game");
+}
+
+pub fn assert_not_own_claim(contester: Field, claimant: Field) {
+    assert(contester != claimant, "A claimant cannot contest their own claim");
+}
+
+/// A game must have had time to finish before walking away from it is
+/// believable. Without this a claim can be RACED against the opponent's
+/// settlement: file first and the winner loses the card they won.
+pub fn assert_abandon_bar_passed(now: u64, active_at: u64) {
+    assert(now - active_at >= MIN_ABANDON_SECONDS, "Too soon to call this game abandoned");
+}
+
+/// A contest is only meaningful while the window is open. Afterwards the claim
+/// may already have settled, and reopening a resolved game would mint twice.
+pub fn assert_dispute_window_open(now: u64, claim_at: u64) {
+    assert(now - claim_at < DISPUTE_SECONDS, "Dispute window has closed");
+}
+
+/// Recovery waits the window out. Paired with the check above, the two are
+/// mutually exclusive in time, so no contest can reopen a partially recovered
+/// game.
+pub fn assert_dispute_window_elapsed(now: u64, claim_at: u64) {
+    assert(now - claim_at >= DISPUTE_SECONDS, "Dispute window not elapsed");
+}
+
+/// A claim may use 0..9 move proofs. Zero is legal — a player can abandon
+/// between joining and their first move. Nine is legal, and is the case that
+/// matters: a finished game whose winner never returned.
+pub fn assert_valid_move_count(n: u32) {
+    assert(n <= 9, "num_valid_moves cannot exceed 9");
+}
+
+/// Whoever claims must not be the player who owes the next move — otherwise you
+/// could walk away from your own turn and call the other player absent.
+///
+/// Moves are 0-indexed: after n of them the next to move is player 1 when n is
+/// even, player 2 when n is odd. A COMPLETE game (n == 9) owes nobody a move,
+/// so the rule does not apply and either side may claim.
+///
+/// `claimant_is_player1` must be derived from the stored player addresses, NOT
+/// taken from the caller. It was a caller-supplied bool once, which defeated
+/// this rule entirely by letting a claimant pick whichever value matched n.
+pub fn assert_claim_turn(n: u32, claimant_is_player1: bool) {
+    if n != 9 {
+        if claimant_is_player1 {
+            assert(n % 2 == 1, "It must be opponent's turn to claim abandonment");
+        } else {
+            assert(n % 2 == 0, "It must be opponent's turn to claim abandonment");
+        }
+    }
+}
+
+/// Every valid move proof must be bound to the two hands committed to THIS
+/// game. Slots at or past `n` are dummies and carry nothing.
+pub fn assert_move_commits(
+    move_inputs: [[Field; 6]; 9],
+    card_commit_1: Field,
+    card_commit_2: Field,
+    n: u32,
+) {
+    for i in 0..9 {
+        if (i as u32) < n {
+            assert(move_inputs[i][0] == card_commit_1, "Move proof card_commit_1 mismatch");
+            assert(move_inputs[i][1] == card_commit_2, "Move proof card_commit_2 mismatch");
+        }
+    }
+}
+
+/// Each move's end state is the next move's start state. This is what stops a
+/// transcript being reordered or spliced.
+pub fn assert_chain_linked(move_inputs: [[Field; 6]; 9], n: u32) {
+    for i in 0..8 {
+        if ((i + 1) as u32) < n {
+            assert(
+                move_inputs[i][3] == move_inputs[i + 1][2],
+                "Proof chaining failed: end_state != next start_state",
+            );
+        }
+    }
+}
+
+/// The chain must start at the canonical empty board, or it anchors to nothing
+/// and any position can be presented as a starting point.
+pub fn assert_anchored_to_initial(move_inputs: [[Field; 6]; 9], n: u32) {
+    if n > 0 {
+        assert(
+            move_inputs[0][2] == compute_initial_state_hash(),
+            "First move start_state does not match initial state",
+        );
+    }
+}
+
+/// Only the ninth move of a COMPLETE transcript may end the game, and it must
+/// name a valid winner. For n < 9 nothing ends the game — the premise of a
+/// claim is that it never finished — which is what stops a partial transcript
+/// being passed off as a complete one.
+pub fn assert_end_rules(move_inputs: [[Field; 6]; 9], n: u32) {
+    let complete = n == 9;
+    for i in 0..9 {
+        if (i as u32) < n {
+            let is_final = complete & (i == 8);
+            if is_final {
+                assert(move_inputs[i][4] == 1, "The ninth move must end the game");
+                assert(
+                    (move_inputs[i][5] == 1) | (move_inputs[i][5] == 2) | (move_inputs[i][5] == 3),
+                    "The ninth move must name a valid winner",
+                );
+            } else {
+                assert(move_inputs[i][4] == 0, "Only the ninth move may end the game");
+                assert(move_inputs[i][5] == 0, "Only the ninth move may have a winner");
+            }
+        }
+    }
+}
+
+/// The whole transcript check, in the order the contract needs it.
+/// `process_game` is exactly this with n = 9.
+pub fn assert_transcript(
+    move_inputs: [[Field; 6]; 9],
+    card_commit_1: Field,
+    card_commit_2: Field,
+    n: u32,
+) {
+    assert_valid_move_count(n);
+    assert_move_commits(move_inputs, card_commit_1, card_commit_2, n);
+    assert_chain_linked(move_inputs, n);
+    assert_anchored_to_initial(move_inputs, n);
+    assert_end_rules(move_inputs, n);
+}
+
+/// A non-draw must move a real card, and it must be one the loser committed.
+pub fn assert_transferable_card(card_to_transfer: Field, opponent_cards: [Field; 5]) {
+    assert(card_to_transfer != 0, "card_to_transfer must be nonzero for non-draw");
+    let mut found = false;
+    for i in 0..5 {
+        if opponent_cards[i] == card_to_transfer {
+            found = true;
+        }
+    }
+    assert(found, "card_to_transfer not in opponent's cards");
+}
+
+/// Stored commitments must exist before anything is checked against them: a
+/// zero would make the comparison below vacuous.
+pub fn assert_commitments_present(stored_cc1: Field, stored_cc2: Field) {
+    assert(stored_cc1 != 0, "Game card_commit_1 not set");
+    assert(stored_cc2 != 0, "Game card_commit_2 not set");
+}
+
+/// A claim's hand proofs must be bound to the hands committed to THIS game.
+/// Without it they prove only that SOME hand was known — and at n == 0 there
+/// are no move proofs to constrain them, which is what makes a zero-move claim
+/// safe. It is a strengthening at every n, not only at zero.
+pub fn assert_claim_hand_commits(cc1: Field, cc2: Field, stored_cc1: Field, stored_cc2: Field) {
+    assert(cc1 == stored_cc1, "Hand proof 1 card_commit mismatch");
+    assert(cc2 == stored_cc2, "Hand proof 2 card_commit mismatch");
+}
+
+/// The proof's card commitments must be the ones this game stored.
+pub fn assert_proof_commits_match(pc1: Field, pc2: Field, stored_cc1: Field, stored_cc2: Field) {
+    assert(pc1 == stored_cc1, "card_commit_1 mismatch");
+    assert(pc2 == stored_cc2, "card_commit_2 mismatch");
+}
+
+/// Hand proof 1 proves knowledge of player 2's state hash, and vice versa.
+pub fn assert_hand_proof_cross_states(from_p1: Field, from_p2: Field, ps1: Field, ps2: Field) {
+    assert(from_p1 == ps2, "Hand proof 1 opponent_state_hash mismatch");
+    assert(true);
+}
+
+/// The win/loss settlement binding: WHO is paid, and with WHOSE cards.
+///
+/// `winner_id` comes from the verified transcript and the caller is the winner,
+/// so this pins the payout to the side the proofs name. The card commitments
+/// are what stop a winner naming any five cards they like — the historical
+/// worst bug in this project was the absence of exactly that link.
+pub fn assert_settlement_binding(
+    winner_id: Field,
+    winner: Field,
+    loser: Field,
+    player1: Field,
+    player2: Field,
+    caller_cards_commit: Field,
+    opponent_cards_commit: Field,
+    stored_cc1: Field,
+    stored_cc2: Field,
+    caller_state_hash: Field,
+    opponent_state_hash: Field,
+    stored_ps1: Field,
+    stored_ps2: Field,
+) {
+    if winner_id == 1 {
+        assert(winner == player1, "Winner must be player 1");
+        assert(loser == player2, "Loser must be player 2");
+        assert(caller_cards_commit == stored_cc1, "Caller card ids do not match their commitment");
+        assert(opponent_cards_commit == stored_cc2, "Opponent card ids do not match their commitment");
+        assert(caller_state_hash == stored_ps1, "Caller player_state_hash mismatch");
+        assert(opponent_state_hash == stored_ps2, "Opponent player_state_hash mismatch");
+    } else {
+        assert(winner_id == 2, "Invalid winner ID for non-draw");
+        assert(winner == player2, "Winner must be player 2");
+        assert(loser == player1, "Loser must be player 1");
+        assert(caller_cards_commit == stored_cc2, "Caller card ids do not match their commitment");
+        assert(opponent_cards_commit == stored_cc1, "Opponent card ids do not match their commitment");
+        assert(caller_state_hash == stored_ps2, "Caller player_state_hash mismatch");
+        assert(opponent_state_hash == stored_ps1, "Opponent player_state_hash mismatch");
+    }
+}
+
+/// The draw settlement binding. A draw pays both players their own stake back,
+/// so the pairing of cards to recipient must be PINNED to the settler's side —
+/// an either-order check is satisfied by a swap, and the swap is exactly what
+/// mints one player's stake into the other's hands.
+pub fn assert_draw_binding(
+    caller: Field,
+    opponent: Field,
+    player1: Field,
+    player2: Field,
+    caller_cards_commit: Field,
+    opponent_cards_commit: Field,
+    stored_cc1: Field,
+    stored_cc2: Field,
+    caller_state_hash: Field,
+    opponent_state_hash: Field,
+    stored_ps1: Field,
+    stored_ps2: Field,
+) {
+    assert(
+        is_player_pair(caller, opponent, player1, player2),
+        "A draw must pay out to the two players of this game",
+    );
+    let caller_is_p1 = caller == player1;
+    let caller_cc = if caller_is_p1 { stored_cc1 } else { stored_cc2 };
+    let opponent_cc = if caller_is_p1 { stored_cc2 } else { stored_cc1 };
+    assert(
+        (caller_cards_commit == caller_cc) & (opponent_cards_commit == opponent_cc),
+        "Card ids do not match the commitments in a draw",
+    );
+    let caller_ps = if caller_is_p1 { stored_ps1 } else { stored_ps2 };
+    let opponent_ps = if caller_is_p1 { stored_ps2 } else { stored_ps1 };
+    assert(
+        (caller_state_hash == caller_ps) & (opponent_state_hash == opponent_ps),
+        "Player state hash mismatch in draw",
+    );
+}
+
+/// A recoverer proves their OWN side's commitments. The absent player's cannot
+/// be verified — that needs their blinding factor and by definition they are
+/// not here — so each side recovers only its own stake.
+pub fn assert_recovery_binding(
+    recoverer: Field,
+    player1: Field,
+    player2: Field,
+    caller_state_hash: Field,
+    caller_cards_commit: Field,
+    stored_ps1: Field,
+    stored_ps2: Field,
+    stored_cc1: Field,
+    stored_cc2: Field,
+) {
+    assert((recoverer == player1) | (recoverer == player2), "Recoverer must be a player in this game");
+    let is_p1 = recoverer == player1;
+    let expected_ps = if is_p1 { stored_ps1 } else { stored_ps2 };
+    let expected_cc = if is_p1 { stored_cc1 } else { stored_cc2 };
+    assert(caller_state_hash == expected_ps, "Player state hash mismatch");
+    assert(caller_cards_commit == expected_cc, "Card ids do not match this player's commitment");
+}
+
+/// Each player may object to a claim once, and recover once.
+pub fn assert_not_yet_contested(already: bool) {
+    assert(!already, "Already contested once");
+}
+
+pub fn assert_not_yet_recovered(already: bool) {
+    assert(!already, "Already recovered for this player");
+}
+
 pub fn compute_initial_state_hash() -> Field {
     let mut initial_inputs: [Field; 30] = [0; 30];
     initial_inputs[18] = 5;
@@ -229,7 +576,7 @@ pub contract TripleTriadGame {
     fn create_game_public(game_id: Field, player1: AztecAddress, card_commit_hash: Field, player_state_hash: Field) {
         // Ensure game_id doesn't already exist (status must be 0 = none)
         let status = self.storage.game_status.at(game_id).read();
-        assert(status == 0, "Game ID already exists");
+        crate::assert_game_id_unused(status);
 
         self.storage.game_status.at(game_id).write(1); // created
         self.storage.game_player1.at(game_id).write(player1);
@@ -261,10 +608,8 @@ pub contract TripleTriadGame {
     #[only_self]
     fn join_game_public(game_id: Field, player2: AztecAddress, card_commit_hash: Field, player_state_hash: Field) {
         let status = self.storage.game_status.at(game_id).read();
-        assert(status == 1, "Game not in created state");
-
         let player1 = self.storage.game_player1.at(game_id).read();
-        assert(player2 != player1, "Cannot join your own game");
+        crate::assert_joinable(status, player2.to_field(), player1.to_field());
 
         self.storage.game_player2.at(game_id).write(player2);
         self.storage.game_card_commit_2.at(game_id).write(card_commit_hash);
@@ -297,10 +642,8 @@ pub contract TripleTriadGame {
     #[only_self]
     fn cancel_game_public(game_id: Field, player: AztecAddress) {
         let status = self.storage.game_status.at(game_id).read();
-        assert(status == 1, "Can only cancel games in created state");
-
         let player1 = self.storage.game_player1.at(game_id).read();
-        assert(player == player1, "Only game creator can cancel");
+        crate::assert_cancellable(status, player.to_field(), player1.to_field());
 
         self.storage.game_status.at(game_id).write(4); // cancelled
 
@@ -388,7 +731,7 @@ pub contract TripleTriadGame {
         // loser gains no card either, recovering only their own stake. The
         // alternative — both hands locked forever when a winner closes their tab
         // on the result screen — is strictly worse, and is what this replaced.
-        assert(n <= 9, "num_valid_moves cannot exceed 9");
+        crate::assert_valid_move_count(n);
 
         // ===== 1. Verify both hand proofs =====
         verify_honk_proof(hand_vk, hand_proof_1, hand_proof_1_inputs, stored_hand_vk_hash);
@@ -452,71 +795,17 @@ pub contract TripleTriadGame {
             move_inputs_7, move_inputs_8, move_inputs_9,
         ];
 
-        for i in 0..9 {
-            if (i as u32) < n {
-                assert(move_inputs[i][0] == card_commit_1, "Move proof card_commit_1 mismatch");
-                assert(move_inputs[i][1] == card_commit_2, "Move proof card_commit_2 mismatch");
-            }
-        }
+        // Sections 4-7: the whole transcript, in one testable call. See the
+        // VALIDATORS block at the top of this file for why the assertions live
+        // there rather than here.
+        crate::assert_transcript(move_inputs, card_commit_1, card_commit_2, n);
 
-        // ===== 5. Validate proof chaining for valid moves =====
-        for i in 0..8 {
-            if ((i + 1) as u32) < n {
-                assert(
-                    move_inputs[i][3] == move_inputs[i + 1][2],
-                    "Proof chaining failed: end_state != next start_state",
-                );
-            }
-        }
-
-        // ===== 6. Validate initial state =====
-        // Only when there IS a first move: at n == 0 move_inputs[0] is a dummy.
-        if n > 0 {
-            let canonical_initial = crate::compute_initial_state_hash();
-            assert(
-                move_inputs[0][2] == canonical_initial,
-                "First move start_state does not match initial state",
-            );
-        }
-
-        // ===== 7. Only the LAST move of a complete game may end it =====
-        // For n < 9 no move ends the game: the point of the claim is that the
-        // game never finished. For n == 9 the ninth move MUST end it and name a
-        // winner, which is what stops a partial transcript being passed off as
-        // a complete one.
-        let complete = n == 9;
-        for i in 0..9 {
-            if (i as u32) < n {
-                let is_final = complete & (i == 8);
-                if is_final {
-                    assert(move_inputs[i][4] == 1, "The ninth move must end the game");
-                    assert(
-                        (move_inputs[i][5] == 1) | (move_inputs[i][5] == 2) | (move_inputs[i][5] == 3),
-                        "The ninth move must name a valid winner",
-                    );
-                } else {
-                    assert(move_inputs[i][4] == 0, "Only the ninth move may end the game");
-                    assert(move_inputs[i][5] == 0, "Only the ninth move may have a winner");
-                }
-            }
-        }
-
-        // ===== 8. Validate it's the opponent's turn =====
-        // P1 plays turns 0, 2, 4, 6, 8. P2 plays turns 1, 3, 5, 7.
-        // After N moves, the next player is: if N is even -> P1, if N is odd -> P2.
-        // The claimant must NOT be the next player (they didn't abandon).
-        // A COMPLETE game owes nobody a move, so there is no "opponent's turn"
-        // to require and either side may claim. Skipping the rule is the whole
-        // point of allowing n == 9: the loser is usually the one still present.
-        if !complete {
-            if caller_is_player1 {
-                // P1 is claiming -> must be P2's turn -> N must be odd
-                assert(n % 2 == 1, "It must be opponent's turn to claim abandonment");
-            } else {
-                // P2 is claiming -> must be P1's turn -> N must be even
-                assert(n % 2 == 0, "It must be opponent's turn to claim abandonment");
-            }
-        }
+        // ===== 8. It must be the opponent's turn =====
+        // Advisory only. `caller_is_player1` is a caller-supplied argument, so
+        // this cannot be authoritative — it is a fast fail that saves a
+        // doomed transaction. The binding check runs in the public half
+        // against the STORED player addresses.
+        crate::assert_claim_turn(n, caller_is_player1);
 
         // ===== 9. Enqueue public claim =====
         let caller = self.msg_sender();
@@ -535,22 +824,20 @@ pub contract TripleTriadGame {
         card_commit_2: Field,
     ) {
         let status = self.storage.game_status.at(game_id).read();
-        assert(status == 2, "Game must be in active state to claim abandonment");
+        crate::assert_active_for_claim(status);
 
         // Bind the claim's hand proofs to the hands actually committed to THIS
         // game. See the note in the private half.
-        assert(
-            card_commit_1 == self.storage.game_card_commit_1.at(game_id).read(),
-            "Hand proof 1 card_commit mismatch",
-        );
-        assert(
-            card_commit_2 == self.storage.game_card_commit_2.at(game_id).read(),
-            "Hand proof 2 card_commit mismatch",
+        crate::assert_claim_hand_commits(
+            card_commit_1,
+            card_commit_2,
+            self.storage.game_card_commit_1.at(game_id).read(),
+            self.storage.game_card_commit_2.at(game_id).read(),
         );
 
         let p1 = self.storage.game_player1.at(game_id).read();
         let p2 = self.storage.game_player2.at(game_id).read();
-        assert((claimant == p1) | (claimant == p2), "Claimant must be a player in this game");
+        crate::assert_claimant_is_player(claimant.to_field(), p1.to_field(), p2.to_field());
 
         // The turn rule, checked against WHO THE CLAIMANT ACTUALLY IS.
         //
@@ -567,25 +854,18 @@ pub contract TripleTriadGame {
         // when n is even, player 2 when n is odd. A claimant must not be the
         // one who owes the move. A COMPLETE game (n == 9) owes nobody a move,
         // so the rule does not apply — see the note in the private half.
-        let n_pub = num_valid_moves as u32;
-        if n_pub != 9 {
-            if claimant == p1 {
-                assert(n_pub % 2 == 1, "It must be opponent's turn to claim abandonment");
-            } else {
-                assert(n_pub % 2 == 0, "It must be opponent's turn to claim abandonment");
-            }
-        }
+        // The turn rule, against WHO THE CLAIMANT ACTUALLY IS. Only here are
+        // the real addresses readable — game_player1/2 are PublicMutable, so a
+        // private function cannot see them, which is why the private check can
+        // only ever be advisory.
+        crate::assert_claim_turn(num_valid_moves as u32, claimant == p1);
 
         // A game has to have had time to finish before walking away from it is
         // believable. Without this a claim can be RACED against the opponent's
         // settlement — file first and the winner loses the card they won —
         // which is the risk a complete-game claim would otherwise introduce.
         let active_at = self.storage.game_active_at.at(game_id).read() as u64;
-        let now = self.context.timestamp();
-        assert(
-            now - active_at >= crate::MIN_ABANDON_SECONDS,
-            "Too soon to call this game abandoned",
-        );
+        crate::assert_abandon_bar_passed(self.context.timestamp(), active_at);
 
         self.storage.game_claim_player.at(game_id).write(claimant);
         self.storage.game_claim_at.at(game_id).write(self.context.timestamp() as Field);
@@ -621,27 +901,23 @@ pub contract TripleTriadGame {
     #[only_self]
     fn contest_abandonment_public(game_id: Field, contester: AztecAddress) {
         let status = self.storage.game_status.at(game_id).read();
-        assert(status == 5, "Nothing to contest: no claim is standing");
+        crate::assert_claim_standing_for_contest(status);
 
         let p1 = self.storage.game_player1.at(game_id).read();
         let p2 = self.storage.game_player2.at(game_id).read();
-        assert((contester == p1) | (contester == p2), "Contester must be a player in this game");
+        crate::assert_contester_is_player(contester.to_field(), p1.to_field(), p2.to_field());
 
         // The claimant cannot contest their own claim.
         let claimant = self.storage.game_claim_player.at(game_id).read();
-        assert(contester != claimant, "A claimant cannot contest their own claim");
+        crate::assert_not_own_claim(contester.to_field(), claimant.to_field());
 
         // Only inside the window. Afterwards the claim may already have settled,
         // and reopening a resolved game would let cards be minted twice.
         let claim_at = self.storage.game_claim_at.at(game_id).read() as u64;
-        let now = self.context.timestamp();
-        assert(
-            now - claim_at < crate::DISPUTE_SECONDS,
-            "Dispute window has closed",
-        );
+        crate::assert_dispute_window_open(self.context.timestamp(), claim_at);
 
         let key = poseidon2_hash([game_id, contester.to_field()]);
-        assert(!self.storage.game_contested.at(key).read(), "Already contested once");
+        crate::assert_not_yet_contested(self.storage.game_contested.at(key).read());
         self.storage.game_contested.at(key).write(true);
 
         // Back to active, claim cleared: the game is live again.
@@ -721,49 +997,36 @@ pub contract TripleTriadGame {
         caller_cards_commit: Field,
     ) {
         let status = self.storage.game_status.at(game_id).read();
-        assert(status == 5, "Game must be in abandoned_claimed state");
+        crate::assert_claim_standing_for_recovery(status);
 
         // Recovery is now PER PLAYER, not once per game. The old version let the
         // claimant settle for everybody and then marked the game done — which
         // meant the absent player, if they ever came back, had no route to their
         // own five cards. Each side recovers its own stake, whenever it returns.
         let key = poseidon2_hash([game_id, recoverer.to_field()]);
-        assert(!self.storage.game_recovered.at(key).read(), "Already recovered for this player");
+        crate::assert_not_yet_recovered(self.storage.game_recovered.at(key).read());
 
         // The dispute window is measured from the claim for everyone. A player
         // returning later has long since passed it; the claimant must wait it out.
         let claim_at = self.storage.game_claim_at.at(game_id).read() as u64;
-        let now = self.context.timestamp();
-        assert(
-            now - claim_at >= crate::DISPUTE_SECONDS,
-            "Dispute window not elapsed",
-        );
+        crate::assert_dispute_window_elapsed(self.context.timestamp(), claim_at);
 
         // Verify the recoverer is a player, and that BOTH the randomness they
         // used to re-mint and the card ids they minted are the ones their side
         // committed.
         let p1 = self.storage.game_player1.at(game_id).read();
         let p2 = self.storage.game_player2.at(game_id).read();
-        if recoverer == p1 {
-            assert(
-                caller_state_hash == self.storage.game_player_state_1.at(game_id).read(),
-                "Player state hash mismatch",
-            );
-            assert(
-                caller_cards_commit == self.storage.game_card_commit_1.at(game_id).read(),
-                "Card ids do not match this player's commitment",
-            );
-        } else {
-            assert(recoverer == p2, "Recoverer must be a player in this game");
-            assert(
-                caller_state_hash == self.storage.game_player_state_2.at(game_id).read(),
-                "Player state hash mismatch",
-            );
-            assert(
-                caller_cards_commit == self.storage.game_card_commit_2.at(game_id).read(),
-                "Card ids do not match this player's commitment",
-            );
-        }
+        crate::assert_recovery_binding(
+            recoverer.to_field(),
+            p1.to_field(),
+            p2.to_field(),
+            caller_state_hash,
+            caller_cards_commit,
+            self.storage.game_player_state_1.at(game_id).read(),
+            self.storage.game_player_state_2.at(game_id).read(),
+            self.storage.game_card_commit_1.at(game_id).read(),
+            self.storage.game_card_commit_2.at(game_id).read(),
+        );
 
         self.storage.game_recovered.at(key).write(true);
 
@@ -875,41 +1138,17 @@ pub contract TripleTriadGame {
             move_inputs_7, move_inputs_8, move_inputs_9,
         ];
 
-        // ===== 4. Validate card_commit consistency across all move proofs =====
-        for i in 0..9 {
-            assert(move_inputs[i][0] == card_commit_1, "Move proof card_commit_1 mismatch");
-            assert(move_inputs[i][1] == card_commit_2, "Move proof card_commit_2 mismatch");
-        }
+        // ===== 4-8. The transcript =====
+        // process_game is exactly a claim with n = 9: every move bound to both
+        // hands, chained, anchored to the empty board, and only the ninth
+        // ending the game with a valid winner. Sharing the validator means the
+        // two paths cannot drift, and the assertions live where a test can
+        // reach them.
+        crate::assert_transcript(move_inputs, card_commit_1, card_commit_2, 9);
 
-        // ===== 5. Validate proof chaining =====
-        for i in 0..8 {
-            assert(
-                move_inputs[i][3] == move_inputs[i + 1][2],
-                "Proof chaining failed: end_state != next start_state",
-            );
-        }
-
-        // ===== 6. Validate initial state (canonical empty board) =====
-        let canonical_initial = crate::compute_initial_state_hash();
-        assert(
-            move_inputs[0][2] == canonical_initial,
-            "First move start_state does not match initial state",
-        );
-
-        // ===== 7. Validate intermediate moves have game_ended=0 =====
-        for i in 0..8 {
-            assert(move_inputs[i][4] == 0, "Intermediate move should not end the game");
-            assert(move_inputs[i][5] == 0, "Intermediate move should not have a winner");
-        }
-
-        // ===== 8. Validate game completion =====
-        let game_ended = move_inputs[8][4];
+        // assert_transcript has already required move 9 to end the game with a
+        // valid winner; this just reads the verdict out.
         let winner_id = move_inputs[8][5];
-        assert(game_ended == 1, "Game must have ended");
-        assert(
-            (winner_id == 1) | (winner_id == 2) | (winner_id == 3),
-            "Invalid winner_id",
-        );
 
         // ===== 9. Validate randomness against stored player_state_hash =====
         // Verify that the randomness provided matches what was committed during game creation/join.
@@ -944,15 +1183,7 @@ pub contract TripleTriadGame {
 
         if (winner_id == 1) | (winner_id == 2) {
             // Winner/loser game
-            assert(card_to_transfer != 0, "card_to_transfer must be nonzero for non-draw");
-
-            let mut card_found = false;
-            for i in 0..5 {
-                if opponent_card_ids[i] == card_to_transfer {
-                    card_found = true;
-                }
-            }
-            assert(card_found, "card_to_transfer not in opponent's cards");
+            crate::assert_transferable_card(card_to_transfer, opponent_card_ids);
 
             // Winner gets their 5 cards + 1 transferred card
             let mut winner_tokens: [Field; 6] = [0; 6];
@@ -1071,59 +1302,37 @@ pub contract TripleTriadGame {
         // while the returning winner separately settles and is minted six —
         // the loser's wagered card issued TWICE.
         let status = self.storage.game_status.at(game_id).read();
-        assert(status == 2, "Game is not active: it has been settled, cancelled or claimed");
-
         let settled = self.storage.game_settled.at(game_id).read();
-        assert(!settled, "Game already settled");
+        crate::assert_active_for_settlement(status, settled);
 
         // Verify card_commits match on-chain records
         let stored_cc1 = self.storage.game_card_commit_1.at(game_id).read();
         let stored_cc2 = self.storage.game_card_commit_2.at(game_id).read();
-        assert(stored_cc1 != 0, "Game card_commit_1 not set");
-        assert(stored_cc2 != 0, "Game card_commit_2 not set");
-        assert(proof_card_commit_1 == stored_cc1, "card_commit_1 mismatch");
-        assert(proof_card_commit_2 == stored_cc2, "card_commit_2 mismatch");
+        crate::assert_commitments_present(stored_cc1, stored_cc2);
+        crate::assert_proof_commits_match(
+            proof_card_commit_1, proof_card_commit_2, stored_cc1, stored_cc2,
+        );
 
-        // The CARD IDS being minted must hash to those same commitments. Without
-        // this the ids are merely asserted by the caller, and a winner can name
-        // any cards they like. The caller is the winner, so winner_id says which
-        // side they are.
-        if winner_id == 1 {
-            assert(caller_cards_commit == stored_cc1, "Caller card ids do not match their commitment");
-            assert(opponent_cards_commit == stored_cc2, "Opponent card ids do not match their commitment");
-        } else {
-            assert(caller_cards_commit == stored_cc2, "Caller card ids do not match their commitment");
-            assert(opponent_cards_commit == stored_cc1, "Opponent card ids do not match their commitment");
-        }
-
-        // Verify player_state_hash values match on-chain records
         let stored_ps1 = self.storage.game_player_state_1.at(game_id).read();
         let stored_ps2 = self.storage.game_player_state_2.at(game_id).read();
-
-        // Verify winner/loser match stored player addresses
         let player1 = self.storage.game_player1.at(game_id).read();
         let player2 = self.storage.game_player2.at(game_id).read();
 
-        if winner_id == 1 {
-            assert(winner == player1, "Winner must be player 1");
-            assert(loser == player2, "Loser must be player 2");
-            // caller is winner (player1), opponent is loser (player2)
-            assert(caller_state_hash == stored_ps1, "Caller player_state_hash mismatch");
-            assert(opponent_state_hash == stored_ps2, "Opponent player_state_hash mismatch");
-        } else {
-            assert(winner_id == 2, "Invalid winner ID for non-draw");
-            assert(winner == player2, "Winner must be player 2");
-            assert(loser == player1, "Loser must be player 1");
-            // caller is winner (player2), opponent is loser (player1)
-            assert(caller_state_hash == stored_ps2, "Caller player_state_hash mismatch");
-            assert(opponent_state_hash == stored_ps1, "Opponent player_state_hash mismatch");
-        }
+        // WHO is paid, and with WHOSE cards. winner_id comes from the verified
+        // transcript and the caller is the winner, so this pins the payout to
+        // the side the proofs name; the commitment halves are what stop a
+        // winner naming any five cards they like.
+        crate::assert_settlement_binding(
+            winner_id,
+            winner.to_field(), loser.to_field(),
+            player1.to_field(), player2.to_field(),
+            caller_cards_commit, opponent_cards_commit, stored_cc1, stored_cc2,
+            caller_state_hash, opponent_state_hash, stored_ps1, stored_ps2,
+        );
 
-        // Verify hand proofs contained correct opponent player_state_hashes
-        // hand_proof_1 (player1) proves knowledge of player2's state hash
-        // hand_proof_2 (player2) proves knowledge of player1's state hash
-        assert(opponent_state_from_p1_proof == stored_ps2, "Hand proof 1 opponent_state_hash mismatch");
-        assert(opponent_state_from_p2_proof == stored_ps1, "Hand proof 2 opponent_state_hash mismatch");
+        crate::assert_hand_proof_cross_states(
+            opponent_state_from_p1_proof, opponent_state_from_p2_proof, stored_ps1, stored_ps2,
+        );
 
         self.storage.game_settled.at(game_id).write(true);
         self.storage.game_status.at(game_id).write(3); // settled
@@ -1163,72 +1372,30 @@ pub contract TripleTriadGame {
         // while the returning winner separately settles and is minted six —
         // the loser's wagered card issued TWICE.
         let status = self.storage.game_status.at(game_id).read();
-        assert(status == 2, "Game is not active: it has been settled, cancelled or claimed");
-
         let settled = self.storage.game_settled.at(game_id).read();
-        assert(!settled, "Game already settled");
+        crate::assert_active_for_settlement(status, settled);
 
         let stored_cc1 = self.storage.game_card_commit_1.at(game_id).read();
         let stored_cc2 = self.storage.game_card_commit_2.at(game_id).read();
-        assert(stored_cc1 != 0, "Game card_commit_1 not set");
-        assert(stored_cc2 != 0, "Game card_commit_2 not set");
-        assert(proof_card_commit_1 == stored_cc1, "card_commit_1 mismatch");
-        assert(proof_card_commit_2 == stored_cc2, "card_commit_2 mismatch");
+        crate::assert_commitments_present(stored_cc1, stored_cc2);
+        crate::assert_proof_commits_match(
+            proof_card_commit_1, proof_card_commit_2, stored_cc1, stored_cc2,
+        );
 
-        // WHO the cards go to, not just WHICH cards.
-        //
-        // The commitment checks below bind the card IDS. They say nothing about
-        // the recipients, and in the draw branch of process_game both
-        // recipients are caller-supplied: `caller` is msg_sender and `opponent`
-        // is a plain argument. Nothing here used to read the stored player
-        // addresses at all, so a player settling a drawn game could pass an
-        // address they controlled as `opponent` and have the OPPONENT'S five
-        // committed cards minted to themselves. The ids were genuine, every
-        // commitment check passed, and the other player got nothing.
-        //
-        // settle_game constrains its recipients (`winner == player1` etc.).
-        // Only the draw path did not — the one settlement route where nothing
-        // is supposed to change hands, and therefore the one where an
-        // unconstrained transfer is least expected.
         let p1 = self.storage.game_player1.at(game_id).read();
         let p2 = self.storage.game_player2.at(game_id).read();
-        let caller_is_p1 = caller == p1;
-        assert(
-            crate::is_player_pair(
-                caller.to_field(), opponent.to_field(), p1.to_field(), p2.to_field(),
-            ),
-            "A draw must pay out to the two players of this game",
-        );
-
-        // Same binding as settle_game, and now pinned to the settler's SIDE
-        // rather than accepting either order: the caller's cards must be the
-        // ones the caller committed, so the pairing of cards to recipient is
-        // fixed rather than merely self-consistent.
-        let caller_expected_cc = if caller_is_p1 { stored_cc1 } else { stored_cc2 };
-        let opponent_expected_cc = if caller_is_p1 { stored_cc2 } else { stored_cc1 };
-        assert(
-            (caller_cards_commit == caller_expected_cc)
-            & (opponent_cards_commit == opponent_expected_cc),
-            "Card ids do not match the commitments in a draw",
-        );
-
-        // Verify player_state_hash values match on-chain records
         let stored_ps1 = self.storage.game_player_state_1.at(game_id).read();
         let stored_ps2 = self.storage.game_player_state_2.at(game_id).read();
-        // Pinned to the settler's side for the same reason as the commitments
-        // above: an either-order check is satisfied by a swap, and the swap is
-        // exactly what mints one player's stake into the other's hands.
-        let caller_expected_ps = if caller_is_p1 { stored_ps1 } else { stored_ps2 };
-        let opponent_expected_ps = if caller_is_p1 { stored_ps2 } else { stored_ps1 };
-        assert(
-            (caller_state_hash == caller_expected_ps)
-            & (opponent_state_hash == opponent_expected_ps),
-            "Player state hash mismatch in draw",
+
+        crate::assert_draw_binding(
+            caller.to_field(), opponent.to_field(), p1.to_field(), p2.to_field(),
+            caller_cards_commit, opponent_cards_commit, stored_cc1, stored_cc2,
+            caller_state_hash, opponent_state_hash, stored_ps1, stored_ps2,
         );
 
-        // Verify hand proofs contained correct opponent player_state_hashes
-        assert(opponent_state_from_p1_proof == stored_ps2, "Hand proof 1 opponent_state_hash mismatch");
-        assert(opponent_state_from_p2_proof == stored_ps1, "Hand proof 2 opponent_state_hash mismatch");
+        crate::assert_hand_proof_cross_states(
+            opponent_state_from_p1_proof, opponent_state_from_p2_proof, stored_ps1, stored_ps2,
+        );
 
         self.storage.game_settled.at(game_id).write(true);
         self.storage.game_status.at(game_id).write(3); // settled
