@@ -93,6 +93,32 @@ pub fn derive_pack_entropy(accumulator: Field, block_number: Field, timestamp: F
     std::hash::pedersen_hash([DOM_SEP__PACK_ENTROPY, accumulator, block_number, timestamp])
 }
 
+/// The blinding factor that hides a player's hand, and the ONLY thing binding a
+/// hand commitment to one particular game.
+///
+/// `card_commit = poseidon2([card_ids[0..5], blinding_factor])`. Drop `game_id`
+/// from this hash and the same five cards commit to the same value in every
+/// game, so a move proof built for one game verifies against another's
+/// transcript — the register's T4 ("a move proof cannot be reused in a different
+/// game") rests entirely on this line.
+///
+/// It is a function because it was three copies of one expression, in
+/// `commit_five_nfts_create`, `commit_five_nfts_join` and
+/// `compute_blinding_factor`. The frontend reads the third to build proofs the
+/// first two must agree with, so a drift between any two of them is a silent
+/// break, and nothing tested that they matched.
+///
+/// At module scope, not inside the contract, because that is the only place a
+/// `nargo test` can call it — the same reason the game contract's validators
+/// live outside its contract block.
+pub fn derive_blinding_factor(
+    nhk_app_secret: Field,
+    contract_address: Field,
+    game_id: Field,
+) -> Field {
+    poseidon::poseidon2::Poseidon2::hash([nhk_app_secret, contract_address, game_id], 3)
+}
+
 /// Fixed starter set card IDs (common cards)
 global STARTER_CARD_IDS: [Field; 5] = [1, 2, 3, 4, 5];
 
@@ -126,7 +152,8 @@ global GAME_ID_IV_FIELD: Field = 0x47616d654964;
 pub contract TripleTriadNFT {
     use super::{
         AXOLOTL_NOTE_SECRET_IV_FIELD, AXOLOTL_NOTE_TAG_FIELD, AXOLOTL_PAYLOAD_IV_FIELD,
-        CARD_PACK_COST, derive_pack_entropy, derive_pack_key, DOM_SEP__STARTER_CLAIM,
+        CARD_PACK_COST, derive_blinding_factor, derive_pack_entropy, derive_pack_key,
+        DOM_SEP__STARTER_CLAIM,
         GAME_ID_IV_FIELD, generate_card, PACK_CONSUMED, STARTER_CARD_IDS,
     };
     use super::filters::{filter_by_token_ids, filter_by_token_ids_10};
@@ -829,7 +856,7 @@ pub contract TripleTriadNFT {
         for i in 0..5 {
             to_hash[i] = token_ids[i];
         }
-        to_hash[5] = poseidon2_hash([nhk_app_secret, self.address.to_field(), game_id]);
+        to_hash[5] = derive_blinding_factor(nhk_app_secret, self.address.to_field(), game_id);
         let card_commit_hash = poseidon2_hash(to_hash);
 
         let player_state_hash = poseidon2_hash(randomness);
@@ -892,7 +919,7 @@ pub contract TripleTriadNFT {
         for i in 0..5 {
             to_hash[i] = token_ids[i];
         }
-        to_hash[5] = poseidon2_hash([nhk_app_secret, self.address.to_field(), game_id]);
+        to_hash[5] = derive_blinding_factor(nhk_app_secret, self.address.to_field(), game_id);
         let card_commit_hash = poseidon2_hash(to_hash);
 
         let player_state_hash = poseidon2_hash(randomness);
@@ -1307,6 +1334,7 @@ pub contract TripleTriadNFT {
 
     // --- Blinding Factor Utility ---
 
+
     /// Compute the blinding factor for the calling player for a specific game.
     /// This is the same value used in commit_five_nfts:
     ///   blinding_factor = poseidon2_hash([nhk_app_secret, contract_address, game_id])
@@ -1316,7 +1344,7 @@ pub contract TripleTriadNFT {
         let owner = self.msg_sender();
         let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
         let seed = self.context.request_nhk_app(owner_npk_m_hash);
-        poseidon2_hash([seed, self.address.to_field(), game_id])
+        derive_blinding_factor(seed, self.address.to_field(), game_id)
     }
 
     // --- Note Import Utility ---

@@ -10,3 +10,9 @@ aztec = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v5.2.
 compressed_string = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v5.2.0-nightly.20260815", directory = "noir-projects/aztec-nr/compressed-string" }
 uint_note = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v5.2.0-nightly.20260815", directory = "noir-projects/aztec-nr/uint-note" }
 arena_token = { path = "../arena_token" }
+# Same tag as aztec-nr's own protocol-types crate, so module-scope
+# `Poseidon2::hash(x, N)` is byte-for-byte the `poseidon2_hash(x)` the contract
+# uses internally (types/src/hash.nr:211 is exactly that call). Module scope is
+# where the derivation has to live for a test to reach it, and `aztec::protocol`
+# does not resolve there.
+poseidon = { git = "https://github.com/noir-lang/poseidon", tag = "v0.3.0" }
