@@ -199,7 +199,7 @@ intuition, in one example.**
 | P2 | A card note created by settlement is real and in the tree. | `PARTIAL` | `create_and_push_note` derives the macro-compatible hash and calls `push_note_hash`. Read, not tested. |
 | P3 | Card notes cannot be double-spent across games. | `PARTIAL` | Constrained `pop_notes` emits nullifiers; duplicate nullifiers are dropped by the sequencer. Relies on protocol behaviour. |
 | P4 | The deployed VK hashes are the real circuits', not the dummy's. | `VERIFIED` | Empirical: a genuine `game_move` proof only verifies against the real hash, and real settlements succeed on the live instance. |
-| P5 | A deployment cannot register the dummy VK for real proofs. | `UNVERIFIED` | **It can — F10.** The constructor validates nothing; the only defences are in tooling. |
+| P5 | A deployment cannot register the dummy VK for real proofs. | `VERIFIED` | F10 closed. `assert_vk_configuration` runs in the constructor: VKs non-zero, hand != move, and neither equal to the dummy unless `permissive_vks` was passed explicitly. 8 tests. A permissive deployment is readable on-chain via `has_permissive_vks()`, so an unsound one is no longer indistinguishable from a sound one. |
 
 ### Properties the register did not name
 

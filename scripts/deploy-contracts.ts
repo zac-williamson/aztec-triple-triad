@@ -276,7 +276,14 @@ async function main() {
 
   // 7. Deploy Game contract
   console.log('\nDeploying TripleTriadGame...');
-  // Constructor: (admin, nft_address, hand_vk_hash, move_vk_hash, token_address, dummy_vk_hash)
+  // Constructor: (admin, nft_address, hand_vk_hash, move_vk_hash, token_address,
+  //               dummy_vk_hash, permissive_vks)
+  //
+  // The constructor now REJECTS a deployment whose hand or move VK is the dummy
+  // VK unless permissive_vks says so explicitly. The URL guard above is still
+  // the thing that keeps --permissive-vks off a real node, but it is no longer
+  // the ONLY thing: an unsound deployment has to ask for it, and the answer is
+  // readable on-chain afterwards via has_permissive_vks().
   const { contract: gameContract } = await Contract.deploy(wallet, gameArtifact, [
     deployerAddress, // admin (for upgradeability)
     nftAddress,
@@ -284,6 +291,7 @@ async function main() {
     Fr.fromHexString(moveVkHash),
     tokenAddress,
     Fr.fromHexString(dummyVkHash),
+    PERMISSIVE_VKS,
   ])
     .send(await sendAs(deployerAddress));
 

@@ -401,6 +401,44 @@ pub fn assert_not_yet_recovered(already: bool) {
     assert(!already, "Already recovered for this player");
 }
 
+/// What a deployment may register as its verification keys.
+///
+/// The constructor used to validate NOTHING. A deployment that registered the
+/// dummy circuit's VK as `move_vk_hash` would accept the constraint-free dummy
+/// proof as a real move — every game winnable by anyone, with no way for a
+/// player to tell from the chain. The only thing standing in the way was a
+/// regex on the PXE URL in `scripts/deploy-contracts.ts`, i.e. tooling, which
+/// is not where a rule like this belongs.
+///
+/// `permissive` exists because the playtest harness genuinely needs that
+/// configuration: `--permissive-vks` registers the dummy VKs so a playtest can
+/// skip real proving. Making it a constructor ARGUMENT rather than an absence
+/// of checks changes the thing that matters — an unsound deployment is now
+/// explicit, deliberate, and recorded on-chain where a player can read it,
+/// instead of being indistinguishable from a sound one.
+pub fn assert_vk_configuration(
+    hand_vk_hash: Field,
+    move_vk_hash: Field,
+    dummy_vk_hash: Field,
+    permissive: bool,
+) {
+    // A zero VK hash is what an unset or mis-encoded deploy argument looks like,
+    // and it is never a legitimate key.
+    assert(hand_vk_hash != 0, "hand_vk_hash must be set");
+    assert(move_vk_hash != 0, "move_vk_hash must be set");
+    assert(dummy_vk_hash != 0, "dummy_vk_hash must be set");
+
+    // Hand and move proofs verify different circuits with different public
+    // input shapes. Registering one for the other is a misconfiguration under
+    // any setting, permissive included.
+    assert(hand_vk_hash != move_vk_hash, "hand_vk_hash and move_vk_hash must differ");
+
+    if !permissive {
+        assert(hand_vk_hash != dummy_vk_hash, "hand_vk_hash must not be the dummy VK");
+        assert(move_vk_hash != dummy_vk_hash, "move_vk_hash must not be the dummy VK");
+    }
+}
+
 pub fn compute_initial_state_hash() -> Field {
     let mut initial_inputs: [Field; 30] = [0; 30];
     initial_inputs[18] = 5;
@@ -517,6 +555,10 @@ pub contract TripleTriadGame {
         game_player_state_2: Map<Field, PublicMutable<Field, Context>, Context>,
         token_contract: PublicImmutable<AztecAddress, Context>,
         dummy_vk_hash: PublicImmutable<Field, Context>,
+        /// True when this deployment registered dummy VKs for real proofs. It
+        /// has NO gameplay soundness; the flag exists so that fact is on-chain
+        /// and readable rather than only in the deployer's console output.
+        permissive_vks: PublicImmutable<bool, Context>,
         game_claim_player: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
         game_claim_at: Map<Field, PublicMutable<Field, Context>, Context>,
         /// Timestamp the game became ACTIVE (both hands committed). An
@@ -541,13 +583,25 @@ pub contract TripleTriadGame {
         move_vk_hash: Field,
         token_address: AztecAddress,
         dummy_vk_hash: Field,
+        permissive_vks: bool,
     ) {
+        crate::assert_vk_configuration(hand_vk_hash, move_vk_hash, dummy_vk_hash, permissive_vks);
+
         self.storage.admin.initialize(admin);
         self.storage.nft_contract.initialize(nft_address);
         self.storage.hand_vk_hash.initialize(hand_vk_hash);
         self.storage.move_vk_hash.initialize(move_vk_hash);
         self.storage.token_contract.initialize(token_address);
         self.storage.dummy_vk_hash.initialize(dummy_vk_hash);
+        self.storage.permissive_vks.initialize(permissive_vks);
+    }
+
+    /// Whether this deployment accepts constraint-free dummy proofs as real
+    /// ones. Public so a player can check the chain rather than trust a README.
+    #[external("public")]
+    #[view]
+    fn has_permissive_vks() -> bool {
+        self.storage.permissive_vks.read()
     }
 
     // Updates are applied by FRESH REDEPLOY (new addresses), not the Aztec

@@ -21,7 +21,8 @@ use crate::{
     assert_hand_proof_cross_states, assert_joinable, assert_move_commits, assert_not_own_claim,
     assert_not_yet_contested, assert_not_yet_recovered, assert_proof_commits_match,
     assert_recovery_binding, assert_settlement_binding, assert_transcript,
-    assert_transferable_card, assert_valid_move_count, compute_initial_state_hash,
+    assert_transferable_card, assert_valid_move_count, assert_vk_configuration,
+    compute_initial_state_hash,
     DISPUTE_SECONDS, MIN_ABANDON_SECONDS,
 };
 
@@ -548,3 +549,56 @@ fn a_hand_proof_naming_its_own_state_is_rejected() {
 }
 
 
+
+// ---------------- deployment: verification keys ----------------
+
+#[test]
+fn a_sound_deployment_registers_three_distinct_keys() {
+    assert_vk_configuration(f(0x11), f(0x22), f(0x33), b(false));
+}
+
+#[test(should_fail)]
+fn a_deployment_may_not_accept_dummy_proofs_as_moves() {
+    // THE finding. With move_vk_hash == dummy_vk_hash the constraint-free dummy
+    // proof verifies as a real move: every game winnable by anyone, and nothing
+    // on-chain to distinguish the deployment from a sound one.
+    assert_vk_configuration(f(0x11), f(0x33), f(0x33), b(false));
+}
+
+#[test(should_fail)]
+fn a_deployment_may_not_accept_dummy_proofs_as_hands() {
+    assert_vk_configuration(f(0x33), f(0x22), f(0x33), b(false));
+}
+
+#[test]
+fn a_playtest_deployment_may_opt_into_dummy_proofs() {
+    // --permissive-vks needs exactly the configuration rejected above. Allowed,
+    // but only as a deliberate constructor argument that is then readable
+    // on-chain via has_permissive_vks() — not as an absence of checks.
+    assert_vk_configuration(f(0x11), f(0x33), f(0x33), b(true));
+}
+
+#[test(should_fail)]
+fn even_a_playtest_deployment_may_not_confuse_hand_and_move_keys() {
+    // Different circuits, different public-input shapes. A misconfiguration
+    // under any setting.
+    assert_vk_configuration(f(0x22), f(0x22), f(0x33), b(true));
+}
+
+#[test(should_fail)]
+fn an_unset_hand_key_is_rejected() {
+    // Zero is what a missing or mis-encoded deploy argument looks like.
+    assert_vk_configuration(f(0), f(0x22), f(0x33), b(false));
+}
+
+#[test(should_fail)]
+fn an_unset_move_key_is_rejected() {
+    assert_vk_configuration(f(0x11), f(0), f(0x33), b(false));
+}
+
+#[test(should_fail)]
+fn an_unset_dummy_key_is_rejected() {
+    // Without it, `if n > 0 { move_vk } else { dummy_vk }` pads a short claim
+    // transcript with a key that verifies nothing.
+    assert_vk_configuration(f(0x11), f(0x22), f(0), b(false));
+}

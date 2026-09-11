@@ -33,6 +33,7 @@ pub unconstrained fn setup_game() -> (TestEnvironment, AztecAddress, AztecAddres
         2,     // move_vk_hash (dummy)
         token_addr,
         3,     // dummy_vk_hash (dummy)
+        false, // permissive_vks: these three are distinct, so the sound path
     );
     let game_addr = env.deploy("TripleTriadGame").with_public_initializer(admin, game_init);
 

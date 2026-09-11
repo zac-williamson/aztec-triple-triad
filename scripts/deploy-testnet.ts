@@ -353,6 +353,10 @@ async function main() {
       Fr.fromHexString(moveVkHash),
       tokenContract.address,
       Fr.fromHexString(dummyVkHash),
+      // permissive_vks: never. This script deploys to a real node, and the
+      // constructor rejects dummy VKs registered as real ones unless this says
+      // otherwise. There is no flag here on purpose.
+      false,
     ]).send(await sendAs(deployerAddress));
     gameContract = gameRes.contract;
     console.log(`  Game:  ${gameContract.address}`);
