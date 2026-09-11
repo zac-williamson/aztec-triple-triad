@@ -247,7 +247,12 @@ for (const name of names) {
     process.exit(2);
   }
 
-  const backup = `/tmp/mutate-${basename(t.src)}.bak`;
+  // Keyed by TARGET, not by basename. Four of the five targets are called
+  // `main.nr`, so `/tmp/mutate-main.nr.bak` was one shared file: sweeping two
+  // of them in sequence had each clobber the other's backup, and a restore —
+  // including the crash recovery above — could write one Noir package's source
+  // over another's.
+  const backup = `/tmp/mutate-${name.replace(/[^a-z0-9]+/gi, '_')}.bak`;
   copyFileSync(t.src, backup);
 
   // RESTORE ON SIGNAL, not only on normal exit.

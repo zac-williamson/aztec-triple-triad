@@ -59,6 +59,19 @@ fn ps2() -> Field {
     std::hint::black_box(0x52)
 }
 
+/// The same barrier, for one-off values written inline at a call site. A bare
+/// `0xdead` or `2` in an argument list is a compile-time constant and folds
+/// exactly like a `global` does.
+fn f(x: Field) -> Field {
+    std::hint::black_box(x)
+}
+fn b(x: bool) -> bool {
+    std::hint::black_box(x)
+}
+fn u(x: u64) -> u64 {
+    std::hint::black_box(x)
+}
+
 /// A well-formed transcript of `n` moves: bound to both hands, chained, and
 /// anchored to the empty board. For n == 9 the ninth move ends the game.
 fn chain(n: u32) -> [[Field; 6]; 9] {
@@ -83,78 +96,78 @@ fn chain(n: u32) -> [[Field; 6]; 9] {
 
 #[test]
 fn game_id_may_be_used_once() {
-    assert_game_id_unused(0);
+    assert_game_id_unused(f(0));
 }
 
 #[test(should_fail)]
 fn game_id_may_not_be_reused() {
     // A recycled id repeats the blinding factor derived from it, which is the
     // only thing binding a move proof to one game.
-    assert_game_id_unused(2);
+    assert_game_id_unused(f(2));
 }
 
 #[test]
 fn a_created_game_accepts_a_different_player() {
-    assert_joinable(1, p2(), p1());
+    assert_joinable(f(1), p2(), p1());
 }
 
 #[test(should_fail)]
 fn cannot_join_your_own_game() {
-    assert_joinable(1, p1(), p1());
+    assert_joinable(f(1), p1(), p1());
 }
 
 #[test(should_fail)]
 fn cannot_join_a_game_that_is_not_created() {
-    assert_joinable(2, p2(), p1());
+    assert_joinable(f(2), p2(), p1());
 }
 
 #[test]
 fn the_creator_may_cancel_before_anyone_joins() {
-    assert_cancellable(1, p1(), p1());
+    assert_cancellable(f(1), p1(), p1());
 }
 
 #[test(should_fail)]
 fn a_stranger_may_not_cancel_your_game() {
     // Cancel re-mints the creator's five committed cards.
-    assert_cancellable(1, outsider(), p1());
+    assert_cancellable(f(1), outsider(), p1());
 }
 
 #[test(should_fail)]
 fn a_joined_game_may_not_be_cancelled() {
     // It would return one hand while the other stayed committed.
-    assert_cancellable(2, p1(), p1());
+    assert_cancellable(f(2), p1(), p1());
 }
 
 #[test]
 fn an_active_unsettled_game_may_settle() {
-    assert_active_for_settlement(2, false);
+    assert_active_for_settlement(f(2), b(false));
 }
 
 #[test(should_fail)]
 fn a_claimed_game_may_not_also_settle() {
     // status 5 with settled=false is exactly the double-mint that the
     // `settled` flag alone did not catch.
-    assert_active_for_settlement(5, false);
+    assert_active_for_settlement(f(5), b(false));
 }
 
 #[test(should_fail)]
 fn a_settled_game_may_not_settle_again() {
-    assert_active_for_settlement(2, true);
+    assert_active_for_settlement(f(2), b(true));
 }
 
 #[test(should_fail)]
 fn only_an_active_game_may_be_claimed() {
-    assert_active_for_claim(5);
+    assert_active_for_claim(f(5));
 }
 
 #[test(should_fail)]
 fn nothing_to_contest_without_a_standing_claim() {
-    assert_claim_standing_for_contest(2);
+    assert_claim_standing_for_contest(f(2));
 }
 
 #[test(should_fail)]
 fn nothing_to_recover_without_a_standing_claim() {
-    assert_claim_standing_for_recovery(2);
+    assert_claim_standing_for_recovery(f(2));
 }
 
 // ---------------- participants ----------------
@@ -187,52 +200,52 @@ fn the_other_player_may_contest() {
 
 #[test(should_fail)]
 fn a_player_may_only_contest_once() {
-    assert_not_yet_contested(true);
+    assert_not_yet_contested(b(true));
 }
 
 #[test(should_fail)]
 fn a_player_may_only_recover_once() {
-    assert_not_yet_recovered(true);
+    assert_not_yet_recovered(b(true));
 }
 
 // ---------------- time ----------------
 
 #[test]
 fn a_stale_game_may_be_claimed() {
-    assert_abandon_bar_passed(MIN_ABANDON_SECONDS + 1, 0);
+    assert_abandon_bar_passed(MIN_ABANDON_SECONDS + u(1), u(0));
 }
 
 #[test(should_fail)]
 fn a_fresh_game_may_not_be_claimed() {
     // Without the bar, a claim races the opponent's settlement: file first and
     // the winner loses the card they won.
-    assert_abandon_bar_passed(MIN_ABANDON_SECONDS - 1, 0);
+    assert_abandon_bar_passed(MIN_ABANDON_SECONDS - u(1), u(0));
 }
 
 #[test]
 fn the_bar_is_inclusive_at_the_boundary() {
-    assert_abandon_bar_passed(MIN_ABANDON_SECONDS, 0);
+    assert_abandon_bar_passed(MIN_ABANDON_SECONDS, u(0));
 }
 
 #[test]
 fn a_fresh_claim_may_be_contested() {
-    assert_dispute_window_open(DISPUTE_SECONDS - 1, 0);
+    assert_dispute_window_open(DISPUTE_SECONDS - u(1), u(0));
 }
 
 #[test(should_fail)]
 fn an_elapsed_claim_may_not_be_contested() {
     // Reopening a claim that may already have settled would mint twice.
-    assert_dispute_window_open(DISPUTE_SECONDS, 0);
+    assert_dispute_window_open(DISPUTE_SECONDS, u(0));
 }
 
 #[test]
 fn recovery_waits_the_window_out() {
-    assert_dispute_window_elapsed(DISPUTE_SECONDS, 0);
+    assert_dispute_window_elapsed(DISPUTE_SECONDS, u(0));
 }
 
 #[test(should_fail)]
 fn recovery_may_not_jump_the_window() {
-    assert_dispute_window_elapsed(DISPUTE_SECONDS - 1, 0);
+    assert_dispute_window_elapsed(DISPUTE_SECONDS - u(1), u(0));
 }
 
 // ---------------- claim shape ----------------
@@ -265,35 +278,35 @@ fn player1_claims_on_an_odd_count() {
     let n7: u32 = std::hint::black_box(7);
     // After an odd number of 0-indexed moves it is player 2 to move, so player
     // 1 is not the one who walked away.
-    assert_claim_turn(n1, true);
-    assert_claim_turn(n7, true);
+    assert_claim_turn(n1, b(true));
+    assert_claim_turn(n7, b(true));
 }
 
 #[test(should_fail)]
 fn player1_may_not_claim_when_it_is_their_own_turn() {
     let n4: u32 = std::hint::black_box(4);
-    assert_claim_turn(n4, true);
+    assert_claim_turn(n4, b(true));
 }
 
 #[test]
 fn player2_claims_on_an_even_count() {
     let n0: u32 = std::hint::black_box(0);
     let n8: u32 = std::hint::black_box(8);
-    assert_claim_turn(n0, false);
-    assert_claim_turn(n8, false);
+    assert_claim_turn(n0, b(false));
+    assert_claim_turn(n8, b(false));
 }
 
 #[test(should_fail)]
 fn player2_may_not_claim_when_it_is_their_own_turn() {
     let n3: u32 = std::hint::black_box(3);
-    assert_claim_turn(n3, false);
+    assert_claim_turn(n3, b(false));
 }
 
 #[test]
 fn a_finished_game_owes_nobody_a_move_so_either_side_may_claim() {
     let n9: u32 = std::hint::black_box(9);
-    assert_claim_turn(n9, true);
-    assert_claim_turn(n9, false);
+    assert_claim_turn(n9, b(true));
+    assert_claim_turn(n9, b(false));
 }
 
 // ---------------- transcript ----------------
@@ -397,49 +410,49 @@ fn a_draw_is_a_valid_verdict() {
 
 #[test]
 fn a_player1_win_pays_player1() {
-    assert_settlement_binding(1, p1(), p2(), p1(), p2(), cc1(), cc2(), cc1(), cc2(), ps1(), ps2(), ps1(), ps2());
+    assert_settlement_binding(f(1), p1(), p2(), p1(), p2(), cc1(), cc2(), cc1(), cc2(), ps1(), ps2(), ps1(), ps2());
 }
 
 #[test]
 fn a_player2_win_pays_player2() {
-    assert_settlement_binding(2, p2(), p1(), p1(), p2(), cc2(), cc1(), cc1(), cc2(), ps2(), ps1(), ps1(), ps2());
+    assert_settlement_binding(f(2), p2(), p1(), p1(), p2(), cc2(), cc1(), cc1(), cc2(), ps2(), ps1(), ps1(), ps2());
 }
 
 #[test(should_fail)]
 fn a_win_may_not_pay_a_stranger() {
-    assert_settlement_binding(1, outsider(), p2(), p1(), p2(), cc1(), cc2(), cc1(), cc2(), ps1(), ps2(), ps1(), ps2());
+    assert_settlement_binding(f(1), outsider(), p2(), p1(), p2(), cc1(), cc2(), cc1(), cc2(), ps1(), ps2(), ps1(), ps2());
 }
 
 #[test(should_fail)]
 fn the_loser_named_must_be_the_other_player() {
-    assert_settlement_binding(1, p1(), outsider(), p1(), p2(), cc1(), cc2(), cc1(), cc2(), ps1(), ps2(), ps1(), ps2());
+    assert_settlement_binding(f(1), p1(), outsider(), p1(), p2(), cc1(), cc2(), cc1(), cc2(), ps1(), ps2(), ps1(), ps2());
 }
 
 #[test(should_fail)]
 fn a_winner_may_not_name_cards_they_did_not_commit() {
     // The historical worst bug in this project was the absence of this link.
-    assert_settlement_binding(1, p1(), p2(), p1(), p2(), 0xdead, cc2(), cc1(), cc2(), ps1(), ps2(), ps1(), ps2());
+    assert_settlement_binding(f(1), p1(), p2(), p1(), p2(), f(0xdead), cc2(), cc1(), cc2(), ps1(), ps2(), ps1(), ps2());
 }
 
 #[test(should_fail)]
 fn the_losers_cards_must_be_the_ones_they_committed() {
-    assert_settlement_binding(1, p1(), p2(), p1(), p2(), cc1(), 0xdead, cc1(), cc2(), ps1(), ps2(), ps1(), ps2());
+    assert_settlement_binding(f(1), p1(), p2(), p1(), p2(), cc1(), f(0xdead), cc1(), cc2(), ps1(), ps2(), ps1(), ps2());
 }
 
 #[test(should_fail)]
 fn a_winner_may_not_claim_the_other_sides_commitment() {
     // Swapping the sides is the attack an either-order check would allow.
-    assert_settlement_binding(1, p1(), p2(), p1(), p2(), cc2(), cc1(), cc1(), cc2(), ps1(), ps2(), ps1(), ps2());
+    assert_settlement_binding(f(1), p1(), p2(), p1(), p2(), cc2(), cc1(), cc1(), cc2(), ps1(), ps2(), ps1(), ps2());
 }
 
 #[test(should_fail)]
 fn an_invalid_winner_id_is_rejected() {
-    assert_settlement_binding(3, p1(), p2(), p1(), p2(), cc1(), cc2(), cc1(), cc2(), ps1(), ps2(), ps1(), ps2());
+    assert_settlement_binding(f(3), p1(), p2(), p1(), p2(), cc1(), cc2(), cc1(), cc2(), ps1(), ps2(), ps1(), ps2());
 }
 
 #[test(should_fail)]
 fn randomness_must_match_what_was_committed() {
-    assert_settlement_binding(1, p1(), p2(), p1(), p2(), cc1(), cc2(), cc1(), cc2(), 0xdead, ps2(), ps1(), ps2());
+    assert_settlement_binding(f(1), p1(), p2(), p1(), p2(), cc1(), cc2(), cc1(), cc2(), f(0xdead), ps2(), ps1(), ps2());
 }
 
 // ---------------- draw binding ----------------
@@ -489,39 +502,39 @@ fn a_player_may_not_recover_the_other_sides_cards() {
 
 #[test]
 fn a_wagered_card_from_the_losers_hand_is_transferable() {
-    assert_transferable_card(7, [5, 6, 7, 8, 9]);
+    assert_transferable_card(f(7), [f(5), f(6), f(7), f(8), f(9)]);
 }
 
 #[test(should_fail)]
 fn a_card_the_loser_never_committed_is_not_transferable() {
-    assert_transferable_card(42, [5, 6, 7, 8, 9]);
+    assert_transferable_card(f(42), [f(5), f(6), f(7), f(8), f(9)]);
 }
 
 #[test(should_fail)]
 fn a_non_draw_must_move_a_real_card() {
-    assert_transferable_card(0, [5, 6, 7, 8, 9]);
+    assert_transferable_card(f(0), [f(5), f(6), f(7), f(8), f(9)]);
 }
 
 // ---------------- stored commitments ----------------
 
 #[test(should_fail)]
 fn an_unset_commitment_makes_every_later_check_vacuous_p1() {
-    assert_commitments_present(0, cc2());
+    assert_commitments_present(f(0), cc2());
 }
 
 #[test(should_fail)]
 fn an_unset_commitment_makes_every_later_check_vacuous_p2() {
-    assert_commitments_present(cc1(), 0);
+    assert_commitments_present(cc1(), f(0));
 }
 
 #[test(should_fail)]
 fn a_proof_commitment_must_match_the_stored_one() {
-    assert_proof_commits_match(0xdead, cc2(), cc1(), cc2());
+    assert_proof_commits_match(f(0xdead), cc2(), cc1(), cc2());
 }
 
 #[test(should_fail)]
 fn a_claims_hand_proof_must_be_bound_to_this_game() {
-    assert_claim_hand_commits(0xdead, cc2(), cc1(), cc2());
+    assert_claim_hand_commits(f(0xdead), cc2(), cc1(), cc2());
 }
 
 #[test]

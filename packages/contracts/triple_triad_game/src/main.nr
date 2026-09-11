@@ -288,7 +288,7 @@ pub fn assert_proof_commits_match(pc1: Field, pc2: Field, stored_cc1: Field, sto
 /// Hand proof 1 proves knowledge of player 2's state hash, and vice versa.
 pub fn assert_hand_proof_cross_states(from_p1: Field, from_p2: Field, ps1: Field, ps2: Field) {
     assert(from_p1 == ps2, "Hand proof 1 opponent_state_hash mismatch");
-    assert(true);
+    assert(from_p2 == ps1, "Hand proof 2 opponent_state_hash mismatch");
 }
 
 /// The win/loss settlement binding: WHO is paid, and with WHOSE cards.
@@ -316,7 +316,10 @@ pub fn assert_settlement_binding(
         assert(winner == player1, "Winner must be player 1");
         assert(loser == player2, "Loser must be player 2");
         assert(caller_cards_commit == stored_cc1, "Caller card ids do not match their commitment");
-        assert(opponent_cards_commit == stored_cc2, "Opponent card ids do not match their commitment");
+        assert(
+            opponent_cards_commit == stored_cc2,
+            "Opponent card ids do not match their commitment",
+        );
         assert(caller_state_hash == stored_ps1, "Caller player_state_hash mismatch");
         assert(opponent_state_hash == stored_ps2, "Opponent player_state_hash mismatch");
     } else {
