@@ -202,6 +202,17 @@ intuition, in one example.**
 | P4 | The deployed VK hashes are the real circuits', not the dummy's. | `VERIFIED` | Empirical: a genuine `game_move` proof only verifies against the real hash, and real settlements succeed on the live instance. |
 | P5 | A deployment cannot register the dummy VK for real proofs. | `VERIFIED` | F10 closed. `assert_vk_configuration` runs in the constructor: VKs non-zero, hand != move, and neither equal to the dummy unless `permissive_vks` was passed explicitly. 8 tests. A permissive deployment is readable on-chain via `has_permissive_vks()`, so an unsound one is no longer indistinguishable from a sound one. |
 
+### Card packs
+
+Added with F6. A pack's contents must not be something its buyer can choose, and
+a pack must pay out exactly once for exactly one payment.
+
+| # | Property | Status | Note |
+|---|---|---|---|
+| K1 | A buyer cannot choose or re-roll their pack's contents. | `VERIFIED` | Entropy is assigned by `assign_pack_entropy` from state the buyer does not control, one-shot per key, and pinned at open by `consume_pack`. Residual: block number and timestamp are low-entropy and sequencer-chosen — see F6 |
+| K2 | A pack can be opened only once. | `VERIFIED` | `consume_pack` writes `PACK_CONSUMED`; a second open would mint twenty cards for one payment |
+| K3 | A pack must be bought before it can be opened. | `VERIFIED` | `consume_pack` rejects a key with no recorded entropy |
+
 ### Properties the register did not name
 
 Found by `reconcile.mjs` reporting surviving assertions that map to no row —
