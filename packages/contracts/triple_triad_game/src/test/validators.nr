@@ -12,7 +12,7 @@
 //! the contract.
 
 use crate::{
-    assert_abandon_bar_passed, assert_active_for_claim, assert_active_for_settlement,
+    assert_abandon_bar_passed, assert_active_for_claim, assert_settleable,
     assert_anchored_to_initial, assert_cancellable, assert_chain_linked,
     assert_claim_hand_commits, assert_claim_standing_for_contest,
     assert_claim_standing_for_recovery, assert_claim_turn, assert_claimant_is_player,
@@ -141,19 +141,45 @@ fn a_joined_game_may_not_be_cancelled() {
 
 #[test]
 fn an_active_unsettled_game_may_settle() {
-    assert_active_for_settlement(f(2), b(false));
+    assert_settleable(f(2), b(false), b(false), b(false));
+}
+
+#[test]
+fn a_complete_transcript_outranks_a_standing_claim() {
+    // F9. Settlement used to require status 2, so a loser could claim (status 5)
+    // and freeze the winner out. Each player may contest only once, so claiming
+    // twice exhausts the winner's only answer and the prize is denied at a cost
+    // of about two hours. A verified nine-move transcript is stronger evidence
+    // than a claim and now outranks one.
+    assert_settleable(f(5), b(false), b(false), b(false));
 }
 
 #[test(should_fail)]
-fn a_claimed_game_may_not_also_settle() {
-    // status 5 with settled=false is exactly the double-mint that the
-    // `settled` flag alone did not catch.
-    assert_active_for_settlement(f(5), b(false));
+fn a_partly_recovered_game_may_not_also_settle() {
+    // The double-mint the old status check was really protecting against.
+    // Player 1 has taken their five back; settling on top would pay the winner
+    // the wagered card as well, issuing it twice.
+    assert_settleable(f(5), b(false), b(true), b(false));
+}
+
+#[test(should_fail)]
+fn a_partly_recovered_game_may_not_also_settle_p2() {
+    assert_settleable(f(5), b(false), b(false), b(true));
 }
 
 #[test(should_fail)]
 fn a_settled_game_may_not_settle_again() {
-    assert_active_for_settlement(f(2), b(true));
+    assert_settleable(f(2), b(true), b(false), b(false));
+}
+
+#[test(should_fail)]
+fn a_cancelled_game_may_not_settle() {
+    assert_settleable(f(4), b(false), b(false), b(false));
+}
+
+#[test(should_fail)]
+fn a_created_but_unjoined_game_may_not_settle() {
+    assert_settleable(f(1), b(false), b(false), b(false));
 }
 
 #[test(should_fail)]

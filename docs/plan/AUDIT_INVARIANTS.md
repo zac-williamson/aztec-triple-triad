@@ -162,7 +162,8 @@ intuition, in one example.**
 | A5 | Each player recovers at most once. | `UNVERIFIED` | `game_recovered` keyed `[game_id, player]` |
 | A6 | A contest and a recovery can never both apply to one claim. | `VERIFIED` | Windows are `<` and `>=` of the same bound — mutually exclusive |
 | A7 | A contest restores the game and restarts the abandonment clock. | `UNVERIFIED` | Finding 3 fix |
-| A8 | A player may contest at most once per game. | `ACCEPTED` | Bounded by A7; a determined opponent can still out-wait one contest |
+| A8 | A player may contest at most once per game. | `ACCEPTED` | Bounded by A7; a determined opponent can still out-wait one contest. **No longer the winner's last line of defence** — see A9 |
+| A9 | A standing claim cannot deny a winner their prize. | `VERIFIED` | F9 closed. `assert_settleable` admits status 5 while neither player has recovered, so a verified nine-move transcript outranks a claim at any `n` the claimant chose. 7 tests, including both partial-recovery double-mints |
 
 ### Idempotence and lifecycle
 

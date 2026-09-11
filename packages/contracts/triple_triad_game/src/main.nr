@@ -92,14 +92,49 @@ pub fn assert_cancellable(status: Field, canceller: Field, player1: Field) {
     assert(canceller == player1, "Only game creator can cancel");
 }
 
-/// A settlement needs an ACTIVE game. `settled` alone is not enough: the
-/// abandonment path records recovery per player and never sets it, so a claimed
-/// game still reads as unsettled. Without the status check a loser could claim
-/// and recover five while a returning winner separately settled and was minted
-/// six — the wagered card issued twice.
-pub fn assert_active_for_settlement(status: Field, settled: bool) {
-    assert(status == 2, "Game is not active: it has been settled, cancelled or claimed");
+/// When a game may still be settled.
+///
+/// A standing abandonment claim does NOT block settlement, and that is the
+/// whole of F9. It used to: settlement required status 2, a claim sets status
+/// 5, and each player may contest only once — so a loser claims, the winner
+/// spends their single contest, the contest restarts the abandonment clock, the
+/// loser waits it out and claims again, and now the winner has nothing left to
+/// answer with. The claim stands, both sides recover their own stake, and the
+/// winner never receives the card they won. Cost to the attacker: two hours.
+///
+/// Rejecting a complete transcript at claim time does not fix it — the claimant
+/// simply truncates. `assert_claim_turn` admits player 2 at n = 8 and player 1
+/// at n = 7, and no contract can tell a truncated prefix from a genuinely
+/// unfinished game, because it only ever sees what was submitted.
+///
+/// So the rule is the other way round: a verified NINE-move transcript is
+/// strictly stronger evidence than a claim, and outranks one. Whatever `n` the
+/// claimant chose, the player holding the full chain settles.
+///
+/// `settled` alone is not enough to gate this, because the abandonment path
+/// records recovery per player and never sets that flag — a claimed game still
+/// reads as unsettled. The recovery flags are the real guard, and they close the
+/// double-mint this replaced: once EITHER side has recovered its stake the game
+/// is already partly unwound, and settling on top of it would mint a loser's
+/// five to them and the wagered card to the winner as well. Before recovery,
+/// nothing has been paid out and settlement is the complete, correct outcome.
+///
+/// Settlement writes status 3, and recovery requires status 5, so a settled
+/// game can never be recovered afterwards. The two are mutually exclusive in
+/// both directions.
+pub fn assert_settleable(
+    status: Field,
+    settled: bool,
+    p1_recovered: bool,
+    p2_recovered: bool,
+) {
     assert(!settled, "Game already settled");
+    if status == 5 {
+        assert(!p1_recovered, "Game already partly recovered: player 1 took their stake back");
+        assert(!p2_recovered, "Game already partly recovered: player 2 took their stake back");
+    } else {
+        assert(status == 2, "Game is not active: it has been settled or cancelled");
+    }
 }
 
 pub fn assert_active_for_claim(status: Field) {
@@ -1360,7 +1395,20 @@ pub contract TripleTriadGame {
         // the loser's wagered card issued TWICE.
         let status = self.storage.game_status.at(game_id).read();
         let settled = self.storage.game_settled.at(game_id).read();
-        crate::assert_active_for_settlement(status, settled);
+        let claimed_p1 = self.storage.game_player1.at(game_id).read();
+        let claimed_p2 = self.storage.game_player2.at(game_id).read();
+        crate::assert_settleable(
+            status,
+            settled,
+            self.storage
+                .game_recovered
+                .at(poseidon2_hash([game_id, claimed_p1.to_field()]))
+                .read(),
+            self.storage
+                .game_recovered
+                .at(poseidon2_hash([game_id, claimed_p2.to_field()]))
+                .read(),
+        );
 
         // Verify card_commits match on-chain records
         let stored_cc1 = self.storage.game_card_commit_1.at(game_id).read();
@@ -1430,7 +1478,20 @@ pub contract TripleTriadGame {
         // the loser's wagered card issued TWICE.
         let status = self.storage.game_status.at(game_id).read();
         let settled = self.storage.game_settled.at(game_id).read();
-        crate::assert_active_for_settlement(status, settled);
+        let claimed_p1 = self.storage.game_player1.at(game_id).read();
+        let claimed_p2 = self.storage.game_player2.at(game_id).read();
+        crate::assert_settleable(
+            status,
+            settled,
+            self.storage
+                .game_recovered
+                .at(poseidon2_hash([game_id, claimed_p1.to_field()]))
+                .read(),
+            self.storage
+                .game_recovered
+                .at(poseidon2_hash([game_id, claimed_p2.to_field()]))
+                .read(),
+        );
 
         let stored_cc1 = self.storage.game_card_commit_1.at(game_id).read();
         let stored_cc2 = self.storage.game_card_commit_2.at(game_id).read();
