@@ -263,16 +263,43 @@ function makeOps(schedule: Schedule) {
         return requireTxHash(receipt, 'contest_abandonment');
       }),
 
-    /** Card-pack preview: the IDs a purchase would mint + the note nonce that
-     *  derives their randomness (captured BEFORE the purchase advances it). */
-    previewCardPack: (owner: string, count: number): Promise<{ cardIds: number[]; nonce: string }> =>
+    /** The note nonce a pack purchase will consume. Read BEFORE the purchase,
+     *  because the purchase advances it by 10 and every later step — the pack
+     *  key, the preview, the note randomness — is derived from the old value. */
+    getPackNonce: (owner: string): Promise<string> =>
       schedule(async () => {
         const { nftContract, Fr, AztecAddress } = await resolveContracts();
         const addr = AztecAddress.fromStringUnsafe(owner);
-        const { result: nonceResult } = await nftContract.methods.get_note_nonce(addr).simulate({ from: addr });
-        const { result: preview }: any = await nftContract.methods.preview_card_ids(nonceResult).simulate({ from: addr });
+        const { result } = await nftContract.methods.get_note_nonce(addr).simulate({ from: addr });
+        return toFr(Fr, result).toString();
+      }),
+
+    /** A bought pack's roll: the entropy the chain assigned it, and the card IDs
+     *  that entropy mints.
+     *
+     *  Only answerable AFTER `sendPurchaseCardPack` has been mined — which is
+     *  the entire point of the two-step flow. The previous single-step version
+     *  answered "what would I get?" from the account's own key material, so a
+     *  player could generate accounts and simulate each for free until one
+     *  previewed a pack of legendaries, then deploy only that one. The roll is
+     *  now fixed by chain state that did not exist when they paid. */
+    readPackRoll: (owner: string, nonce: string, count: number): Promise<{ entropy: string; cardIds: number[] }> =>
+      schedule(async () => {
+        const { nftContract, Fr, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromStringUnsafe(owner);
+        const nonceFr = toFr(Fr, nonce);
+
+        const { result: keyResult } = await nftContract.methods.pack_key_for(nonceFr).simulate({ from: addr });
+        const key = toFr(Fr, keyResult);
+        const { result: entropyResult } = await nftContract.methods.get_pack_entropy(key).simulate({ from: addr });
+        const entropy = toFr(Fr, entropyResult);
+        if (entropy.isZero()) throw new Error('No pack reserved at this nonce — the purchase has not been mined');
+
+        const { result: preview }: any = await nftContract.methods
+          .preview_card_ids(nonceFr, entropy)
+          .simulate({ from: addr });
         const cardIds = Array.from({ length: count }, (_, i) => Number(preview[i]));
-        return { cardIds, nonce: toFr(Fr, nonceResult).toString() };
+        return { entropy: entropy.toString(), cardIds };
       }),
 
     /** Recipient-derivable note randomness (hex) for `count` notes at `nonce`. */
@@ -328,6 +355,18 @@ function makeOps(schedule: Schedule) {
           .purchase_card_pack()
           .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
         return requireTxHash(receipt, 'purchase_card_pack');
+      })),
+
+    /** Open a pack bought earlier. `entropy` is checked on-chain against what
+     *  the purchase recorded; a wrong value reverts the whole transaction. */
+    sendOpenCardPack: (owner: string, nonce: string, entropy: string, opts: SendOpts): Promise<string> =>
+      schedule(() => withReorgRetry('open_card_pack', async () => {
+        const { nftContract, Fr, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromStringUnsafe(owner);
+        const { receipt } = await nftContract.methods
+          .open_card_pack(toFr(Fr, nonce), toFr(Fr, entropy))
+          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
+        return requireTxHash(receipt, 'open_card_pack');
       })),
 
     sendMintStarterCards: (owner: string, opts: SendOpts): Promise<string> =>

@@ -1,21 +1,28 @@
 /**
  * useCardPacks orchestrates the pack purchase through the PXE door (`pxe.ts`):
- * preview → purchase send → note-randomness → import, all inside one runPxeTx
- * queue item. This pins the ORCHESTRATION (the hook calls the right ops with the
- * right args); the ops' own contract-call shape + fee headroom are pinned in
- * pxe.test.ts.
+ * nonce → purchase send → read roll → open send → note-randomness → import, all
+ * inside one runPxeTx queue item. This pins the ORCHESTRATION (the hook calls
+ * the right ops with the right args); the ops' own contract-call shape + fee
+ * headroom are pinned in pxe.test.ts.
+ *
+ * The ORDER is the security property, not an implementation detail: the roll
+ * must be read only AFTER the purchase has been sent. Reading it first is the
+ * bug this flow replaced — a player could then evaluate a pack before paying
+ * for it, and generate accounts until one previewed legendaries.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 
 const hoisted = vi.hoisted(() => {
-  const previewCardPack = vi.fn();
+  const getPackNonce = vi.fn();
+  const readPackRoll = vi.fn();
   const sendPurchaseCardPack = vi.fn();
+  const sendOpenCardPack = vi.fn();
   const computeNoteRandomness = vi.fn();
   const importCardNotes = vi.fn();
   return {
-    ops: { previewCardPack, sendPurchaseCardPack, computeNoteRandomness, importCardNotes },
-    previewCardPack, sendPurchaseCardPack, computeNoteRandomness, importCardNotes,
+    ops: { getPackNonce, readPackRoll, sendPurchaseCardPack, sendOpenCardPack, computeNoteRandomness, importCardNotes },
+    getPackNonce, readPackRoll, sendPurchaseCardPack, sendOpenCardPack, computeNoteRandomness, importCardNotes,
     runPxeTx: vi.fn(),
     fetchTxEffectData: vi.fn(),
     addCards: vi.fn(),
@@ -59,11 +66,17 @@ describe('useCardPacks', () => {
     ).rejects.toThrow('Wallet not connected');
   });
 
-  it('hunt runs the full preview → purchase → import flow via pxe ops', async () => {
+  it('hunt runs the full buy → roll → open → import flow via pxe ops', async () => {
     const previewCardIds = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 
-    hoisted.previewCardPack.mockResolvedValue({ cardIds: previewCardIds, nonce: '0xNONCE' });
-    hoisted.sendPurchaseCardPack.mockResolvedValue('0xTX_HASH');
+    const callOrder: string[] = [];
+    hoisted.getPackNonce.mockImplementation(async () => { callOrder.push('nonce'); return '0xNONCE'; });
+    hoisted.sendPurchaseCardPack.mockImplementation(async () => { callOrder.push('buy'); return '0xBUY_TX'; });
+    hoisted.readPackRoll.mockImplementation(async () => {
+      callOrder.push('roll');
+      return { entropy: '0xENTROPY', cardIds: previewCardIds };
+    });
+    hoisted.sendOpenCardPack.mockImplementation(async () => { callOrder.push('open'); return '0xTX_HASH'; });
     hoisted.computeNoteRandomness.mockResolvedValue(previewCardIds.map((_, i) => `0xrand${i}`));
     hoisted.importCardNotes.mockResolvedValue(previewCardIds);
     hoisted.fetchTxEffectData.mockResolvedValue({ noteHashes: ['0xnh1'], firstNullifier: '0xnull1' });
@@ -81,9 +94,18 @@ describe('useCardPacks', () => {
     expect(huntResult.txHash).toBe('0xTX_HASH');
     expect(result.current.txStatus).toBe('done');
 
-    // The purchase goes through the named send op (not a raw contract). The fee
-    // headroom the op applies is asserted in pxe.test.ts.
+    // The roll is read AFTER the purchase is sent. This ordering is the whole
+    // fix: reversing these two lines restores the free pre-purchase preview that
+    // made pack rarity grindable by generating accounts.
+    expect(callOrder).toEqual(['nonce', 'buy', 'roll', 'open']);
+
+    // Both sends go through the named send ops (not raw contracts). The fee
+    // headroom the ops apply is asserted in pxe.test.ts.
     expect(hoisted.sendPurchaseCardPack).toHaveBeenCalledWith('0xACCOUNT', { node: mockNodeClient, timeoutMs: 300 });
+    // The opening is bound to the nonce captured before the purchase advanced
+    // it, and to the entropy the chain assigned.
+    expect(hoisted.readPackRoll).toHaveBeenCalledWith('0xACCOUNT', '0xNONCE', 10);
+    expect(hoisted.sendOpenCardPack).toHaveBeenCalledWith('0xACCOUNT', '0xNONCE', '0xENTROPY', { node: mockNodeClient, timeoutMs: 300 });
     // Note-randomness derived from the pre-purchase nonce.
     expect(hoisted.computeNoteRandomness).toHaveBeenCalledWith('0xACCOUNT', '0xNONCE', 10);
 

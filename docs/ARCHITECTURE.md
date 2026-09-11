@@ -247,13 +247,39 @@ mint (onboarding/pack) ──► private note ──► commit_five_nfts_* POPS 
   `triple_triad_nft/src/main.nr:385-414`): 5 fixed starter cards
   (`STARTER_CARD_IDS`, `:52`), a nonce note initialized to 5 (`:409`), and 100
   ArenaTokens (`:412-413`).
-- **Card packs** (`purchase_card_pack`, `:417-444`): burn 100 tokens
-  (`CARD_PACK_COST`, `:55`; `burn_from`, `arena_token/src/main.nr:72-79`),
-  generate 10 random cards in-circuit from `pedersen([nhk_app_secret, nonce+i])`
-  with a 5-tier rarity roll over pools `[10,166,50,20,10]`
-  (`generate_card`, `triple_triad_nft/src/main.nr:8,17-49`), advance the nonce
-  by 10 (`:443`). `preview_card_ids` (`:449-462`) lets the frontend show the
-  pack contents via `.simulate()` before buying — same derivation, no tx.
+- **Card packs** are bought and opened in **two transactions**, and the split is
+  a security property, not a UX choice.
+  - `purchase_card_pack` burns 100 tokens (`CARD_PACK_COST`; `burn_from`,
+    `arena_token/src/main.nr:72-79`), advances the nonce by 10, and enqueues
+    `assign_pack_entropy` with an opaque `derive_pack_key(owner, nonce)` — a
+    hash, so a private purchase does not publish who bought a pack.
+  - `assign_pack_entropy` (public, `#[only_self]`) rolls the pack from
+    `derive_pack_entropy(accumulator, block_number, timestamp)` and chains the
+    result into the accumulator. None of those three inputs is chosen by the
+    buyer, and none of them exists until the purchase has landed.
+  - `open_card_pack(nonce, entropy)` mints the ten cards from
+    `poseidon2([entropy, nhk_app_secret])` through `generate_card`'s 5-tier
+    rarity roll over pools `[10,166,50,20,10]`, then enqueues `consume_pack`,
+    which pins `entropy` to what the purchase recorded and retires the pack.
+    A wrong entropy reverts the transaction and the notes with it.
+
+  **Why it is not one transaction.** It used to be: cards came from
+  `pedersen([nhk_app_secret, nonce+i])`, and `preview_card_ids` answered "what
+  would this account get?" for free, offline, with no transaction. Both inputs
+  were the player's, so generating accounts until one previewed a pack of
+  legendaries cost nothing but time, and paying 100 tokens constrained nothing
+  because the roll was known before the money moved. The roll has to be fixed
+  after the buyer has committed, and on Aztec that needs a second transaction.
+
+  **What this does not fix.** `block_number` and `timestamp` are low-entropy and
+  the sequencer picks both, so a sequencer can steer a roll and a patient buyer
+  can time purchases toward a favourable window. Aztec 5.2 exposes no
+  unpredictable value to a contract — no block hash, no beacon, no archive root
+  (see `PublicContext`) — so this is the strongest available construction, not a
+  complete one. It converts an unlimited free grind into a bounded, paid bias.
+
+  `preview_card_ids(nonce, entropy)` now takes the entropy, so it can only
+  answer for a pack that has already been bought.
 - **Settlement mints** use `create_and_push_note` (`:469-509`): a manual note
   build that computes the note hash itself
   (`poseidon2([slot, value, owner, randomness])` with the note-hash domain
