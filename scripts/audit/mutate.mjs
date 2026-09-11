@@ -33,11 +33,45 @@
  * concurrent runs produce flaky verdicts, and a flaky mutation report is worse
  * than none — it invites you to dismiss a real survivor as noise.
  */
-import { readFileSync, writeFileSync, copyFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, copyFileSync, existsSync, unlinkSync } from 'fs';
 import { execSync, spawn } from 'child_process';
 import { join, basename } from 'path';
 
 const NARGO = `${process.env.HOME}/.aztec/current/internal-bin/nargo`;
+
+/**
+ * Recovery from a kill this process cannot catch.
+ *
+ * The signal handlers below cover SIGINT/SIGTERM/SIGHUP. Nothing covers
+ * SIGKILL, an OOM, or the power going out — and this tool holds a
+ * security-critical source file in a deliberately broken state for minutes at
+ * a time. So the mutated state is recorded on disk before the first edit and
+ * cleared on clean exit; the next run finds the marker and puts the file back.
+ *
+ * Restoring from the BACKUP, never from git. The file being mutated usually has
+ * uncommitted work in it, and `git checkout -- <file>` to undo a mutation
+ * destroys that work along with it. (It did, here, to the whole validator
+ * extraction — the mutation was one line, the revert took 400.)
+ */
+const MARKER = '/tmp/mutate-in-progress.json';
+
+function recoverFromPreviousRun() {
+  if (!existsSync(MARKER)) return;
+  let m;
+  try { m = JSON.parse(readFileSync(MARKER, 'utf8')); } catch { unlinkSync(MARKER); return; }
+  if (m.backup && m.src && existsSync(m.backup)) {
+    copyFileSync(m.backup, m.src);
+    console.error(`  recovered: a previous run (pid ${m.pid}, ${m.startedAt}) was killed`);
+    console.error(`  mid-mutation. Restored ${m.src} from ${m.backup}.`);
+  } else {
+    console.error(`  WARNING: a previous run left ${m.src} mutated and its backup is gone.`);
+    console.error('  Check that file by hand before trusting anything built from it.');
+  }
+  unlinkSync(MARKER);
+}
+
+/** The nargo child, so a signal can take it down with us. */
+let CHILD = null;
 
 /** Targets: a Noir package, the file to mutate, and how to run its tests. */
 const TARGETS = {
@@ -120,7 +154,7 @@ function mutationsFor(src) {
  *
  * A fresh TXE per mutant costs about 8 seconds and removes the failure mode.
  */
-function restartTxe() {
+async function restartTxe() {
   try { execSync('pkill -f "aztec start --txe"', { stdio: 'ignore' }); } catch { /* none running */ }
   spawn(`${process.env.HOME}/.aztec/current/bin/aztec`, ['start', '--txe', '--port', '8081'],
         { detached: true, stdio: 'ignore' }).unref();
@@ -128,44 +162,63 @@ function restartTxe() {
     try {
       execSync('curl -s --max-time 2 http://127.0.0.1:8081', { stdio: 'ignore' });
       return true;
-    } catch { execSync('sleep 2'); }
+    } catch {
+      // A promise sleep, not `execSync('sleep 2')` — the point of the async
+      // rewrite is that the event loop stays free to deliver signals.
+      await new Promise((r) => setTimeout(r, 2000));
+    }
   }
   return false;
+}
+
+/**
+ * Run the suite as a CHILD, awaited — not `execSync`.
+ *
+ * This is what makes the signal handlers below work at all. `execSync` blocks
+ * node's single thread for the whole ~60s run, and a queued SIGTERM handler
+ * cannot run while the thread is blocked: the handler added for exactly this
+ * purpose was unreachable in practice, and a `pkill -f mutate.mjs` still left
+ * the mutated file on disk. Awaiting a spawned child keeps the loop free, so
+ * the signal is delivered the moment it arrives.
+ */
+function runNargo(t) {
+  return new Promise((resolve) => {
+    const oracle = t.txe ? ['--oracle-resolver', 'http://127.0.0.1:8081'] : [];
+    const child = spawn(NARGO, ['test', '--package', t.pkg, ...oracle],
+                        { cwd: t.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    CHILD = child;
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { out += d; });
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } },
+                             20 * 60_000);
+    child.on('close', (code) => { clearTimeout(timer); CHILD = null; resolve({ code, out }); });
+    child.on('error', (e) => { clearTimeout(timer); CHILD = null; resolve({ code: -1, out: String(e) }); });
+  });
 }
 
 /**
  * A mutation run against an already-failing suite measures nothing. Prove the
  * baseline is green before touching anything, and abort loudly if it is not.
  */
-function baselineIsGreen(t) {
-  try {
-    const oracle = t.txe ? ' --oracle-resolver http://127.0.0.1:8081' : '';
-    const out = execSync(`${NARGO} test --package ${t.pkg}${oracle}`,
-      { cwd: t.cwd, encoding: 'utf8', timeout: 20 * 60_000, stdio: 'pipe' });
-    return /tests? passed/.test(out) && !/tests? failed/.test(out);
-  } catch {
-    return false;
-  }
+async function baselineIsGreen(t) {
+  const { code, out } = await runNargo(t);
+  return code === 0 && /tests? passed/.test(out) && !/tests? failed/.test(out);
 }
 
-function runTests(t) {
-  try {
-    const oracle = t.txe ? ' --oracle-resolver http://127.0.0.1:8081' : '';
-    execSync(`${NARGO} test --package ${t.pkg}${oracle}`, {
-      cwd: t.cwd, stdio: 'pipe', timeout: 20 * 60_000,
-    });
-    return 'passed';            // suite green WITH the mutation => survived
-  } catch (e) {
-    const out = String(e.stdout ?? '') + String(e.stderr ?? '');
-    // ORDER MATTERS. A mutant that does not COMPILE is not a killed mutant — it
-    // is no evidence at all, and counting it as a kill overstates coverage.
-    // Test failures are reported by nargo as "N tests failed" / "Failed
-    // assertion"; anything else carrying a compiler diagnostic is invalid.
-    if (/\d+ tests? failed|Failed assertion/i.test(out)) return 'killed';
-    if (/error(\[|:)|Aborting|could not compile|expected .* but found/i.test(out)) return 'invalid';
-    return 'error';
-  }
+async function runTests(t) {
+  const { code, out } = await runNargo(t);
+  if (code === 0) return 'passed';   // suite green WITH the mutation => survived
+  // ORDER MATTERS. A mutant that does not COMPILE is not a killed mutant — it
+  // is no evidence at all, and counting it as a kill overstates coverage.
+  // Test failures are reported by nargo as "N tests failed" / "Failed
+  // assertion"; anything else carrying a compiler diagnostic is invalid.
+  if (/\d+ tests? failed|Failed assertion/i.test(out)) return 'killed';
+  if (/error(\[|:)|Aborting|could not compile|expected .* but found/i.test(out)) return 'invalid';
+  return 'error';
 }
+
+recoverFromPreviousRun();
 
 const arg = process.argv[2];
 if (!arg || arg === '--help') {
@@ -186,8 +239,8 @@ for (const name of names) {
   const chosen = muts.slice(0, limit);
   console.log(`\n${name}: mutating ${chosen.length} of ${muts.length} assert(s) in ${basename(t.src)}`);
 
-  if (t.txe) restartTxe();
-  if (!baselineIsGreen(t)) {
+  if (t.txe) await restartTxe();
+  if (!await baselineIsGreen(t)) {
     console.error(`  ABORT: ${name}'s test suite is RED before any mutation.`);
     console.error('  Mutation verdicts against a failing suite are meaningless — fix the');
     console.error('  suite (or the environment) first. For TXE targets, a restart usually does it.');
@@ -208,14 +261,20 @@ for (const name of names) {
   //
   // A tool that edits security-critical source in place must put restoring it
   // ahead of everything else, including its own exit code.
+  writeFileSync(MARKER, JSON.stringify(
+    { src: t.src, backup, pid: process.pid, startedAt: new Date().toISOString() }, null, 2));
+
   const rescue = (sig) => {
+    if (CHILD) { try { CHILD.kill('SIGKILL'); } catch { /* already gone */ } }
     try { copyFileSync(backup, t.src); } catch { /* nothing better to do */ }
+    try { unlinkSync(MARKER); } catch { /* fine */ }
     console.error(`\n  ${sig}: restored ${t.src} before exiting.`);
     process.exit(130);
   };
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => rescue(sig));
   process.on('uncaughtException', (e) => {
     try { copyFileSync(backup, t.src); } catch { /* ignore */ }
+    try { unlinkSync(MARKER); } catch { /* ignore */ }
     console.error(`\n  crashed, restored ${t.src}: ${e.message}`);
     process.exit(1);
   });
@@ -231,8 +290,8 @@ for (const name of names) {
       writeFileSync(t.src, lines.join('\n'));
       // Fresh TXE per mutant: see restartTxe(). Without it a degraded TXE turns
       // every later mutant into a false kill.
-      if (t.txe) restartTxe();
-      const verdict = runTests(t);
+      if (t.txe) await restartTxe();
+      const verdict = await runTests(t);
       if (verdict === 'passed') {
         survivors.push(mut);
         console.log(`  SURVIVED  ${t.src}:${mut.line + 1}  ${mut.original.slice(0, 78)}`);
@@ -245,6 +304,30 @@ for (const name of names) {
     }
   } finally {
     copyFileSync(backup, t.src);   // always restore, including on Ctrl-C paths
+    try { unlinkSync(MARKER); } catch { /* already gone */ }
+  }
+
+  // Snapshot the result so the register can be checked against it in CI. F7
+  // was that the register's statuses were my judgement; a committed snapshot
+  // plus scripts/audit/register.test.ts makes them a measurement that drift
+  // cannot quietly undo.
+  if (process.env.MUTATION_JSON) {
+    const out = process.env.MUTATION_JSON;
+    let all = {};
+    try { all = JSON.parse(readFileSync(out, 'utf8')); } catch { /* first run */ }
+    all[name] = {
+      measuredAt: new Date().toISOString().slice(0, 10),
+      asserts: chosen.length,
+      invalid: invalid.length,
+      survivors: survivors.map(m => ({
+        line: m.line + 1,
+        // The MESSAGE is the stable key — line numbers move on every edit.
+        message: (m.original.match(/"([^"]+)"/) || [null, null])[1],
+        source: m.original.slice(0, 120),
+      })),
+    };
+    writeFileSync(out, JSON.stringify(all, null, 2) + '\n');
+    console.log(`  snapshot -> ${out}`);
   }
 
   const evaluated = chosen.length - invalid.length;
