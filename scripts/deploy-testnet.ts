@@ -409,9 +409,17 @@ async function main() {
   // config the Vercel production build reads, and wants the public relay.
   //
   // They used to get the same content, so every redeploy silently rewrote the
-  // committed `wss://ws.aztec-arena.com` to `ws://localhost:5174` — and the next
-  // push shipped a production frontend that opens a WebSocket to the player's
-  // own machine. Nothing else in the app fails; matchmaking just never connects.
+  // committed `wss://ws.aztec-arena.com` to `ws://localhost:5174`.
+  //
+  // That did NOT reach production, and the reason is worth keeping: Vercel's
+  // Production env var wins over a committed dotenv at build time, and
+  // sync-vercel-env.ts sets VITE_WS_URL from its own default rather than from
+  // this file (plus a refuse-localhost guard). Two independent layers, neither
+  // of which is this script's doing. What it did break is any build that does
+  // not go through Vercel's env — a local `npm run build` for testnet, or the
+  // day someone prunes that env var as redundant because the repo "already has
+  // the right value". Then matchmaking opens a WebSocket to the player's own
+  // machine and nothing else in the app looks wrong.
   const wsPort = process.env.WS_PORT || '5174';
   const addresses = `VITE_AZTEC_PXE_URL=${PXE_URL}
 VITE_NFT_CONTRACT_ADDRESS=${nftContract.address.toString()}
