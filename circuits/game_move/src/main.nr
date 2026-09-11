@@ -1905,28 +1905,68 @@ fn forge_end_state_hash_not_matching_board() {
 
 /// The OPPONENT's hand commitment must be the one this game is bound to.
 /// Only player 1's was ever exercised; player 2's assertion was untested.
+///
+/// `card_commit_2` is read at exactly ONE line in this circuit — the else-branch
+/// of the commitment check. Neuter that line and the input constrains nothing at
+/// all, so player 2 can play cards they never staked. That is the same shape as
+/// the worst bug this project has had.
+///
+/// The first version of this test did not reach that line. It forged the commit
+/// but left `current_turn_before` at 1 while moving as player 2, and placed onto
+/// a cell its own `board_before` had already filled — so it died on the turn
+/// check, passed as a should_fail test, and looked like coverage. Mutation
+/// testing is what caught it: the assertion survived while a test named after it
+/// sat right here. The move below is a VALID player-2 move, so the forged
+/// commitment is the only thing left to fail on.
 #[test(should_fail)]
 fn forge_opponent_card_commit() {
+    // Player 1 has opened at cell 0; it is player 2's turn.
     let mut board_before: [Field; 18] = [0; 18];
-    board_before[2] = 10; board_before[3] = 2;
+    board_before[0] = 1; board_before[1] = 1;
     let scores_before: [Field; 2] = [5, 5];
     let oob = orig_owners(board_before);
-    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+    let start_hash = hash_board_state(board_before, scores_before, 2, oob);
 
+    // Player 2 plays card 10 at (2,2) — cell 8, whose neighbours are both
+    // empty, so nothing is captured and the scores do not move.
     let mut board_after: [Field; 18] = [0; 18];
     board_after[0] = 1; board_after[1] = 1;
-    board_after[2] = 10; board_after[3] = 2;
+    board_after[16] = 10; board_after[17] = 2;
     let scores_after: [Field; 2] = [5, 5];
     let ooa = orig_after(board_before, board_after, oob);
-    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+    let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
-    // Player 2 moves, so THEIR commit is the one recomputed from the hand.
     main(
         get_p1_commit(),
         get_p2_commit() + 1,   // THE LIE: not the commitment P2 is bound to
         start_hash, end_hash, 0, 0,
-        2, 10, 0, 1, board_before, board_after, scores_before, scores_after,
-        1, oob, ooa, p2_card_ids(), P2_BLINDING,
+        2, 10, 2, 2, board_before, board_after, scores_before, scores_after,
+        2, oob, ooa, p2_card_ids(), P2_BLINDING,
+    );
+}
+
+/// The same move, honest, so the test above is known to fail for the ONE reason
+/// it names. Without this pair a should_fail test proves only that something
+/// went wrong, which is how the broken version survived.
+#[test]
+fn opponent_card_commit_move_is_otherwise_valid() {
+    let mut board_before: [Field; 18] = [0; 18];
+    board_before[0] = 1; board_before[1] = 1;
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 2, oob);
+
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = 1; board_after[1] = 1;
+    board_after[16] = 10; board_after[17] = 2;
+    let scores_after: [Field; 2] = [5, 5];
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
+
+    main(
+        get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
+        2, 10, 2, 2, board_before, board_after, scores_before, scores_after,
+        2, oob, ooa, p2_card_ids(), P2_BLINDING,
     );
 }
 
