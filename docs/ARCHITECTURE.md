@@ -226,10 +226,14 @@ pattern work. Steps:
    `mint_for_game_loser` (`:699-701`). Draw path (`:714-740`): both players'
    5 cards re-mint via `mint_for_game_draw_offchain`. Both paths mint 20
    ArenaTokens to each player (`:703-706`, `:730-733`).
-9. **Replay protection** — the public half flips `game_settled` exactly once
-   (`:761-762,801-802`) and re-checks the stored commitments match the proof's
-   (`:764-770`), so a proof bundle can't settle a different game or settle
-   twice.
+9. **Replay protection** — the public half flips `game_settled` exactly once and
+   re-checks that the stored commitments match the proof's, so a proof bundle
+   cannot settle a different game or settle twice. The gate is
+   `assert_settleable`: status 2 (active), or status 5 (a claim is standing)
+   while neither player has recovered — a complete transcript outranks an
+   abandonment claim, see [§8](#8-abandoned-games). `game_settled` alone would
+   not be enough, because the abandonment path records recovery per player and
+   never sets that flag.
 
 ## 7. The note lifecycle
 
@@ -324,36 +328,67 @@ the design-era spec describing that flow is archived at
 
 ## 8. Abandoned games
 
-If your opponent walks away mid-game, their cards are burned (committed) and
-they're unreachable for a cooperative settle. The recovery path:
+If your opponent walks away mid-game their cards are committed and unreachable
+for a cooperative settle. Four functions handle it, and the shape of the whole
+thing is: **a claim freezes the game, a contest or a settlement unfreezes it,
+and recovery is the last resort that returns each side its own stake.**
 
-1. **Claim** — `claim_abandoned_game`
-   (`triple_triad_game/src/main.nr:232-380`). You submit the 2 hand proofs plus
-   all moves played so far (1–8, `:272-274`), padded to 9 slots with
-   **dummy proofs**: the `dummy_move` circuit has the same public-input shape
-   and zero constraints (`circuits/dummy_move/src/main.nr:6-13`). The contract
-   verifies slot *i* against the real move VK if `i < num_valid_moves`, else
-   against the dummy VK (`:283-316`) — three VKs total, all pinned at deploy.
-   The real prefix must chain from the canonical start (`:336-355`), and the
-   parity of `num_valid_moves` must prove it was the *opponent's* turn when
-   play stopped (`:365-375`) — you can't claim a game you abandoned yourself.
-   The public half records claimant and block number (`:382-397`).
-2. **Dispute window** — settlement requires ≥ 5 blocks after the claim
-   (`:491-494`, ~1 minute). What the window actually protects: a false claim
-   against a *finished* game. `process_game`'s settlement gates only on the
-   `game_settled` flag, not on game status (`:761-762`), so the genuine result
-   can still land during the window — after which the abandonment settle fails
-   its own `!settled` assert (`:496-497`). For a false claim *mid-game* there
-   is no on-chain counter-claim yet: a second `claim_abandoned_game` is
-   impossible because the status is no longer `active` (`:385-386`). See
-   `FUTURE_IMPROVEMENTS.md` ("Abandoned-game counter-claim").
-3. **Settle** — `settle_abandoned_game` (`:407-474`): claimant's 5 cards
-   re-mint privately; optionally one opponent card is claimed
-   (`mint_single_card_private`, validated in-hand `:427-440`); the opponent's
-   remaining cards go to **public** ownership
-   (`mint_to_public_batch_4/5`, `triple_triad_nft/src/main.nr:766-786`) — they
-   weren't online to receive tagged notes, but can later pull the cards private
-   themselves. Only the claimant is rewarded tokens (`:460-462`).
+1. **Claim** — `claim_abandoned_game`. You submit the 2 hand proofs plus every
+   move played so far (0–9), padded to 9 slots with **dummy proofs**: the
+   `dummy_move` circuit has the same public-input shape and zero constraints
+   (`circuits/dummy_move/src/main.nr:6-13`). Slot *i* is verified against the
+   real move VK if `i < num_valid_moves`, else against the dummy VK — three VKs,
+   all pinned at deploy, and the constructor now rejects a deployment that
+   registers the dummy VK as a real one unless `permissive_vks` says so
+   explicitly (readable afterwards via `has_permissive_vks()`).
+
+   `n == 0` is legal: a player can abandon between joining and their first move,
+   and refusing that claim left BOTH hands locked forever. `n == 9` is legal
+   too — a complete game whose winner never returned is exactly the case the
+   loser needs this for.
+
+   For `n < 9` the parity of `num_valid_moves` must show it was the *opponent's*
+   turn when play stopped, so you cannot walk away from your own turn and call
+   the other player absent (`assert_claim_turn`). That check reads the stored
+   player addresses; it was once a caller-supplied `bool`, which defeated it
+   entirely. A claim also requires `MIN_ABANDON_SECONDS` since the game went
+   active — SECONDS, not blocks, because measured block time on this testnet
+   ranges from 27 to 72 seconds.
+
+2. **Contest** — `contest_abandonment`. Either player who is not the claimant
+   may object inside `DISPUTE_SECONDS`, with no proof required. The game returns
+   to active and the abandonment clock **restarts** — without the restart a
+   contested game was instantly re-claimable, which made the window decorative.
+   Once per player per game.
+
+3. **Settle anyway** — a standing claim does **not** block settlement. A
+   verified nine-move transcript outranks a claim at any `n` the claimant chose,
+   so `process_game` is accepted from status 5 as well as status 2, provided
+   neither player has recovered (`assert_settleable`).
+
+   This is load-bearing, not a convenience. Contest is once per player, so
+   without it a loser could claim, absorb the winner's single contest, wait out
+   the restarted clock, and claim again — denying the prize for the price of two
+   hours. Truncation makes a claim-time check useless: the claimant just submits
+   a shorter prefix, and no contract can tell a truncated prefix from a genuinely
+   unfinished game.
+
+   The recovery flags, not the status, are what prevent a double mint: once
+   either side has taken its stake back the game is partly unwound and settling
+   on top would issue the wagered card twice. Settlement writes status 3 and
+   recovery requires status 5, so the two are mutually exclusive in both
+   directions.
+
+4. **Recover** — `settle_abandoned_game`, after `DISPUTE_SECONDS` elapses.
+   Recovery is **per player**: each side re-mints its own five cards, whenever it
+   returns. No card changes hands, and the claimant gains nothing by claiming.
+   An earlier version let the claimant settle for everybody and marked the game
+   done, which left the absent player no route to their own cards if they ever
+   came back.
+
+   A recoverer proves their OWN side's commitments (`assert_recovery_binding`).
+   The absent player's cannot be verified — that needs their blinding factor,
+   and by definition they are not here.
 
 ## 9. ArenaToken
 
