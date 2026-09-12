@@ -89,6 +89,18 @@ const HAND_SIZE = 5;
 interface BotManifest {
   index: number;
   address: string;
+  /**
+   * The NFT contract these cards were minted against.
+   *
+   * Card notes belong to one DEPLOYMENT, not one chain. `rollupVersion` alone
+   * does not capture that: a contract redeploy leaves the rollup untouched, so
+   * a manifest recorded against the previous NFT still looked current — and
+   * this script, which mints only the shortfall between the manifest's count
+   * and --cards, then minted NOTHING. Observed after the 2026-09-11 redeploy:
+   * 992 cards recorded, 0 actually held, bot unable to play and the provisioner
+   * reporting success.
+   */
+  nftAddress?: string;
   secret: string;
   salt: string;
   signingKey: string;
@@ -233,10 +245,48 @@ async function obtainClaim(node: any, address: string, l1ChainId: number): Promi
  * With duplicates the manifest is a MULTISET, so length is the count that
  * matters — not the number of distinct ids.
  */
-function previousMintedTotal(index: number): number {
+function previousMintedTotal(index: number, nftAddress: string): number {
   const p = manifestPath(index);
   if (!existsSync(p)) return 0;
-  return ((JSON.parse(readFileSync(p, 'utf-8')) as BotManifest).cardIds ?? []).length;
+  const m = JSON.parse(readFileSync(p, 'utf-8')) as BotManifest;
+  if (!sameDeployment(m, nftAddress)) return 0;
+  return (m.cardIds ?? []).length;
+}
+
+/**
+ * Does this manifest describe the deployment we are provisioning against?
+ *
+ * A manifest with no `nftAddress` predates this field. Treat it as foreign
+ * rather than current: the alternative is assuming the cards are still held,
+ * which is the failure this exists to prevent, and the cost of being wrong the
+ * other way is only a re-mint.
+ */
+function sameDeployment(m: Partial<BotManifest>, nftAddress: string): boolean {
+  return m.nftAddress?.toLowerCase() === nftAddress.toLowerCase();
+}
+
+/**
+ * Move a manifest belonging to a previous deployment aside, keeping it.
+ *
+ * Never deleted: it is the only record of those notes' plaintexts, and if the
+ * old contract is ever queried again they are the only way to see those cards.
+ */
+function archiveForeignManifest(index: number, nftAddress: string): void {
+  const p = manifestPath(index);
+  if (!existsSync(p)) return;
+  const m = JSON.parse(readFileSync(p, 'utf-8')) as BotManifest;
+  if (sameDeployment(m, nftAddress)) return;
+  const tag = (m.nftAddress ?? 'pre-nft-field').slice(0, 12);
+  const archived = p.replace(/\.json$/, `.${tag}.json`);
+  writeFileSync(archived, JSON.stringify(m, null, 2));
+  console.log(`  manifest belongs to a previous NFT deployment (${tag}) — archived to`);
+  console.log(`  ${archived}; this run starts from zero cards.`);
+  writeFileSync(p, JSON.stringify({
+    index: m.index, address: m.address, secret: m.secret, salt: m.salt,
+    signingKey: m.signingKey, cardIds: [], notes: [], nftAddress,
+    rollupVersion: m.rollupVersion, provisionedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }, null, 2));
 }
 
 /**
@@ -253,6 +303,7 @@ function persistNotes(
   rollupVersion: number,
   notes: { tokenId: number; randomness: string; txHash: string }[],
   cardIds: number[],
+  nftAddress: string,
 ): void {
   const p = manifestPath(index);
   const prior: Partial<BotManifest> = existsSync(p)
@@ -275,7 +326,7 @@ function persistNotes(
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify({
     ...prior, index, address, ...keys,
-    cardIds, notes: merged, rollupVersion,
+    cardIds, notes: merged, rollupVersion, nftAddress,
     provisionedAt: prior.provisionedAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   }, null, 2));
@@ -330,6 +381,10 @@ async function main(): Promise<number> {
   console.log(`  Bot:    ${botAddress}`);
 
   const nftAddress = readEnvAddress('VITE_NFT_CONTRACT_ADDRESS');
+  // Before ANY count is read from it: a manifest from a previous NFT deployment
+  // reports cards this identity no longer holds, and this script mints only the
+  // shortfall against that count.
+  if (!dryRun) archiveForeignManifest(index, nftAddress);
   const tokenAddress = readEnvAddress('VITE_TOKEN_CONTRACT_ADDRESS');
 
   // 1. Deploy the bot account, paying with its bridged claim in-tx.
@@ -437,7 +492,7 @@ async function main(): Promise<number> {
   // PXE and reappear on settlement, so count them as present: minting to cover
   // them would inflate the stock every time a game is in flight.
   const heldNow = await readCollection(nft, botAccount.address);
-  const committedElsewhere = Math.max(0, (previousMintedTotal(index)) - heldNow.length);
+  const committedElsewhere = Math.max(0, (previousMintedTotal(index, nftAddress)) - heldNow.length);
   // `heldNow` is what THIS script's PXE can see, which is not what the bot can
   // see and never will be: mint_bot_cards creates untagged notes, and this
   // process never imports them. After minting 800 cards its own view still read
@@ -449,7 +504,7 @@ async function main(): Promise<number> {
   // over-minted by 456 cards on its first run, for exactly this reason. What
   // the bot can actually FIELD is knowable only inside the bot; ask its
   // /health endpoint, not this script.
-  const have = Math.max(heldNow.length + committedElsewhere, previousMintedTotal(index));
+  const have = Math.max(heldNow.length + committedElsewhere, previousMintedTotal(index, nftAddress));
   const toMint = Math.max(0, cardCount - have);
   console.log(
     `  holding ${heldNow.length} visible here` +
@@ -510,7 +565,7 @@ async function main(): Promise<number> {
       // way these notes can ever be imported, so an interrupted or clobbered run
       // must not be able to lose more than the batch in flight.
       persistNotes(index, botAddress, keys, Number(rollupVersion), mintedNotes,
-        [...priorCardIds, ...plan.slice(0, i + batch.length).map(c => c.id)]);
+        [...priorCardIds, ...plan.slice(0, i + batch.length).map(c => c.id)], nftAddress);
       console.log(`  minted ${Math.min(i + BATCH, plan.length)}/${plan.length}`);
     } catch (err: any) {
       // Do not silently continue: a partial collection that reports success is
@@ -532,7 +587,7 @@ async function main(): Promise<number> {
   const held = await readCollection(nft, botAccount.address);
   // Read from the manifest, which persistNotes has been maintaining as we
   // minted — adding mintedNotes on top would count this run twice.
-  const totalNotes = previousMintedTotal(index);
+  const totalNotes = previousMintedTotal(index, nftAddress);
   if (totalNotes < HAND_SIZE) {
     throw new Error(
       `verification failed: only ${totalNotes} note(s) recorded — the bot needs at least ` +
@@ -548,7 +603,7 @@ async function main(): Promise<number> {
   // concatenating again. Reading the file back and appending mintedNotes on top
   // double-counted every note this run had already written — 60 cards, 120 note
   // records — which then doubles the bot's import work at every boot.
-  persistNotes(index, botAddress, keys, Number(rollupVersion), mintedNotes, minted);
+  persistNotes(index, botAddress, keys, Number(rollupVersion), mintedNotes, minted, nftAddress);
   const outPath = manifestPath(index);
   console.log(`\n=== Done. Manifest: ${outPath} ===`);
   return 0;
