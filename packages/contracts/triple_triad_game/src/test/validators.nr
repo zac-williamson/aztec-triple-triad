@@ -628,3 +628,113 @@ fn an_unset_dummy_key_is_rejected() {
     // transcript with a key that verifies nothing.
     assert_vk_configuration(f(0x11), f(0x22), f(0), b(false));
 }
+
+// ---------------- the other side of every pair ----------------
+//
+// Added from a mutation sweep, which found 13 survivors of 66 and made the
+// pattern impossible to miss: EVERY test above forges player 1's half of a
+// symmetric check and never player 2's, so the whole `winner_id == 2` branch of
+// the settlement binding — six assertions — was never executed by anything.
+//
+// This is the same gap that produced F1. The win/loss path constrained its
+// recipients and always had; the draw branch, the one nobody tested, did not.
+// Writing a test per rule is not enough when a rule has two mirrored halves.
+
+#[test]
+fn player_2_may_win() {
+    assert_settlement_binding(
+        f(2), p2(), p1(), p1(), p2(), cc2(), cc1(), cc1(), cc2(), ps2(), ps1(), ps1(), ps2(),
+    );
+}
+
+#[test(should_fail)]
+fn a_player_2_win_may_not_pay_player_1() {
+    assert_settlement_binding(
+        f(2), p1(), p1(), p1(), p2(), cc2(), cc1(), cc1(), cc2(), ps2(), ps1(), ps1(), ps2(),
+    );
+}
+
+#[test(should_fail)]
+fn a_player_2_win_must_name_player_1_as_the_loser() {
+    assert_settlement_binding(
+        f(2), p2(), p2(), p1(), p2(), cc2(), cc1(), cc1(), cc2(), ps2(), ps1(), ps1(), ps2(),
+    );
+}
+
+#[test(should_fail)]
+fn a_winning_player_2_may_not_name_cards_they_did_not_commit() {
+    assert_settlement_binding(
+        f(2), p2(), p1(), p1(), p2(), f(0xdead), cc1(), cc1(), cc2(), ps2(), ps1(), ps1(), ps2(),
+    );
+}
+
+#[test(should_fail)]
+fn a_winning_player_2_may_not_name_cards_player_1_did_not_commit() {
+    // The historical worst bug, mirrored: a winner naming any five cards as the
+    // loser's stake.
+    assert_settlement_binding(
+        f(2), p2(), p1(), p1(), p2(), cc2(), f(0xdead), cc1(), cc2(), ps2(), ps1(), ps1(), ps2(),
+    );
+}
+
+#[test(should_fail)]
+fn a_winning_player_2_must_use_their_own_randomness() {
+    assert_settlement_binding(
+        f(2), p2(), p1(), p1(), p2(), cc2(), cc1(), cc1(), cc2(), f(0xdead), ps1(), ps1(), ps2(),
+    );
+}
+
+#[test(should_fail)]
+fn a_winning_player_2_must_use_player_1s_randomness_for_player_1() {
+    assert_settlement_binding(
+        f(2), p2(), p1(), p1(), p2(), cc2(), cc1(), cc1(), cc2(), ps2(), f(0xdead), ps1(), ps2(),
+    );
+}
+
+#[test(should_fail)]
+fn a_winning_player_1_must_use_player_2s_randomness_for_player_2() {
+    // The winner_id == 1 twin of the above; only the caller's side was forged.
+    assert_settlement_binding(
+        f(1), p1(), p2(), p1(), p2(), cc1(), cc2(), cc1(), cc2(), ps1(), f(0xdead), ps1(), ps2(),
+    );
+}
+
+#[test(should_fail)]
+fn a_claims_second_hand_proof_must_be_bound_to_this_game() {
+    assert_claim_hand_commits(cc1(), f(0xdead), cc1(), cc2());
+}
+
+#[test(should_fail)]
+fn the_second_proof_commitment_must_match_the_stored_one() {
+    assert_proof_commits_match(cc1(), f(0xdead), cc1(), cc2());
+}
+
+#[test(should_fail)]
+fn hand_proof_2_must_prove_knowledge_of_player_1s_state() {
+    // Hand proof 1 proves player 2's state and vice versa; only the first
+    // direction was ever forged.
+    assert_hand_proof_cross_states(ps2(), f(0xdead), ps1(), ps2());
+}
+
+#[test(should_fail)]
+fn a_draw_may_not_use_randomness_neither_player_committed() {
+    assert_draw_binding(
+        p1(), p2(), p1(), p2(), cc1(), cc2(), cc1(), cc2(), f(0xdead), ps2(), ps1(), ps2(),
+    );
+}
+
+#[test(should_fail)]
+fn a_recoverer_must_use_the_randomness_their_side_committed() {
+    assert_recovery_binding(p1(), p1(), p2(), f(0xdead), cc1(), ps1(), ps2(), cc1(), cc2());
+}
+
+#[test(should_fail)]
+fn a_zero_card_may_not_be_transferred_from_a_malformed_hand() {
+    // Defence in depth, and the reason this assertion survives mutation on its
+    // own: a committed hand cannot contain card id 0 (commit_five_nfts pops five
+    // real NFT notes), so the "not in opponent's cards" check below already
+    // rejects a zero transfer in every reachable case. Killing the mutant needs
+    // the unreachable one — a hand that DOES contain a zero — which is exactly
+    // what this assertion is the last guard against.
+    assert_transferable_card(f(0), [f(0), f(1), f(2), f(3), f(4)]);
+}
