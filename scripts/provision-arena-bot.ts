@@ -426,6 +426,29 @@ async function main(): Promise<number> {
     GrumpkinScalar.fromHexString(deployerSigning),
   );
 
+  // The deployer pays for every mint below (mint_bot_cards is minter-gated), and
+  // a fresh contract deploy drains it — measured today: 5.00 FJ left after
+  // deploying three contracts, against 11.87 FJ for a single 8-card batch.
+  //
+  // Fee Juice is non-transferable, so a "top-up" is a bridged CLAIM that the
+  // account consumes in a transaction. Every path that consumed one did so at
+  // ACCOUNT DEPLOYMENT (deploy-testnet.ts, provision-playtest-accounts.ts, and
+  // the bot account above) — which is exactly the step skipped for an account
+  // that already exists. So an already-deployed account with a pending claim had
+  // no way to spend it, and this script failed with "Insufficient fee payer
+  // balance" while a bridged 1000 FJ sat unclaimed in the store.
+  //
+  // The first mint consumes it. Nothing else about the batch changes.
+  const deployerClaimRecord = getStoredClaim(
+    loadClaimStore(claimStorePath()), deployer.address.toString(),
+  );
+  let deployerClaim = deployerClaimRecord?.status === 'pending'
+    ? deserializeClaim(deployerClaimRecord, Fr)
+    : undefined;
+  if (deployerClaim) {
+    console.log(`  Claim:  deployer has a pending Fee Juice claim — consuming it on the first mint`);
+  }
+
   const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
   const { Contract } = await import('@aztec/aztec.js/contracts');
   const nftArtifact = loadContractArtifact(
@@ -541,13 +564,19 @@ async function main(): Promise<number> {
     // to the bot until it imports them with exactly these values.
     const rand = Array.from({ length: ARRAY_WIDTH }, () => Fr.random());
     try {
+      const fee: Record<string, unknown> = {
+        gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) },
+      };
+      if (deployerClaim) fee.paymentMethod = new FeeJuicePaymentMethodWithClaim(deployer.address, deployerClaim);
       const txHash = await nft.methods
         .mint_bot_cards(new Fr(BigInt(index)), ids, ranks, rand, batch.length)
-        .send({
-          from: deployer.address,
-          fee: { gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) } },
-          wait: { timeout: TX_TIMEOUT },
-        });
+        .send({ from: deployer.address, fee, wait: { timeout: TX_TIMEOUT } });
+      if (deployerClaim) {
+        // Consumed. Mark it before the next batch so a re-run cannot try to
+        // spend it twice, which fails the tx on a duplicate nullifier.
+        markClaimConsumed(claimStorePath(), deployer.address.toString());
+        deployerClaim = undefined;
+      }
       // send() here resolves to { receipt, offchainEffects, offchainMessages },
       // and receipt.txHash is a TxHash OBJECT. String()ing the outer value gave
       // "[object Object]" for every note, which only surfaced a thousand notes
