@@ -191,19 +191,60 @@ function mutationsFor(src) {
  *
  * A fresh TXE per mutant costs about 8 seconds and removes the failure mode.
  */
+const TXE_PORT = 8081;
+
+/** PIDs actually LISTENING on the TXE port. */
+function txePids() {
+  try {
+    return execSync(`lsof -t -iTCP:${TXE_PORT} -sTCP:LISTEN`, { encoding: 'utf8' })
+      .trim().split('\n').filter(Boolean).map(Number);
+  } catch {
+    return [];   // lsof exits non-zero when nothing matches
+  }
+}
+
 async function restartTxe() {
-  try { execSync('pkill -f "aztec start --txe"', { stdio: 'ignore' }); } catch { /* none running */ }
-  spawn(`${process.env.HOME}/.aztec/current/bin/aztec`, ['start', '--txe', '--port', '8081'],
+  // Kill by PORT, not by command line.
+  //
+  // This used to be `pkill -f "aztec start --txe"`, which matches NOTHING: the
+  // process that ends up listening is
+  // `node --no-warnings .../aztec/dest/bin/index.js start --txe --port 8081`,
+  // spawned via the `aztec` shell wrapper, and the wrapper is gone by the time
+  // it is serving. So the pkill killed nothing, the freshly spawned TXE could
+  // not bind the port and died immediately, and curl answered from the OLD
+  // long-lived TXE — which made restartTxe report success while doing nothing
+  // at all.
+  //
+  // That silently undid the one fix protecting this harness's most dangerous
+  // failure mode. A degraded TXE fails the suite for environmental reasons, the
+  // classifier cannot tell that from a mutation-induced failure, and every
+  // later mutant scores as KILLED. It fails toward "covered", which is the
+  // direction that gets an audit believed when it should not be. Measured
+  // once: a sweep ran 66 mutants against a TXE that had been up for an hour.
+  const before = txePids();
+  for (const pid of before) {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+  for (let i = 0; i < 40 && txePids().length; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  if (txePids().length) return false;   // port still held; nothing good follows
+
+  spawn(`${process.env.HOME}/.aztec/current/bin/aztec`,
+        ['start', '--txe', '--port', String(TXE_PORT)],
         { detached: true, stdio: 'ignore' }).unref();
+
   for (let i = 0; i < 60; i++) {
-    try {
-      execSync('curl -s --max-time 2 http://127.0.0.1:8081', { stdio: 'ignore' });
-      return true;
-    } catch {
-      // A promise sleep, not `execSync('sleep 2')` — the point of the async
-      // rewrite is that the event loop stays free to deliver signals.
-      await new Promise((r) => setTimeout(r, 2000));
+    const now = txePids();
+    // A NEW pid on the port, not merely something answering: the whole bug
+    // above was an old process answering for a new one that never started.
+    if (now.length && !now.some((pid) => before.includes(pid))) {
+      try {
+        execSync(`curl -s --max-time 2 http://127.0.0.1:${TXE_PORT}`, { stdio: 'ignore' });
+        return true;
+      } catch { /* listening but not ready yet */ }
     }
+    await new Promise((r) => setTimeout(r, 2000));
   }
   return false;
 }
@@ -276,7 +317,13 @@ for (const name of names) {
   const chosen = muts.slice(0, limit);
   console.log(`\n${name}: mutating ${chosen.length} of ${muts.length} assert(s) in ${basename(t.src)}`);
 
-  if (t.txe) await restartTxe();
+  if (t.txe && !await restartTxe()) {
+    console.error(`  ABORT: could not start a fresh TXE on port ${TXE_PORT}.`);
+    console.error('  Every mutant would run against a degraded or absent TXE and score as');
+    console.error('  KILLED for environmental reasons — a silently inflated coverage number,');
+    console.error('  which is worse than no number.');
+    process.exit(2);
+  }
   if (!await baselineIsGreen(t)) {
     console.error(`  ABORT: ${name}'s test suite is RED before any mutation.`);
     console.error('  Mutation verdicts against a failing suite are meaningless — fix the');
@@ -318,7 +365,10 @@ for (const name of names) {
       writeFileSync(t.src, lines.join('\n'));
       // Fresh TXE per mutant: see restartTxe(). Without it a degraded TXE turns
       // every later mutant into a false kill.
-      if (t.txe) await restartTxe();
+      if (t.txe && !await restartTxe()) {
+        throw new Error(`could not restart TXE before mutant ${n + 1}; aborting rather than `
+          + 'scoring the rest against a dead one');
+      }
       const verdict = await runTests(t);
       if (verdict === 'passed') {
         survivors.push(mut);
