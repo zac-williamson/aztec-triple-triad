@@ -48,51 +48,6 @@ pub fn generate_card(seed: Field, counter: Field) -> (u8, u32) {
     (rarity, global_card_id)
 }
 
-/// Domain separators for the card-pack commit/reveal. Distinct constants so a
-/// pack key can never collide with a pack's entropy or with any other hash in
-/// this contract.
-global DOM_SEP__PACK_KEY: Field = 0x5041434b5f4b4559;       // "PACK_KEY"
-global DOM_SEP__PACK_ENTROPY: Field = 0x5041434b5f454e54;   // "PACK_ENT"
-
-/// Marks a pack as opened. Any non-zero value that no entropy derivation can
-/// produce would do; 1 is chosen because `pack_entropy` reads 0 when unset, so
-/// the three states (unsold / bought / opened) are 0 / H(..) / 1.
-global PACK_CONSUMED: Field = 1;
-
-/// The public handle for a pack. Deliberately a HASH of the buyer and their
-/// nonce, not the pair itself: `purchase_card_pack` is a private function, and
-/// passing the buyer's address to the enqueued public call would publish who
-/// bought a pack. The public side only ever sees an opaque key.
-pub fn derive_pack_key(owner: Field, nonce_value: Field) -> Field {
-    std::hash::pedersen_hash([DOM_SEP__PACK_KEY, owner, nonce_value])
-}
-
-/// A pack's entropy, fixed by the chain AFTER the buyer has committed.
-///
-/// This is the whole of the fix for the pack grind. The old design seeded cards
-/// from `nhk_app_secret`, which is derived from key material the player CHOOSES
-/// — and `preview_card_ids` let them simulate the result for free, offline,
-/// before spending anything. Generating accounts until one previewed a pack of
-/// legendaries cost nothing but time. Rolling the seed here, from state the
-/// buyer does not control and cannot know until their purchase has landed,
-/// means a re-roll costs another pack.
-///
-/// Note what is NOT in this hash: the buyer. Anything the player picks is
-/// something they can grind against the (small) set of block numbers and
-/// timestamps their purchase might land in, which would hand the grind straight
-/// back. The accumulator chains every pack ever sold into the next one.
-///
-/// Residual, and it is real: block number and timestamp are low-entropy and the
-/// SEQUENCER picks both, so a sequencer can steer a roll, and a patient buyer
-/// can time purchases toward a window whose plausible timestamps mostly favour
-/// them. Aztec 5.2 exposes no unpredictable value to a contract — no block
-/// hash, no beacon, no archive root (see PublicContext) — so this is the
-/// strongest available construction, not a complete one. It converts an
-/// unlimited free grind into a bounded, paid, per-roll bias.
-pub fn derive_pack_entropy(accumulator: Field, block_number: Field, timestamp: Field) -> Field {
-    std::hash::pedersen_hash([DOM_SEP__PACK_ENTROPY, accumulator, block_number, timestamp])
-}
-
 /// The blinding factor that hides a player's hand, and the ONLY thing binding a
 /// hand commitment to one particular game.
 ///
@@ -152,9 +107,8 @@ global GAME_ID_IV_FIELD: Field = 0x47616d654964;
 pub contract TripleTriadNFT {
     use super::{
         AXOLOTL_NOTE_SECRET_IV_FIELD, AXOLOTL_NOTE_TAG_FIELD, AXOLOTL_PAYLOAD_IV_FIELD,
-        CARD_PACK_COST, derive_blinding_factor, derive_pack_entropy, derive_pack_key,
-        DOM_SEP__STARTER_CLAIM,
-        GAME_ID_IV_FIELD, generate_card, PACK_CONSUMED, STARTER_CARD_IDS,
+        CARD_PACK_COST, derive_blinding_factor, DOM_SEP__STARTER_CLAIM, GAME_ID_IV_FIELD,
+        generate_card, STARTER_CARD_IDS,
     };
     use super::filters::{filter_by_token_ids, filter_by_token_ids_10};
     use arena_token::ArenaToken;
@@ -245,14 +199,6 @@ pub contract TripleTriadNFT {
         /// a private function can read it and so a slot can never be repointed
         /// at a player once set.
         arena_bots: Map<Field, PublicImmutable<AztecAddress, Context>, Context>,
-
-        /// Card-pack commit/reveal. `pack_entropy` is keyed by the opaque
-        /// `derive_pack_key(owner, nonce)` and holds one of three states:
-        /// 0 = no pack bought at this key, H(..) = bought and awaiting opening,
-        /// PACK_CONSUMED = already opened. `pack_accumulator` chains every
-        /// pack sold into the next roll, so the sequence cannot be rewound.
-        pack_entropy: Map<Field, PublicMutable<Field, Context>, Context>,
-        pack_accumulator: PublicMutable<Field, Context>,
     }
 
     // --- Constructor ---
@@ -577,64 +523,23 @@ pub contract TripleTriadNFT {
         ArenaToken::at(token_addr).mint_private(owner, 100).call(self.context);
     }
 
-    /// Buy a card pack. Burns 100 Arena Tokens and reserves a pack; the cards
-    /// are not decided here. `open_card_pack` mints them once the chain has
-    /// fixed the entropy.
-    ///
-    /// Two transactions, and the split is the point. The old one-shot version
-    /// seeded the cards from `nhk_app_secret` — key material the player picks —
-    /// so a player could generate accounts, simulate `preview_card_ids` on each
-    /// for free, and only ever deploy the one that previewed a pack of
-    /// legendaries. Nothing about paying 100 tokens constrained that, because
-    /// the roll was known before the money moved.
-    ///
-    /// Separating buy from open is the only construction that fixes it: the
-    /// roll has to be decided from state that did not exist when the buyer
-    /// committed. See `derive_pack_entropy` for what that state is and what it
-    /// still does not cover.
+    /// Purchase a card pack: burns 100 Arena Tokens and generates 10 random cards.
     #[external("private")]
     fn purchase_card_pack() {
         let owner = self.msg_sender();
+        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
+        let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
 
         // Burn 100 Arena Tokens
         let token_addr = self.storage.token_contract.read();
         ArenaToken::at(token_addr).burn_from(owner, CARD_PACK_COST).call(self.context);
 
         let nonce_value = pop_note_nonce(self.context, self.storage, owner);
-        push_note_nonce(self.context, self.storage, owner, nonce_value + 10);
-
-        // The KEY, not the buyer. A public call's arguments are public, and
-        // `purchase_card_pack` is otherwise a fully private transaction —
-        // enqueuing (owner, nonce) would publish that this account bought a
-        // pack. The hash publishes only that SOME pack was bought.
-        self.enqueue_self.assign_pack_entropy(derive_pack_key(owner.to_field(), nonce_value));
-    }
-
-    /// Open a pack bought earlier, minting its ten cards.
-    ///
-    /// `entropy` is supplied by the caller and pinned by the enqueued public
-    /// call against what the chain recorded at purchase. Supplying a different
-    /// value does not mint different cards — it reverts the transaction, and
-    /// with it every note created here, because a public revert discards the
-    /// whole tx's revertible side effects including private ones.
-    ///
-    /// The card seed mixes in `nhk_app_secret` so pack contents stay private:
-    /// the public entropy alone would let an observer derive everyone's cards.
-    /// Mixing it in is safe precisely BECAUSE of the commit — the account was
-    /// fixed at purchase, before the entropy existed, so there is no account to
-    /// choose any more.
-    #[external("private")]
-    fn open_card_pack(nonce_value: Field, entropy: Field) {
-        let owner = self.msg_sender();
-        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
-        let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
-
-        let seed = poseidon2_hash([entropy, nhk_app_secret]);
 
         for i in 0..10 {
             let note_randomness = derive_note_randomness(nhk_app_secret, nonce_value, i as Field);
             let note_tag = derive_note_tag(note_randomness);
-            let (_, card_id) = generate_card(seed, nonce_value + i as Field);
+            let (_, card_id) = generate_card(nhk_app_secret, nonce_value + i as Field);
             let note_payload = encrypt_card_payload(card_id as Field, note_randomness);
             let _: Field =
                 create_and_push_note(self.context, owner, card_id as Field, note_randomness);
@@ -644,22 +549,17 @@ pub contract TripleTriadNFT {
             );
         }
 
-        self.enqueue_self.consume_pack(derive_pack_key(owner.to_field(), nonce_value), entropy);
+        push_note_nonce(self.context, self.storage, owner, nonce_value + 10);
     }
 
-    /// The card IDs an `open_card_pack(nonce_value, entropy)` will mint.
-    ///
-    /// Takes the entropy rather than deriving one, so it can only be answered
-    /// for a pack that has already been BOUGHT. That is the point: the previous
-    /// signature took a nonce alone and answered from key material the caller
-    /// chose, which made it a free oracle for grinding accounts. The frontend
-    /// uses this after purchase, to know which notes to import.
+    /// Preview which card IDs will be generated for a given nonce value.
+    /// Call via .simulate({ from: playerAddr }) -- runs client-side, no tx.
+    /// Uses the same seed derivation as the get_cards_from_* functions.
     #[external("private")]
-    fn preview_card_ids(nonce_value: Field, entropy: Field) -> [Field; 10] {
+    fn preview_card_ids(nonce_value: Field) -> [Field; 10] {
         let owner = self.msg_sender();
         let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
-        let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
-        let seed = poseidon2_hash([entropy, nhk_app_secret]);
+        let seed = self.context.request_nhk_app(owner_npk_m_hash);
 
         let mut result = [0 as Field; 10];
         for i in 0..10 {
@@ -667,13 +567,6 @@ pub contract TripleTriadNFT {
             result[i] = card_id as Field;
         }
         result
-    }
-
-    /// The public handle for a caller's pack at `nonce_value`, so the frontend
-    /// can look its entropy up with `get_pack_entropy`.
-    #[external("private")]
-    fn pack_key_for(nonce_value: Field) -> Field {
-        derive_pack_key(self.msg_sender().to_field(), nonce_value)
     }
 
     // --- Custom Note Creation (no delivery/tagging) ---
@@ -1158,50 +1051,6 @@ pub contract TripleTriadNFT {
     }
 
     // --- Public functions called via enqueue_self ---
-
-    /// Fix a bought pack's entropy from chain state the buyer did not choose.
-    ///
-    /// `#[only_self]`: enqueued by `purchase_card_pack` and nothing else. If
-    /// anyone could call it they could assign entropy to a key they had not
-    /// paid for, and — worse — call it repeatedly on their own pending pack
-    /// until the roll suited them, which is the exact grind this replaced.
-    #[external("public")]
-    #[only_self]
-    fn assign_pack_entropy(key: Field) {
-        assert(self.storage.pack_entropy.at(key).read() == 0, "Pack already reserved at this key");
-
-        let entropy = derive_pack_entropy(
-            self.storage.pack_accumulator.read(),
-            self.context.block_number() as Field,
-            self.context.timestamp() as Field,
-        );
-
-        self.storage.pack_entropy.at(key).write(entropy);
-        self.storage.pack_accumulator.write(entropy);
-    }
-
-    /// Bind an opening to the entropy its purchase recorded, and retire the pack.
-    ///
-    /// Both halves matter. The equality is what stops a buyer naming whatever
-    /// entropy mints the cards they want — the private half computed real notes
-    /// from it, and a mismatch reverts the transaction and those notes with it.
-    /// The one-shot write is what stops the same pack being opened twice, which
-    /// would mint twenty cards for one payment.
-    #[external("public")]
-    #[only_self]
-    fn consume_pack(key: Field, entropy: Field) {
-        let recorded = self.storage.pack_entropy.at(key).read();
-        assert(recorded != 0, "No pack bought at this key");
-        assert(recorded != PACK_CONSUMED, "Pack already opened");
-        assert(recorded == entropy, "Pack entropy mismatch");
-        self.storage.pack_entropy.at(key).write(PACK_CONSUMED);
-    }
-
-    #[external("public")]
-    #[view]
-    fn get_pack_entropy(key: Field) -> Field {
-        self.storage.pack_entropy.at(key).read()
-    }
 
     #[external("public")]
     #[only_self]

@@ -66,33 +66,13 @@ export function useCardPacks(
         label: `Hunting at ${location.name}...`,
         execute: async (ops, setPhase) => {
           setPhase('simulating');
-          // Capture the note nonce BEFORE the purchase advances it by 10.
-          const nonce = await ops.getPackNonce(capturedAccountAddress);
+          // Capture the note nonce BEFORE the purchase advances it.
+          const { cardIds, nonce } = await ops.previewCardPack(capturedAccountAddress, CARDS_PER_PACK);
 
           setPhase('sending');
-          // Two transactions, and the order is what makes the pack fair. The
-          // first one pays and reserves a slot; the chain then rolls the pack
-          // from state that did not exist when the player committed. Only after
-          // that can anyone — including the buyer — know what is in it.
-          //
-          // Fee Juice paid natively by the sender; the send ops apply the shared
-          // base-fee headroom so the txs survive a base-fee climb during proving.
-          await ops.sendPurchaseCardPack(capturedAccountAddress, {
-            node: capturedNodeClient,
-            timeoutMs: AZTEC_TX_TIMEOUT,
-          });
-
-          setPhase('simulating');
-          const { entropy, cardIds } = await ops.readPackRoll(
-            capturedAccountAddress,
-            nonce,
-            CARDS_PER_PACK,
-          );
-
-          setPhase('sending');
-          // The cards are minted HERE, so this is the tx whose effects carry the
-          // notes to import below.
-          const txHash = await ops.sendOpenCardPack(capturedAccountAddress, nonce, entropy, {
+          // Fee Juice paid natively by the sender; the send op applies the shared
+          // base-fee headroom so the tx survives a base-fee climb during proving.
+          const txHash = await ops.sendPurchaseCardPack(capturedAccountAddress, {
             node: capturedNodeClient,
             timeoutMs: AZTEC_TX_TIMEOUT,
           });

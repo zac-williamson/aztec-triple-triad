@@ -23212,38 +23212,6 @@
                         ],
                         "kind": "struct"
                       }
-                    },
-                    {
-                      "name": "pack_entropy",
-                      "value": {
-                        "fields": [
-                          {
-                            "name": "slot",
-                            "value": {
-                              "kind": "integer",
-                              "sign": false,
-                              "value": "0000000000000000000000000000000000000000000000000000000000000012"
-                            }
-                          }
-                        ],
-                        "kind": "struct"
-                      }
-                    },
-                    {
-                      "name": "pack_accumulator",
-                      "value": {
-                        "fields": [
-                          {
-                            "name": "slot",
-                            "value": {
-                              "kind": "integer",
-                              "sign": false,
-                              "value": "0000000000000000000000000000000000000000000000000000000000000013"
-                            }
-                          }
-                        ],
-                        "kind": "struct"
-                      }
                     }
                   ],
                   "kind": "struct"

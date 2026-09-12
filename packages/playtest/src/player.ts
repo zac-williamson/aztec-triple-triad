@@ -93,10 +93,7 @@ export const TIMEOUTS = TESTNET ? {
   interactionIdle: 240_000,
   canSettle: 1_800_000,     // all 9 move + 2 hand proofs, real proving (30 min)
   settleTx: 2_400_000,      // process_game: 11 recursive verifs + on-chain inclusion/finality (40 min)
-  packTx: 2_400_000,        // TWO txs now: purchase reserves a roll, open mints it
-                            // (the roll must be fixed by chain state the buyer did not
-                            // choose, so it cannot be one tx). Plus 10-note import and
-                            // block inclusion for each. (40 min)
+  packTx: 1_200_000,        // purchase tx + 10-note import + block inclusion (20 min)
   pxeRead: 300_000,         // testnet PXE reads sync across real blocks
   evaluate: 60_000,
   placementConfirm: 120_000, // confirm a cell click registered; fail loud on a miss, not a 240s board-update timeout
@@ -112,8 +109,7 @@ export const TIMEOUTS = TESTNET ? {
   interactionIdle: 60_000,  // capture cascades run ~1s per flip
   canSettle: 1_200_000,     // all 9 move proofs + 2 hand proofs (real proving)
   settleTx: 1_800_000,      // process_game: 11 recursive verifications, client-proved
-  packTx: 1_200_000,        // TWO txs: purchase_card_pack then open_card_pack,
-                            // each proved, plus the 10-note import
+  packTx: 600_000,          // purchase_card_pack: tx proving + 10-note import
   pxeRead: 180_000,         // hard backstop for a single PXE read; a true hang fails fatally, never masked
   evaluate: 30_000,         // a bare page.evaluate (phase snapshot) must not hang the run
   placementConfirm: 30_000, // confirm a cell click registered; fail loud on a miss, not a board-update timeout

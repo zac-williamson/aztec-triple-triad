@@ -174,7 +174,15 @@ learned the hard way.
 10. **`game_id` and `randomness` are derived IN-CIRCUIT** — never pass them in
     from the frontend.
 11. **`npm install --legacy-peer-deps`**, always.
-12. **The browser PXE has NO background sync** — its proof anchor advances only
+12. **Card packs are ONE transaction.** The audit's F6 (pack rarity is
+    grindable by generating accounts) is **closed as irrelevant — do not
+    reopen it.** It was once fixed by splitting buy and open into two
+    transactions, which doubled the latency of a core flow on a chain where
+    every tx is a client-side proof, to partially mitigate a Low finding about
+    a resource with no value. It was reverted. If packs ever carry real value
+    the fix is Aztec partial notes, still one transaction. See
+    `docs/ARCHITECTURE.md` §7.
+13. **The browser PXE has NO background sync** — its proof anchor advances only
     inside an explicit `pxe.sync()`. Every wallet send must sync FIRST
     (`instrumentedWallet.sendTx` does; keep that parity with stock
     `EmbeddedWallet`), and idle windows are covered by
