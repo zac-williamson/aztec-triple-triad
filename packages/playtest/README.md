@@ -22,7 +22,7 @@ npx tsx scripts/stop-stack.ts
 
 ```bash
 PLAYTEST_TESTNET=1 \
-PLAYTEST_FRONTEND_URL=https://www.aztec-arena.com \
+PLAYTEST_FRONTEND_URL='https://www.aztec-arena.com/?e2e=1' \
 PLAYTEST_PXE_URL=https://v5.testnet.rpc.aztec-labs.com \
 PLAYTEST_BACKEND_URL=https://ws.aztec-arena.com \
 npx playwright test new-user-onboarding --config packages/playtest/playwright.config.ts
@@ -30,7 +30,13 @@ npx playwright test new-user-onboarding --config packages/playtest/playwright.co
 
 `PLAYTEST_FRONTEND_URL` drives an already-served frontend instead of the vite dev
 server the harness would otherwise boot (it then starts no vite and claims no
-port). Without it, a green testnet run proves the contracts, the relay and the
+port).
+
+**The `?e2e=1` is not optional.** The harness's first act is to wait for
+`window.__triadTest`, and a production build has `VITE_TESTKIT` statically
+false — the testkit's runtime opt-in (`src/testkit/enabled.ts`) is the only way
+in. Without it the run dies after three minutes on a `waitForFunction` timeout
+that looks like a broken site and is not one. Without it, a green testnet run proves the contracts, the relay and the
 client LOGIC — and says nothing about the bundle users actually load. That gap
 has cost real time here before: the OPFS proxy 404'd only when served from the
 deployed build, and the `__name` addInitScript trap only appeared under a
