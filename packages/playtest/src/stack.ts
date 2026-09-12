@@ -15,7 +15,7 @@ import net from 'net';
 import {
   ROOT, PXE_URL, NODE_PORT, ANVIL_PORT, BACKEND_PORT, FRONTEND_PORT,
   BACKEND_URL, FRONTEND_URL, ARTIFACTS_DIR, BROWSER_REGISTRY_PATH, TESTNET, LOCAL_BACKEND,
-  readContractAddresses, type StackInfo, type StackMode,
+  readContractAddresses, type StackInfo, type StackMode, EXTERNAL_FRONTEND,
 } from './env.js';
 
 const BOOT_TIMEOUTS = {
@@ -142,9 +142,11 @@ export class Stack {
     // Testnet mode only owns the local vite (3000); the node/anvil/backend are
     // remote (live testnet + live ws relay), so don't probe their local ports —
     // except in LOCAL_BACKEND mode, where we also own the local backend (5174).
-    const testnetPorts = LOCAL_BACKEND
-      ? ([['backend', BACKEND_PORT], ['frontend', FRONTEND_PORT]] as const)
-      : ([['frontend', FRONTEND_PORT]] as const);
+    const testnetPorts: ReadonlyArray<readonly [string, number]> = EXTERNAL_FRONTEND
+      ? (LOCAL_BACKEND ? [['backend', BACKEND_PORT]] : [])
+      : (LOCAL_BACKEND
+          ? [['backend', BACKEND_PORT], ['frontend', FRONTEND_PORT]]
+          : [['frontend', FRONTEND_PORT]]);
     const ports = TESTNET
       ? testnetPorts
       : ([
@@ -262,10 +264,15 @@ export class Stack {
       if (LOCAL_BACKEND) {
         log('testnet mode + LOCAL_BACKEND — live testnet chain, LOCAL ws relay; booting backend + vite');
         await this.bootBackend();
-      } else {
+      } else if (!EXTERNAL_FRONTEND) {
         log('testnet mode — using live testnet + live ws relay; booting local vite only');
       }
-      await this.bootFrontend();
+      if (EXTERNAL_FRONTEND) {
+        log(`testnet mode — driving the ALREADY-SERVED frontend at ${FRONTEND_URL}; booting no vite`);
+        await waitFor('external frontend', () => httpOk(FRONTEND_URL), BOOT_TIMEOUTS.frontendMs);
+      } else {
+        await this.bootFrontend();
+      }
       return this.writeInfo(readContractAddresses());
     }
     await this.bootSandbox();

@@ -36,7 +36,26 @@ export const BACKEND_PORT = 5174;
 export const FRONTEND_PORT = 3000;
 // WS relay base for liveness probes + /games checks. Testnet = the live relay.
 export const BACKEND_URL = process.env.PLAYTEST_BACKEND_URL || `http://localhost:${BACKEND_PORT}`;
-export const FRONTEND_URL = `http://localhost:${FRONTEND_PORT}`;
+/**
+ * Where the browser points.
+ *
+ * Defaults to the vite dev server the harness boots. `PLAYTEST_FRONTEND_URL`
+ * aims it at an already-served build instead — in particular the DEPLOYED site,
+ * which is the only way this harness can catch a production-only failure.
+ *
+ * That distinction has cost this project real time: a dev build and a Vercel
+ * build have diverged before (the OPFS proxy 404ing only when served from the
+ * deployed bundle, and the `__name` addInitScript trap). A green run against
+ * localhost says the contracts, the relay and the client LOGIC are right; it
+ * says nothing about the artifact users actually load.
+ *
+ * With this set the harness boots no frontend of its own and does not claim the
+ * port.
+ */
+export const FRONTEND_URL = process.env.PLAYTEST_FRONTEND_URL || `http://localhost:${FRONTEND_PORT}`;
+
+/** True when pointed at a frontend we did not start and must not manage. */
+export const EXTERNAL_FRONTEND = Boolean(process.env.PLAYTEST_FRONTEND_URL);
 
 /**
  * Reuse mode (explicit opt-in for the inner dev loop): attach to an already

@@ -18,6 +18,25 @@ PLAYTEST_REUSE_STACK=1 npx playwright test
 npx tsx scripts/stop-stack.ts
 ```
 
+## Run against the DEPLOYED site
+
+```bash
+PLAYTEST_TESTNET=1 \
+PLAYTEST_FRONTEND_URL=https://www.aztec-arena.com \
+PLAYTEST_PXE_URL=https://v5.testnet.rpc.aztec-labs.com \
+PLAYTEST_BACKEND_URL=https://ws.aztec-arena.com \
+npx playwright test new-user-onboarding --config packages/playtest/playwright.config.ts
+```
+
+`PLAYTEST_FRONTEND_URL` drives an already-served frontend instead of the vite dev
+server the harness would otherwise boot (it then starts no vite and claims no
+port). Without it, a green testnet run proves the contracts, the relay and the
+client LOGIC — and says nothing about the bundle users actually load. That gap
+has cost real time here before: the OPFS proxy 404'd only when served from the
+deployed build, and the `__name` addInitScript trap only appeared under a
+production bundle. Point it at production when the question is "does the live
+site work", not "is the code right".
+
 Prerequisites: `aztec` CLI at the pinned version (see CLAUDE.md), contracts/circuits
 compiled (`packages/contracts/target`, `circuits/target`), root
 `npm install --legacy-peer-deps` done, `npx playwright install chromium`.
