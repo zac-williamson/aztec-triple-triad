@@ -51,6 +51,11 @@ export const BACKEND_URL = process.env.PLAYTEST_BACKEND_URL || `http://localhost
  *
  * With this set the harness boots no frontend of its own and does not claim the
  * port.
+ *
+ * Against a PRODUCTION build the URL must carry `?e2e=1`: the harness waits for
+ * `window.__triadTest`, and production has `VITE_TESTKIT` statically false, so
+ * the testkit's runtime opt-in is the only way in. Omit it and the run dies on a
+ * waitForFunction timeout that reads like a broken site.
  */
 export const FRONTEND_URL = process.env.PLAYTEST_FRONTEND_URL || `http://localhost:${FRONTEND_PORT}`;
 
