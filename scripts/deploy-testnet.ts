@@ -217,6 +217,27 @@ async function main() {
   for (const name of ['arena_token-ArenaToken', 'triple_triad_nft-TripleTriadNFT', 'triple_triad_game-TripleTriadGame']) {
     cpSync(`${contractsDir}/${name}.json`, `${frontendDir}/${name}.json`);
   }
+
+  // packages/frontend/public/contracts is TRACKED, and it is what the browser
+  // fetches at runtime to register the contracts. Refreshing it on disk does
+  // nothing for the Vercel build, which runs from the repo — so an uncommitted
+  // refresh ships the PREVIOUS deployment's ABI against the new contracts, and
+  // the browser fails with "No artifact registered for contract class ..." at
+  // the first transaction. Every new player is blocked; nobody who already has
+  // a session notices.
+  //
+  // It is invisible from the JS bundle, which carries the calling code while the
+  // ABI is a separate fetched JSON — so "the bundle has the new function names"
+  // is not evidence the artifact matches. Say so here, loudly, because the
+  // symptom appears long after the deploy that caused it.
+  console.log('');
+  console.log('!'.repeat(72));
+  console.log('!!  COMMIT packages/frontend/public/contracts/ — it is tracked, and the');
+  console.log('!!  deployed site serves whatever is COMMITTED there, not what is on disk.');
+  console.log('!!  Without it the browser cannot register these contracts and every new');
+  console.log('!!  player is blocked at their first transaction.');
+  console.log('!'.repeat(72));
+  console.log('');
   console.log('Compilation complete. Artifacts copied to frontend.\n');
 
   console.log('=== Triple Triad Testnet Deployment ===');
