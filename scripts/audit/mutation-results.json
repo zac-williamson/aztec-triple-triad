@@ -1,0 +1,163 @@
+{
+  "circuits/game_move": {
+    "measuredAt": "2026-09-11",
+    "asserts": 28,
+    "invalid": 0,
+    "survivors": [
+      {
+        "line": 108,
+        "message": "Invalid player",
+        "source": "assert( ... \"Invalid player\""
+      },
+      {
+        "line": 118,
+        "message": "Col out of bounds",
+        "source": "assert(c < 3, \"Col out of bounds\"); ... \"Col out of bounds\""
+      },
+      {
+        "line": 133,
+        "message": "Player 2 card commit mismatch",
+        "source": "assert(recomputed_commit == card_commit_2, \"Player 2 card commit mismatch\"); ... \"Player 2 card commit mismatch\""
+      },
+      {
+        "line": 161,
+        "message": "Cell not empty",
+        "source": "assert(board_before[cell_idx * 2] == 0, \"Cell not empty\"); ... \"Cell not empty\""
+      },
+      {
+        "line": 162,
+        "message": "Cell not empty (owner)",
+        "source": "assert(board_before[cell_idx * 2 + 1] == 0, \"Cell not empty (owner)\"); ... \"Cell not empty (owner)\""
+      },
+      {
+        "line": 163,
+        "message": "Cell not empty (original owner)",
+        "source": "assert(original_owners_before[cell_idx] == 0, \"Cell not empty (original owner)\"); ... \"Cell not empty (original owner)\""
+      },
+      {
+        "line": 166,
+        "message": "Card not placed correctly",
+        "source": "assert(board_after[cell_idx * 2] == card_id, \"Card not placed correctly\"); ... \"Card not placed correctly\""
+      },
+      {
+        "line": 167,
+        "message": "Owner not set correctly",
+        "source": "assert( ... \"Owner not set correctly\""
+      },
+      {
+        "line": 173,
+        "message": "Original owner not set correctly",
+        "source": "assert( ... \"Original owner not set correctly\""
+      },
+      {
+        "line": 292,
+        "message": "Game should have ended",
+        "source": "assert(game_ended == 1, \"Game should have ended\"); ... \"Game should have ended\""
+      },
+      {
+        "line": 298,
+        "message": "Player 2 should be winner",
+        "source": "assert(winner_id == 2, \"Player 2 should be winner\"); ... \"Player 2 should be winner\""
+      },
+      {
+        "line": 300,
+        "message": "Should be a draw",
+        "source": "assert(winner_id == 3, \"Should be a draw\"); ... \"Should be a draw\""
+      },
+      {
+        "line": 303,
+        "message": "Game should not have ended",
+        "source": "assert(game_ended == 0, \"Game should not have ended\"); ... \"Game should not have ended\""
+      },
+      {
+        "line": 304,
+        "message": "No winner yet",
+        "source": "assert(winner_id == 0, \"No winner yet\"); ... \"No winner yet\""
+      }
+    ]
+  },
+  "circuits/prove_hand": {
+    "measuredAt": "2026-09-11",
+    "asserts": 5,
+    "invalid": 0,
+    "survivors": []
+  },
+  "circuits/card_data": {
+    "measuredAt": "2026-09-11",
+    "asserts": 1,
+    "invalid": 0,
+    "survivors": []
+  },
+  "contracts/game": {
+    "measuredAt": "2026-09-12",
+    "asserts": 66,
+    "invalid": 0,
+    "survivors": [
+      {
+        "line": 291,
+        "message": "card_to_transfer must be nonzero for non-draw",
+        "source": "assert(card_to_transfer != 0, \"card_to_transfer must be nonzero for non-draw\"); ... \"card_to_transfer must be nonzero fo"
+      },
+      {
+        "line": 314,
+        "message": "Hand proof 2 card_commit mismatch",
+        "source": "assert(cc2 == stored_cc2, \"Hand proof 2 card_commit mismatch\"); ... \"Hand proof 2 card_commit mismatch\""
+      },
+      {
+        "line": 320,
+        "message": "card_commit_2 mismatch",
+        "source": "assert(pc2 == stored_cc2, \"card_commit_2 mismatch\"); ... \"card_commit_2 mismatch\""
+      },
+      {
+        "line": 326,
+        "message": "Hand proof 2 opponent_state_hash mismatch",
+        "source": "assert(from_p2 == ps1, \"Hand proof 2 opponent_state_hash mismatch\"); ... \"Hand proof 2 opponent_state_hash mismatch\""
+      },
+      {
+        "line": 359,
+        "message": "Opponent player_state_hash mismatch",
+        "source": "assert(opponent_state_hash == stored_ps2, \"Opponent player_state_hash mismatch\"); ... \"Opponent player_state_hash mismat"
+      },
+      {
+        "line": 362,
+        "message": "Winner must be player 2",
+        "source": "assert(winner == player2, \"Winner must be player 2\"); ... \"Winner must be player 2\""
+      },
+      {
+        "line": 363,
+        "message": "Loser must be player 1",
+        "source": "assert(loser == player1, \"Loser must be player 1\"); ... \"Loser must be player 1\""
+      },
+      {
+        "line": 364,
+        "message": "Caller card ids do not match their commitment",
+        "source": "assert(caller_cards_commit == stored_cc2, \"Caller card ids do not match their commitment\"); ... \"Caller card ids do not "
+      },
+      {
+        "line": 365,
+        "message": "Opponent card ids do not match their commitment",
+        "source": "assert(opponent_cards_commit == stored_cc1, \"Opponent card ids do not match their commitment\"); ... \"Opponent card ids d"
+      },
+      {
+        "line": 366,
+        "message": "Caller player_state_hash mismatch",
+        "source": "assert(caller_state_hash == stored_ps2, \"Caller player_state_hash mismatch\"); ... \"Caller player_state_hash mismatch\""
+      },
+      {
+        "line": 367,
+        "message": "Opponent player_state_hash mismatch",
+        "source": "assert(opponent_state_hash == stored_ps1, \"Opponent player_state_hash mismatch\"); ... \"Opponent player_state_hash mismat"
+      },
+      {
+        "line": 402,
+        "message": "Player state hash mismatch in draw",
+        "source": "assert( ... \"Player state hash mismatch in draw\""
+      },
+      {
+        "line": 426,
+        "message": "Player state hash mismatch",
+        "source": "assert(caller_state_hash == expected_ps, \"Player state hash mismatch\"); ... \"Player state hash mismatch\""
+      }
+    ]
+  }
+}
