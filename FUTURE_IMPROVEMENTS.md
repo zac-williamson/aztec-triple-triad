@@ -1,21 +1,41 @@
 # Future Improvements
 
-## Abandoned-game counter-claim (2026-06-12)
+## ~~Abandoned-game counter-claim (2026-06-12)~~ — RESOLVED 2026-09-11
 
-The 5-block dispute window after `claim_abandoned_game`
-(`packages/contracts/triple_triad_game/src/main.nr:491-494`) currently protects
-against exactly one attack: a false abandonment claim against a *finished* game,
-which the accused defeats by running `process_game` inside the window
-(`settle_game` gates on the `game_settled` flag only, `main.nr:761-762`; the
-abandonment settle then fails its `!settled` assert, `main.nr:496-497`).
+The original entry: the dispute window protected only against a false claim on a
+*finished* game, and a mid-game false claim had no recourse, because a
+counter-claim presenting a longer chain was impossible once the first claim had
+consumed the `active` status.
 
-There is no recourse for a false claim *mid-game*: a counter-claim presenting a
-longer valid move chain is impossible because `claim_abandoned_game_public`
-requires status `active` (`main.nr:385-386`), which the first claim already
-consumed. A fix would allow a counter-claim while status is `abandoned_claimed`
-that supersedes the original iff it presents strictly more valid moves, resetting
-the dispute clock. Until then, the dispute window is a delay, not a remedy, for
-mid-game disputes. See `docs/ARCHITECTURE.md` §8.
+Two things landed instead of the counter-claim as described.
+
+**`contest_abandonment`** lets either player object inside `DISPUTE_SECONDS`
+(600s) with no proof at all, returning the game to active and restarting the
+abandonment clock. Cheaper than a longer-chain counter-claim and strictly more
+available: an honest player who is merely slow does not have to prove anything,
+and one who cannot prove a longer chain (because they have no moves yet) is not
+locked out.
+
+**F9's fix** covers the finished-game case properly. The old defence — settle
+inside the window — rested on `settle_game` gating on the `settled` flag alone,
+and that gap was closed when complete games became claimable, because a claimed
+game still reads as unsettled. Settlement is now explicitly accepted from status
+5 while neither player has recovered, so a verified nine-move transcript
+outranks a claim whatever `n` the claimant chose. A claim-time check could not
+substitute: the claimant simply truncates, and no contract can distinguish a
+truncated prefix from a genuinely unfinished game.
+
+**What remains, and why it is not the same problem.** Contest is once per player,
+so an attacker who claims, absorbs the contest, waits out the restarted hour and
+claims again leaves the honest player nothing to answer with. For a FINISHED
+game that no longer costs anything — the winner settles instead. For a MID-GAME
+claim there is no transcript to settle with, so the game unwinds into per-player
+recovery: each side re-mints its own five cards and nothing changes hands. The
+cost is the game, not the cards. Worth revisiting if abandonment claims ever get
+cheaper or cards ever carry real value; not worth a second proof-carrying code
+path now.
+
+See `docs/ARCHITECTURE.md` §8.
 
 ## ~~Backend session staleness (2026-04-15)~~ — RESOLVED 2026-06-12 (Lane 4, item G)
 
