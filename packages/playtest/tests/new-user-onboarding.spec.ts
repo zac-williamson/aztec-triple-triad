@@ -65,7 +65,8 @@ test('a new player with only an Ethereum account plays and settles a game', asyn
     // ---- The starting position: an Ethereum account with some ETH ----------
     log('creating a brand-new Ethereum account…');
     wallet = await createFundedL1Account({ log });
-    expect(await wallet.balance(), 'the new account holds testnet ETH').toBeGreaterThan(0n);
+    // The funding transfer's successful receipt is the proof the ETH landed.
+    expect(wallet.funding.wei, 'the new account holds testnet ETH').toBeGreaterThan(0n);
 
     // ---- A browser that knows nothing ---------------------------------------
     // seed: null — no pooled account. The app generates a fresh Aztec key on

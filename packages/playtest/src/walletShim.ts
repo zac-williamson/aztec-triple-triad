@@ -85,7 +85,13 @@ export interface InjectedWallet {
   chainId: number;
   /** Install into a page. Must run before app JS. */
   install: (page: Page) => Promise<void>;
-  balance: () => Promise<bigint>;
+  /**
+   * The mined funding transfer, straight from its receipt. A successful receipt
+   * is the chain's proof the ETH arrived; re-reading the balance afterwards
+   * asks the question again of whichever node the load-balanced RPC picks, and
+   * one still a block behind the receipt answers 0 (20 Nov 2026).
+   */
+  funding: { hash: Hex; blockNumber: bigint; wei: bigint };
 }
 
 /**
@@ -116,7 +122,7 @@ export async function createFundedL1Account(
     address: account.address,
     privateKey,
     chainId: sepolia.id,
-    balance: () => pub.getBalance({ address: account.address }),
+    funding: { hash, blockNumber: receipt.blockNumber, wei: fundWei },
     install: (page: Page) => installWallet(page, privateKey),
   };
 }
@@ -230,7 +236,12 @@ export async function refundTreasury(privateKey: Hex, log?: (m: string) => void)
     const balance = await pub.getBalance({ address: account.address });
     const fees = await pub.estimateFeesPerGas();
     const cost = 21_000n * (fees.maxFeePerGas ?? 0n);
-    if (balance <= cost * 2n) { ledgerRemove(account.address); return; } // not worth a transaction
+    // Nothing worth a transaction — but keep the ledger entry. A balance read is
+    // only as fresh as the node that answers it: on 20 Nov 2026 a stale node
+    // reported 0 for an account holding 0.02 ETH, this line struck the entry
+    // off, and the only copy of that key was gone. Entries leave the ledger
+    // when a refund MINES, never on a read.
+    if (balance <= cost * 2n) return;
     const hash = await wallet.sendTransaction({ to: treasury.address, value: balance - cost * 2n, gas: 21_000n });
     // Struck off only once the refund has actually MINED. Removing it at send
     // time would discard the record on the one occasion it matters — a
