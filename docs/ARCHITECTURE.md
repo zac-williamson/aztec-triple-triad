@@ -546,11 +546,15 @@ Proof generation itself (`aztec/proofWorker.ts`) is `Noir.execute` (witness) +
 `UltraHonkBackend.generateProof` per circuit, with backends cached per circuit
 (`:16-27`) over one Barretenberg instance (`aztec/proofBackend.ts`). Circuit
 artifacts are fetched from `/circuits/*.json` (`aztec/circuitLoader.ts:19,30,42`
-— the compiled outputs `npm run copy-circuits` publishes). Note: despite the
-filename, this runs on the **main thread** — there is no Web Worker, so proving
-blocks the tab. The cost mostly overlaps the opponent's thinking time by
-construction: the move is relayed before proving starts
-(`hooks/useGamePlay.ts:374` vs `:387-394`).
+— the compiled outputs `npm run copy-circuits` publishes). The module itself
+runs on the main thread, but bb.js runs the prover in its own Web Workers (the
+build's `main.worker`/`thread.worker` assets), so only witness generation and
+marshalling touch the main thread. Measured in Chrome on a 12-core Mac with v6
+(20 Nov 2026): a `game_move` proof takes ~0.45 s, cold or warm, with one
+~60-70 ms main-thread task; `prove_hand` ~0.2 s with one ~66 ms task. No visible
+freeze, so moving this into a worker would buy nothing. The cost also overlaps
+the opponent's thinking time by construction: the move is relayed before
+proving starts (`hooks/useGamePlay.ts:374` vs `:387-394`).
 
 ### 12.4 Settlement (useGameSettlement)
 
