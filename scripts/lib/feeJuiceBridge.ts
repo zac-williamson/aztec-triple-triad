@@ -232,6 +232,8 @@ export interface BridgeParams {
   log: LogFn;
   /** Seconds to wait for the L1->L2 message to land in the tree. */
   messageWaitSeconds?: number;
+  /** Pause before retrying a deposit whose pre-flight read a stale allowance. */
+  staleReadRetryMs?: number;
 }
 
 /**
@@ -245,9 +247,18 @@ export interface BridgeParams {
  * already mined, so re-running will reuse the funder's L1 balance, and the claim
  * the caller already persisted (before the wait) stays valid.
  */
+/** Whether an L1 error (or any error in its cause chain) is the ERC20 allowance revert. */
+function isInsufficientAllowance(err: unknown): boolean {
+  for (let e: any = err, depth = 0; e && depth < 8; e = e.cause, depth++) {
+    if (/ERC20InsufficientAllowance/.test(String(e.message ?? e))) return true;
+  }
+  return false;
+}
+
 export async function bridgeFeeJuice(params: BridgeParams): Promise<FeeJuiceClaim> {
   const { node, l1RpcUrl, funderKey, l2Address, log } = params;
   const messageWaitSeconds = params.messageWaitSeconds ?? 600;
+  const staleReadRetryMs = params.staleReadRetryMs ?? 15_000;
 
   const [{ L1FeeJuicePortalManager }, { AztecAddress }, { createExtendedL1Client }, { Fr }] = await Promise.all([
     import('@aztec-labs/aztec.js/ethereum'),
@@ -379,7 +390,26 @@ export async function bridgeFeeJuice(params: BridgeParams): Promise<FeeJuiceClai
   }
 
   log(`Bridging ${target} Fee Juice -> ${l2Address.slice(0, 18)}... (mint=false)`);
-  const result = await portalManager.bridgeTokensPublic(l2, target, false);
+  // Seeing the allowance once is not enough: the SDK pre-flights the deposit
+  // twice (simulate, then estimateGas), and a load-balanced public RPC can
+  // answer either from a backend several blocks behind — one that reports the
+  // allowance as 0 after both approves are mined and after this RPC already
+  // showed it (publicnode Sepolia, 20 Nov 2026: 2 of 7 bridges). Nothing is
+  // deposited when a pre-flight fails, so retry — but only while a fresh read
+  // still shows the allowance in place. A real shortfall throws at once.
+  let result: Awaited<ReturnType<typeof portalManager.bridgeTokensPublic>>;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      result = await portalManager.bridgeTokensPublic(l2, target, false);
+      break;
+    } catch (err) {
+      if (!isInsufficientAllowance(err) || attempt >= 4) throw err;
+      const now = await readAllowance();
+      if (now < target) throw err;
+      log(`Deposit pre-flight read a stale allowance (attempt ${attempt}); this RPC shows ${now} — retrying.`);
+      await new Promise((r) => setTimeout(r, staleReadRetryMs));
+    }
+  }
   log(`Bridged. claimAmount=${result.claimAmount} leafIndex=${result.messageLeafIndex}`);
 
   const claim: FeeJuiceClaim = {

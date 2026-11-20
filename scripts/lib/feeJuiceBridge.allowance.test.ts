@@ -82,6 +82,7 @@ async function bridge() {
     funderKey: '0x' + 'aa'.repeat(32),
     l2Address: L2,
     log: () => {},
+    staleReadRetryMs: 0,
   });
 }
 
@@ -109,6 +110,42 @@ describe('bridgeFeeJuice portal allowance', () => {
       'bridge',
     ]);
     expect(claim.claimAmount).toBe(TARGET);
+  });
+
+  it('retries a deposit whose pre-flight read a stale allowance, while this RPC shows it in place', async () => {
+    // What killed a self-provisioning run: both approves mined and visible, then
+    // the SDK's estimateGas landed on a lagging backend that still saw 0.
+    allowanceOnRpc = TARGET;
+    portalManager.bridgeTokensPublic.mockImplementationOnce(async () => {
+      events.push('bridge:stale');
+      throw new Error('ERC20InsufficientAllowance(0xportal, 0, 1000000000000000000000)', {
+        cause: new Error('L1 RPC request failed'),
+      });
+    });
+    const claim = await bridge();
+
+    expect(portalManager.bridgeTokensPublic).toHaveBeenCalledTimes(2);
+    expect(events).toEqual(['read:visible', 'bridge:stale', 'read:visible', 'bridge']);
+    expect(claim.claimAmount).toBe(TARGET);
+  });
+
+  it('does not retry a real shortfall', async () => {
+    allowanceOnRpc = TARGET;
+    portalManager.bridgeTokensPublic.mockImplementationOnce(async () => {
+      allowanceOnRpc = 0n; // the allowance really is gone
+      throw new Error('outer', { cause: new Error('ERC20InsufficientAllowance(0xportal, 0, 1)') });
+    });
+    await expect(bridge()).rejects.toThrow('outer');
+    expect(portalManager.bridgeTokensPublic).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry an unrelated failure', async () => {
+    allowanceOnRpc = TARGET;
+    portalManager.bridgeTokensPublic.mockImplementationOnce(async () => {
+      throw new Error('execution reverted: FeeJuicePortal__Unauthorized');
+    });
+    await expect(bridge()).rejects.toThrow('FeeJuicePortal__Unauthorized');
+    expect(portalManager.bridgeTokensPublic).toHaveBeenCalledTimes(1);
   });
 
   it('skips the approve when the allowance is already in place', async () => {
