@@ -146,9 +146,9 @@ unconstrained fn starter_claim_mints_starter_tokens() {
 
     env.call_private(player, TripleTriadNFT::at(nft_address).get_cards_for_new_player());
 
-    // The 5 starter card notes are relay-delivered (create_and_push_note, no
-    // tagging) so they are invisible to note discovery here by design; the
-    // token mint is the claim's discoverable on-chain observable.
+    // The 5 starter card notes are untagged and delivered offchain, so they
+    // stay invisible until their messages are received (offchain_delivery.nr);
+    // the token mint is the claim's discoverable on-chain observable.
     let balance: u128 =
         env.execute_utility(arena_token::ArenaToken::at(token_address).get_balance(player));
     assert(balance == 100, "Expected 100 starter tokens");

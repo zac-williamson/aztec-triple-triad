@@ -128,6 +128,8 @@ pub contract TripleTriadNFT {
         },
         note::{
             constants::MAX_NOTES_PER_PAGE,
+            lifecycle::NewNote,
+            NoteMessage,
             note_getter_options::NoteGetterOptions,
             note_interface::{NoteProperties, NoteType},
             note_viewer_options::NoteViewerOptions,
@@ -504,15 +506,8 @@ pub contract TripleTriadNFT {
         // Mint 5 starter cards with deterministic randomness and emit CardCreated events
         for i in 0..5 {
             let note_randomness = derive_note_randomness(nhk_app_secret, 0, i as Field);
-            let note_tag = derive_note_tag(note_randomness);
-            let note_payload = encrypt_card_payload(STARTER_CARD_IDS[i], note_randomness);
-
-            let _: Field =
-                create_and_push_note(self.context, owner, STARTER_CARD_IDS[i], note_randomness);
-            self.emit(CardCreated { note_tag, note_payload }).deliver_to(
-                owner,
-                MessageDelivery::offchain(),
-            );
+            create_note_with_randomness(self.context, owner, STARTER_CARD_IDS[i], note_randomness)
+                .deliver(MessageDelivery::offchain());
         }
 
         // Create initial note_nonce with value 5
@@ -538,15 +533,9 @@ pub contract TripleTriadNFT {
 
         for i in 0..10 {
             let note_randomness = derive_note_randomness(nhk_app_secret, nonce_value, i as Field);
-            let note_tag = derive_note_tag(note_randomness);
             let (_, card_id) = generate_card(nhk_app_secret, nonce_value + i as Field);
-            let note_payload = encrypt_card_payload(card_id as Field, note_randomness);
-            let _: Field =
-                create_and_push_note(self.context, owner, card_id as Field, note_randomness);
-            self.emit(CardCreated { note_tag, note_payload }).deliver_to(
-                owner,
-                MessageDelivery::offchain(),
-            );
+            create_note_with_randomness(self.context, owner, card_id as Field, note_randomness)
+                .deliver(MessageDelivery::offchain());
         }
 
         push_note_nonce(self.context, self.storage, owner, nonce_value + 10);
@@ -570,6 +559,46 @@ pub contract TripleTriadNFT {
     }
 
     // --- Custom Note Creation (no delivery/tagging) ---
+
+    /// Create a FieldNote with explicit randomness and return its note message.
+    ///
+    /// The same note as `create_and_push_note`: the randomness is ours and
+    /// derivable, so recovery by `import_note` still needs nothing from the
+    /// sender. The difference is that the caller delivers the standard note
+    /// message (`.deliver(MessageDelivery::offchain())`), so the recipient can
+    /// ingest it with the macro-injected `offchain_receive` instead of
+    /// importing note by note. `create_note` would choose random randomness;
+    /// building the `NewNote` ourselves is what keeps it derivable.
+    #[contract_library_method]
+    fn create_note_with_randomness(
+        context: &mut aztec::context::PrivateContext,
+        owner: AztecAddress,
+        value: Field,
+        randomness: Field,
+    ) -> NoteMessage<FieldNote> {
+        let note = FieldNote { value };
+        let note_hash_counter = context.get_side_effect_counter();
+        let storage_slot = TripleTriadNFT::storage_layout().private_nfts.slot;
+        // Same formula as create_and_push_note, so either path yields the same note.
+        let note_hash = poseidon2_hash_with_separator(
+            [storage_slot, value, owner.to_field(), randomness],
+            DOM_SEP__NOTE_HASH,
+        );
+        notify_created_note(
+            owner,
+            storage_slot,
+            randomness,
+            FieldNote::get_id(),
+            note.pack(),
+            note_hash,
+            note_hash_counter,
+        );
+        context.push_note_hash(note_hash);
+        NoteMessage::new(
+            NewNote { note, owner, storage_slot, randomness, note_hash_counter },
+            context,
+        )
+    }
 
     /// Create a FieldNote with explicit randomness.
     /// Pushes the note hash to the tx accumulator and notifies the PXE.

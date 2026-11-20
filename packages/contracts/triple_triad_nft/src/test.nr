@@ -4,3 +4,4 @@ mod minting;
 mod bot_minting;
 mod game_lifecycle;
 mod blinding;
+mod offchain_delivery;
