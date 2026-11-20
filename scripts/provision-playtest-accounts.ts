@@ -27,6 +27,10 @@
  * in place (same keys, fresh deploy/mint); the harness only ever claims entries
  * for the NFT under test (packages/playtest/src/playtestPool.ts).
  *
+ * The harness runs this itself, for a pair at fresh indices, whenever its pool
+ * has no unused account for the deployment under test
+ * (packages/playtest/src/poolTopUp.ts). Run it by hand only to pre-stock.
+ *
  * Usage:
  *   export AZTEC_PXE_URL=https://aztec-testnet.drpc.org
  *   export TESTNET_L1_RPC_URL=https://...sepolia...

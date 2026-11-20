@@ -9,7 +9,7 @@
  * have seeded a browser with cards that exist nowhere.
  */
 import { describe, it, expect } from 'vitest';
-import { claimNext, entryStatus, type Deployment } from '../../packages/playtest/src/playtestPool';
+import { claimNext, countClaimable, entryStatus, nextFreeIndex, type Deployment } from '../../packages/playtest/src/playtestPool';
 
 const NFT = '0x1c0554f341edab543537458916b973c1e455c2f0cd5a0e132ce1223ecac6aa80';
 const OLD_NFT = '0x' + '0b'.repeat(32);
@@ -77,5 +77,20 @@ describe('claimNext', () => {
   it('never claims an entry minted on another NFT, or one with no NFT stamp', () => {
     const pool = [entry(0, false, RV, OLD_NFT), entry(1, false, RV), entry(2, false, RV, NFT)];
     expect(claimNext(pool, NFT).index).toBe(2);
+  });
+});
+
+describe('pool top-up arithmetic', () => {
+  it('counts only unused entries minted on this NFT', () => {
+    const pool = [
+      entry(0, true, RV, NFT), entry(1, false, RV, NFT), entry(2, false, RV, OLD_NFT),
+      entry(3, false, RV), entry(4, false, OLD_RV), entry(5, false, RV, NFT.toUpperCase().replace('0X', '0x')),
+    ];
+    expect(countClaimable(pool, NFT)).toBe(2);
+  });
+
+  it('provisions at the first index nothing has used, so keys are never reused', () => {
+    expect(nextFreeIndex([])).toBe(0);
+    expect(nextFreeIndex([entry(0, true), entry(7, false), entry(3, true)])).toBe(8);
   });
 });

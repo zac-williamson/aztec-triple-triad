@@ -18,6 +18,26 @@ PLAYTEST_REUSE_STACK=1 npx playwright test
 npx tsx scripts/stop-stack.ts
 ```
 
+## Run the campaign against testnet
+
+```bash
+PLAYTEST_TESTNET=1 PLAYTEST_LOCAL_BACKEND=1 \
+PLAYTEST_PXE_URL=https://aztec-testnet.drpc.org \
+npx playwright test multi-game.spec.ts --config packages/playtest/playwright.config.ts
+```
+
+Each player is a single-use account from the pool in
+`.artifacts/playtest-accounts.json`, restored with its starter cards instead of
+onboarding. **The pool tops itself up:** when no unused account exists for the
+NFT under test, the harness provisions a pair from the L1 treasury
+(`~/.aztec-triad-private/treasury-l1-key.txt`, needs Sepolia ETH) through
+`scripts/provision-playtest-accounts.ts` — about 4 minutes each, logged to
+`.artifacts/provision-*.log`, before the player's browser launches. Entries are
+stamped with the chain and the NFT (`src/playtestPool.ts`), so after a redeploy
+or re-genesis the next run simply provisions a fresh pair.
+`PLAYTEST_LOCAL_BACKEND=1` runs a local relay against the live chain, leaving
+the production relay alone.
+
 ## Run against the DEPLOYED site
 
 ```bash

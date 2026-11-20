@@ -67,30 +67,45 @@ export function entryStatus(
   return sameAddress(entry.nftAddress, deployment.nftAddress) ? 'current' : 'other-deployment';
 }
 
+/** Unused, and its cards were minted on `nftAddress`. */
+function isClaimable(e: Pick<PoolEntry, 'used' | 'nftAddress'>, nftAddress: string): boolean {
+  return !e.used && !!e.nftAddress && sameAddress(e.nftAddress, nftAddress);
+}
+
+/** How many entries a run against `nftAddress` could still claim. */
+export function countClaimable(entries: Pick<PoolEntry, 'used' | 'nftAddress'>[], nftAddress: string): number {
+  return entries.filter((e) => isClaimable(e, nftAddress)).length;
+}
+
+/** First index no entry has used: fresh deterministic keys, never deployed. */
+export function nextFreeIndex(entries: Pick<PoolEntry, 'index'>[]): number {
+  return entries.reduce((max, e) => Math.max(max, e.index + 1), 0);
+}
+
 /**
  * Claim the next unused entry whose cards were minted on `nftAddress`: mark it
  * used (the pool is single-use) and return it. The caller persists the manifest.
  *
  * Matching the NFT alone is enough here: a deploy picks a random salt, so a
  * contract address never recurs across deployments, and an entry minted on the
- * NFT under test is on the chain under test. Throws, with the way out, when the
- * pool has nothing for this deployment.
+ * NFT under test is on the chain under test. Throws when the pool has nothing
+ * for this deployment — the harness tops it up first (poolTopUp.ts), so this
+ * only fires if provisioning itself came up short.
  */
 export function claimNext<E extends Pick<PoolEntry, 'index' | 'used' | 'nftAddress'>>(
   entries: E[],
   nftAddress: string,
 ): E {
-  const entry = entries.find((e) => !e.used && !!e.nftAddress && sameAddress(e.nftAddress, nftAddress));
+  const entry = entries.find((e) => isClaimable(e, nftAddress));
   if (entry) {
     entry.used = true;
     return entry;
   }
   const unusedElsewhere = entries.filter((e) => !e.used).length;
-  const nextIndex = entries.reduce((max, e) => Math.max(max, e.index + 1), 0);
   throw new Error(
     `No unused playtest account for this deployment (NFT ${nftAddress}): ` +
       `${entries.length} in the pool, ${unusedElsewhere} unused but provisioned for another ` +
       `chain or NFT, so their cards do not exist here. Provision more:\n` +
-      `  npx tsx scripts/provision-playtest-accounts.ts --start ${nextIndex} --count <N>`,
+      `  npx tsx scripts/provision-playtest-accounts.ts --start ${nextFreeIndex(entries)} --count <N>`,
   );
 }

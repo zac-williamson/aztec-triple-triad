@@ -4,14 +4,15 @@
  * coordinates, and waits on app state (never wall-clock sleeps).
  */
 import type { Page, Browser } from '@playwright/test';
-import { createWriteStream, readFileSync, writeFileSync, type WriteStream } from 'fs';
+import { createWriteStream, writeFileSync, type WriteStream } from 'fs';
 import { cpus } from 'os';
 import { resolve } from 'path';
 import type { PhaseSnapshot, ClickTarget } from '../../frontend/src/testkit/contract.js';
 import { FRONTEND_URL, TESTNET, PLAYTEST_ACCOUNTS_PATH, readContractAddresses } from './env.js';
 import { launchIsolatedBrowser } from './browser.js';
 import { registerBrowser, deregisterBrowser, playwrightChromiumLeaders } from './stack.js';
-import { claimNext, type PoolEntry } from './playtestPool.js';
+import { claimNext } from './playtestPool.js';
+import { ensurePoolAccounts, readPool } from './poolTopUp.js';
 
 declare global {
   interface Window {
@@ -120,7 +121,9 @@ export const TIMEOUTS = TESTNET ? {
 
 /**
  * Claim the next unused account provisioned for THIS deployment (SINGLE-USE),
- * mark it used in the manifest, and build the localStorage seed that makes the app
+ * provisioning a fresh pair from the treasury first if none is left (see
+ * poolTopUp.ts), mark it used in the manifest, and build the localStorage seed
+ * that makes the app
  * restore it as an already-deployed account with its 5 starter cards — no app
  * faucet, no funding step (docs/plan/PLAYTEST_SELFFUND.md). Serial single-worker
  * launches make the manifest read-modify-write race-free.
@@ -129,19 +132,13 @@ export const TIMEOUTS = TESTNET ? {
  * and cardStore.ts exactly, so prepareConnection restores the keys, sees
  * `deployed`, skips minting, and re-imports the cards from the seeded cardStore.
  */
-function claimPlaytestAccount(): Record<string, string> {
-  let manifest: PoolEntry[];
-  try {
-    manifest = JSON.parse(readFileSync(PLAYTEST_ACCOUNTS_PATH, 'utf-8')) as PoolEntry[];
-  } catch {
-    throw new Error(
-      `PLAYTEST_TESTNET needs a provisioned account pool at ${PLAYTEST_ACCOUNTS_PATH}.\n` +
-        `Run: npx tsx scripts/provision-playtest-accounts.ts --count <N>`,
-    );
-  }
+async function claimPlaytestAccount(): Promise<Record<string, string>> {
+  // Players come in pairs, so a short pool is topped up a pair at a time.
+  await ensurePoolAccounts(1, 2);
+  const manifest = readPool();
   // Only an entry minted on the NFT under test: the pool outlives deployments
   // (re-genesis, redeploys), and an older entry's cards exist nowhere this app
-  // looks. Throws, with the provisioning command, when there is none.
+  // looks.
   const { nft, game } = readContractAddresses();
   const entry = claimNext(manifest, nft);
 
@@ -209,6 +206,17 @@ export class PlayerDriver {
     // launches make the diff unambiguous. Register it so a SIGKILLed worker
     // can't leak the detached browser past teardown — Playwright's own cleanup
     // only fires on a graceful exit (exit/SIGINT/SIGTERM hooks).
+    // TESTNET: claim a pre-funded, pre-deployed account from the provisioned pool
+    // and seed it into localStorage so onboarding restores it (no app faucet).
+    // Claimed BEFORE the browser launches: an empty pool is provisioned here,
+    // which takes minutes, and a browser would only sit idle through it.
+    // Local sandbox keeps the auto-fund path (seed stays undefined).
+    // `seed: null` is how a caller says "a genuinely new player" — the pool
+    // exists to SKIP onboarding, which is exactly what an onboarding test must
+    // not do. `undefined` keeps the default (pool on testnet, faucet locally).
+    const seed = opts?.seed !== undefined
+      ? (opts.seed ?? undefined)
+      : (TESTNET ? await claimPlaytestAccount() : undefined);
     const before = playwrightChromiumLeaders();
     const { browser, context } = await launchIsolatedBrowser();
     const newPids = [...playwrightChromiumLeaders()].filter(pid => !before.has(pid));
@@ -216,15 +224,6 @@ export class PlayerDriver {
     const page = await context.newPage();
     const driver = new PlayerDriver(name, page, browser);
     driver.browserPids = newPids;
-    // TESTNET: claim a pre-funded, pre-deployed account from the provisioned pool
-    // and seed it into localStorage so onboarding restores it (no app faucet).
-    // Local sandbox keeps the auto-fund path (seed stays undefined).
-    // `seed: null` is how a caller says "a genuinely new player" — the pool
-    // exists to SKIP onboarding, which is exactly what an onboarding test must
-    // not do. `undefined` keeps the default (pool on testnet, faucet locally).
-    const seed = opts?.seed !== undefined
-      ? (opts.seed ?? undefined)
-      : (TESTNET ? claimPlaytestAccount() : undefined);
     await driver.boot(logsDir, seed, opts);
     return driver;
   }
