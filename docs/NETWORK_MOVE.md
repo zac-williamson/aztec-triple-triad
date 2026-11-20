@@ -142,3 +142,7 @@ Contract changes only ship with a redeploy, so batch them into a move:
   two let a player move only their own cards into and out of an escrow nothing
   else reads. Dead code, not an exploit — but still deployed entry points the
   open audit would have to cover.
+- Deliver card notes with v6's offchain messages and `offchain_receive`
+  instead of the hand-driven `import_note`, and drop the `CardCreated` events
+  that nothing receives. Plan and the local spike to run first:
+  [plan/OFFCHAIN_DELIVERY.md](plan/OFFCHAIN_DELIVERY.md).

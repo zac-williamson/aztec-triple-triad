@@ -242,9 +242,9 @@ The full journey of a card, and the Aztec mechanics at each step:
 ```
 mint (onboarding/pack) ──► private note ──► commit_five_nfts_* POPS it (burn)
                                               │ play happens off-chain
-        settlement re-mint (create_and_push_note + CardCreated event)
+        settlement re-mint (create_and_push_note)
                                               │
-        recipient's PXE: tag-scan event ──► import_note ──► private note again
+        recipient re-derives ids + randomness ──► import_note ──► private note again
 ```
 
 - **Onboarding** (`get_cards_for_new_player`,
@@ -297,13 +297,15 @@ mint (onboarding/pack) ──► private note ──► commit_five_nfts_* POPS 
   `note_tag = poseidon2([randomness, iv_NoteTag])` (`:264-270`) and a 2-field
   symmetric encryption of the card id under the note's randomness
   (`encrypt_card_payload`, `:272-278`; cipher `:196-216`), delivered
-  `OFFCHAIN` (`:685-688`).
+  `OFFCHAIN` (`:685-688`). **Nothing receives those events**: no client code
+  reads a send's offchain messages, so they are computed in-circuit and
+  dropped. [plan/OFFCHAIN_DELIVERY.md](plan/OFFCHAIN_DELIVERY.md) plans their
+  removal, together with moving delivery to v6's `offchain_receive`.
 - **Discovery** is the flip side — **ground rule #9**: notes created this way
-  are NOT auto-discovered. The recipient re-derives their expected randomness
-  (their own from the nonce; the captured card's from the winner's spare slot —
-  whose value they know because *they* hold the preimage exchanged in §4),
-  recognizes their tags, decrypts the payload, and calls the unconstrained
-  utility `import_note` (`:1026-1072`), which re-encodes the note as a standard
+  are NOT auto-discovered. The recipient re-derives the card ids and their
+  expected randomness (their own from the nonce; the captured card's from the
+  winner's spare slot — whose value they know because *they* hold the preimage
+  exchanged in §4), and calls the unconstrained utility `import_note` (`:1026-1072`), which re-encodes the note as a standard
   private-note message and runs it through `process_private_note_msg` +
   `validate_and_store_enqueued_notes_and_events` against the real tx data
   (the 4.2-era `attempt_note_discovery` API went private upstream in 4.3.1) —
