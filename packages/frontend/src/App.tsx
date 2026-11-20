@@ -114,6 +114,9 @@ function AppInner() {
       {game.screen === 'main-menu' && (
         <MainMenu
           connected={game.ws.connected}
+          aztecStatus={aztec.status}
+          aztecError={aztec.error}
+          onRetryAztec={() => window.location.reload()}
           aztecConnecting={aztec.isConnecting}
           aztecReady={aztec.hasConnected}
           cardCount={aztec.ownedCardIds.length}

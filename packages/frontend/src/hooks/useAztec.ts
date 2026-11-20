@@ -5,7 +5,7 @@ import type { FeeJuiceClaim } from '../aztec/fundDevnet';
 import type { AcquireRoute } from '../aztec/l1Funding';
 import { pxe, setPxeWallet, runPxeTx } from '../aztec/pxe';
 import { startPxeKeepSynced } from '../aztec/pxeKeepSynced';
-type ConnectionStatus =
+export type ConnectionStatus =
   | 'disconnected'
   | 'connecting'
   | 'needs-funding' // non-local network → manual Fee Juice funding via the official Aztec faucet

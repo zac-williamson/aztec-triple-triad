@@ -53,10 +53,53 @@
   border: 1px solid rgba(232, 168, 124, 0.3);
 }
 
-.main-menu__status--connected {
+.main-menu__status--ok {
   background: rgba(123, 198, 126, 0.15);
   color: #7bc67e;
   border-color: rgba(123, 198, 126, 0.3);
+}
+
+.main-menu__status--error {
+  background: rgba(214, 96, 77, 0.15);
+  color: #e07a68;
+  border-color: rgba(214, 96, 77, 0.4);
+}
+
+.main-menu__aztec-error {
+  margin: 12px auto 0;
+  max-width: 420px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: rgba(214, 96, 77, 0.1);
+  border: 1px solid rgba(214, 96, 77, 0.3);
+  text-align: center;
+  pointer-events: auto;
+}
+
+.main-menu__aztec-error-text {
+  margin: 0 0 8px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 13px;
+  color: #f0d6c8;
+}
+
+.main-menu__aztec-error-detail {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: #b09a88;
+  word-break: break-word;
+}
+
+.main-menu__aztec-retry {
+  padding: 6px 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(232, 168, 124, 0.5);
+  background: rgba(232, 168, 124, 0.15);
+  color: #e8a87c;
+  font-family: 'Nunito', sans-serif;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .main-menu__buttons {

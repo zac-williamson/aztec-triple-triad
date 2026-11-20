@@ -129,7 +129,8 @@ describe('main-menu practice entry', () => {
     const onPractice = vi.fn();
     render(
       <MainMenu
-        connected aztecConnecting={false} aztecReady cardCount={0} tokenBalance={0}
+        connected aztecStatus="connected" aztecError={null} onRetryAztec={() => {}}
+        aztecConnecting={false} aztecReady cardCount={0} tokenBalance={0}
         accountAddress={null} hasGameInProgress={false}
         stuckGame={null}
         isRecovering={false}

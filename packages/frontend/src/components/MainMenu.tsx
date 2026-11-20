@@ -1,9 +1,33 @@
 import { useState } from 'react';
 import type { StuckGame } from '../hooks/useGame';
+import type { ConnectionStatus } from '../hooks/useAztec';
 import './MainMenu.css';
+
+/**
+ * One badge for two links: the relay (game server) and the Aztec node. It used
+ * to show only the relay, so when the testnet RPC died (Oct 2026) the menu said
+ * "Connected" over 0 cards and a disabled Play button, with the real error only
+ * in the console. It now reports the weaker of the two.
+ */
+export function connectionBadge(
+  relayConnected: boolean,
+  aztecStatus: ConnectionStatus,
+): { label: string; tone: 'ok' | 'pending' | 'error' } {
+  if (aztecStatus === 'error') return { label: 'Aztec network unavailable', tone: 'error' };
+  if (aztecStatus === 'unsupported') return { label: 'Aztec disabled', tone: 'error' };
+  if (!relayConnected) return { label: 'Connecting to game server...', tone: 'pending' };
+  if (aztecStatus === 'needs-funding') return { label: 'Account needs funding', tone: 'pending' };
+  if (aztecStatus === 'connected') return { label: 'Connected', tone: 'ok' };
+  return { label: 'Connecting to Aztec...', tone: 'pending' };
+}
 
 interface MainMenuProps {
   connected: boolean;
+  aztecStatus: ConnectionStatus;
+  /** Why the Aztec connection failed, when aztecStatus is 'error'. */
+  aztecError: string | null;
+  /** Start over after an Aztec failure (the app reloads: the wallet store may hold a lock). */
+  onRetryAztec: () => void;
   aztecConnecting: boolean;
   aztecReady: boolean;
   cardCount: number;
@@ -23,6 +47,9 @@ interface MainMenuProps {
 
 export function MainMenu({
   connected,
+  aztecStatus,
+  aztecError,
+  onRetryAztec,
   aztecConnecting,
   aztecReady,
   cardCount,
@@ -41,6 +68,8 @@ export function MainMenu({
   const [showNotEnoughCards, setShowNotEnoughCards] = useState(false);
 
   const canPlay = connected && aztecReady;
+  const badge = connectionBadge(connected, aztecStatus);
+  const aztecDown = badge.tone === 'error';
 
   const handlePlayClick = () => {
     if (cardCount < 5) {
@@ -55,9 +84,24 @@ export function MainMenu({
       <div className="main-menu__header">
         <h1 className="main-menu__title">Axolotl Arena</h1>
         <p className="main-menu__subtitle">Powered by Aztec Network</p>
-        <div className={`main-menu__status ${connected ? 'main-menu__status--connected' : ''}`}>
-          {connected ? 'Connected' : 'Connecting...'}
+        <div
+          className={`main-menu__status main-menu__status--${badge.tone}`}
+          data-testid="connection-status"
+        >
+          {badge.label}
         </div>
+        {aztecStatus === 'error' && (
+          <div className="main-menu__aztec-error" role="alert" data-testid="aztec-error">
+            <p className="main-menu__aztec-error-text">
+              Can&apos;t connect to the Aztec network, so games can&apos;t start right now.
+              Practice vs Bot still works.
+            </p>
+            {aztecError && <code className="main-menu__aztec-error-detail">{aztecError.slice(0, 200)}</code>}
+            <button className="main-menu__aztec-retry" data-testid="aztec-retry" onClick={onRetryAztec}>
+              Retry
+            </button>
+          </div>
+        )}
         {connected && accountAddress && (
           <div style={{
             fontFamily: 'monospace',
@@ -89,7 +133,7 @@ export function MainMenu({
           data-testid="menu-play"
           onClick={handlePlayClick}
           disabled={!canPlay}
-          title={!canPlay ? 'Connecting to server...' : undefined}
+          title={canPlay ? undefined : badge.label}
         >
           <span className="main-menu__btn-icon">&#9876;</span>
           {hasGameInProgress ? 'Resume' : 'Play'}
@@ -115,7 +159,7 @@ export function MainMenu({
           className="main-menu__btn main-menu__btn--packs"
           data-testid="menu-packs"
           onClick={onCardPacks}
-          disabled={!connected}
+          disabled={!connected || aztecDown}
         >
           <span className="main-menu__btn-icon">&#127183;</span>
           Buy Card Pack
