@@ -16,8 +16,8 @@ import type { HandProofData, MoveProofData, PlaintextNoteData } from '../types';
  *  (The contract instances stay inside pxe.ts; only these value types cross.) */
 async function loadSdk(): Promise<{ Fr: any; AztecAddress: any }> {
   const [{ Fr }, { AztecAddress }] = await Promise.all([
-    import('@aztec/aztec.js/fields'),
-    import('@aztec/aztec.js/addresses'),
+    import('@aztec-labs/aztec.js/fields'),
+    import('@aztec-labs/aztec.js/addresses'),
   ]);
   return { Fr, AztecAddress };
 }
@@ -388,7 +388,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
         setPhase('proving');
 
         const { loadProveHandCircuit, loadGameMoveCircuit } = await import('../aztec/circuitLoader');
-        const { UltraHonkBackend } = await import('@aztec/bb.js');
+        const { UltraHonkBackend } = await import('@aztec-foundation/bb.js');
         const { getBarretenberg } = await import('../aztec/proofBackend');
 
         const [handArtifact, moveArtifact] = await Promise.all([
@@ -655,7 +655,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           setPhase('proving');
 
           const { loadProveHandCircuit, loadGameMoveCircuit, loadDummyMoveCircuit } = await import('../aztec/circuitLoader');
-          const { UltraHonkBackend } = await import('@aztec/bb.js');
+          const { UltraHonkBackend } = await import('@aztec-foundation/bb.js');
           const { getBarretenberg } = await import('../aztec/proofBackend');
 
           const [handArtifact, moveArtifact, dummyArtifact] = await Promise.all([

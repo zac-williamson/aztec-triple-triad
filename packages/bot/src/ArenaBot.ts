@@ -1056,8 +1056,8 @@ export class ArenaBot {
     }
 
     const { handVk, moveVk } = await proofs.verificationKeys();
-    const { Fr } = await import('@aztec/aztec.js/fields');
-    const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+    const { Fr } = await import('@aztec-labs/aztec.js/fields');
+    const { AztecAddress } = await import('@aztec-labs/aztec.js/addresses');
     const { buildProcessGameArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
 
     // On a draw no card changes hands (winner_id=3 re-mints both), so 0.

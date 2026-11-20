@@ -1,7 +1,7 @@
 /**
  * InstrumentedWallet
  *
- * Subclasses @aztec/wallets/embedded's EmbeddedWallet and overrides sendTx
+ * Subclasses @aztec-labs/wallets/embedded's EmbeddedWallet and overrides sendTx
  * so every transaction emits phase-by-phase progress events
  * (simulating → proving → sending → mining → complete/error) with real
  * wall-clock durations and — where the SDK exposes them — per-function
@@ -19,26 +19,26 @@
  *   - waitForTx defaults waitForStatus to PROPOSED unless the caller set one
  */
 
-import { EmbeddedWallet as EmbeddedWalletBase, type EmbeddedWalletOptions } from '@aztec/wallets/embedded';
-import type { AztecNode } from '@aztec/aztec.js/node';
+import { EmbeddedWallet as EmbeddedWalletBase, type EmbeddedWalletOptions } from '@aztec-labs/wallets/embedded';
+import type { AztecNode } from '@aztec-labs/aztec.js/node';
 import {
   extractOffchainOutput,
   NO_WAIT,
   type InteractionWaitOptions,
   type SendReturn,
-} from '@aztec/aztec.js/contracts';
-// v5: getGasLimits moved from @aztec/aztec.js/contracts to @aztec/wallet-sdk/base-wallet
+} from '@aztec-labs/aztec.js/contracts';
+// v5: getGasLimits moved from @aztec-labs/aztec.js/contracts to @aztec-labs/wallet-sdk/base-wallet
 // and now takes (gasUsed, maxTxGasLimits, pad) instead of (simulationResult, pad).
-import { getGasLimits } from '@aztec/wallet-sdk/base-wallet';
-import { waitForTx } from '@aztec/aztec.js/node';
-import type { SendOptions } from '@aztec/aztec.js/wallet';
-import { CallAuthorizationRequest } from '@aztec/aztec.js/authorization';
+import { getGasLimits } from '@aztec-labs/wallet-sdk/base-wallet';
+import { waitForTx } from '@aztec-labs/aztec.js/node';
+import type { SendOptions } from '@aztec-labs/aztec.js/wallet';
+import { CallAuthorizationRequest } from '@aztec-labs/aztec.js/authorization';
 import {
   collectOffchainEffects,
   type ExecutionPayload,
   TxStatus,
-} from '@aztec/stdlib/tx';
-import { GasSettings } from '@aztec/stdlib/gas';
+} from '@aztec-labs/stdlib/tx';
+import { GasSettings } from '@aztec-labs/stdlib/gas';
 
 import { txProgress, type PhaseTiming, type TxProgressEvent } from './txProgress';
 import { startNodeKeepalive } from './nodeKeepalive';

@@ -2,7 +2,7 @@ import type { ProveHandInput, GameMoveInput, Proof } from './types.js';
 import type { ProofBackend } from './prover.js';
 
 /**
- * Proof backend using @noir-lang/noir_js and @aztec/bb.js.
+ * Proof backend using @noir-lang/noir_js and @aztec-labs/bb.js.
  * This runs in Node.js or browser environments.
  *
  * Usage:
@@ -31,7 +31,7 @@ export class NoirProofBackend implements ProofBackend {
 
     // Dynamically import to support both Node.js and browser
     const { Noir } = await import('@noir-lang/noir_js');
-    const { UltraHonkBackend, Barretenberg } = await import('@aztec/bb.js');
+    const { UltraHonkBackend, Barretenberg } = await import('@aztec-foundation/bb.js');
 
     // 4.3.1: UltraHonkBackend requires an explicit Barretenberg api;
     // one multithreaded instance is shared by both circuits.

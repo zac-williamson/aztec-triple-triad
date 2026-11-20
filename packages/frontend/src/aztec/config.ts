@@ -21,7 +21,7 @@ function env(key: string, fallback = ''): string {
 }
 export const AZTEC_CONFIG = {
   /** PXE URL for connecting to an Aztec node */
-  pxeUrl: env('VITE_AZTEC_PXE_URL', 'https://v5.testnet.rpc.aztec-labs.com'),
+  pxeUrl: env('VITE_AZTEC_PXE_URL', 'https://aztec-testnet.drpc.org'),
 
   /** Contract addresses (set after deployment) */
   nftContractAddress: env('VITE_NFT_CONTRACT_ADDRESS', ''),

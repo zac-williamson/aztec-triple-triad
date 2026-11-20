@@ -16,7 +16,7 @@
  *
  * Env:
  *   TESTNET_L1_RPC_URL    L1 (Sepolia) RPC. Default: public publicnode endpoint.
- *   AZTEC_PXE_URL         Aztec node URL. Default: https://v5.testnet.rpc.aztec-labs.com
+ *   AZTEC_PXE_URL         Aztec node URL. Default: https://aztec-testnet.drpc.org
  *   TREASURY_L1_KEY       Treasury L1 private key (0x). Else read from
  *                         TREASURY_L1_KEY_FILE or ~/.aztec-triad-private/treasury-l1-key.txt.
  *   MESSAGE_WAIT_SECONDS  How long to wait for L1->L2 inclusion (default 600).
@@ -24,7 +24,7 @@
  * The claim (secret + leaf index) is saved to the claim store
  * (~/.aztec-triad-private/fee-juice-claims.json, 0600) and printed to stdout.
  */
-import { createAztecNodeClient } from '@aztec/aztec.js/node';
+import { createAztecNodeClient } from '@aztec-labs/aztec.js/node';
 import {
   bridgeFeeJuice,
   parseL2Addresses,
@@ -36,7 +36,7 @@ import {
   serializeClaim,
 } from './lib/feeJuiceBridge.js';
 
-const PXE_URL = process.env.AZTEC_PXE_URL || 'https://v5.testnet.rpc.aztec-labs.com';
+const PXE_URL = process.env.AZTEC_PXE_URL || 'https://aztec-testnet.drpc.org';
 const L1_RPC = process.env.TESTNET_L1_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com';
 const WAIT = process.env.MESSAGE_WAIT_SECONDS ? Number(process.env.MESSAGE_WAIT_SECONDS) : 600;
 const log = (m: string) => console.log(m);

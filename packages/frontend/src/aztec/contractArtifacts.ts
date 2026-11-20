@@ -72,8 +72,8 @@ export async function registerGameContracts(
   addresses: { nft?: string; game?: string; token?: string },
   log: (msg: string) => void = () => {},
 ): Promise<void> {
-  const { AztecAddress } = await import('@aztec/aztec.js/addresses');
-  const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
+  const { AztecAddress } = await import('@aztec-labs/aztec.js/addresses');
+  const { loadContractArtifact } = await import('@aztec-labs/aztec.js/abi');
 
   const entries: { name: ArtifactName; address?: string; alias: string }[] = [
     { name: 'nft', address: addresses.nft, alias: 'nft-contract' },

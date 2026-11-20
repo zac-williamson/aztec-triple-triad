@@ -32,13 +32,13 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { resolve, dirname } from 'path';
 
-import { createAztecNodeClient } from '@aztec/aztec.js/node';
-import { Fr } from '@aztec/aztec.js/fields';
-import { AztecAddress } from '@aztec/aztec.js/addresses';
-import { NO_FROM } from '@aztec/aztec.js/account';
-import { FeeJuicePaymentMethodWithClaim } from '@aztec/aztec.js/fee';
-import { EmbeddedWallet } from '@aztec/wallets/embedded';
-import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
+import { createAztecNodeClient } from '@aztec-labs/aztec.js/node';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { NO_FROM } from '@aztec-labs/aztec.js/account';
+import { FeeJuicePaymentMethodWithClaim } from '@aztec-labs/aztec.js/fee';
+import { EmbeddedWallet } from '@aztec-labs/wallets/embedded';
+import { GrumpkinScalar } from '@aztec-labs/foundation/curves/grumpkin';
 
 import {
   bridgeFeeJuice, serializeClaim, deserializeClaim, getStoredClaim, loadClaimStore,
@@ -449,8 +449,8 @@ async function main(): Promise<number> {
     console.log(`  Claim:  deployer has a pending Fee Juice claim — consuming it on the first mint`);
   }
 
-  const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
-  const { Contract } = await import('@aztec/aztec.js/contracts');
+  const { loadContractArtifact } = await import('@aztec-labs/aztec.js/abi');
+  const { Contract } = await import('@aztec-labs/aztec.js/contracts');
   const nftArtifact = loadContractArtifact(
     JSON.parse(readFileSync(resolve(ROOT_DIR, 'packages/contracts/target/triple_triad_nft-TripleTriadNFT.json'), 'utf-8')),
   );

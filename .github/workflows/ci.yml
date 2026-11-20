@@ -45,7 +45,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Cache node_modules
         id: node-modules-cache
@@ -114,10 +114,10 @@ jobs:
             !packages/frontend/public/cards
           sparse-checkout-cone-mode: false
 
-      # Aztec tooling (TXE, aztec CLI) runs on the system node; >= 22 required.
+      # Aztec tooling (TXE, aztec CLI) runs on the system node; v6 needs >= 24.15.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       # .aztecrc is the single source of truth for the toolchain pin —
       # CI follows it automatically when Lane 1 bumps versions.
@@ -160,13 +160,15 @@ jobs:
           V='${{ steps.pin.outputs.version }}'
           curl -fsSL "https://install.aztec-labs.com/$V/install" -o /tmp/aztec-install.sh
           sed -i.bak -E 's|mv "\$temp_([A-Za-z_]+)/bin/([^"]+)"|cp -L "$temp_\1/bin/\2"|g' /tmp/aztec-install.sh
-          # Three call sites are expected. Fewer means upstream changed the
-          # code — possibly fixing it — and we should look rather than install
-          # a layout we no longer understand.
+          # Two call sites are expected on 6.0.0 (nargo + noir-profiler):
+          # upstream fixed the foundry loop itself (`cp -Lp`) but still `mv`s
+          # noirup's binaries out of a temp dir it then deletes. Fewer means
+          # upstream changed the code again and we should look rather than
+          # install a layout we no longer understand.
           patched=$(grep -cE 'cp -L "\$temp_[A-Za-z_]+/bin/' /tmp/aztec-install.sh || true)
           echo "patched $patched mv-from-temp call sites"
-          if [ "$patched" -lt 3 ]; then
-            echo "::warning::expected 3 patched call sites, found $patched — installer may have changed upstream"
+          if [ "$patched" -lt 2 ]; then
+            echo "::warning::expected 2 patched call sites, found $patched — installer may have changed upstream"
           fi
           rm -rf "$HOME/.aztec/versions/$V"
           VERSION="$V" bash /tmp/aztec-install.sh

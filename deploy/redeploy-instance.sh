@@ -32,7 +32,7 @@ say "1/7  compile contracts"
 
 say "2/7  deploy to testnet"
 set -a; eval "$(grep -E '^DEPLOYER_(SECRET|SALT|SIGNING_KEY)=' ~/.aztec-triad-private/deployer-testnet-key.txt)"; set +a
-export AZTEC_PXE_URL="${AZTEC_PXE_URL:-https://v5.testnet.rpc.aztec-labs.com}"
+export AZTEC_PXE_URL="${AZTEC_PXE_URL:-https://aztec-testnet.drpc.org}"
 npx tsx scripts/deploy-testnet.ts
 
 # deploy-testnet.ts writes a LOCAL ws url into the testnet env, which would

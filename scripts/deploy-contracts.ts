@@ -24,20 +24,20 @@ import { readFileSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 
 // Aztec SDK imports
-import { createAztecNodeClient } from '@aztec/aztec.js/node';
-import { Fr } from '@aztec/aztec.js/fields';
-import { AztecAddress } from '@aztec/aztec.js/addresses';
-import { FeeJuicePaymentMethodWithClaim } from '@aztec/aztec.js/fee';
-import { NO_FROM } from '@aztec/aztec.js/account';
+import { createAztecNodeClient } from '@aztec-labs/aztec.js/node';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { FeeJuicePaymentMethodWithClaim } from '@aztec-labs/aztec.js/fee';
+import { NO_FROM } from '@aztec-labs/aztec.js/account';
 
-import { EmbeddedWallet } from '@aztec/wallets/embedded';
-import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
+import { EmbeddedWallet } from '@aztec-labs/wallets/embedded';
+import { GrumpkinScalar } from '@aztec-labs/foundation/curves/grumpkin';
 
 // L1→L2 Fee Juice bridge (shared with the in-app devnet onboarding flow)
 import { fundAccountOnDevnet } from '../packages/frontend/src/aztec/fundDevnet';
 
 // bb.js for VK hash computation
-import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
+import { Barretenberg, UltraHonkBackend } from '@aztec-foundation/bb.js';
 
 import { headroomMaxFeesPerGas } from './lib/feeSettings';
 
@@ -52,7 +52,7 @@ const PERMISSIVE_VKS = process.argv.includes('--permissive-vks');
 async function loadContractArtifact(name: string) {
   const path = resolve(ROOT_DIR, `packages/contracts/target/${name}.json`);
   const raw = JSON.parse(readFileSync(path, 'utf-8'));
-  const { loadContractArtifact: load } = await import('@aztec/aztec.js/abi');
+  const { loadContractArtifact: load } = await import('@aztec-labs/aztec.js/abi');
   return load(raw);
 }
 
@@ -245,7 +245,7 @@ async function main() {
   const symbolField = encodeCompressedString('AXL');
 
   // Use the Aztec.js Contract deployment pattern
-  const { Contract } = await import('@aztec/aztec.js/contracts');
+  const { Contract } = await import('@aztec-labs/aztec.js/contracts');
 
   const { contract: nftContract } = await Contract.deploy(wallet, nftArtifact, [
     deployerAddress,

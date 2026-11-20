@@ -26,10 +26,10 @@ export async function fundAccountOnDevnet(
   log: LogFn,
 ): Promise<FeeJuiceClaim> {
   const [{ L1FeeJuicePortalManager }, { AztecAddress }, { createExtendedL1Client }, { Fr }] = await Promise.all([
-    import('@aztec/aztec.js/ethereum'),
-    import('@aztec/aztec.js/addresses'),
-    import('@aztec/ethereum/client'),
-    import('@aztec/aztec.js/fields'),
+    import('@aztec-labs/aztec.js/ethereum'),
+    import('@aztec-labs/aztec.js/addresses'),
+    import('@aztec-labs/ethereum/client'),
+    import('@aztec-labs/aztec.js/fields'),
   ]);
 
   const l2Address = AztecAddress.fromStringUnsafe(accountAddress);
@@ -42,7 +42,7 @@ export async function fundAccountOnDevnet(
   // Same shape as scripts/lib/feeJuiceBridge.ts: derive from a real logger so a
   // level method the SDK adds later (5.2 added logger.trace() inside
   // L1TxUtils.estimateGas) cannot crash the bridge.
-  const { createLogger } = await import('@aztec/foundation/log');
+  const { createLogger } = await import('@aztec-labs/foundation/log');
   const baseLogger: any = createLogger('frontend:fundDevnet');
   const bridgeLogger: any = {};
   for (const key in baseLogger) {

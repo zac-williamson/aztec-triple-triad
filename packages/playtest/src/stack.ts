@@ -22,7 +22,7 @@ const BOOT_TIMEOUTS = {
   sandboxMs: 300_000,   // cold image pulls can be slow
   deployMs: 900_000,    // VK hashing + 8 txs on a fresh chain
   backendMs: 30_000,
-  optimizeMs: 300_000,  // cold pre-bundle of the @aztec/three dep graph
+  optimizeMs: 300_000,  // cold pre-bundle of the @aztec-labs/three dep graph
   frontendMs: 120_000,
 };
 

@@ -19,8 +19,8 @@ vi.mock('../../frontend/src/aztec/settlementArgs.js', () => ({
 vi.mock('../../frontend/src/aztec/noteImporter.js', () => ({
   fetchTxEffectData: vi.fn(async () => ({ noteHashes: ['0x1'], firstNullifier: '0x2' })),
 }));
-vi.mock('@aztec/aztec.js/fields', () => ({ Fr: class {} }));
-vi.mock('@aztec/aztec.js/addresses', () => ({ AztecAddress: { fromStringUnsafe: (s: string) => s } }));
+vi.mock('@aztec-labs/aztec.js/fields', () => ({ Fr: class {} }));
+vi.mock('@aztec-labs/aztec.js/addresses', () => ({ AztecAddress: { fromStringUnsafe: (s: string) => s } }));
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'sweep-')); });

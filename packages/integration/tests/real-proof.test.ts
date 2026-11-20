@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Noir } from '@noir-lang/noir_js';
-import { UltraHonkBackend, UltraHonkVerifierBackend, Barretenberg } from '@aztec/bb.js';
+import { UltraHonkBackend, UltraHonkVerifierBackend, Barretenberg } from '@aztec-foundation/bb.js';
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';

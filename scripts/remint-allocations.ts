@@ -34,13 +34,13 @@
  */
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { createAztecNodeClient } from '@aztec/aztec.js/node';
-import { Fr } from '@aztec/aztec.js/fields';
-import { AztecAddress } from '@aztec/aztec.js/addresses';
-import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
-import { EmbeddedWallet } from '@aztec/wallets/embedded';
-import { loadContractArtifact } from '@aztec/aztec.js/abi';
-import { Contract } from '@aztec/aztec.js/contracts';
+import { createAztecNodeClient } from '@aztec-labs/aztec.js/node';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { GrumpkinScalar } from '@aztec-labs/foundation/curves/grumpkin';
+import { EmbeddedWallet } from '@aztec-labs/wallets/embedded';
+import { loadContractArtifact } from '@aztec-labs/aztec.js/abi';
+import { Contract } from '@aztec-labs/aztec.js/contracts';
 import { CARD_DATABASE, packRanks } from '../packages/game-logic/src/cards';
 import { headroomMaxFeesPerGas } from './lib/feeSettings';
 

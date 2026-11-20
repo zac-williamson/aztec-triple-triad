@@ -23,7 +23,7 @@
  * starter-state assert intact — no relaxed asserts anywhere).
  *
  * Usage:
- *   export AZTEC_PXE_URL=https://v5.testnet.rpc.aztec-labs.com
+ *   export AZTEC_PXE_URL=https://aztec-testnet.drpc.org
  *   export TESTNET_L1_RPC_URL=https://...sepolia...
  *   export TREASURY_L1_KEY=0x...            # or TREASURY_L1_KEY_FILE (chmod 600)
  *   npx tsx scripts/provision-playtest-accounts.ts --count 8
@@ -35,13 +35,13 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { resolve, dirname } from 'path';
 
-import { createAztecNodeClient } from '@aztec/aztec.js/node';
-import { Fr } from '@aztec/aztec.js/fields';
-import { AztecAddress } from '@aztec/aztec.js/addresses';
-import { NO_FROM } from '@aztec/aztec.js/account';
-import { FeeJuicePaymentMethodWithClaim } from '@aztec/aztec.js/fee';
-import { EmbeddedWallet } from '@aztec/wallets/embedded';
-import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
+import { createAztecNodeClient } from '@aztec-labs/aztec.js/node';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { NO_FROM } from '@aztec-labs/aztec.js/account';
+import { FeeJuicePaymentMethodWithClaim } from '@aztec-labs/aztec.js/fee';
+import { EmbeddedWallet } from '@aztec-labs/wallets/embedded';
+import { GrumpkinScalar } from '@aztec-labs/foundation/curves/grumpkin';
 
 import {
   bridgeFeeJuice,
@@ -66,7 +66,7 @@ import { STARTER_CARD_IDS, STARTER_CARD_COUNT } from '../packages/frontend/src/a
 import type { StoredCard } from '../packages/frontend/src/aztec/cardStore';
 
 const ROOT_DIR = resolve(import.meta.dirname || __dirname, '..');
-const PXE_URL = process.env.AZTEC_PXE_URL || 'https://v5.testnet.rpc.aztec-labs.com';
+const PXE_URL = process.env.AZTEC_PXE_URL || 'https://aztec-testnet.drpc.org';
 const ENV_PATH = resolve(ROOT_DIR, 'packages/frontend/.env.testnet');
 const MANIFEST_PATH = resolve(ROOT_DIR, 'packages/playtest/.artifacts/playtest-accounts.json');
 const TX_TIMEOUT = 600; // seconds — testnet block inclusion + proving headroom
@@ -152,7 +152,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function loadArtifact(name: string): Promise<any> {
   const path = resolve(ROOT_DIR, `packages/contracts/target/${name}.json`);
-  const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
+  const { loadContractArtifact } = await import('@aztec-labs/aztec.js/abi');
   return loadContractArtifact(JSON.parse(readFileSync(path, 'utf-8')));
 }
 
@@ -270,7 +270,7 @@ async function provisionOne(index: number, opts: ProvisionOpts): Promise<Manifes
   console.log(`  address: ${addressStr}`);
 
   await wallet.registerSender(address, 'player');
-  const { Contract } = await import('@aztec/aztec.js/contracts');
+  const { Contract } = await import('@aztec-labs/aztec.js/contracts');
   const nftAddr = AztecAddress.fromStringUnsafe(opts.nftAddress);
   const tokenAddr = AztecAddress.fromStringUnsafe(opts.tokenAddress);
   // Register the pre-deployed NFT + Token INSTANCES in this fresh PXE so their

@@ -10,7 +10,7 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
-import type { Barretenberg, UltraHonkBackend as UltraHonkBackendType } from '@aztec/bb.js';
+import type { Barretenberg, UltraHonkBackend as UltraHonkBackendType } from '@aztec-foundation/bb.js';
 import type { Noir as NoirType } from '@noir-lang/noir_js';
 import {
   createGame,
@@ -48,8 +48,10 @@ export async function fundAndDeployAccount(
   label: string,
   sendTimeout: number,
 ): Promise<void> {
-  const { FeeJuicePaymentMethodWithClaim } = await import('@aztec/aztec.js/fee');
-  const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+  const { FeeJuicePaymentMethodWithClaim } = await import('@aztec-labs/aztec.js/fee');
+  // v6: the self-deploying account has no signer. AztecAddress.ZERO used to
+  // mean that; v6 wants the NO_FROM sentinel ("Account 0x00… does not exist").
+  const { NO_FROM } = await import('@aztec-labs/aztec.js/account');
 
   const claim = await fundAccountOnDevnet(node, account.address.toString(), (m) => console.log(`  ${label}: ${m}`));
   const claimFee = new FeeJuicePaymentMethodWithClaim(account.address, claim as never);
@@ -58,7 +60,7 @@ export async function fundAndDeployAccount(
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       await deployMethod.send({
-        from: AztecAddress.ZERO,
+        from: NO_FROM,
         fee: { paymentMethod: claimFee },
         skipClassPublication: true,
         skipInstancePublication: true,
@@ -128,7 +130,7 @@ function getRootDir(): string {
 }
 
 export function loadContractArtifact(name: string): any {
-  const { loadContractArtifact: sdkLoad } = require('@aztec/aztec.js/abi');
+  const { loadContractArtifact: sdkLoad } = require('@aztec-labs/aztec.js/abi');
   const path = resolve(getRootDir(), `packages/contracts/target/${name}.json`);
   const raw = JSON.parse(readFileSync(path, 'utf-8'));
   // Use SDK's loadContractArtifact to transform raw nargo output into proper ContractArtifact
@@ -187,7 +189,7 @@ export async function computeVkHash(
   api: Barretenberg,
   circuitBytecode: string,
 ): Promise<{ hash: string; fields: string[] }> {
-  const { UltraHonkBackend } = await import('@aztec/bb.js');
+  const { UltraHonkBackend } = await import('@aztec-foundation/bb.js');
   const backend = new UltraHonkBackend(circuitBytecode, api);
   const vkBytes = await backend.getVerificationKey();
   const vkFields = bytesToFields(vkBytes);
@@ -276,7 +278,7 @@ export async function generateFullGameProofs(
   p1Randomness?: string[],
   p2Randomness?: string[],
 ): Promise<GameProofs> {
-  const { UltraHonkBackend } = await import('@aztec/bb.js');
+  const { UltraHonkBackend } = await import('@aztec-foundation/bb.js');
   const { Noir } = await import('@noir-lang/noir_js');
 
   const handBackend = new UltraHonkBackend(proveHandArtifact.bytecode, api);

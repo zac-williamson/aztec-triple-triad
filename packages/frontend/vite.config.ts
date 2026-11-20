@@ -25,7 +25,7 @@ export default defineConfig({
   plugins: [
     react(),
     nodePolyfillsFix({
-      // 'util' since 5.2: the unbundled sqlite-opfs store reaches @aztec/foundation,
+      // 'util' since 5.2: the unbundled sqlite-opfs store reaches @aztec-labs/foundation,
       // which imports util.inspect; nothing else supplies the CJS->ESM interop for it.
       include: ['buffer', 'path', 'process', 'net', 'tty', 'util'],
     }),
@@ -79,7 +79,12 @@ export default defineConfig({
     // (the no-eval CJS bundle, chosen for CSP). Name that exact specifier: a bare
     // 'msgpackr' include resolves to the ESM entry and leaves the .cjs unbundled,
     // so the browser gets no named 'Encoder' export.
-    include: ['pino', 'pino/browser', 'msgpackr', 'msgpackr/index-no-eval', 'sha3'],
+    // 'tty' since v6: something under the excluded packages now reaches the tty
+    // polyfill. Left to runtime discovery it is optimized AFTER the page loads
+    // ("new dependencies optimized: tty" -> "reloading"), which renames the
+    // optimized chunks under an in-flight import and onboarding dies with
+    // "Failed to fetch dynamically imported module …/.vite/deps/lazy-*.js".
+    include: ['pino', 'pino/browser', 'msgpackr', 'msgpackr/index-no-eval', 'sha3', 'tty'],
     // WASM-containing packages that esbuild corrupts, plus the SQLite-OPFS store.
     //
     // As of 5.2 the browser PXE keeps state in SQLite-OPFS, and that store spawns a
@@ -96,18 +101,18 @@ export default defineConfig({
     // site, since dev serves it straight out of node_modules. The
     // `copy-sqlite-worker` build step stages it into public/assets.
     //
-    // Exclude the ./sqlite-opfs SUBPATH, not all of @aztec/kv-store: the package's
+    // Exclude the ./sqlite-opfs SUBPATH, not all of @aztec-labs/kv-store: the package's
     // full closure is ~326 deps (AWS SDK, Koa, Google Cloud) and unbundling it just
     // trades this for an endless run of CJS named-export failures (util.inspect,
     // sha3.Keccak, ...). The subpath's own imports are narrow, so this is the
     // smallest cut that lets the worker URL resolve.
     exclude: [
-      '@aztec/noir-noirc_abi',
-      '@aztec/noir-acvm_js',
-      '@aztec/bb.js',
+      '@aztec-foundation/noir-noirc_abi',
+      '@aztec-foundation/noir-acvm_js',
+      '@aztec-foundation/bb.js',
       '@noir-lang/noir_js',
-      '@aztec/kv-store/sqlite-opfs',
-      '@aztec/sqlite3mc-wasm',
+      '@aztec-labs/kv-store/sqlite-opfs',
+      '@aztec-labs/sqlite3mc-wasm',
     ],
   },
   worker: {

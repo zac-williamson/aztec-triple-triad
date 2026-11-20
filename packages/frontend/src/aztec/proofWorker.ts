@@ -8,7 +8,7 @@
  */
 
 import { Noir } from '@noir-lang/noir_js';
-import { UltraHonkBackend } from '@aztec/bb.js';
+import { UltraHonkBackend } from '@aztec-foundation/bb.js';
 import type { HandProofData, MoveProofData } from '../types';
 import { loadProveHandCircuit, loadGameMoveCircuit } from './circuitLoader';
 import { getBarretenberg } from './proofBackend';

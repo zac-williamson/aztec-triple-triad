@@ -89,7 +89,7 @@ const projectId = readTrim(PROJECT_ID_FILE);
 const frontendEnv = parseDotenv(FRONTEND_ENV_FILE);
 
 const desired: Record<string, string> = {
-  VITE_AZTEC_PXE_URL: frontendEnv.VITE_AZTEC_PXE_URL ?? 'https://v5.testnet.rpc.aztec-labs.com',
+  VITE_AZTEC_PXE_URL: frontendEnv.VITE_AZTEC_PXE_URL ?? 'https://aztec-testnet.drpc.org',
   VITE_NFT_CONTRACT_ADDRESS: frontendEnv.VITE_NFT_CONTRACT_ADDRESS,
   VITE_GAME_CONTRACT_ADDRESS: frontendEnv.VITE_GAME_CONTRACT_ADDRESS,
   VITE_TOKEN_CONTRACT_ADDRESS: frontendEnv.VITE_TOKEN_CONTRACT_ADDRESS,

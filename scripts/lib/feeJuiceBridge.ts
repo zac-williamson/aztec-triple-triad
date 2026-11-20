@@ -250,10 +250,10 @@ export async function bridgeFeeJuice(params: BridgeParams): Promise<FeeJuiceClai
   const messageWaitSeconds = params.messageWaitSeconds ?? 600;
 
   const [{ L1FeeJuicePortalManager }, { AztecAddress }, { createExtendedL1Client }, { Fr }] = await Promise.all([
-    import('@aztec/aztec.js/ethereum'),
-    import('@aztec/aztec.js/addresses'),
-    import('@aztec/ethereum/client'),
-    import('@aztec/aztec.js/fields'),
+    import('@aztec-labs/aztec.js/ethereum'),
+    import('@aztec-labs/aztec.js/addresses'),
+    import('@aztec-labs/ethereum/client'),
+    import('@aztec-labs/aztec.js/fields'),
   ]);
 
   const l2 = AztecAddress.fromStringUnsafe(l2Address);
@@ -285,7 +285,7 @@ export async function bridgeFeeJuice(params: BridgeParams): Promise<FeeJuiceClai
   // Copying a real logger's surface (trace/fatal/isLevelEnabled/level/...) and
   // overriding only the levels we surface keeps this immune to the SDK adding
   // another level method later.
-  const { createLogger } = await import('@aztec/foundation/log');
+  const { createLogger } = await import('@aztec-labs/foundation/log');
   const baseLogger: any = createLogger('scripts:feeJuiceBridge');
   const bridgeLogger: any = {};
   for (const key in baseLogger) {

@@ -23,7 +23,7 @@ npx tsx scripts/stop-stack.ts
 ```bash
 PLAYTEST_TESTNET=1 \
 PLAYTEST_FRONTEND_URL='https://www.aztec-arena.com/?e2e=1' \
-PLAYTEST_PXE_URL=https://v5.testnet.rpc.aztec-labs.com \
+PLAYTEST_PXE_URL=https://aztec-testnet.drpc.org \
 PLAYTEST_BACKEND_URL=https://ws.aztec-arena.com \
 npx playwright test new-user-onboarding --config packages/playtest/playwright.config.ts
 ```
@@ -62,7 +62,7 @@ test onboarding.
 
 ```bash
 PLAYTEST_TESTNET=1 \
-PLAYTEST_PXE_URL=https://v5.testnet.rpc.aztec-labs.com \
+PLAYTEST_PXE_URL=https://aztec-testnet.drpc.org \
 PLAYTEST_BACKEND_URL=https://ws.aztec-arena.com \
 npx playwright test new-user-onboarding --config packages/playtest/playwright.config.ts
 ```

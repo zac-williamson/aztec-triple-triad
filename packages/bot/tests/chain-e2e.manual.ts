@@ -345,8 +345,8 @@ class ScriptedOpponent {
       );
     }
     const { handVk, moveVk } = await this.proofs.verificationKeys();
-    const { Fr } = await import('@aztec/aztec.js/fields');
-    const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+    const { Fr } = await import('@aztec-labs/aztec.js/fields');
+    const { AztecAddress } = await import('@aztec-labs/aztec.js/addresses');
     const { buildProcessGameArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
     const iAmP1 = this.me === 'player1';
     const args = await buildProcessGameArgs({

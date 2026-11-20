@@ -31,7 +31,7 @@ let _cachedNftArtifact: any = null;
 /** Load and cache the NFT contract artifact */
 export async function getNftArtifact(): Promise<any> {
   if (_cachedNftArtifact) return _cachedNftArtifact;
-  const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
+  const { loadContractArtifact } = await import('@aztec-labs/aztec.js/abi');
   const { loadRawArtifact } = await import('./contractArtifacts');
   _cachedNftArtifact = loadContractArtifact(await loadRawArtifact('nft') as never);
   return _cachedNftArtifact;
@@ -42,7 +42,7 @@ export async function getNftArtifact(): Promise<any> {
  * The tx may have just been mined, so we retry a few times.
  */
 async function fetchTxEffect(nodeClient: any, txHashStr: string): Promise<any> {
-  const { TxHash } = await import('@aztec/stdlib/tx');
+  const { TxHash } = await import('@aztec-labs/stdlib/tx');
   const hash = TxHash.fromString(txHashStr);
 
   for (let attempt = 0; attempt < TX_EFFECT_MAX_RETRIES; attempt++) {

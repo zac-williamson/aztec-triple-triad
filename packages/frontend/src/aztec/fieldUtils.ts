@@ -7,10 +7,10 @@
 
 let _Fr: any = null;
 
-/** Lazily load and cache the Fr class from @aztec/aztec.js/fields */
+/** Lazily load and cache the Fr class from @aztec-labs/aztec.js/fields */
 export async function getFr(): Promise<any> {
   if (!_Fr) {
-    const mod = await import('@aztec/aztec.js/fields');
+    const mod = await import('@aztec-labs/aztec.js/fields');
     _Fr = mod.Fr;
   }
   return _Fr;

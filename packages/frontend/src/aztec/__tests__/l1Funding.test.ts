@@ -22,13 +22,13 @@ const AZTEC_ADDR = `0x${'12'.repeat(32)}`;
 // decode threw after a real deposit had been made. A fixture that defines its
 // own reality cannot fail.
 
-vi.mock('@aztec/aztec.js/ethereum', () => ({
+vi.mock('@aztec-labs/aztec.js/ethereum', () => ({
   generateClaimSecret: async () => [
     { toString: () => `0x${'aa'.repeat(32)}` },
     { toString: () => `0x${'bb'.repeat(32)}` },
   ],
 }));
-vi.mock('@aztec/aztec.js/fields', () => ({
+vi.mock('@aztec-labs/aztec.js/fields', () => ({
   Fr: { fromHexString: (h: string) => ({ h }) },
 }));
 

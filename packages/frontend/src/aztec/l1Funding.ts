@@ -262,7 +262,7 @@ export async function fundAccountFromWallet(params: FundAccountParams): Promise<
 
   // ---- 3. Deposit to the portal -------------------------------------------
   report('deposit', 'Bridging to your Aztec account…');
-  const { generateClaimSecret } = await import('@aztec/aztec.js/ethereum');
+  const { generateClaimSecret } = await import('@aztec-labs/aztec.js/ethereum');
   const [claimSecret, claimSecretHash] = await generateClaimSecret();
 
   const depositHash = await wallet.sendTransaction({
@@ -319,7 +319,7 @@ export async function fundAccountFromWallet(params: FundAccountParams): Promise<
     messageLeafIndex: index,
   };
 
-  const { Fr } = await import('@aztec/aztec.js/fields');
+  const { Fr } = await import('@aztec-labs/aztec.js/fields');
   const waitSeconds = params.messageWaitSeconds ?? 900;
   const messageHash = Fr.fromHexString(key);
   for (let i = 0; i < waitSeconds; i++) {

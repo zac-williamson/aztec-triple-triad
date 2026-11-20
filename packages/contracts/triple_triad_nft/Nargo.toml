@@ -5,10 +5,10 @@ authors = [""]
 compiler_version = ">=0.18.0"
 
 [dependencies]
-field_note = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v5.2.0-nightly.20260815", directory = "noir-projects/aztec-nr/field-note" }
-aztec = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v5.2.0-nightly.20260815", directory = "noir-projects/aztec-nr/aztec" }
-compressed_string = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v5.2.0-nightly.20260815", directory = "noir-projects/aztec-nr/compressed-string" }
-uint_note = { git = "https://github.com/AztecProtocol/aztec-packages/", tag = "v5.2.0-nightly.20260815", directory = "noir-projects/aztec-nr/uint-note" }
+field_note = { git = "https://github.com/aztec-labs-eng/aztec-nr", tag = "v6.0.0", directory = "field-note" }
+aztec = { git = "https://github.com/aztec-labs-eng/aztec-nr", tag = "v6.0.0", directory = "aztec" }
+compressed_string = { git = "https://github.com/aztec-labs-eng/aztec-nr", tag = "v6.0.0", directory = "compressed-string" }
+uint_note = { git = "https://github.com/aztec-labs-eng/aztec-nr", tag = "v6.0.0", directory = "uint-note" }
 arena_token = { path = "../arena_token" }
 # Same tag as aztec-nr's own protocol-types crate, so module-scope
 # `Poseidon2::hash(x, N)` is byte-for-byte the `poseidon2_hash(x)` the contract

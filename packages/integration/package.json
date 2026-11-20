@@ -8,20 +8,21 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "vitest run -c vitest.e2e.config.ts"
   },
   "dependencies": {
     "@axolotl-arena/game-logic": "*",
     "@axolotl-arena/backend": "*",
-    "@noir-lang/noir_js": "1.0.0-beta.25",
-    "@noir-lang/types": "1.0.0-beta.25",
-    "@aztec/bb.js": "5.2.0-nightly.20260815",
-    "@aztec/aztec.js": "5.2.0-nightly.20260815",
-    "@aztec/wallets": "5.2.0-nightly.20260815",
-    "@aztec/foundation": "5.2.0-nightly.20260815",
-    "@aztec/constants": "5.2.0-nightly.20260815",
-    "@aztec/noir-contracts.js": "5.2.0-nightly.20260815",
-    "@aztec/stdlib": "5.2.0-nightly.20260815",
+    "@noir-lang/noir_js": "1.0.0-rc.3",
+    "@noir-lang/types": "1.0.0-rc.3",
+    "@aztec-foundation/bb.js": "6.0.0",
+    "@aztec-labs/aztec.js": "6.0.0",
+    "@aztec-labs/wallets": "6.0.0",
+    "@aztec-labs/foundation": "6.0.0",
+    "@aztec-labs/constants": "6.0.0",
+    "@aztec-labs/noir-contracts.js": "6.0.0",
+    "@aztec-labs/stdlib": "6.0.0",
     "ws": "^8.16.0"
   },
   "devDependencies": {

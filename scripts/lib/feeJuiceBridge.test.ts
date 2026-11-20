@@ -189,9 +189,9 @@ describe('feeJuiceBridge helpers', () => {
   // Live bridge — only with Sepolia creds. Skipped otherwise (like the e2e gate).
   const liveEnabled = !!(process.env.TESTNET_L1_RPC_URL && process.env.TREASURY_L1_KEY);
   it.skipIf(!liveEnabled)('live: bridges to a throwaway L2 address', async () => {
-    const { createAztecNodeClient } = await import('@aztec/aztec.js/node');
+    const { createAztecNodeClient } = await import('@aztec-labs/aztec.js/node');
     const { bridgeFeeJuice } = await import('./feeJuiceBridge');
-    const node = createAztecNodeClient(process.env.AZTEC_PXE_URL || 'https://v5.testnet.rpc.aztec-labs.com');
+    const node = createAztecNodeClient(process.env.AZTEC_PXE_URL || 'https://aztec-testnet.drpc.org');
     const claim = await bridgeFeeJuice({
       node,
       l1RpcUrl: process.env.TESTNET_L1_RPC_URL!,

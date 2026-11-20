@@ -208,7 +208,7 @@ note plaintexts to a manifest:
 
 ```bash
 # On a machine with the deployer key (NOT the box — the minter key never goes there).
-export AZTEC_PXE_URL=https://v5.testnet.rpc.aztec-labs.com
+export AZTEC_PXE_URL=https://aztec-testnet.drpc.org
 export DEPLOYER_SECRET=... DEPLOYER_SALT=... DEPLOYER_SIGNING_KEY=...
 set -a; . packages/frontend/.env.testnet; set +a
 
@@ -317,7 +317,7 @@ ssh box 'sudo systemctl stop triad-bot'
 set -a; . packages/frontend/.env.testnet; set +a          # contract addresses
 eval "$(grep -E '^DEPLOYER_' ~/.aztec-triad-private/deployer-testnet-key.txt)"
 export DEPLOYER_SECRET DEPLOYER_SALT DEPLOYER_SIGNING_KEY
-export AZTEC_PXE_URL=https://v5.testnet.rpc.aztec-labs.com
+export AZTEC_PXE_URL=https://aztec-testnet.drpc.org
 npx tsx scripts/provision-arena-bot.ts --index 0 --cards 2000
 
 # 4. Ship the manifest. Leave arena-bot-0.json.imported.json ALONE — it is the

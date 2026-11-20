@@ -47,10 +47,10 @@ export async function prepareConnection(options?: {
   const useStorage = !options?.skipLocalStorage;
 
   const [nodeModule, instrumentedModule, foundationModule, fieldsModule] = await Promise.all([
-    import('@aztec/aztec.js/node'),
+    import('@aztec-labs/aztec.js/node'),
     import('./instrumentedWallet'),
-    import('@aztec/foundation/curves/grumpkin'),
-    import('@aztec/aztec.js/fields'),
+    import('@aztec-labs/foundation/curves/grumpkin'),
+    import('@aztec-labs/aztec.js/fields'),
   ]);
 
   const { createAztecNodeClient } = nodeModule;
@@ -137,14 +137,14 @@ export async function deployAndRegister(
   const { wallet, node, accountManager, accountAddress, alreadyDeployed } = prepared;
 
   const [{ AztecAddress }, { NO_FROM }] = await Promise.all([
-    import('@aztec/aztec.js/addresses'),
-    import('@aztec/aztec.js/account'),
+    import('@aztec-labs/aztec.js/addresses'),
+    import('@aztec-labs/aztec.js/account'),
   ]);
 
   await wallet.registerSender(accountManager.address, 'player');
 
   // Register contracts (must happen before deploy+mint batch so NFT contract is available)
-  const { loadContractArtifact } = await import('@aztec/aztec.js/abi');
+  const { loadContractArtifact } = await import('@aztec-labs/aztec.js/abi');
 
   // One registration path, shared with the arena bot (contractArtifacts.ts), so
   // browser and bot register the same contracts the same way.
@@ -181,8 +181,8 @@ export async function deployAndRegister(
   // wrapped through the account's entrypoint alongside the fee claim by
   // DeployAccountMethod's internal multicall entrypoint wrapping.
   if (!deployed && needsMint && options?.feeJuiceClaim) {
-    const { FeeJuicePaymentMethodWithClaim } = await import('@aztec/aztec.js/fee');
-    const { mergeExecutionPayloads } = await import('@aztec/stdlib/tx');
+    const { FeeJuicePaymentMethodWithClaim } = await import('@aztec-labs/aztec.js/fee');
+    const { mergeExecutionPayloads } = await import('@aztec-labs/stdlib/tx');
 
     log('Deploying account + minting starter cards (single tx)...');
     const deployMethod = await accountManager.getDeployMethod();
@@ -247,7 +247,7 @@ export async function deployAndRegister(
       const sendOpts: any = { from: NO_FROM, wait: { timeout: AZTEC_TX_TIMEOUT } };
       sendOpts.fee = { gasSettings: await gasSettingsWithHeadroom(node as BaseFeeNode) };
       if (options?.feeJuiceClaim) {
-        const { FeeJuicePaymentMethodWithClaim } = await import('@aztec/aztec.js/fee');
+        const { FeeJuicePaymentMethodWithClaim } = await import('@aztec-labs/aztec.js/fee');
         sendOpts.fee.paymentMethod = new FeeJuicePaymentMethodWithClaim(accountManager.address, options.feeJuiceClaim);
       }
       await deployMethod.send(sendOpts);
@@ -390,7 +390,7 @@ async function drainPendingStoreReset(log: LogFn): Promise<void> {
   // Clear first: a store we cannot delete must not wedge every future boot.
   localStorage.removeItem(PENDING_STORE_RESET_KEY);
   try {
-    const { listStores, deleteStore } = await import('@aztec/kv-store/sqlite-opfs');
+    const { listStores, deleteStore } = await import('@aztec-labs/kv-store/sqlite-opfs');
     const stores = await listStores();
     const targets = scope === 'all' ? stores : stores.filter(n => n.startsWith('pxe_data_'));
     if (targets.length === 0) {

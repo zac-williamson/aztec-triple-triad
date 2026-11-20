@@ -17,13 +17,13 @@
  * accounts the app funded. For the bot, which was funded separately, read the
  * balance and ignore the percentage.
  */
-import { createAztecNodeClient } from '@aztec/aztec.js/node';
-import { Fr } from '@aztec/foundation/curves/bn254';
-import { ProtocolContractAddress } from '@aztec/protocol-contracts';
-import { deriveStorageSlotInMap } from '@aztec/stdlib/hash';
-import { AztecAddress } from '@aztec/aztec.js/addresses';
+import { createAztecNodeClient } from '@aztec-labs/aztec.js/node';
+import { Fr } from '@aztec-labs/foundation/curves/bn254';
+import { ProtocolContractAddress } from '@aztec-labs/protocol-contracts';
+import { deriveStorageSlotInMap } from '@aztec-labs/stdlib/hash';
+import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
 
-const NODE = process.env.AZTEC_NODE_URL ?? 'https://v5.testnet.rpc.aztec-labs.com';
+const NODE = process.env.AZTEC_NODE_URL ?? 'https://aztec-testnet.drpc.org';
 /**
  * What each account started with. On testnet the fee asset has a free faucet
  * and the app bridges whatever its `mintAmount()` returns — currently 1e21,

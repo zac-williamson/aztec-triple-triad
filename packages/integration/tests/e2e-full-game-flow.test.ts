@@ -131,15 +131,15 @@ import type { GameState, Player } from '@axolotl-arena/game-logic';
 // Aztec SDK
 // ============================================================================
 
-import { createAztecNodeClient } from '@aztec/aztec.js/node';
-import { Fr } from '@aztec/aztec.js/fields';
-import { AztecAddress } from '@aztec/aztec.js/addresses';
-import { Contract } from '@aztec/aztec.js/contracts';
-import { EmbeddedWallet } from '@aztec/wallets/embedded';
-import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
+import { createAztecNodeClient } from '@aztec-labs/aztec.js/node';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { Contract } from '@aztec-labs/aztec.js/contracts';
+import { EmbeddedWallet } from '@aztec-labs/wallets/embedded';
+import { GrumpkinScalar } from '@aztec-labs/foundation/curves/grumpkin';
 
 
-import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
+import { Barretenberg, UltraHonkBackend } from '@aztec-foundation/bb.js';
 
 // ============================================================================
 // E2E helpers (contract deployment VK hashes + Fee Juice account funding)

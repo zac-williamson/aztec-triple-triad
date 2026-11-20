@@ -60,7 +60,7 @@ export class BotProofs {
    */
   async verificationKeys(): Promise<{ handVk: Uint8Array; moveVk: Uint8Array }> {
     if (this.vks) return this.vks;
-    const { UltraHonkBackend } = await import('@aztec/bb.js');
+    const { UltraHonkBackend } = await import('@aztec-foundation/bb.js');
     const { getBarretenberg } = await import('../../frontend/src/aztec/proofBackend.js');
     const { loadProveHandCircuit, loadGameMoveCircuit } =
       await import('../../frontend/src/aztec/circuitLoader.js');
@@ -84,7 +84,7 @@ export class BotProofs {
    */
   async dummyVerificationKey(): Promise<Uint8Array> {
     if (this.dummyVkCache) return this.dummyVkCache;
-    const { UltraHonkBackend } = await import('@aztec/bb.js');
+    const { UltraHonkBackend } = await import('@aztec-foundation/bb.js');
     const { getBarretenberg } = await import('../../frontend/src/aztec/proofBackend.js');
     const { loadDummyMoveCircuit } = await import('../../frontend/src/aztec/circuitLoader.js');
     const api = await getBarretenberg();
@@ -100,7 +100,7 @@ export class BotProofs {
    */
   proveDummy(): Promise<string> {
     return this.serialise('dummy proof', async () => {
-      const { UltraHonkBackend } = await import('@aztec/bb.js');
+      const { UltraHonkBackend } = await import('@aztec-foundation/bb.js');
       const { Noir } = await import('@noir-lang/noir_js');
       const { getBarretenberg } = await import('../../frontend/src/aztec/proofBackend.js');
       const { loadDummyMoveCircuit } = await import('../../frontend/src/aztec/circuitLoader.js');

@@ -84,10 +84,10 @@ jobs:
           #
           # After an INTENTIONAL migration, redeploy the contracts and update
           # this number. It is meant to be edited; that is the point.
-          EXPECTED=1821665230
+          EXPECTED=679261766
           out="$(curl -fsS --max-time 25 -X POST -H 'Content-Type: application/json' \
             -d '{"jsonrpc":"2.0","method":"node_getNodeInfo","params":[],"id":1}' \
-            https://v5.testnet.rpc.aztec-labs.com)" || {
+            https://aztec-testnet.drpc.org)" || {
             echo "::error::aztec node unreachable"; exit 1; }
           got=$(echo "$out" | grep -oE '"rollupVersion":[0-9]+' | cut -d: -f2)
           echo "rollupVersion=$got (expected $EXPECTED)"

@@ -53,8 +53,8 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  const { createAztecNodeClient } = await import('@aztec/aztec.js/node');
-  const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+  const { createAztecNodeClient } = await import('@aztec-labs/aztec.js/node');
+  const { AztecAddress } = await import('@aztec-labs/aztec.js/addresses');
   const node = createAztecNodeClient(rpcUrl);
 
   // 1. Node reachable + identity

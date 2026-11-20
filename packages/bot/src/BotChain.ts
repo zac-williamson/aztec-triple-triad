@@ -176,10 +176,10 @@ export class BotChain {
       contractsDir: this.cfg.contractsDir,
     });
 
-    const { createAztecNodeClient } = await import('@aztec/aztec.js/node');
-    const { EmbeddedWallet } = await import('@aztec/wallets/embedded');
-    const { Fr } = await import('@aztec/aztec.js/fields');
-    const { GrumpkinScalar } = await import('@aztec/foundation/curves/grumpkin');
+    const { createAztecNodeClient } = await import('@aztec-labs/aztec.js/node');
+    const { EmbeddedWallet } = await import('@aztec-labs/wallets/embedded');
+    const { Fr } = await import('@aztec-labs/aztec.js/fields');
+    const { GrumpkinScalar } = await import('@aztec-labs/foundation/curves/grumpkin');
 
     this.node = createAztecNodeClient(this.cfg.pxeUrl);
     const { rollupVersion } = await this.node.getNodeInfo();
@@ -434,11 +434,11 @@ export class BotChain {
   /** Read the account's Fee Juice balance from public state. */
   async readFeeJuice(): Promise<bigint> {
     const [{ Fr }, { ProtocolContractAddress }, { deriveStorageSlotInMap }] = await Promise.all([
-      import('@aztec/foundation/curves/bn254'),
-      import('@aztec/protocol-contracts'),
-      import('@aztec/stdlib/hash'),
+      import('@aztec-labs/foundation/curves/bn254'),
+      import('@aztec-labs/protocol-contracts'),
+      import('@aztec-labs/stdlib/hash'),
     ]);
-    const { AztecAddress } = await import('@aztec/aztec.js/addresses');
+    const { AztecAddress } = await import('@aztec-labs/aztec.js/addresses');
     // Slot 1 is FeeJuice's balances map — the derivation the SDK's own
     // getFeeJuiceBalance uses, rather than a slot read off a layout dump.
     const slot = await deriveStorageSlotInMap(new Fr(1), AztecAddress.fromStringUnsafe(this.address));

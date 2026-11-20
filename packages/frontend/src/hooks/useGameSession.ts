@@ -229,7 +229,7 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
     try {
       const nodeClient = aztec.nodeClient as any;
       if (nodeClient) {
-        const { TxHash } = await import('@aztec/stdlib/tx');
+        const { TxHash } = await import('@aztec-labs/stdlib/tx');
         const hash = TxHash.fromString(txHash);
         const txResult = await nodeClient.getTxEffect(hash);
         if (txResult?.data) {

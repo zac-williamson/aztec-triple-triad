@@ -5,19 +5,19 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 
-vi.mock('@aztec/wallets/embedded', () => ({ EmbeddedWallet: class {} }));
-vi.mock('@aztec/aztec.js/contracts', () => ({
+vi.mock('@aztec-labs/wallets/embedded', () => ({ EmbeddedWallet: class {} }));
+vi.mock('@aztec-labs/aztec.js/contracts', () => ({
   extractOffchainOutput: () => ({}),
   NO_WAIT: Symbol('NO_WAIT'),
 }));
-vi.mock('@aztec/wallet-sdk/base-wallet', () => ({ getGasLimits: () => ({ gasLimits: {}, teardownGasLimits: {} }) }));
-vi.mock('@aztec/aztec.js/node', () => ({ waitForTx: vi.fn() }));
-vi.mock('@aztec/aztec.js/authorization', () => ({ CallAuthorizationRequest: { fromFields: vi.fn() } }));
-vi.mock('@aztec/stdlib/tx', () => ({
+vi.mock('@aztec-labs/wallet-sdk/base-wallet', () => ({ getGasLimits: () => ({ gasLimits: {}, teardownGasLimits: {} }) }));
+vi.mock('@aztec-labs/aztec.js/node', () => ({ waitForTx: vi.fn() }));
+vi.mock('@aztec-labs/aztec.js/authorization', () => ({ CallAuthorizationRequest: { fromFields: vi.fn() } }));
+vi.mock('@aztec-labs/stdlib/tx', () => ({
   collectOffchainEffects: () => [],
   TxStatus: { PROPOSED: 'proposed' },
 }));
-vi.mock('@aztec/stdlib/gas', () => ({ GasSettings: { from: (x: unknown) => x } }));
+vi.mock('@aztec-labs/stdlib/gas', () => ({ GasSettings: { from: (x: unknown) => x } }));
 
 import { InstrumentedWallet } from './instrumentedWallet';
 

@@ -31,13 +31,13 @@ export class ChainClient {
   static async connect(addresses: ContractAddresses): Promise<ChainClient> {
     const [{ createAztecNodeClient }, { EmbeddedWallet }, { Fr }, { AztecAddress }, { GrumpkinScalar }, { Contract }, { loadContractArtifact }] =
       await Promise.all([
-        import('@aztec/aztec.js/node'),
-        import('@aztec/wallets/embedded'),
-        import('@aztec/aztec.js/fields'),
-        import('@aztec/aztec.js/addresses'),
-        import('@aztec/foundation/curves/grumpkin'),
-        import('@aztec/aztec.js/contracts'),
-        import('@aztec/aztec.js/abi'),
+        import('@aztec-labs/aztec.js/node'),
+        import('@aztec-labs/wallets/embedded'),
+        import('@aztec-labs/aztec.js/fields'),
+        import('@aztec-labs/aztec.js/addresses'),
+        import('@aztec-labs/foundation/curves/grumpkin'),
+        import('@aztec-labs/aztec.js/contracts'),
+        import('@aztec-labs/aztec.js/abi'),
       ]);
 
     const node = createAztecNodeClient(PXE_URL);

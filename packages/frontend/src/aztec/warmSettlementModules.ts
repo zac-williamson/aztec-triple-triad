@@ -45,11 +45,11 @@ const SETTLEMENT_IMPORTS: Array<() => Promise<unknown>> = [
   () => import('./proofBackend'),
   () => import('./circuitLoader'),
   () => import('./gameConstants'),
-  () => import('@aztec/aztec.js/fields'),
-  () => import('@aztec/aztec.js/addresses'),
+  () => import('@aztec-labs/aztec.js/fields'),
+  () => import('@aztec-labs/aztec.js/addresses'),
   // The proving stack. These are the biggest chunks on the path and therefore
   // the ones most worth having in memory before a deploy can move them.
-  () => import('@aztec/bb.js'),
+  () => import('@aztec-foundation/bb.js'),
   () => import('@noir-lang/noir_js'),
 ];
 

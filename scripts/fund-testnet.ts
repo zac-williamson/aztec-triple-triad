@@ -34,7 +34,7 @@
  *   --force   re-bridge even if an unconsumed claim already exists for an address.
  */
 
-import { createAztecNodeClient } from '@aztec/aztec.js/node';
+import { createAztecNodeClient } from '@aztec-labs/aztec.js/node';
 
 import {
   parseL2Addresses,
@@ -47,7 +47,7 @@ import {
   readFunderKey,
 } from './lib/feeJuiceBridge';
 
-const DEFAULT_NODE_URL = 'https://v5.testnet.rpc.aztec-labs.com';
+const DEFAULT_NODE_URL = 'https://aztec-testnet.drpc.org';
 
 async function main() {
   const force = process.argv.includes('--force');

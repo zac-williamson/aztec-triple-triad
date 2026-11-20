@@ -22,16 +22,16 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
 // Aztec SDK
-import { createAztecNodeClient } from '@aztec/aztec.js/node';
-import { Fr } from '@aztec/aztec.js/fields';
-import { AztecAddress } from '@aztec/aztec.js/addresses';
-import { Contract } from '@aztec/aztec.js/contracts';
-import { EmbeddedWallet } from '@aztec/wallets/embedded';
-import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
+import { createAztecNodeClient } from '@aztec-labs/aztec.js/node';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { Contract } from '@aztec-labs/aztec.js/contracts';
+import { EmbeddedWallet } from '@aztec-labs/wallets/embedded';
+import { GrumpkinScalar } from '@aztec-labs/foundation/curves/grumpkin';
 
 
 // bb.js
-import { Barretenberg } from '@aztec/bb.js';
+import { Barretenberg } from '@aztec-foundation/bb.js';
 
 // Shared helpers
 import {
@@ -171,7 +171,8 @@ describe('E2E Aztec Settlement', () => {
       try {
         const blockNum = await node.getBlockNumber();
         if (blockNum > 0) {
-          const header = await node.getBlockHeader();
+          // v6 removed AztecNode.getBlockHeader(); getBlockData is the header-only fetch.
+          const header = (await node.getBlockData(blockNum))?.header;
           console.log(`  Node at block ${blockNum}, timestamp=${header?.globalVariables?.timestamp ?? 'unknown'}`);
           break;
         }

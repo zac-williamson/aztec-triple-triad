@@ -4,13 +4,13 @@
  * These tests ACTUALLY execute the compiled Noir circuits using @noir-lang/noir_js
  * and verify that valid inputs produce valid witnesses and invalid inputs are rejected.
  *
- * Uses @aztec/bb.js for Poseidon2 and Pedersen hash (matching circuit internals).
+ * Uses @aztec-foundation/bb.js for Poseidon2 and Pedersen hash (matching circuit internals).
  *
  * @vitest-environment node
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { Noir } from '@noir-lang/noir_js';
-import { Barretenberg } from '@aztec/bb.js';
+import { Barretenberg } from '@aztec-foundation/bb.js';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 

@@ -97,10 +97,10 @@ vi.mock('../../aztec/pxe', () => {
 
 // loadSdk() in useGameSettlement lazy-imports these directly (value types only;
 // the contract instances stay inside pxe.ts).
-vi.mock('@aztec/aztec.js/fields', () => ({
+vi.mock('@aztec-labs/aztec.js/fields', () => ({
   Fr: class { constructor(public v: unknown) {} toString() { return String(this.v); } },
 }));
-vi.mock('@aztec/aztec.js/addresses', () => ({
+vi.mock('@aztec-labs/aztec.js/addresses', () => ({
   AztecAddress: { fromStringUnsafe: (s: string) => s },
 }));
 
@@ -114,7 +114,7 @@ vi.mock('../../aztec/proofBackend', () => ({
   getBarretenberg: vi.fn().mockResolvedValue({}),
 }));
 
-vi.mock('@aztec/bb.js', () => ({
+vi.mock('@aztec-foundation/bb.js', () => ({
   UltraHonkBackend: class {
     getVerificationKey() { return Promise.resolve(new Uint8Array([1])); }
     generateProof() { return Promise.resolve({ proof: new Uint8Array([2]) }); }

@@ -4,7 +4,7 @@
  * Manages a single Barretenberg WASM instance for the lifetime of the app.
  * Reusing the instance avoids expensive re-initialization per proof.
  */
-import { Barretenberg } from '@aztec/bb.js';
+import { Barretenberg } from '@aztec-foundation/bb.js';
 
 let bbInstance: Barretenberg | null = null;
 let bbInitPromise: Promise<Barretenberg> | null = null;

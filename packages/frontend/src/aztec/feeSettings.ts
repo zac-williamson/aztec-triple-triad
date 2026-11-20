@@ -20,7 +20,7 @@
  * txs share one fee policy.
  */
 
-import type { GasFees } from '@aztec/stdlib/gas';
+import type { GasFees } from '@aztec-labs/stdlib/gas';
 
 /** Multiplier applied to the current L2 base fee to set `maxFeesPerGas`. */
 export const FEE_HEADROOM_MULTIPLIER = 3;

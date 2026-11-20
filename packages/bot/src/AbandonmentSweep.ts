@@ -323,7 +323,7 @@ export class AbandonmentSweep {
 
   private async claim(rec: GameRecord): Promise<void> {
     const { buildClaimAbandonedArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
-    const { Fr } = await import('@aztec/aztec.js/fields');
+    const { Fr } = await import('@aztec-labs/aztec.js/fields');
     const { handVk, moveVk } = await this.deps.proofs.verificationKeys();
     const dummyVk = await this.deps.proofs.dummyVerificationKey();
 
@@ -372,7 +372,7 @@ export class AbandonmentSweep {
   private async settle(rec: GameRecord): Promise<void> {
     const { buildSettleAbandonedArgs, waitForDisputeWindow, DISPUTE_SECONDS } =
       await import('../../frontend/src/aztec/settlementArgs.js');
-    const { Fr } = await import('@aztec/aztec.js/fields');
+    const { Fr } = await import('@aztec-labs/aztec.js/fields');
 
     // Measured against the CHAIN's record of when the claim was filed, not our
     // own clock and no longer a block count: the contract compares timestamps,

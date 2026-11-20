@@ -34,7 +34,7 @@ export const PLAYTEST_SEED = 'axolotl-arena/playtest-pool/v2';
  * rebuilds it with ITS OWN top-level `Fr.fromHexString` / `GrumpkinScalar.
  * fromHexString` — the proven deploy-testnet.ts pattern. Passing Fr objects
  * across the module boundary is fragile: inside a heavy import graph (e.g. the
- * provisioning script, which also pulls @aztec/wallets/embedded) the SDK's
+ * provisioning script, which also pulls @aztec-labs/wallets/embedded) the SDK's
  * internal Fr class can be a different module instance than the one this file
  * built with, so `new Fr(thatFr)` fails its `instanceof BaseField` check
  * ("Type 'object' ... passed to BaseField ctor"). Hex sidesteps that entirely.
@@ -64,8 +64,8 @@ export async function playtestAccount(index: number): Promise<PlaytestAccountKey
     throw new Error(`playtestAccount: index must be a non-negative integer, got ${index}`);
   }
   const [{ Fr }, { GrumpkinScalar }] = await Promise.all([
-    import('@aztec/aztec.js/fields'),
-    import('@aztec/foundation/curves/grumpkin'),
+    import('@aztec-labs/aztec.js/fields'),
+    import('@aztec-labs/foundation/curves/grumpkin'),
   ]);
   return {
     secret: Fr.fromBufferReduce(digest('secret', index)).toString(),

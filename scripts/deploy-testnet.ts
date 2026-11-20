@@ -10,7 +10,7 @@
  * Prerequisites:
  *   1. Get Fee Juice from the bridge https://bridge.aztec-kit.anothercoffeefor.me/ (select Testnet)
  *   2. Set env vars for your funded deployer account:
- *      export AZTEC_PXE_URL=https://v5.testnet.rpc.aztec-labs.com
+ *      export AZTEC_PXE_URL=https://aztec-testnet.drpc.org
  *      export DEPLOYER_SECRET=0x...    # Fr hex from aztec-wallet
  *      export DEPLOYER_SALT=0x...      # Fr hex from aztec-wallet
  *      export DEPLOYER_SIGNING_KEY=0x... # GrumpkinScalar hex
@@ -26,15 +26,15 @@
 import { readFileSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 
-import { createAztecNodeClient } from '@aztec/aztec.js/node';
-import { Fr } from '@aztec/aztec.js/fields';
-import { AztecAddress } from '@aztec/aztec.js/addresses';
-import { NO_FROM } from '@aztec/aztec.js/account';
-import { FeeJuicePaymentMethodWithClaim } from '@aztec/aztec.js/fee';
-import { EmbeddedWallet } from '@aztec/wallets/embedded';
-import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
+import { createAztecNodeClient } from '@aztec-labs/aztec.js/node';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { NO_FROM } from '@aztec-labs/aztec.js/account';
+import { FeeJuicePaymentMethodWithClaim } from '@aztec-labs/aztec.js/fee';
+import { EmbeddedWallet } from '@aztec-labs/wallets/embedded';
+import { GrumpkinScalar } from '@aztec-labs/foundation/curves/grumpkin';
 
-import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
+import { Barretenberg, UltraHonkBackend } from '@aztec-foundation/bb.js';
 
 import {
   bridgeFeeJuice,
@@ -50,7 +50,7 @@ import {
 } from './lib/feeJuiceBridge';
 import { headroomMaxFeesPerGas } from './lib/feeSettings';
 
-const PXE_URL = process.env.AZTEC_PXE_URL || 'https://v5.testnet.rpc.aztec-labs.com';
+const PXE_URL = process.env.AZTEC_PXE_URL || 'https://aztec-testnet.drpc.org';
 const ROOT_DIR = resolve(import.meta.dirname || __dirname, '..');
 
 // ====================== Helpers ======================
@@ -58,7 +58,7 @@ const ROOT_DIR = resolve(import.meta.dirname || __dirname, '..');
 async function loadContractArtifact(name: string) {
   const path = resolve(ROOT_DIR, `packages/contracts/target/${name}.json`);
   const raw = JSON.parse(readFileSync(path, 'utf-8'));
-  const { loadContractArtifact: load } = await import('@aztec/aztec.js/abi');
+  const { loadContractArtifact: load } = await import('@aztec-labs/aztec.js/abi');
   return load(raw);
 }
 
@@ -360,7 +360,7 @@ async function main() {
     return new Fr(BigInt(hex));
   }
 
-  const { Contract } = await import('@aztec/aztec.js/contracts');
+  const { Contract } = await import('@aztec-labs/aztec.js/contracts');
 
   // 1. Deploy NFT + Token in parallel (or resume from env vars if a prior
   //    deploy attempt left them on-chain). Set NFT_ADDRESS and TOKEN_ADDRESS
