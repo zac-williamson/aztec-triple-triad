@@ -130,3 +130,15 @@ keys exported). Then on the box:
 default branch. Update it on `testnet` too. If GitHub disabled the workflow for
 inactivity, re-enable it by id (`gh workflow list --all`, then
 `gh workflow enable <id>`). Dispatch one run and see every step pass.
+
+## Bundle with the next redeploy
+
+Contract changes only ship with a redeploy, so batch them into a move:
+
+- Delete the NFT contract's four leftover public-escrow functions —
+  `game_transfer`, `unlock_cards`, `prepare_for_game`, `reclaim_card`. Nothing
+  calls them since hands moved to commit-and-burn (`commit_five_nfts_*`). The
+  first two are callable only by the game contract, which never does; the last
+  two let a player move only their own cards into and out of an escrow nothing
+  else reads. Dead code, not an exploit — but still deployed entry points the
+  open audit would have to cover.
