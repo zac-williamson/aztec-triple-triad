@@ -235,6 +235,9 @@ async function obtainClaim(node: any, address: string, l1ChainId: number): Promi
     node, l1RpcUrl, funderKey: readFunderKey(), l2Address: address,
     log: (m: string) => console.log(`    ${m}`),
     messageWaitSeconds: process.env.MESSAGE_WAIT_SECONDS ? Number(process.env.MESSAGE_WAIT_SECONDS) : 600,
+    // Unlike a playtest account, the bot pays for every game it ever plays,
+    // so it keeps the deep balance it has always had.
+    amount: 1000n * 10n ** 18n,
   });
   putStoredClaim(storePath, address, serializeClaim(address, claim, new Date().toISOString()));
   return claim;

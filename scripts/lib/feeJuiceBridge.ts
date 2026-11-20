@@ -2,9 +2,9 @@
  * Fee Juice bridging core (L1 -> L2), shared by the funding + deploy scripts.
  *
  * Fee Juice is NON-TRANSFERABLE on L2: an account cannot send it to another
- * account. The ONLY way to fund an account is to bridge from L1 via the
- * L1FeeJuicePortalManager and have the account *claim* the resulting L1->L2
- * message in a transaction (FeeJuicePaymentMethodWithClaim). This module
+ * account. The ONLY way to fund an account is to bridge from L1 through the
+ * Fee Juice portal and have the account *claim* the resulting L1->L2 message
+ * in a transaction (FeeJuicePaymentMethodWithClaim). This module
  * generalizes the proven local-devnet flow (packages/frontend/src/aztec/
  * fundDevnet.ts) to any network by taking the L1 RPC URL + an L1 funder key
  * from the caller instead of hardcoding Anvil's mnemonic.
@@ -232,48 +232,87 @@ export interface BridgeParams {
   log: LogFn;
   /** Seconds to wait for the L1->L2 message to land in the tree. */
   messageWaitSeconds?: number;
-  /** Pause before retrying a deposit whose pre-flight read a stale allowance. */
-  staleReadRetryMs?: number;
+  /** Fee Juice to bridge (base units). Default DEFAULT_BRIDGE_AMOUNT. */
+  amount?: bigint;
 }
+
+/** Multicall3 — the same address on every EVM chain, Sepolia included. */
+export const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11';
 
 /**
- * Bridge Fee Juice from L1 to a single L2 address and wait for the L1->L2
- * message to be included. mint=true uses the FeeAssetHandler so the funder does
- * not need to pre-hold Fee Juice ERC20 — only L1 (Sepolia) ETH for gas.
- *
- * Returns the full claim. The caller persists it; the destination account
- * consumes it later via FeeJuicePaymentMethodWithClaim. Throws (does not mask)
- * if the message has not arrived within messageWaitSeconds — the bridge tx is
- * already mined, so re-running will reuse the funder's L1 balance, and the claim
- * the caller already persisted (before the wait) stays valid.
+ * Fee Juice bridged per account unless the caller asks for more. Measured on
+ * the v6 testnet (20 Nov 2026): a full contract deploy spent 19, a five-game
+ * playtest campaign 14 at most. 100 leaves 5x headroom over the heaviest, and
+ * one faucet mint (1000) then funds ten bridges instead of one.
  */
-/** Whether an L1 error (or any error in its cause chain) is the ERC20 allowance revert. */
-function isInsufficientAllowance(err: unknown): boolean {
-  for (let e: any = err, depth = 0; e && depth < 8; e = e.cause, depth++) {
-    if (/ERC20InsufficientAllowance/.test(String(e.message ?? e))) return true;
-  }
-  return false;
-}
+export const DEFAULT_BRIDGE_AMOUNT = 100n * 10n ** 18n;
 
+const MAX_UINT256 = 2n ** 256n - 1n;
+
+/**
+ * Inbox inserts swing by ~40k gas with the message index they land on, so an
+ * estimate taken now can under-size the deposit when it mines. The SDK doubles
+ * its deposit estimates for the same reason (inboxDepositGasConfig); unused gas
+ * is not charged.
+ */
+const DEPOSIT_GAS_MULTIPLIER = 2n;
+
+/**
+ * Bridge `amount` Fee Juice from L1 to one L2 address and wait for the L1->L2
+ * message to be included. Returns the claim; the caller persists it and the
+ * destination account consumes it via FeeJuicePaymentMethodWithClaim.
+ *
+ * A bridge is exactly ONE L1 transaction, and in the steady state the cheapest
+ * one there is: a plain `depositToAztecPublic` from the funder, drawing on a
+ * Fee Juice float the funder already holds through an allowance it granted the
+ * portal once. That deposit is the portal's own cost (~290k gas on the v6
+ * testnet, almost all of it the Inbox insert) and nothing else is spent.
+ *
+ * When the float cannot cover the bridge (first use, or every
+ * mintAmount/amount bridges) it is one atomic transaction through Multicall3
+ * instead: mint from the faucet, approve, deposit this bridge's share, and park
+ * the rest with the funder as the next float. The standing allowance is granted
+ * once, the first time a float exists without it.
+ *
+ * Why this shape: the SDK's bridgeTokensPublic sends mint, approve and deposit
+ * as three transactions (~460-560k gas per bridge) and pre-flights each through
+ * the RPC; on a load-balanced public endpoint the deposit's estimate could land
+ * on a node that had not seen the approve yet and revert
+ * ERC20InsufficientAllowance (2 of 7 testnet bridges, 20 Nov 2026). Here no
+ * transaction depends on another one sent moments earlier: the deposit reads
+ * only a float and an allowance settled by earlier bridges, the cold start does
+ * everything inside one transaction, and nonces come from a local nonce
+ * manager rather than a fresh RPC read.
+ *
+ * Multicall3 is a stateless relay: it holds Fee Juice only inside the
+ * transaction that mints and spends it, and the claim belongs to whoever holds
+ * the claim secret, not to the L1 sender. Throws (does not mask) if a
+ * transaction reverts, if the receipt carries no deposit event for our secret
+ * hash, or if the message has not arrived within messageWaitSeconds.
+ */
 export async function bridgeFeeJuice(params: BridgeParams): Promise<FeeJuiceClaim> {
   const { node, l1RpcUrl, funderKey, l2Address, log } = params;
   const messageWaitSeconds = params.messageWaitSeconds ?? 600;
-  const staleReadRetryMs = params.staleReadRetryMs ?? 15_000;
+  const amount = params.amount ?? DEFAULT_BRIDGE_AMOUNT;
 
-  const [{ L1FeeJuicePortalManager }, { AztecAddress }, { createExtendedL1Client }, { Fr }] = await Promise.all([
-    import('@aztec-labs/aztec.js/ethereum'),
-    import('@aztec-labs/aztec.js/addresses'),
-    import('@aztec-labs/ethereum/client'),
-    import('@aztec-labs/aztec.js/fields'),
-  ]);
+  const [{ generateClaimSecret }, { AztecAddress }, { Fr }, artifacts, viem, accounts] =
+    await Promise.all([
+      import('@aztec-labs/aztec.js/ethereum'),
+      import('@aztec-labs/aztec.js/addresses'),
+      import('@aztec-labs/aztec.js/fields'),
+      import('@aztec-foundation/l1-artifacts'),
+      import('viem'),
+      import('viem/accounts'),
+    ]);
+  const { FeeAssetHandlerAbi, FeeJuicePortalAbi, TestERC20Abi } = artifacts;
+  const { createWalletClient, defineChain, encodeFunctionData, formatUnits, http, multicall3Abi, parseEventLogs, publicActions } = viem;
+  const fj = (v: bigint) => `${formatUnits(v, 18)} FJ`;
 
-  const l2 = AztecAddress.fromStringUnsafe(l2Address);
+  const l2 = AztecAddress.fromStringUnsafe(l2Address).toString() as `0x${string}`;
 
-  // Determine the L1 chain id from the RPC and pass it EXPLICITLY. Without a
-  // chain, createExtendedL1Client defaults to Anvil's 31337, so any non-Anvil L1
-  // (e.g. Sepolia) rejects the signed tx with "invalid chain id for signer".
-  // Reads (getMintAmount) don't sign, so this only bites the bridge write.
-  const { defineChain } = await import('viem');
+  // Determine the L1 chain id from the RPC and pass it EXPLICITLY, so the
+  // signer never falls back to a default chain id and gets its txs rejected
+  // with "invalid chain id for signer".
   const chainIdResp: any = await fetch(l1RpcUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -287,143 +326,109 @@ export async function bridgeFeeJuice(params: BridgeParams): Promise<FeeJuiceClai
     nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
     rpcUrls: { default: { http: [l1RpcUrl] } },
   });
-  const l1Client = createExtendedL1Client([l1RpcUrl], funderKey, chain);
+  // A local nonce manager: consecutive transactions (a bridge, the one-time
+  // allowance, the next account's bridge) take nonces from a counter in this
+  // process instead of re-reading them from an RPC that may not have caught up.
+  const account = accounts.privateKeyToAccount(funderKey as `0x${string}`, { nonceManager: accounts.nonceManager });
+  const l1Client: any = createWalletClient({ account, chain, transport: http(l1RpcUrl) }).extend(publicActions);
+  const funder = account.address;
 
-  // Derive the logger from a REAL one rather than hand-listing methods. A
-  // hand-rolled {info,warn,error,debug,verbose} stub broke on the 5.2 bump:
-  // L1TxUtils.estimateGas started calling `this.logger?.trace(...)`, so the
-  // bridge died with "this.logger?.trace is not a function" before minting.
-  // Copying a real logger's surface (trace/fatal/isLevelEnabled/level/...) and
-  // overriding only the levels we surface keeps this immune to the SDK adding
-  // another level method later.
-  const { createLogger } = await import('@aztec-labs/foundation/log');
-  const baseLogger: any = createLogger('scripts:feeJuiceBridge');
-  const bridgeLogger: any = {};
-  for (const key in baseLogger) {
-    const value = baseLogger[key];
-    bridgeLogger[key] = typeof value === 'function' ? value.bind(baseLogger) : value;
-  }
-  const noop = () => {};
-  Object.assign(bridgeLogger, {
-    info: log,
-    warn: log,
-    error: log,
-    debug: noop,
-    verbose: noop,
-    trace: noop,
-  });
+  const { l1ContractAddresses: l1 } = await node.getNodeInfo();
+  const handler = l1.feeAssetHandlerAddress.toString() as `0x${string}`;
+  const feeJuice = l1.feeJuiceAddress.toString() as `0x${string}`;
+  const portal = l1.feeJuicePortalAddress.toString() as `0x${string}`;
 
-  const portalManager = await L1FeeJuicePortalManager.new(node, l1Client, bridgeLogger);
+  const [claimSecret, claimSecretHash] = await generateClaimSecret();
+  const secretHash = claimSecretHash.toString() as `0x${string}`;
+  const [float, allowance] = (await Promise.all([
+    l1Client.readContract({ address: feeJuice, abi: TestERC20Abi, functionName: 'balanceOf', args: [funder] }),
+    l1Client.readContract({ address: feeJuice, abi: TestERC20Abi, functionName: 'allowance', args: [funder, portal] }),
+  ])) as [bigint, bigint];
 
-  // Ensure the funder holds enough Fee Juice ERC20, THEN bridge with mint=false.
-  //
-  // We do NOT use bridgeTokensPublic(..., mint=true): that path calls the SDK's
-  // tokenManager.mint(), which submits the mint tx but (unlike approve/deposit)
-  // does NOT await its receipt, so the immediately-following approve races it on
-  // the nonce. On a load-balanced RPC the approve's nonce is computed from a
-  // backend that hasn't seen the pending mint and reuses the mint's nonce ->
-  // "replacement transaction underpriced". Instead we mint (if needed) and poll
-  // the ERC20 balance until it lands (proving the mint mined), then pre-approve
-  // and poll the allowance the same way (see below), then bridge the existing
-  // balance with mint=false.
-  const tokenManager = portalManager.getTokenManager();
-  const target: bigint = await tokenManager.getMintAmount();
-  const funderAddr: string = l1Client.account.address;
-  let bal: bigint = await tokenManager.getL1TokenBalance(funderAddr as any);
-  if (bal < target) {
-    log(`Funder Fee Juice ERC20 balance ${bal} < ${target}; minting...`);
-    await tokenManager.mint(funderAddr as any);
-    let landed = false;
-    for (let i = 0; i < 90; i++) {
-      bal = await tokenManager.getL1TokenBalance(funderAddr as any);
-      if (bal >= target) {
-        landed = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-    if (!landed) {
-      throw new Error(`Mint did not land: funder balance ${bal} < ${target} after wait.`);
-    }
-    log(`Mint confirmed; funder balance ${bal}.`);
+  const depositGas = async (request: object) =>
+    (await l1Client.estimateContractGas({ ...request, account })) * DEPOSIT_GAS_MULTIPLIER;
+  let hash: `0x${string}`;
+  if (float >= amount && allowance >= amount) {
+    log(`Bridging ${fj(amount)} -> ${l2Address.slice(0, 18)}... from the funder's float of ${fj(float)} (one deposit)`);
+    const request = {
+      address: portal,
+      abi: FeeJuicePortalAbi,
+      functionName: 'depositToAztecPublic',
+      args: [l2, amount, secretHash],
+    } as const;
+    hash = await l1Client.writeContract({ ...request, account, gas: await depositGas(request) });
   } else {
-    log(`Funder already holds ${bal} Fee Juice ERC20 (>= ${target}); skipping mint.`);
-  }
-
-  // Pre-approve the portal and poll until the allowance is VISIBLE on this RPC.
-  //
-  // v6's bridgeTokensPublic approves (awaiting the receipt) and then runs an
-  // eth_call pre-flight, `simulate.depositToAztecPublic`, straight away. A
-  // load-balanced public RPC can serve that call from a backend a block behind
-  // the receipt's, and the pre-flight reverts ERC20InsufficientAllowance even
-  // though the approve is mined (publicnode Sepolia, 20 Nov 2026). v5 sent the
-  // deposit without a pre-flight, so this never surfaced before.
-  //
-  // `approve` SETS the allowance, so the SDK's own re-approve of the same amount
-  // cannot make a lagging backend see less than this one already shows; and its
-  // mining time gives every backend room to catch up with this approve.
-  const { l1ContractAddresses } = await node.getNodeInfo();
-  const portalAddr = l1ContractAddresses.feeJuicePortalAddress.toString() as `0x${string}`;
-  const allowanceAbi = [{
-    type: 'function', name: 'allowance', stateMutability: 'view',
-    inputs: [{ name: 'owner', type: 'address' }, { name: 'spender', type: 'address' }],
-    outputs: [{ name: '', type: 'uint256' }],
-  }] as const;
-  const readAllowance = async (): Promise<bigint> =>
-    (await (l1Client as any).readContract({
-      address: tokenManager.tokenAddress.toString(),
-      abi: allowanceAbi,
-      functionName: 'allowance',
-      args: [funderAddr, portalAddr],
+    const mintAmount = (await l1Client.readContract({
+      address: handler,
+      abi: FeeAssetHandlerAbi,
+      functionName: 'mintAmount',
     })) as bigint;
-  let allowance = await readAllowance();
-  if (allowance < target) {
-    await tokenManager.approve(target, portalAddr, 'FeeJuice Portal');
-    for (let i = 0; i < 90 && allowance < target; i++) {
-      allowance = await readAllowance();
-      if (allowance < target) await new Promise((r) => setTimeout(r, 2000));
-    }
-    if (allowance < target) {
-      throw new Error(`Approve did not land: portal allowance ${allowance} < ${target} after wait.`);
-    }
-    log(`Approve confirmed; portal allowance ${allowance}.`);
+    const mints = (amount + mintAmount - 1n) / mintAmount;
+    const rest = mints * mintAmount - amount;
+    const call = (target: `0x${string}`, callData: `0x${string}`) => ({ target, allowFailure: false, callData });
+    const calls = [
+      ...Array.from({ length: Number(mints) }, () =>
+        call(handler, encodeFunctionData({ abi: FeeAssetHandlerAbi, functionName: 'mint', args: [MULTICALL3_ADDRESS] }))),
+      call(feeJuice, encodeFunctionData({ abi: TestERC20Abi, functionName: 'approve', args: [portal, amount] })),
+      call(portal, encodeFunctionData({
+        abi: FeeJuicePortalAbi,
+        functionName: 'depositToAztecPublic',
+        args: [l2, amount, secretHash],
+      })),
+      ...(rest > 0n
+        ? [call(feeJuice, encodeFunctionData({ abi: TestERC20Abi, functionName: 'transfer', args: [funder, rest] }))]
+        : []),
+    ];
+    log(
+      `Bridging ${fj(amount)} -> ${l2Address.slice(0, 18)}... in one tx: mint ${fj(mints * mintAmount)}, ` +
+        `deposit ${fj(amount)}, park ${fj(rest)} as the funder's next float (float was ${fj(float)})`,
+    );
+    const request = { address: MULTICALL3_ADDRESS, abi: multicall3Abi, functionName: 'aggregate3', args: [calls] } as const;
+    hash = await l1Client.writeContract({ ...request, account, gas: await depositGas(request) });
   }
+  log(`  L1 tx ${hash}`);
+  const receipt = await l1Client.waitForTransactionReceipt({ hash });
+  if (receipt.status !== 'success') {
+    throw new Error(`Bridge tx ${hash} reverted on L1 (block ${receipt.blockNumber}).`);
+  }
+  const deposit = parseEventLogs({ abi: FeeJuicePortalAbi, eventName: 'DepositToAztecPublic', logs: receipt.logs })
+    .find((e: any) =>
+      e.address.toLowerCase() === portal.toLowerCase() &&
+      e.args.secretHash.toLowerCase() === secretHash.toLowerCase());
+  if (!deposit) {
+    throw new Error(`Bridge tx ${hash} succeeded but emitted no DepositToAztecPublic for our secret hash.`);
+  }
+  const { key, index } = (deposit as any).args as { key: `0x${string}`; index: bigint };
+  log(`Bridged in L1 block ${receipt.blockNumber} for ${receipt.gasUsed} gas. leafIndex=${index}`);
 
-  log(`Bridging ${target} Fee Juice -> ${l2Address.slice(0, 18)}... (mint=false)`);
-  // Seeing the allowance once is not enough: the SDK pre-flights the deposit
-  // twice (simulate, then estimateGas), and a load-balanced public RPC can
-  // answer either from a backend several blocks behind — one that reports the
-  // allowance as 0 after both approves are mined and after this RPC already
-  // showed it (publicnode Sepolia, 20 Nov 2026: 2 of 7 bridges). Nothing is
-  // deposited when a pre-flight fails, so retry — but only while a fresh read
-  // still shows the allowance in place. A real shortfall throws at once.
-  let result: Awaited<ReturnType<typeof portalManager.bridgeTokensPublic>>;
-  for (let attempt = 1; ; attempt++) {
-    try {
-      result = await portalManager.bridgeTokensPublic(l2, target, false);
-      break;
-    } catch (err) {
-      if (!isInsufficientAllowance(err) || attempt >= 4) throw err;
-      const now = await readAllowance();
-      if (now < target) throw err;
-      log(`Deposit pre-flight read a stale allowance (attempt ${attempt}); this RPC shows ${now} — retrying.`);
-      await new Promise((r) => setTimeout(r, staleReadRetryMs));
-    }
+  // Grant the portal a standing allowance on the funder's float, once, so later
+  // bridges are a single plain deposit. Settled long before the next bridge
+  // reads it: the L1->L2 wait below alone takes a minute or more.
+  if (allowance < MAX_UINT256 / 2n) {
+    const approveHash = await l1Client.writeContract({
+      address: feeJuice,
+      abi: TestERC20Abi,
+      functionName: 'approve',
+      args: [portal, MAX_UINT256],
+      account,
+    });
+    const approved = await l1Client.waitForTransactionReceipt({ hash: approveHash });
+    if (approved.status !== 'success') throw new Error(`Standing portal allowance tx ${approveHash} reverted.`);
+    log(`Standing portal allowance granted on the funder's float (${approved.gasUsed} gas, once).`);
   }
-  log(`Bridged. claimAmount=${result.claimAmount} leafIndex=${result.messageLeafIndex}`);
 
   const claim: FeeJuiceClaim = {
-    claimAmount: result.claimAmount,
-    claimSecret: result.claimSecret,
-    claimSecretHash: result.claimSecretHash,
-    messageHash: result.messageHash,
-    messageLeafIndex: result.messageLeafIndex,
+    claimAmount: amount,
+    claimSecret,
+    claimSecretHash,
+    messageHash: key,
+    messageLeafIndex: index,
   };
 
   // Wait for the L1->L2 message to be included in the L2 tree. On testnet the
   // public sequencer mines blocks on its own (no SEQ_MIN_TX_PER_BLOCK=0 needed),
   // so this is a straight poll until the witness exists.
-  const messageHash = Fr.fromHexString(result.messageHash);
+  const messageHash = Fr.fromHexString(key);
   log(`Waiting up to ${messageWaitSeconds}s for the L1->L2 message to be included...`);
   let confirmed = false;
   for (let i = 0; i < messageWaitSeconds; i++) {
@@ -440,7 +445,7 @@ export async function bridgeFeeJuice(params: BridgeParams): Promise<FeeJuiceClai
   }
   if (!confirmed) {
     throw new Error(
-      `L1->L2 message ${result.messageHash} not included within ${messageWaitSeconds}s. ` +
+      `L1->L2 message ${key} not included within ${messageWaitSeconds}s. ` +
         `The bridge tx is mined and the claim is persisted; re-run once Sepolia propagates, ` +
         `or raise messageWaitSeconds.`,
     );
