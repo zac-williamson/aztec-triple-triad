@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { padToHand, sortProofChain } from '../settlementArgs';
 
 class FakeFr { constructor(public v: bigint) {} }
@@ -59,6 +59,18 @@ describe('sortProofChain', () => {
  * claim is refused in the browser before it ever reaches the chain.
  */
 describe('buildClaimAbandonedArgs move-count guard', () => {
+  // The first call past the guard imports proofWorker (bb.js + noir_js) and
+  // fieldUtils (the SDK's Fr), and starts Barretenberg's WASM to hash the
+  // canonical initial state. None of that is what these tests are about, and on
+  // a 2-core CI runner it alone outgrew the 5s per-test budget after the v6
+  // bump (5018ms on the first case). Pay it once, up front, under a budget that
+  // fits it, so each case times only the guard.
+  beforeAll(async () => {
+    await import('../fieldUtils');
+    const { computeCanonicalInitialHash } = await import('../settlementArgs');
+    await computeCanonicalInitialHash();
+  }, 120_000);
+
   const moves = (n: number) =>
     Array.from({ length: n }, (_, i) => ({
       proof: '', publicInputs: [], startStateHash: `${i}`, endStateHash: `${i + 1}`,
