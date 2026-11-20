@@ -24,7 +24,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 // Aztec SDK
 import { createAztecNodeClient } from '@aztec-labs/aztec.js/node';
 import { Fr } from '@aztec-labs/aztec.js/fields';
-import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
 import { Contract } from '@aztec-labs/aztec.js/contracts';
 import { EmbeddedWallet } from '@aztec-labs/wallets/embedded';
 import { GrumpkinScalar } from '@aztec-labs/foundation/curves/grumpkin';
@@ -142,6 +141,9 @@ describe('E2E Aztec Settlement', () => {
   let p2Addr: any;
   let nftContract: any;
   let gameContract: any;
+  let tokenContract: any;
+  /** Fields in an UltraHonkZKProof, read off process_game's ABI (no magic number). */
+  let proofLength: number;
 
   // Barretenberg + circuit artifacts
   let api: Barretenberg;
@@ -221,6 +223,9 @@ describe('E2E Aztec Settlement', () => {
     console.log('Computing VK hashes...');
     const handVk = await computeVkHash(api, proveHandArtifact.bytecode);
     const moveVk = await computeVkHash(api, gameMoveArtifact.bytecode);
+    // The constructor also takes the dummy circuit's VK hash: the abandoned-game
+    // flow pads missing moves with dummy proofs.
+    const dummyVk = await computeVkHash(api, loadCircuitArtifact('dummy_move').bytecode);
     console.log(`  hand_vk_hash: ${handVk.hash}`);
     console.log(`  move_vk_hash: ${moveVk.hash}`);
 
@@ -230,6 +235,11 @@ describe('E2E Aztec Settlement', () => {
     // --- Deploy contracts ---
     const nftArtifact = loadContractArtifact('triple_triad_nft-TripleTriadNFT');
     const gameArtifact = loadContractArtifact('triple_triad_game-TripleTriadGame');
+    const tokenArtifact = loadContractArtifact('arena_token-ArenaToken');
+    const handProofParam = gameArtifact.functions
+      .find((f: any) => f.name === 'process_game')
+      .parameters.find((p: any) => p.name === 'hand_proof_1');
+    proofLength = handProofParam.type.length; // UltraHonkZKProof is [Field; N]
 
     console.log('Deploying TripleTriadNFT...');
     function encodeCompressedString(s: string): Fr {
@@ -251,11 +261,21 @@ describe('E2E Aztec Settlement', () => {
     await wallet.registerSender(nftContract.address, 'nft-contract');
 
     console.log('Deploying TripleTriadGame...');
+    ({ contract: tokenContract } = await Contract.deploy(wallet, tokenArtifact, [
+      deployerAddr,
+    ]).send(sendAs(deployerAddr)));
+    await wallet.registerSender(tokenContract.address, 'token-contract');
+
+    // Constructor: (admin, nft, hand_vk_hash, move_vk_hash, token, dummy_vk_hash,
+    // permissive_vks) — as scripts/deploy-contracts.ts deploys it, real VKs only.
     ({ contract: gameContract } = await Contract.deploy(wallet, gameArtifact, [
+      deployerAddr,
       nftContract.address,
       Fr.fromHexString(handVk.hash),
       Fr.fromHexString(moveVk.hash),
-      AztecAddress.ZERO, // token_address (not needed for this test)
+      tokenContract.address,
+      Fr.fromHexString(dummyVk.hash),
+      false,
     ]).send(sendAs(deployerAddr)));
     console.log(`  Game deployed at: ${gameContract.address}`);
 
@@ -266,6 +286,11 @@ describe('E2E Aztec Settlement', () => {
     await nftContract.methods
       .set_game_contract(gameContract.address)
       .send(sendAs(deployerAddr));
+    // Starter cards come with 100 ARNA and settlement pays +20 each, so the NFT
+    // and the token must know each other (same wiring as deploy-contracts.ts).
+    await nftContract.methods.set_token_contract(tokenContract.address).send(sendAs(deployerAddr));
+    await tokenContract.methods.set_nft_contract(nftContract.address).send(sendAs(deployerAddr));
+    await tokenContract.methods.set_game_contract(gameContract.address).send(sendAs(deployerAddr));
 
     // --- Mint cards to players ---
     // Player 1: self-mint starter cards via get_cards_for_new_player
@@ -291,7 +316,7 @@ describe('E2E Aztec Settlement', () => {
 
     // Verify Player 1 notes are visible
     const { result: p1CardsArr } = await nftContract.methods
-      .get_private_cards(p1Addr, 0)
+      .get_nfts_for_user(p1Addr, 0)
       .simulate({ from: p1Addr });
     const p1Cards = p1CardsArr[0];
     const p1Count = p1Cards.filter((v: any) => BigInt(v) !== 0n).length;
@@ -321,7 +346,7 @@ describe('E2E Aztec Settlement', () => {
 
     // Verify P2 notes
     const { result: p2CardsArr } = await nftContract.methods
-      .get_private_cards(p2Addr, 0)
+      .get_nfts_for_user(p2Addr, 0)
       .simulate({ from: p2Addr });
     const p2Cards = p2CardsArr[0];
     const p2Count = p2Cards.filter((v: any) => BigInt(v) !== 0n).length;
@@ -474,8 +499,8 @@ describe('E2E Aztec Settlement', () => {
     console.log(`  Winner: ${gameProofs.winner}`);
 
     expect(gameProofs.moveProofs.length).toBe(9);
-    expect(gameProofs.handProof1.proofFields.length).toBe(500);
-    expect(gameProofs.handProof2.proofFields.length).toBe(500);
+    expect(gameProofs.handProof1.proofFields.length).toBe(proofLength);
+    expect(gameProofs.handProof2.proofFields.length).toBe(proofLength);
 
     // ================================================================
     // 9. Verify proof chain integrity
@@ -543,6 +568,10 @@ describe('E2E Aztec Settlement', () => {
         opponentCardIds.map((id: number) => new Fr(BigInt(id))),
         callerRandomness,
         opponentRandomness,
+        // Blinding factors are revealed at settlement so the contract can check
+        // the ids it mints are the ones each player committed.
+        toFr(isP1Winner || isDraw ? p1Blinding : p2Blinding),
+        toFr(isP1Winner || isDraw ? p2Blinding : p1Blinding),
       )
       .send(sendAs(callerAddr));
     console.log('  process_game transaction succeeded!');
@@ -596,13 +625,13 @@ describe('E2E Aztec Settlement', () => {
 
     // Verify card counts
     const { result: winnerCardsArr } = await nftContract.methods
-      .get_private_cards(winnerAddr, 0)
+      .get_nfts_for_user(winnerAddr, 0)
       .simulate({ from: winnerAddr });
     const winnerCards = winnerCardsArr[0];
     const winnerCardCount = winnerCards.filter((v: any) => BigInt(v) !== 0n).length;
 
     const { result: loserCardsArr } = await nftContract.methods
-      .get_private_cards(loserAddr, 0)
+      .get_nfts_for_user(loserAddr, 0)
       .simulate({ from: loserAddr });
     const loserCards = loserCardsArr[0];
     const loserCardCount = loserCards.filter((v: any) => BigInt(v) !== 0n).length;

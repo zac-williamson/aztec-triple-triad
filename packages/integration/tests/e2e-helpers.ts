@@ -223,7 +223,23 @@ export function stateToHashInput(state: GameState): bigint[] {
   fields.push(BigInt(state.player1Score));
   fields.push(BigInt(state.player2Score));
   fields.push(state.currentTurn === 'player1' ? 1n : 2n);
+  // The circuit's hash_board_state also covers who FIRST placed each card
+  // (set at placement, never changed by capture) — 30 fields in all, as in
+  // packages/frontend/src/aztec/proofWorker.ts computeBoardStateHash.
+  for (const owner of originalOwners(state)) fields.push(BigInt(owner));
   return fields;
+}
+
+/** original_owners[9], row-major: 1 or 2 for whoever first placed a card there, 0 if empty. */
+export function originalOwners(state: GameState): string[] {
+  const owners: string[] = [];
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      const oo = state.board[r][c].originalOwner;
+      owners.push(oo === 'player1' ? '1' : oo === 'player2' ? '2' : '0');
+    }
+  }
+  return owners;
 }
 
 /** Compute pedersen hash of state (matching the Noir contract's computation). */
@@ -431,6 +447,8 @@ export async function generateFullGameProofs(
       scores_before: [String(stateBefore.player1Score), String(stateBefore.player2Score)],
       scores_after: [String(stateAfter.player1Score), String(stateAfter.player2Score)],
       current_turn_before: stateBefore.currentTurn === 'player1' ? '1' : '2',
+      original_owners_before: originalOwners(stateBefore),
+      original_owners_after: originalOwners(stateAfter),
       player_card_ids: playerCardIds.map(String),
       blinding_factor: blindingFactor,
     };
