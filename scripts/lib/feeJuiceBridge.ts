@@ -312,9 +312,9 @@ export async function bridgeFeeJuice(params: BridgeParams): Promise<FeeJuiceClai
   // the nonce. On a load-balanced RPC the approve's nonce is computed from a
   // backend that hasn't seen the pending mint and reuses the mint's nonce ->
   // "replacement transaction underpriced". Instead we mint (if needed) and poll
-  // the ERC20 balance until it lands (proving the mint mined), then bridge the
-  // existing balance with mint=false — where approve() awaits its receipt before
-  // the deposit, so the two are correctly sequenced on ANY RPC.
+  // the ERC20 balance until it lands (proving the mint mined), then pre-approve
+  // and poll the allowance the same way (see below), then bridge the existing
+  // balance with mint=false.
   const tokenManager = portalManager.getTokenManager();
   const target: bigint = await tokenManager.getMintAmount();
   const funderAddr: string = l1Client.account.address;
@@ -337,6 +337,45 @@ export async function bridgeFeeJuice(params: BridgeParams): Promise<FeeJuiceClai
     log(`Mint confirmed; funder balance ${bal}.`);
   } else {
     log(`Funder already holds ${bal} Fee Juice ERC20 (>= ${target}); skipping mint.`);
+  }
+
+  // Pre-approve the portal and poll until the allowance is VISIBLE on this RPC.
+  //
+  // v6's bridgeTokensPublic approves (awaiting the receipt) and then runs an
+  // eth_call pre-flight, `simulate.depositToAztecPublic`, straight away. A
+  // load-balanced public RPC can serve that call from a backend a block behind
+  // the receipt's, and the pre-flight reverts ERC20InsufficientAllowance even
+  // though the approve is mined (publicnode Sepolia, 20 Nov 2026). v5 sent the
+  // deposit without a pre-flight, so this never surfaced before.
+  //
+  // `approve` SETS the allowance, so the SDK's own re-approve of the same amount
+  // cannot make a lagging backend see less than this one already shows; and its
+  // mining time gives every backend room to catch up with this approve.
+  const { l1ContractAddresses } = await node.getNodeInfo();
+  const portalAddr = l1ContractAddresses.feeJuicePortalAddress.toString() as `0x${string}`;
+  const allowanceAbi = [{
+    type: 'function', name: 'allowance', stateMutability: 'view',
+    inputs: [{ name: 'owner', type: 'address' }, { name: 'spender', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  }] as const;
+  const readAllowance = async (): Promise<bigint> =>
+    (await (l1Client as any).readContract({
+      address: tokenManager.tokenAddress.toString(),
+      abi: allowanceAbi,
+      functionName: 'allowance',
+      args: [funderAddr, portalAddr],
+    })) as bigint;
+  let allowance = await readAllowance();
+  if (allowance < target) {
+    await tokenManager.approve(target, portalAddr, 'FeeJuice Portal');
+    for (let i = 0; i < 90 && allowance < target; i++) {
+      allowance = await readAllowance();
+      if (allowance < target) await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (allowance < target) {
+      throw new Error(`Approve did not land: portal allowance ${allowance} < ${target} after wait.`);
+    }
+    log(`Approve confirmed; portal allowance ${allowance}.`);
   }
 
   log(`Bridging ${target} Fee Juice -> ${l2Address.slice(0, 18)}... (mint=false)`);
