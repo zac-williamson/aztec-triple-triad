@@ -22,6 +22,11 @@
  * on claim so every account is consumed fresh-state exactly once (keeps every
  * starter-state assert intact — no relaxed asserts anywhere).
  *
+ * DEPLOYMENT-STAMPED: each entry records the chain's rollupVersion and the NFT
+ * its cards were minted on. An entry for another chain or NFT is re-provisioned
+ * in place (same keys, fresh deploy/mint); the harness only ever claims entries
+ * for the NFT under test (packages/playtest/src/playtestPool.ts).
+ *
  * Usage:
  *   export AZTEC_PXE_URL=https://aztec-testnet.drpc.org
  *   export TESTNET_L1_RPC_URL=https://...sepolia...
@@ -57,6 +62,7 @@ import {
 } from './lib/feeJuiceBridge';
 import { headroomMaxFeesPerGas } from './lib/feeSettings';
 import { playtestAccount } from './lib/playtestAccounts';
+import { entryStatus, type Deployment, type PoolEntry } from '../packages/playtest/src/playtestPool';
 // Reuse the frontend's exact field + note-effect helpers so the manifest's note
 // coordinates are byte-identical to what the browser produces/expects. These
 // modules are import.meta-free (cardStore is type-only), so they load in Node.
@@ -72,26 +78,10 @@ const MANIFEST_PATH = resolve(ROOT_DIR, 'packages/playtest/.artifacts/playtest-a
 const TX_TIMEOUT = 600; // seconds — testnet block inclusion + proving headroom
 const PXE_SYNC_WAIT_MS = 8000; // match deploy-testnet.ts post-create sync settle
 
-/** One pool account, as stored in the harness-injected manifest. */
-interface ManifestEntry {
-  index: number;
-  address: string;
-  /** THROWAWAY playtest-account keys (hex) — deterministic, browser-bound by design. */
-  secret: string;
-  salt: string;
-  signingKey: string;
-  /** Full StoredCard[] (superset of the plan's {cardId,randomness}) so the harness
-   *  can seed the browser cardStore verbatim and re-import via import_note. */
-  starterCards: StoredCard[];
-  /** Single-use flag: the harness flips this to true on claim. */
-  used: boolean;
-  /** rollupVersion of the chain this account was provisioned on. The rc
-   *  testnet re-genesises on upgrades, orphaning every account — an entry
-   *  stamped for a different chain is re-provisioned, not skipped (same
-   *  deterministic keys, fresh deploy). Entries without a stamp predate it
-   *  and are treated as stale. */
-  rollupVersion?: number;
-}
+/** One pool account, as stored in the harness-injected manifest. The shape —
+ *  and which entries still belong to this deployment — lives in
+ *  packages/playtest/src/playtestPool.ts, shared with the harness that claims them. */
+type ManifestEntry = PoolEntry<StoredCard>;
 
 interface ProvisionOpts {
   nftAddress: string;
@@ -435,11 +425,13 @@ async function main() {
     loadArtifact('arena_token-ArenaToken'),
   ]);
 
-  // Chain identity: accounts only exist on the chain they were deployed to,
-  // and the rc testnet re-genesises on upgrades. Stamp new entries and treat
-  // a mismatched (or missing) stamp as "this account does not exist anymore".
+  // Deployment identity: an account only exists on the chain it was deployed
+  // to (the testnet re-genesises on upgrades), and its starter cards only in the
+  // NFT they were minted on (a redeploy replaces it). Stamp new entries with
+  // both; packages/playtest/src/playtestPool.ts decides what an old stamp means.
   const { rollupVersion } = await createAztecNodeClient(PXE_URL).getNodeInfo();
   const currentRollupVersion = Number(rollupVersion);
+  const deployment: Deployment = { rollupVersion: currentRollupVersion, nftAddress };
   console.log(`  Chain:  rollupVersion ${currentRollupVersion}`);
 
   const byIndex = new Map<number, ManifestEntry>(loadManifest().map((e) => [e.index, e]));
@@ -450,15 +442,28 @@ async function main() {
   for (let i = start; i < start + count; i++) {
     const existing = byIndex.get(i);
     if (existing && existing.starterCards?.length === STARTER_CARD_COUNT) {
-      if (existing.rollupVersion === currentRollupVersion) {
+      const status = entryStatus(existing, deployment);
+      if (status === 'current') {
         console.log(`\nskip #${i} — already provisioned (${existing.address}, used=${existing.used})`);
         skipped++;
         continue;
       }
-      console.log(`\nre-provision #${i} — manifest entry is from a different chain (rollupVersion ${existing.rollupVersion ?? 'unstamped'} vs ${currentRollupVersion})`);
+      if (status === 'unstamped') {
+        // Same chain, NFT unknown. If its cards are on the current NFT the
+        // starter mint was already claimed and re-provisioning would throw, so
+        // leave it; the harness will not claim it either.
+        console.log(`\nskip #${i} — provisioned on this chain before entries recorded their NFT; ` +
+          `it cannot be told apart from a previous deployment's, so the harness will not claim it`);
+        skipped++;
+        continue;
+      }
+      console.log(`\nre-provision #${i} — manifest entry is for another deployment (rollupVersion ` +
+        `${existing.rollupVersion ?? 'unstamped'}, NFT ${existing.nftAddress ?? 'unstamped'} vs ` +
+        `${currentRollupVersion}, ${nftAddress})`);
     }
     const entry = await provisionOne(i, opts);
     entry.rollupVersion = currentRollupVersion;
+    entry.nftAddress = nftAddress;
     byIndex.set(i, entry);
     // Incremental write so a mid-run failure preserves completed accounts.
     saveManifest([...byIndex.values()].sort((a, b) => a.index - b.index));
@@ -466,9 +471,9 @@ async function main() {
   }
 
   const total = [...byIndex.values()];
-  const free = total.filter((e) => !e.used).length;
+  const free = total.filter((e) => !e.used && entryStatus(e, deployment) === 'current').length;
   console.log(`\n=== Done: provisioned ${provisioned}, skipped ${skipped} ===`);
-  console.log(`Pool: ${total.length} accounts total, ${free} unused.`);
+  console.log(`Pool: ${total.length} accounts total, ${free} unused for this deployment (NFT ${nftAddress}).`);
 }
 
 main().catch((err) => {

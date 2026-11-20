@@ -75,7 +75,8 @@ export const ARTIFACTS_DIR = resolve(PLAYTEST_DIR, '.artifacts');
 export const STACK_INFO_PATH = resolve(ARTIFACTS_DIR, 'stack.json');
 /**
  * Pre-provisioned playtest account pool (scripts/provision-playtest-accounts.ts).
- * In TESTNET mode the harness claims the next unused account from here and seeds
+ * In TESTNET mode the harness claims the next unused account minted on the NFT
+ * under test (packages/playtest/src/playtestPool.ts) and seeds
  * its keys + minted starter cards into localStorage, so onboarding restores an
  * already-deployed account with no app faucet. See docs/plan/PLAYTEST_SELFFUND.md.
  */

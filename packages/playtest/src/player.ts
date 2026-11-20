@@ -11,6 +11,7 @@ import type { PhaseSnapshot, ClickTarget } from '../../frontend/src/testkit/cont
 import { FRONTEND_URL, TESTNET, PLAYTEST_ACCOUNTS_PATH, readContractAddresses } from './env.js';
 import { launchIsolatedBrowser } from './browser.js';
 import { registerBrowser, deregisterBrowser, playwrightChromiumLeaders } from './stack.js';
+import { claimNext, type PoolEntry } from './playtestPool.js';
 
 declare global {
   interface Window {
@@ -117,21 +118,9 @@ export const TIMEOUTS = TESTNET ? {
   eventually: 180_000,      // private-state eventual consistency (PXE note discovery) after a tx
 };
 
-/** One account in the provisioned pool manifest (provision-playtest-accounts.ts). */
-interface PlaytestPoolEntry {
-  index: number;
-  address: string;
-  secret: string;
-  salt: string;
-  signingKey: string;
-  /** Full StoredCard[] — seeded verbatim into the browser cardStore. */
-  starterCards: unknown[];
-  used: boolean;
-}
-
 /**
- * Claim the next unused account from the provisioned pool (SINGLE-USE), mark it
- * used in the manifest, and build the localStorage seed that makes the app
+ * Claim the next unused account provisioned for THIS deployment (SINGLE-USE),
+ * mark it used in the manifest, and build the localStorage seed that makes the app
  * restore it as an already-deployed account with its 5 starter cards — no app
  * faucet, no funding step (docs/plan/PLAYTEST_SELFFUND.md). Serial single-worker
  * launches make the manifest read-modify-write race-free.
@@ -141,22 +130,20 @@ interface PlaytestPoolEntry {
  * `deployed`, skips minting, and re-imports the cards from the seeded cardStore.
  */
 function claimPlaytestAccount(): Record<string, string> {
-  let manifest: PlaytestPoolEntry[];
+  let manifest: PoolEntry[];
   try {
-    manifest = JSON.parse(readFileSync(PLAYTEST_ACCOUNTS_PATH, 'utf-8')) as PlaytestPoolEntry[];
+    manifest = JSON.parse(readFileSync(PLAYTEST_ACCOUNTS_PATH, 'utf-8')) as PoolEntry[];
   } catch {
     throw new Error(
       `PLAYTEST_TESTNET needs a provisioned account pool at ${PLAYTEST_ACCOUNTS_PATH}.\n` +
         `Run: npx tsx scripts/provision-playtest-accounts.ts --count <N>`,
     );
   }
-  const entry = manifest.find((e) => !e.used);
-  if (!entry) {
-    throw new Error(
-      `Playtest account pool exhausted (all ${manifest.length} used — single-use). Provision more:\n` +
-        `  npx tsx scripts/provision-playtest-accounts.ts --start ${manifest.length} --count <N>`,
-    );
-  }
+  // Only an entry minted on the NFT under test: the pool outlives deployments
+  // (re-genesis, redeploys), and an older entry's cards exist nowhere this app
+  // looks. Throws, with the provisioning command, when there is none.
+  const { nft, game } = readContractAddresses();
+  const entry = claimNext(manifest, nft);
 
   // Well-formedness guard (no mask): a corrupt/partial manifest entry must fail
   // loud here, not silently seed garbage and fall through to the removed funding
@@ -171,10 +158,8 @@ function claimPlaytestAccount(): Record<string, string> {
     throw new Error(`Manifest entry #${entry.index} missing its address or 5 starter cards — re-provision.`);
   }
 
-  entry.used = true;
   writeFileSync(PLAYTEST_ACCOUNTS_PATH, JSON.stringify(manifest, null, 2));
 
-  const { nft, game } = readContractAddresses();
   return {
     [`aztec_tt_account_secret_${game}`]: entry.secret,
     [`aztec_tt_account_salt_${game}`]: entry.salt,
