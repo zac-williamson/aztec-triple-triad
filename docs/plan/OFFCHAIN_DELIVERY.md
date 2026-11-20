@@ -1,6 +1,7 @@
 # Card notes on v6: `offchain_receive` instead of `import_note`
 
-**Status:** proposal, not built (20 November 2026). It changes the NFT
+**Status:** proposal (20 November 2026). Step 1, a spike, is done; see
+[Steps](#steps). It changes the NFT
 contract, and our contracts are not upgradeable, so it ships only with a
 redeploy. Bundle it with the next network move
 ([NETWORK_MOVE.md](../NETWORK_MOVE.md)).
@@ -121,19 +122,34 @@ aztec-nr internals, but only on that rare path.
 
 ### Steps
 
-1. **Spike on the local network (no redeploy).** Change only
-   `purchase_card_pack`. Receive its cards with `offchain_receive`, and have
-   `full-game.spec.ts` assert that the pack's cards appear without
-   `import_note`. The spike settles three things not yet verified:
-   - that a `NewNote` struct literal compiles from our crate;
-   - how the ABI wants `tx_hash: Option<Field>` encoded from TypeScript;
-   - that `get_nfts_for_user` sees the received notes without an explicit
-     sync.
+1. **Spike: done 20 November 2026**, on branch `spike/offchain-delivery`
+   (not for deployment). `get_cards_for_new_player` and `purchase_card_pack`
+   build their notes with a `create_note_with_randomness` helper and deliver
+   them offchain. Results:
+   - A `NewNote` struct literal compiles from our crate, with no warnings.
+   - In TXE (`triple_triad_nft/src/test/offchain_delivery.nr`), the cards
+     are invisible after the tx and appear after `offchain_receive` with no
+     `import_note` and no explicit sync. Receiving the same messages twice
+     does not duplicate them. The full NFT suite passes, 30/30.
+   - A received note proves the randomness survived. The inbox stores a
+     note only if its hash matches one the tx committed, and that hash was
+     computed in-circuit from our derivable randomness.
+   - TypeScript encoding, checked against the deployed NFT ABI: each message
+     is `{ ciphertext: msg.payload, recipient, tx_hash, anchor_block_timestamp }`.
+     A bare `tx_hash` encodes as `Some` and `null` as `None`; plain arrays
+     encode as `BoundedVec`s.
+   - Gates: `get_cards_for_new_player` 30,096 → 29,439 and
+     `purchase_card_pack` 36,161 → 34,679. That is 2–4% of each function's
+     own circuit. The kernels dominate the full proof, so players won't
+     notice the difference.
+   - Not covered: the browser. TXE runs the same aztec-nr inbox code, but
+     against TXE's oracles instead of the browser PXE's IndexedDB store.
 2. **At the next redeploy.**
    - Change every mint site and drop `CardCreated`.
    - Switch the frontend's starter, pack and settlement paths, and the bot
      provisioner.
-   - Measure the gate change on `purchase_card_pack`.
+   - Prove it in the browser: `full-game.spec.ts` asserts that the pack's
+     cards appear without `import_note`.
 3. **Later, optional.** Forward the counterparty's settlement messages over
    the relay, so the player who didn't settle needs nothing either.
 
