@@ -18,7 +18,8 @@ for v5, 2026-06-30 for rc.2, ~2026-08-28 onto the 5.2 line, and ~2026-10-27
 onto v6, which also retired the `*.testnet.rpc.aztec-labs.com` hosts), each
 time silently orphaning deployed contracts. Run
 `npx tsx scripts/check-testnet-state.ts` when anything on-chain looks dead, and
-expect to repeat this whenever the testnet moves. An Alpha **mainnet** also
+expect to repeat this whenever the testnet moves — the procedure, in order, is
+[docs/NETWORK_MOVE.md](docs/NETWORK_MOVE.md). An Alpha **mainnet** also
 runs 6.0.0 (`https://aztec-mainnet.drpc.org`); this app is not deployed there. The June-2026 lane-based
 revival (docs/plan/MASTER_PLAN.md) is finished; those docs are history, not
 current process. `docs/history/V5_MIGRATION_REPORT.md` records the v4→v5

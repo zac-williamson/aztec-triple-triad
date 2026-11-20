@@ -175,7 +175,8 @@ npx tsx scripts/check-testnet-state.ts   # and confirm they are still alive
 The testnet re-genesises on protocol upgrades and silently orphans deployed
 contracts; it has happened four times, most recently onto v6.0.0 in late
 October 2026. If anything on-chain looks dead, run the
-check above before debugging anything else.
+check above before debugging anything else. Moving to a new network
+version is [docs/NETWORK_MOVE.md](docs/NETWORK_MOVE.md).
 
 The contracts are **not upgradeable**: there is no class-update path, so a contract change — or a testnet re-genesis — means a redeploy at new addresses, which `scripts/deploy-testnet.ts` writes to `.env.testnet`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the contract details.
 
