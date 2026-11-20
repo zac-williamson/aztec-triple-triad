@@ -9,14 +9,17 @@ join, settle — and settlement recursively verifies the full proof transcript
 the wagered card. See `README.md` for setup as a user; this file is for people
 (and agents) changing the code.
 
-## Current state (August 2026)
+## Current state (November 2026)
 
-The app runs on the **Aztec v5 testnet** (5.2.0-nightly.20260815). Beware: the
-testnet **re-genesises on protocol upgrades** — three times so far (2026-06-17
-for v5, 2026-06-30 for rc.2, and again by 2026-08-28 onto the 5.2 line), each
+The app targets the **Aztec v6 testnet** (6.0.0 "Tierra", RPC
+`https://aztec-testnet.drpc.org`, rollupVersion 679261766). Beware: the
+testnet **re-genesises on protocol upgrades** — four times so far (2026-06-17
+for v5, 2026-06-30 for rc.2, ~2026-08-28 onto the 5.2 line, and ~2026-10-27
+onto v6, which also retired the `*.testnet.rpc.aztec-labs.com` hosts), each
 time silently orphaning deployed contracts. Run
 `npx tsx scripts/check-testnet-state.ts` when anything on-chain looks dead, and
-expect to repeat this whenever the testnet moves. The June-2026 lane-based
+expect to repeat this whenever the testnet moves. An Alpha **mainnet** also
+runs 6.0.0 (`https://aztec-mainnet.drpc.org`); this app is not deployed there. The June-2026 lane-based
 revival (docs/plan/MASTER_PLAN.md) is finished; those docs are history, not
 current process. `docs/history/V5_MIGRATION_REPORT.md` records the v4→v5
 migration and its lessons (rate-limiter detour, idle-joiner anchor wedge).
@@ -51,47 +54,52 @@ is the wishlist.
 
 | What | Pin |
 |------|-----|
-| Aztec CLI / sandbox install | `5.2.0-nightly.20260815` (worktree `.aztecrc` pins it) |
-| npm `@aztec/*` packages | `5.2.0-nightly.20260815` |
-| aztec-nr git tags in `Nargo.toml` (contracts) | `v5.2.0-nightly.20260815` |
-| nargo / `@noir-lang/noir_js` | `1.0.0-beta.25` |
+| Aztec CLI / local network install | `6.0.0` (`.aztecrc` pins it) |
+| npm `@aztec-labs/*` packages | `6.0.0` |
+| npm `@aztec-foundation/bb.js` (and the other `@aztec-foundation/*`) | `6.0.0` — NOT npm `latest` (6.1.x) |
+| aztec-nr git tag in `Nargo.toml` (contracts) | `v6.0.0` from `github.com/aztec-labs-eng/aztec-nr` |
+| `bb_proof_verification` git tag (game contract) | `v6.0.0` from `AztecProtocol/aztec-packages` (`barretenberg/noir/bb_proof_verification`) |
+| nargo / `@noir-lang/noir_js` | `1.0.0-rc.3` |
 | poseidon git tag (circuits) | `v0.3.0` |
-| Node.js | >= 22 |
+| Node.js | >= 24.15 |
 
-One uniform set on **5.2.0-nightly.20260815** (August 2026), chosen to match
-the live testnet node's `nodeVersion` EXACTLY — protocol compatibility is what
-matters, so pin to the node, not to whatever npm calls `latest`. Treat it as
-one set — never bump one without the others, never mix
-versions across packages. The standalone circuits carry no aztec-nr deps (only
-poseidon); the three contracts carry the aztec-nr tags.
+One uniform set on **6.0.0** (November 2026), chosen to match the live testnet
+node's `nodeVersion` EXACTLY — protocol compatibility is what matters, so pin
+to the node, not to whatever npm calls `latest`. Treat it as one set — never
+bump one without the others, never mix versions across packages. The
+standalone circuits carry no aztec-nr deps (only poseidon); the three
+contracts carry the aztec-nr tags.
+
+**v6 moved things.** The npm scope `@aztec/*` stops at 5.3.0: v6 is
+`@aztec-labs/*`, except the foundation packages (`bb.js`, `l1-artifacts`,
+`noir-acvm_js`, `noir-noirc_abi`, `noir-types`, `noir-noir_codegen`), which are
+`@aztec-foundation/*`. Subpaths are unchanged. aztec-nr lives in its own repo,
+`aztec-labs-eng/aztec-nr`, with `directory = "aztec"` / `"field-note"` / … —
+`AztecProtocol/aztec-packages` no longer carries it at v6 tags.
 
 ```bash
-aztec-up install 5.2.0-nightly.20260815   # then switch the active toolchain:
-aztec-up use 5.2.0-nightly.20260815
+aztec-up install 6.0.0   # (patched — see below) then switch the active toolchain:
+aztec-up use 6.0.0
 ```
 
-The committed `.aztecrc` pins the toolchain for this checkout, but run
-contract/circuit commands with `~/.aztec/current` actually on
-5.2.0-nightly.20260815 (`aztec --version` to confirm).
+**`aztec-up use` is not optional on v6.** `aztec start --local-network`
+deploys its L1 contracts with `~/.aztec/current/internal-bin/forge`, whatever
+binary you invoked — with `current` still on 5.2 it dies with
+`unexpected argument '--disable-external-identification'`. Run contract and
+circuit commands with `~/.aztec/current` actually on 6.0.0 (`aztec --version`).
 
-**Install footgun (bites every time on the 5.2 line, re-running does NOT fix
-it).** `aztec-up install` exits 0 while leaving `versions/<v>/bin/` empty and
-printing `expected bundled binary 'forge' missing from .../internal-bin`. Cause
-is upstream: the version installer `mv`s tools out of a temp dir into
-`internal-bin` and then `rm -rf`s that temp dir — but what it moves are
-SYMLINKS back into that dir, so every one lands dangling; the next step's `-e`
-test then fails.
-
-**It does this in THREE places, not one** — `nargo`, `noir-profiler`, and each
-foundry binary. An earlier version of this note patched only foundry, which
-gets you past the `forge` error and into `spawn nargo ENOENT` two steps later:
-a dangling symlink reports ENOENT exactly like a missing file. Patch them all:
+**Install footgun (still there on 6.0.0).** The version installer `mv`s
+noirup's `nargo` and `noir-profiler` out of a temp dir into `internal-bin`
+and then `rm -rf`s that temp dir; a dangling symlink then reports ENOENT
+exactly like a missing file (`spawn nargo ENOENT`). Upstream fixed the same bug
+for the foundry binaries (`cp -Lp`) in 6.0.0, so there are now TWO call sites
+to patch, not three:
 
 ```bash
 curl -fsSL https://install.aztec-labs.com/<VERSION>/install -o /tmp/install.sh
 # BSD sed wants `-i ''`; GNU sed (Linux, CI) wants `-i` or `-i.bak`.
 sed -i '' -E 's|mv "\$temp_([A-Za-z_]+)/bin/([^"]+)"|cp -L "$temp_\1/bin/\2"|g' /tmp/install.sh
-grep -cE 'cp -L "\$temp_[A-Za-z_]+/bin/' /tmp/install.sh    # expect 3
+grep -cE 'cp -L "\$temp_[A-Za-z_]+/bin/' /tmp/install.sh    # expect 2 on 6.0.0
 rm -rf ~/.aztec/versions/<VERSION>
 VERSION=<VERSION> bash /tmp/install.sh
 aztec-up use <VERSION>
@@ -126,9 +134,10 @@ cd packages/contracts && aztec compile && aztec codegen target/ -o target/codege
 # standalone circuits — these DO use nargo
 cd circuits && nargo compile
 
-# contract tests need a running TXE (the bare `txe` binary is gone since 4.3.1)
-aztec start --txe --port 8081 &
-cd packages/contracts && nargo test --oracle-resolver http://127.0.0.1:8081
+# contract tests: `aztec test` starts TXE on :8081 itself and runs nargo test
+cd packages/contracts && aztec test
+# (by hand: aztec start --txe --port 8081 & then
+#  aztec-nargo test --oracle-resolver http://127.0.0.1:8081)
 # in TXE tests, cross-package deploys must use env.deploy("@package/Name") —
 # bare names crash the TXE process (4.3.1-era upstream bug, see LANE_1_CHAIN.md)
 
@@ -150,14 +159,14 @@ cd packages/frontend && npm run dev:devnet    # or dev:testnet
 From `docs/plan/MASTER_PLAN.md`; repeated here because every one of these was
 learned the hard way.
 
-1. **Versions**: the pin set above, everywhere (uniform 5.2.0-nightly.20260815). Never mix
+1. **Versions**: the pin set above, everywhere (uniform 6.0.0). Never mix
    Aztec versions across packages.
 2. **Contracts compile with `aztec compile`**, not `nargo compile` (misses AVM
    transpilation + VK generation). Standalone circuits use `nargo compile`.
 3. **Contract tests run against TXE** (see command above).
-4. **Wallets**: ONLY `EmbeddedWallet` from `@aztec/wallets/embedded` with
-   `wallet.createSchnorrAccount(...)`. `@aztec/test-wallet` / `TestWallet` is
-   **FORBIDDEN**.
+4. **Wallets**: ONLY `EmbeddedWallet` from `@aztec-labs/wallets/embedded` with
+   `wallet.createSchnorrAccount(...)`. `test-wallet` / `TestWallet` (under
+   either scope) is **FORBIDDEN**.
 5. **SponsoredFPC / `SponsoredFeePaymentMethod` is BANNED.** Fee Juice flows
    only: bridge + claim at account deployment, then senders pay natively
    (omit the `fee` option). The legacy usages were removed in A2.
@@ -196,10 +205,10 @@ Canonical implementation: `packages/frontend/src/aztec/connectToAztec.ts`
 (two-phase: prepare → fund → deploy). The skeleton:
 
 ```typescript
-import { createAztecNodeClient } from '@aztec/aztec.js/node';
-import { EmbeddedWallet } from '@aztec/wallets/embedded';
-import { Fr } from '@aztec/aztec.js/fields';
-import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
+import { createAztecNodeClient } from '@aztec-labs/aztec.js/node';
+import { EmbeddedWallet } from '@aztec-labs/wallets/embedded';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { GrumpkinScalar } from '@aztec-labs/foundation/curves/grumpkin';
 
 const node = createAztecNodeClient(pxeUrl);
 const wallet = await EmbeddedWallet.create(node, {
@@ -209,12 +218,17 @@ const wallet = await EmbeddedWallet.create(node, {
 const account = await wallet.createSchnorrAccount(secretFr, saltFr, signingKey);
 
 // Account deployment pays fees by claiming bridged Fee Juice in the same tx:
-const { FeeJuicePaymentMethodWithClaim } = await import('@aztec/aztec.js/fee');
+const { FeeJuicePaymentMethodWithClaim } = await import('@aztec-labs/aztec.js/fee');
 const paymentMethod = new FeeJuicePaymentMethodWithClaim(account.address, claim);
 ```
 
 Contract calls take the sender explicitly:
 `contract.methods.foo(...).send({ from: account.address, fee: { paymentMethod } })`.
+
+An account's own deployment has no signer: send it with
+`from: NO_FROM` (`@aztec-labs/aztec.js/account`). On v6 `AztecAddress.ZERO`
+no longer means that — it fails `Account "0x00…00" does not exist on this
+wallet`.
 
 ## Conventions
 
