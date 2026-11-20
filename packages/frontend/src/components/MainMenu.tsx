@@ -53,7 +53,7 @@ export function MainMenu({
   return (
     <div className="main-menu">
       <div className="main-menu__header">
-        <h1 className="main-menu__title">Axalotl Arena</h1>
+        <h1 className="main-menu__title">Axolotl Arena</h1>
         <p className="main-menu__subtitle">Powered by Aztec Network</p>
         <div className={`main-menu__status ${connected ? 'main-menu__status--connected' : ''}`}>
           {connected ? 'Connected' : 'Connecting...'}

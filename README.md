@@ -15,7 +15,7 @@ cd packages/frontend && npm run dev        # http://localhost:3000
 
 Click **Practice vs Bot** on the main menu and pick a difficulty (Novice / Skilled / Master). The on-chain multiplayer experience (NFT cards, ZK-proven moves, on-chain settlement) is below.
 
-> A hosted version you can play without any local setup is coming with the public launch. Until then, run it locally as described here.
+> Play the hosted version at **https://www.aztec-arena.com** (Aztec testnet). To run it locally, follow the steps here.
 
 ## What is Triple Triad?
 
@@ -47,19 +47,22 @@ For how it all fits together — the three-transaction game lifecycle, the 11-pr
 
 ## Prerequisites
 
-- **Node.js** >= 22.0.0
-- **Aztec CLI** 5.2.0-nightly.20260815 — install via:
+- **Node.js** >= 24.15
+- **Aztec CLI** 6.0.0 — install via:
   ```bash
-  aztec-up install 5.2.0-nightly.20260815
-  aztec-up use 5.2.0-nightly.20260815
+  aztec-up install 6.0.0
+  aztec-up use 6.0.0
   ```
-  The toolchain version is pinned per-checkout by the committed `.aztecrc`. On
-  the 5.2 line `aztec-up install` can exit 0 while installing nothing, and
-  re-running does not fix it — CLAUDE.md has the workaround and how to spot it.
-- **Nargo** (installed with the Aztec CLI; this repo uses `1.0.0-beta.25`)
+  The toolchain version is pinned per-checkout by the committed `.aztecrc`, and
+  `aztec-up use` is required, not optional: the local network deploys its L1
+  contracts with whatever `~/.aztec/current` points at. The 6.0.0 installer can
+  still exit 0 with `nargo` missing — CLAUDE.md has the workaround and how to
+  spot it.
+- **Nargo** (installed with the Aztec CLI; this repo uses `1.0.0-rc.3`)
 
-> Everything is pinned to **Aztec 5.2.0-nightly.20260815** — the npm `@aztec/*`
-> packages, the aztec-nr git tags in every `Nargo.toml`, and the CLI. The pin
+> Everything is pinned to **Aztec 6.0.0** — the npm `@aztec-labs/*` and
+> `@aztec-foundation/*` packages, the aztec-nr git tags in every `Nargo.toml`
+> (`github.com/aztec-labs-eng/aztec-nr`), and the CLI. The pin
 > matches the live testnet node's `nodeVersion` exactly, because protocol
 > compatibility is what matters; do not follow npm `latest`. Never mix versions
 > across packages. See [CLAUDE.md](CLAUDE.md#versions--matched-sets-never-bumped-piecemeal)
@@ -170,10 +173,11 @@ npx tsx scripts/check-testnet-state.ts   # and confirm they are still alive
 ```
 
 The testnet re-genesises on protocol upgrades and silently orphans deployed
-contracts; it has happened three times. If anything on-chain looks dead, run the
+contracts; it has happened four times, most recently onto v6.0.0 in late
+October 2026. If anything on-chain looks dead, run the
 check above before debugging anything else.
 
-All three contracts are **updatable** (admin-guarded): each exposes an `update_to(new_class_id)` function that swaps the contract class while preserving the address, gated to the deployer (`minter` for the NFT, `admin` for the game and token contracts) and subject to an on-chain update delay. Future bug fixes ship as address-preserving class updates — these addresses are stable, so deployments no longer churn `.env.testnet`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the contract details.
+The contracts are **not upgradeable**: there is no class-update path, so a contract change — or a testnet re-genesis — means a redeploy at new addresses, which `scripts/deploy-testnet.ts` writes to `.env.testnet`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the contract details.
 
 ## Development
 
@@ -211,7 +215,7 @@ npm test
 - **Contracts**: [Noir](https://noir-lang.org/) + [Aztec.nr](https://github.com/AztecProtocol/aztec-nr)
 - **Frontend**: React, TypeScript, [React Three Fiber](https://docs.pmnd.rs/react-three-fiber), Vite
 - **Backend**: Node.js WebSocket relay (`ws`)
-- **Proofs**: Client-side ZK proof generation with `@aztec/bb.js`
+- **Proofs**: Client-side ZK proof generation with `@aztec-foundation/bb.js`
 - **Assets**: Synty polygon swamp models (FBX), DALL-E generated card art
 
 ## License
