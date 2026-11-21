@@ -144,5 +144,7 @@ Contract changes only ship with a redeploy, so batch them into a move:
   open audit would have to cover.
 - Deliver card notes with v6's offchain messages and `offchain_receive`
   instead of the hand-driven `import_note`, and drop the `CardCreated` events
-  that nothing receives. Plan and the local spike to run first:
+  that nothing receives. **Built** on branch `spike/offchain-delivery`
+  (contract, frontend, bot, tests): merge it before compiling the contracts
+  for the redeploy. What it changes and what it leaves on `import_note`:
   [plan/OFFCHAIN_DELIVERY.md](plan/OFFCHAIN_DELIVERY.md).

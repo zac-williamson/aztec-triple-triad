@@ -242,9 +242,10 @@ The full journey of a card, and the Aztec mechanics at each step:
 ```
 mint (onboarding/pack) ──► private note ──► commit_five_nfts_* POPS it (burn)
                                               │ play happens off-chain
-        settlement re-mint (create_and_push_note)
+        settlement re-mint (create_and_push_note + offchain message)
                                               │
-        recipient re-derives ids + randomness ──► import_note ──► private note again
+        owner hands the message to offchain_receive ──► private note again
+        (recovery: re-derive ids + randomness ──► import_note)
 ```
 
 - **Onboarding** (`get_cards_for_new_player`,
@@ -281,37 +282,46 @@ mint (onboarding/pack) ──► private note ──► commit_five_nfts_* POPS 
   > which keeps it at ONE transaction. Anything that adds a transaction is the
   > wrong answer.
 
-- **Settlement mints** use `create_and_push_note` (`:469-509`): a manual note
-  build that computes the note hash itself
-  (`poseidon2([slot, value, owner, randomness])` with the note-hash domain
-  separator, `:488-491`), calls `notify_created_note` so the local PXE learns
-  it (`:493-501`), and pushes the hash to the tx (`:507`). Crucially it reads
-  the slot from `TripleTriadNFT::storage_layout().private_nfts.slot` (`:484`) —
-  **ground rule #7**: the `#[storage]` macro assigns slots including hidden
-  fields, so a hardcoded slot is a silent corruption bug.
-- **Why manual notes?** Protocol-level note delivery
-  (`MessageDelivery.ONCHAIN_CONSTRAINED`, e.g. the admin mint `:513-522`)
-  costs ~maximum-size encrypted logs per note. The settlement tx creates up to
-  10 notes for *two different recipients*; the manual path instead emits one
-  compact `CardCreated` event per note (`:136-140`) carrying
-  `note_tag = poseidon2([randomness, iv_NoteTag])` (`:264-270`) and a 2-field
-  symmetric encryption of the card id under the note's randomness
-  (`encrypt_card_payload`, `:272-278`; cipher `:196-216`), delivered
-  `OFFCHAIN` (`:685-688`). **Nothing receives those events**: no client code
-  reads a send's offchain messages, so they are computed in-circuit and
-  dropped. [plan/OFFCHAIN_DELIVERY.md](plan/OFFCHAIN_DELIVERY.md) plans their
-  removal, together with moving delivery to v6's `offchain_receive`.
-- **Discovery** is the flip side — **ground rule #9**: notes created this way
-  are NOT auto-discovered. The recipient re-derives the card ids and their
-  expected randomness (their own from the nonce; the captured card's from the
-  winner's spare slot — whose value they know because *they* hold the preimage
-  exchanged in §4), and calls the unconstrained utility `import_note` (`:1026-1072`), which re-encodes the note as a standard
-  private-note message and runs it through `process_private_note_msg` +
-  `validate_and_store_enqueued_notes_and_events` against the real tx data
-  (the 4.2-era `attempt_note_discovery` API went private upstream in 4.3.1) —
-  a `.simulate()` call, no transaction. The frontend driver is
-  `importNotesFromTx` (`packages/frontend/src/aztec/noteImporter.ts:93-159`;
-  see §12.6).
+- **Card mints** — starter cards, packs, the settlement and abandonment
+  re-mints — build each note by hand in `push_card_note`: it computes the note
+  hash itself (`poseidon2([slot, value, owner, randomness])` with the
+  note-hash domain separator), calls `notify_created_note` so the local PXE
+  learns it, and pushes the hash to the tx. Crucially it reads the slot from
+  `TripleTriadNFT::storage_layout().private_nfts.slot` — **ground rule #7**:
+  the `#[storage]` macro assigns slots including hidden fields, so a hardcoded
+  slot is a silent corruption bug. `create_and_push_note` wraps it and
+  returns the note's `NoteMessage`, which every player-facing mint delivers
+  with `MessageDelivery::offchain()`.
+- **Why build the note by hand?** For the randomness. `create_note` would
+  choose it at random; ours is derived from the owner's `nhk_app` secret
+  (`derive_note_randomness`, or the per-game randomness committed in §4), so
+  an owner can always rebuild a note and import it with nothing from the
+  sender — the settlement and abandonment recovery paths depend on that.
+  Building the `NewNote` ourselves keeps that property and still yields the
+  standard note message.
+- **Why offchain delivery?** It costs no fee and no log, the encryption runs
+  unconstrained, and it consumes no tagging index — so no 84-index window to
+  outrun. The message comes back from `send()` as one of its
+  `offchainMessages`; a settlement's carries messages for *both* players.
+- **Discovery** — **ground rule #9**: these notes carry no tag, so nothing
+  finds them by scanning. The owner hands the messages to `offchain_receive`
+  (injected into every contract by `#[aztec]`), which keeps them in a
+  persistent inbox; at the next contract sync the PXE stores each note once
+  its tx is found on-chain, re-processes it after a reorg, and drops the
+  message when its block finalizes. The frontend's door is
+  `receiveCardMessages` (`aztec/pxe.ts`; §12.6). **Recovery** is the
+  unconstrained utility `import_note`: re-derive the card ids and randomness
+  and re-encode each note as a private-note message for
+  `process_private_note_msg` + `validate_and_store_enqueued_notes_and_events`
+  (a `.simulate()` call, no transaction). It serves the boot-time restore
+  from the card store, and — until the settler forwards the messages instead
+  ([plan/OFFCHAIN_DELIVERY.md](plan/OFFCHAIN_DELIVERY.md), step 3) — the
+  settlement loser, who gets their cards' plaintext over the relay.
+- **The bot's stock is the exception**: `mint_bot_cards` sends no message.
+  The inbox re-fetches the receipt of every received message's tx on each
+  sync until its block finalizes — one to three txs for a player, a hundred
+  for a thousand-card stock — so the bot imports its stock from the
+  provisioner's manifest with `import_note`.
 - **Inspection**: `get_nfts_for_user` pages through the private set
   (`:1076-1089`); `get_note_nonce` reads the counter (`:1093-1102`).
 
@@ -408,8 +418,9 @@ its anchor.
 | Note pop with custom filter (spend by token id) | `triple_triad_nft/src/main.nr:579-582` + `src/filters.nr` |
 | Single-note counter ("nonce note") pattern | `triple_triad_nft/src/main.nr:347-379` |
 | Manual note creation (hash + `notify_created_note`) | `triple_triad_nft/src/main.nr:469-509` |
-| Note discovery / `import_note` utility | `triple_triad_nft/src/main.nr:1026-1072` |
-| Deterministic note tagging + encrypted payloads | `triple_triad_nft/src/main.nr:61-66,264-278` |
+| Offchain note delivery (`.deliver(MessageDelivery::offchain())`) | `triple_triad_nft/src/main.nr` `create_and_push_note` and its callers |
+| Receiving offchain messages (macro-injected `offchain_receive`) | `packages/frontend/src/aztec/pxe.ts` `receiveCardMessages` |
+| Manual note import (recovery) / `import_note` utility | `triple_triad_nft/src/main.nr` `import_note` |
 | App-siloed key material (`request_nhk_app`) as KDF seed | `triple_triad_nft/src/main.nr:552-563` |
 | In-circuit id/randomness derivation (anti-grinding) | `triple_triad_nft/src/main.nr:246-262` |
 | `storage_layout()` instead of hardcoded slots | `triple_triad_nft/src/main.nr:484,1040` |
@@ -604,21 +615,36 @@ Two policies matter:
   queued settlement can never start between `create_game`'s tx and the
   postEffect that records its result.
 
-### 12.6 Note import and persistence
+### 12.6 Card delivery and persistence
 
-After settlement, each player must import their re-minted notes (§7;
-ground rule #9). `importNotesFromTx` (`aztec/noteImporter.ts:93-159`) fetches
-the `TxEffect` (with retries — the tx may have just mined, `:48-59`), pads the
-note-hash list to the fixed 64-slot circuit input (`:129-133`), and calls the
-NFT contract's `import_note` utility once per note via `.simulate()`
-(`:138-155`). The settlement hook persists each note's `(tokenId, randomness,
-txHash, noteHashes, firstNullifier)` to localStorage *before* importing
-(`hooks/useGameSettlement.ts:103-142`) — enough to replay the import into a
-fresh PXE after the browser's IndexedDB is wiped.
+Every mint the player sent — starter cards (`connectToAztec.ts`
+`storeAndReceiveStarterCards`), packs (`hooks/useCardPacks.ts`), the
+winner's settlement return and the abandoned-game recovery
+(`hooks/useGameSettlement.ts` `receiveOwnCards`) — does two things, in this
+order (§7; ground rule #9):
 
-ArenaToken rewards need no import (they use protocol-level
-`ONCHAIN_CONSTRAINED` delivery) but do need the PXE to sync the settlement
-block, hence the deliberate balance-refresh polling (`:159-167,442-445`).
+1. **Persist** each card's `(cardId, randomness, txHash, noteHashes,
+   firstNullifier)` to the card store (`aztec/cardStore.ts`) — enough to
+   replay the notes into a fresh PXE after its store is wiped. The note hashes
+   come from the `TxEffect` (`fetchTxEffectData`, `aztec/noteImporter.ts`,
+   retried because the tx may have just mined).
+2. **Receive** the send's offchain messages: `receiveCardMessages`
+   (`aztec/pxe.ts`) passes the ones addressed to us, from the NFT contract,
+   to `offchain_receive` in batches of 16. The notes appear at the next NFT
+   read, which triggers the contract sync that processes them.
+
+Persisting first means a receive that fails still leaves a record. On every
+connect the boot-time restore (`connectToAztec.ts`) re-imports every stored
+card with `import_note` and reconciles the store against what the PXE holds —
+the recovery path; it is idempotent, because the PXE keys notes by nullifier.
+
+The settlement **loser** is the one remaining import on the normal path:
+their messages stayed in the winner's browser, so the winner relays the
+plaintext (`RELAY_NOTE_DATA`) and the loser imports it
+(`importRelayedCards`). The loser's +20 ArenaToken reward is likewise an
+untagged note (`mint_reward`), imported with `importTokenRewardNote`; the
+winner's own reward is `ONCHAIN_CONSTRAINED` and needs only the PXE to sync
+the settlement block, hence the balance-refresh delay.
 
 ### 12.7 The relay (useWebSocket) and wallet layer
 
@@ -659,5 +685,5 @@ results stringify as decimal.
 |-------------|---------------------|
 | #6 serial PXE ops | the txManager queue (`aztec/txManager.ts:200-221`) — nothing touches PXE outside it |
 | #8 decimal `.simulate()` results | `toFr` (`aztec/fieldUtils.ts:23`), `safeToField` (`aztec/proofWorker.ts:97-107`) |
-| #9 `import_note` after manual mints | `importNotesFromTx` (`aztec/noteImporter.ts:93-159`) + localStorage replay (§12.6) |
+| #9 untagged card notes need delivering | `receiveCardMessages` (`aztec/pxe.ts`) after every mint we send; `import_note` for the boot-time restore and the loser's relayed cards (§12.6) |
 | #10 in-circuit `game_id`/randomness | frontend only *previews* them via `.simulate()` (`hooks/useGameSession.ts:215-231`), never supplies them to a tx |

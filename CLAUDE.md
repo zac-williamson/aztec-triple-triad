@@ -179,8 +179,13 @@ learned the hard way.
 8. **`.simulate()` results stringify as DECIMAL** — never `Fr.fromHexString()`
    them blindly; use the prefix-checking `toFr` helper in
    `packages/frontend/src/aztec/fieldUtils.ts`.
-9. **Notes created via `create_and_push_note` are NOT auto-discovered** — every
-   such tx must be followed by `import_note` per note.
+9. **Card notes carry no tag, so nothing discovers them by scanning.** Every
+   card mint delivers its note messages offchain, and whoever sent the tx
+   takes its own cards by handing the send's `offchainMessages` to
+   `offchain_receive` (`receiveCardMessages` in `pxe.ts`); the PXE stores the
+   notes at its next NFT sync. `import_note` is for recovery — the boot-time
+   restore — plus the settlement loser's relayed cards and the bot's stock,
+   which sends no messages (docs/plan/OFFCHAIN_DELIVERY.md).
 10. **`game_id` and `randomness` are derived IN-CIRCUIT** — never pass them in
     from the frontend.
 11. **`npm install --legacy-peer-deps`**, always.

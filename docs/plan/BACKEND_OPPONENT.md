@@ -433,12 +433,14 @@ That is the loss budget in miniature, and it makes two things concrete:
   not a nice-to-have. The bot cannot cancel (it only joins), so stranding is its
   only failure mode and it is monotonic. **Built and verified on-chain**
   (2026-08-29): `GameJournal` persists each game's transcript as it grows, and
-  `AbandonmentSweep` claims → waits the dispute window → settles → imports the
-  re-minted notes. Opponent walks out after 2 moves → spendable 6 → 11 (+5).
-  One defect it took a chain run to find: `settle_abandoned_game` re-mints via
-  `create_and_push_note`, so without an explicit `import_note` the cards are
-  ours on-chain and INVISIBLE — a recovery that reports success and returns
-  nothing.
+  `AbandonmentSweep` claims → waits the dispute window → settles → takes the
+  re-minted notes back. Opponent walks out after 2 moves → spendable 6 → 11 (+5).
+  One defect it took a chain run to find: `settle_abandoned_game` re-mints
+  untagged notes, so without an explicit import the cards are ours on-chain
+  and INVISIBLE — a recovery that reports success and returns nothing. (Since
+  the offchain-delivery change the sweep receives them from the settle tx's
+  own messages rather than with `import_note`; see
+  [OFFCHAIN_DELIVERY.md](OFFCHAIN_DELIVERY.md).)
 - `cardsStranded` and the spendable count are the metrics to alert on. A bot
   that is out of cards fails *quietly and correctly* — it stays idle — which is
   precisely why nobody would notice.
