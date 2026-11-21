@@ -198,14 +198,17 @@ internals, but no longer on the path every mint takes.
      | Game 2 (draw, Bob settled) | 5 imported from the relay | settler: 5 received, no `import_note` |
 
      Each connect also shows the boot-time restore importing the starter
-     cards (above). Not covered in the browser: the abandoned-game recovery.
-     `abandonment.spec.ts` has not been able to pass since 31 August: it
-     claims after the relay's 60-second idle warning, but since then the
-     contract has required an hour since the game went active
-     (`MIN_ABANDON_SECONDS`). In this run the claim, 25 s after the game went
-     active, reverted in `claim_abandoned_game_public`, the half that enforces
-     it — before any card is minted, so on any branch. That path is covered by
-     unit tests (frontend and bot).
+     cards (above).
+
+     The abandoned-game recovery came last. `abandonment.spec.ts` could not
+     pass from 31 August: it claimed at the relay's 60-second idle mark, and
+     the contract wanted an hour since the game went active — the claim
+     reverted in `claim_abandoned_game_public`. With the bar lowered to eight
+     minutes on this branch (ARCHITECTURE §8) and the claim flow waiting it
+     out, it passes: the claimant's five cards arrive as offchain messages
+     with no `import_note`, and its phase stays idle afterwards (the first
+     passing run showed the create/join pipeline restarting on the dead game,
+     fixed in the same series).
 3. **Later, optional.** Forward the counterparty's settlement messages over
    the relay, so the player who didn't settle needs no `import_note` either.
    It would not hide anything new from the relay server, which already sees
