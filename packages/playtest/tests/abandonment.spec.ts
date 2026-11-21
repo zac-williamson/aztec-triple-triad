@@ -13,13 +13,16 @@
  * (never moves) → during the runway BEFORE the 60s deadline the relay warns BOTH
  * browsers of IMPENDING abandonment (idlePlayer=player1, countdown > 0) → at the
  * 60s deadline the claim becomes available → P2 (the non-idle player) claims →
- * claim_abandoned_game (on-chain status → 5 abandoned_claimed) → on-chain dispute
- * window (>=5 blocks) → settle_abandoned_game (status → 3 settled) → P2 receives
- * the claimed card (P1's hand[0]).
+ * the flow waits until the game is MIN_ABANDON_SECONDS (8 min) old on chain time
+ * → claim_abandoned_game (on-chain status → 5 abandoned_claimed) → the 10-minute
+ * dispute window → settle_abandoned_game → P2 recovers its OWN five cards,
+ * delivered as offchain messages.
  *
  * Fully asserts reality — no masks / relaxed asserts: deterministic keys, the
- * REAL 60s inactivity threshold, the REAL on-chain claim/dispute/settle path,
- * and the independent ChainClient (third pair of eyes) for the status.
+ * REAL 60s inactivity threshold, the REAL 8-minute abandonment bar and 10-minute
+ * dispute window, the REAL on-chain claim/dispute/settle path, and the
+ * independent ChainClient (third pair of eyes) for the status. About twenty
+ * minutes, most of it those two waits.
  */
 import { test, expect } from '@playwright/test';
 import type { Player } from '@axolotl-arena/game-logic';
@@ -94,7 +97,7 @@ test.describe.serial('present-but-idle abandonment', () => {
     await p2d?.dispose();
   });
 
-  test('P1 idles 60s → both warned → P2 claims a card → settled via abandonment', async () => {
+  test('P1 idles → both warned → P2 claims at the 8-minute bar → recovers its own five', async () => {
     const stack = readStackInfo();
     if (!stack.addresses) throw new Error('stack.json has no contract addresses — setup incomplete');
     const chain = await ChainClient.connect(stack.addresses);
@@ -142,8 +145,6 @@ test.describe.serial('present-but-idle abandonment', () => {
     for (const d of [p1d, p2d]) {
       expect((await d.phase()).game!.currentTurn, `${d.name} sees player1's turn`).toBe('player1');
     }
-    // The contract claims the opponent's hand[0]; P1's hand is STARTER, so card 1.
-    const claimedCard = STARTER_CARDS[0];
 
     // ── P1 STOPS. The relay warns BOTH browsers of IMPENDING abandonment during
     //    the runway BEFORE the 60s deadline (warn lead, docs/plan/ABANDONED_GAMES.md):
@@ -175,13 +176,18 @@ test.describe.serial('present-but-idle abandonment', () => {
       'on-chain game active (create+join mined)');
 
     // ── P2 (non-idle) triggers the abandoned-game claim ─────────────────────
+    const claimMark = p2d.consoleMark();
     await p2d.claimAbandonedGame();
     await p2d.waitClaimingAbandoned();
 
-    // claim_abandoned_game lands on-chain → status 5 (abandoned_claimed).
+    // claim_abandoned_game lands on-chain → status 5 (abandoned_claimed). The
+    // relay offered the claim after a minute of idling, but the contract takes
+    // it only once the game has run MIN_ABANDON_SECONDS (8 min of chain time
+    // since it went active): the flow waits that out before proving, and this
+    // wait covers it.
     await waitGameStatus(chain, onChainGameId!, GAME_STATUS.abandoned_claimed, TIMEOUTS.settleTx, 'claim_abandoned_game');
 
-    // The dispute window elapses (>=5 blocks) and P2 recovers ITS OWN stake.
+    // The dispute window (10 minutes) elapses and P2 recovers ITS OWN stake.
     //
     // The game stays at `abandoned_claimed`, not `settled`: recovery is PER
     // PLAYER now, and the status only advances to 3 once BOTH sides have taken
@@ -206,9 +212,25 @@ test.describe.serial('present-but-idle abandonment', () => {
     // are not here to reveal it — so minting anything on their behalf meant
     // minting whatever the claimant asserted. P2 therefore returns to exactly
     // its pre-game hand.
+    //
+    // Recovery follows the 10-minute dispute window (DISPUTE_SECONDS) and a
+    // settle transaction, so this waits as long as a settlement may take.
     await p2d.expectEventually('P2 recovered its own stake, no more',
-      async () => (await p2d.privateCards()).length, STARTER_CARDS.length);
+      async () => (await p2d.privateCards()).length, STARTER_CARDS.length, TIMEOUTS.settleTx);
     expect(await p2d.privateCards(), 'P2 holds exactly its starter cards')
       .toEqual(expect.arrayContaining(STARTER_CARDS));
+    // ...delivered by the settle tx's own offchain messages, not import_note.
+    p2d.expectCardsReceivedNotImported(claimMark, STARTER_CARDS.length, 'abandoned recovery');
+
+    // ...and the game stays over. A finished lifecycle ends in 'idle', which is
+    // also where the create/join pipeline starts, and the relay's follow-up
+    // GAME_OVER once restarted it on this dead game: a fresh join preview, its
+    // randomness shared with the absent player (and for a player-1 claimant, a
+    // second create_game committing the cards just recovered). Nothing in a
+    // correct flow goes idle → preparing/creating after the claim, so give the
+    // relay's messages a window and check that nothing did.
+    await p2d.page.waitForTimeout(15_000);
+    expect(p2d.consoleSince(claimMark).filter(l => /Phase: idle → (preparing|creating)/.test(l)),
+      'the on-chain pipeline restarted on a finished game').toEqual([]);
   });
 });
