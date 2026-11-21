@@ -10,8 +10,15 @@ import type { TxEffectData } from '../aztec/noteImporter';
 import { toFr as toFrUtil, toHexString, bytesToFrArray, base64ToFrArray, hexToFr } from '../aztec/fieldUtils';
 import { AZTEC_TX_TIMEOUT, AZTEC_SETTLE_TX_TIMEOUT, CARDS_PER_HAND, TOTAL_MOVES, MOVE_PROOF_WAIT_TIMEOUT, HAND_PROOF_WAIT_TIMEOUT, GAME_TOKEN_REWARD } from '../aztec/gameConstants';
 import { requireWallet, requireAccountAddress } from '../aztec/walletGuards';
-import { padToHand, sortProofChain, computeCanonicalInitialHash, waitForDisputeWindow, DISPUTE_SECONDS, claimableMoveCount } from '../aztec/settlementArgs';
+import { padToHand, sortProofChain, computeCanonicalInitialHash, waitForDisputeWindow, waitForAbandonBar, DISPUTE_SECONDS, claimableMoveCount } from '../aztec/settlementArgs';
 import type { HandProofData, MoveProofData, PlaintextNoteData } from '../types';
+
+/** The idle opponent moved while a claim waited for the abandonment bar. */
+class OpponentResumedError extends Error {
+  constructor() {
+    super('the opponent moved — the game is not abandoned');
+  }
+}
 
 /** Lazy-load the field/address SDK classes for building proof-tx arguments.
  *  (The contract instances stay inside pxe.ts; only these value types cross.) */
@@ -81,6 +88,9 @@ export interface UseGameSettlementReturn {
   opponentSettled: boolean;
   takenCardId: number | null;
   isClaimingAbandoned: boolean;
+  /** Seconds until the game is old enough for the contract to accept a claim,
+   *  while the claim flow waits for it; else null. */
+  abandonBarCountdown: number | null;
   abandonedDisputeCountdown: number | null;
 
   // Actions
@@ -121,6 +131,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
 
   // --- Abandoned game state ---
   const [isClaimingAbandoned, setIsClaimingAbandoned] = useState(false);
+  const [abandonBarCountdown, setAbandonBarCountdown] = useState<number | null>(null);
   const [abandonedDisputeCountdown, setAbandonedDisputeCountdown] = useState<number | null>(null);
   const abandonedClaimStartedRef = useRef(false);
   const autoClaimFiredRef = useRef(false);
@@ -629,7 +640,9 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
   const handleAbandonedGame = useCallback(async () => {
     if (abandonedClaimStartedRef.current) return;
     abandonedClaimStartedRef.current = true;
-    session.transitionPhase('settling');
+    // The phase moves to 'settling' only once the claim is actually going
+    // ahead (after the abandonment bar, below): until then the opponent may
+    // come back and the game must still be able to carry on as 'active'.
     setIsClaimingAbandoned(true);
 
     requireWallet(aztec.wallet);
@@ -691,6 +704,31 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     }
 
     try {
+      // Step 0: the contract's bar. It refuses any claim until the game has
+      // been active MIN_ABANDON_SECONDS of chain time, and the relay offers
+      // the claim once the opponent has idled a minute — in a young game,
+      // well before that. Wait it out here, counting down, rather than prove a
+      // claim that reverts "Too soon to call this game abandoned" (which also
+      // spends the automatic trigger, latched once per game).
+      //
+      // The wait is the one point where an idle opponent can still come back.
+      // A new move proof means they did: stop, and leave the game to carry on.
+      // Claiming anyway would file a stale prefix of the transcript, which the
+      // contract accepts, against a player who is here.
+      const activeAt = (await pxe.readAbandonmentInfo(addr, capturedOnChainGameId)).activeAt;
+      await waitForAbandonBar(
+        aztec.nodeClient as any,
+        activeAt,
+        {
+          onProgress: secondsLeft => {
+            if (play.getMoveProofs().length > heldMoveProofs.length) throw new OpponentResumedError();
+            setAbandonBarCountdown(secondsLeft);
+          },
+        },
+      );
+      setAbandonBarCountdown(null);
+      session.transitionPhase('settling');
+
       // Step 1: claim_abandoned_game
       await runPxeTx<string>({
         type: 'claim_abandoned_game',
@@ -885,10 +923,16 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
         },
       });
     } catch (err) {
-      console.error('[useGameSettlement] Abandoned game flow failed:', err);
       setIsClaimingAbandoned(false);
+      setAbandonBarCountdown(null);
       setAbandonedDisputeCountdown(null);
       abandonedClaimStartedRef.current = false;
+      if (err instanceof OpponentResumedError) {
+        // The game is live again: leave its phase alone and let it play on.
+        console.log('[useGameSettlement] the opponent moved while the claim waited for the abandonment bar — claim cancelled');
+        return;
+      }
+      console.error('[useGameSettlement] Abandoned game flow failed:', err);
       session.transitionPhase('idle');
     }
   }, [ws, aztec.wallet, aztec.accountAddress, receiveOwnCards,
@@ -922,6 +966,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
 
   const cancelAbandonedUi = useCallback((): void => {
     setIsClaimingAbandoned(false);
+    setAbandonBarCountdown(null);
     setAbandonedDisputeCountdown(null);
     abandonedClaimStartedRef.current = false;
   }, []);
@@ -947,6 +992,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     opponentSettled,
     takenCardId,
     isClaimingAbandoned,
+    abandonBarCountdown,
     abandonedDisputeCountdown,
     handleSettle,
     handleAbandonedGame,

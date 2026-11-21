@@ -22,6 +22,7 @@ import WebSocket from 'ws';
 import { chooseBotMove } from '@axolotl-arena/game-logic';
 import type { GameState, Player } from '@axolotl-arena/game-logic';
 import type { ArenaBotConfig } from './config.js';
+import { MIN_ABANDON_SECONDS } from './AbandonmentSweep.js';
 
 /** The slice of BotProofs the bot uses — narrowed so tests can fake it. */
 export interface BotProofsLike {
@@ -340,6 +341,9 @@ export class ArenaBot {
     if (!this.journal) return [];
     const now = this.now();
     const outstanding = this.journal.outstanding?.() ?? [];
+    // When the sweep will act: its own minimum age (the game timeout, which
+    // index.ts passes it), and never before the contract's bar.
+    const sweepAgeSeconds = Math.max(MIN_ABANDON_SECONDS, Math.round(this.cfg.gameTimeoutMs / 1000));
     return outstanding.map((rec: {
       onChainGameId: string; committedAt: number; settled?: boolean; claimedAt?: number;
       myHandProof: unknown; opponentHandProof: unknown; moveProofs: unknown[];
@@ -360,7 +364,9 @@ export class ArenaBot {
           ? `claimed — dispute window, ~${left}min left`
           : 'claimed — dispute window passed';
       }
-      else if (ageSeconds < 3600) blockedBy = `too young (${Math.ceil((3600 - ageSeconds) / 60)}min to go)`;
+      else if (ageSeconds < sweepAgeSeconds) {
+        blockedBy = `too young (${Math.ceil((sweepAgeSeconds - ageSeconds) / 60)}min to go)`;
+      }
       return {
         onChainGameId: rec.onChainGameId,
         moveProofs: rec.moveProofs.length,

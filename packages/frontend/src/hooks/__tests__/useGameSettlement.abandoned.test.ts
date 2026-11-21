@@ -30,7 +30,9 @@ const hoisted = vi.hoisted(() => ({
   // beforeEach can rewind it: shared across tests it drifts past the dispute
   // window, and a later test then finds the window already open — or worse,
   // lets a flow parked by an EARLIER test run to completion mid-assertion.
-  chainClock: { t: 1_700_000 },
+  chainClock: { t: 1_700_000, step: 900 },
+  // Default: a game long past the abandonment bar, claimed at 1_700_000.
+  readInfoMock: vi.fn(),
 }));
 
 vi.mock('../../aztec/AztecContext', () => {
@@ -49,7 +51,7 @@ vi.mock('../../aztec/AztecContext', () => {
       fake: 'node',
       getBlockNumber: () => Promise.resolve(block++),
       getBlock: () => {
-        hoisted.chainClock.t += 900;   // one poll clears the 600s window
+        hoisted.chainClock.t += hoisted.chainClock.step;   // default: one poll clears the 600s window
         return Promise.resolve({ header: { globalVariables: { timestamp: hoisted.chainClock.t } } });
       },
     },
@@ -84,9 +86,7 @@ vi.mock('../../aztec/pxe', () => {
   const ops = {
     sendClaimAbandonedGame: hoisted.sendClaimMock,
     sendSettleAbandonedGame: hoisted.sendSettleMock,
-    readAbandonmentInfo: vi.fn().mockResolvedValue({
-      status: 5, activeAt: 1_000_000, claimAt: 1_700_000, claimPlayer: '0xME',
-    }),
+    readAbandonmentInfo: hoisted.readInfoMock,
     importCardNotes: hoisted.importCardNotesMock,
     receiveCardMessages: hoisted.receiveCardMessagesMock,
   };
@@ -220,10 +220,14 @@ const play = {
   waitForMoveProofs: vi.fn().mockResolvedValue(undefined),
 };
 
+const LONG_PAST_THE_BAR = { status: 5, activeAt: 1_000_000, claimAt: 1_700_000, claimPlayer: '0xME' };
+
 describe('abandoned settlement relay notifications (QA-F3)', () => {
   beforeEach(() => {
     hoisted.chainClock.t = 1_700_000;   // rewind the chain clock for each test
+    hoisted.chainClock.step = 900;
     vi.clearAllMocks();
+    hoisted.readInfoMock.mockResolvedValue(LONG_PAST_THE_BAR);
     hoisted.sendSettleMock.mockResolvedValue({ txHash: '0xSETTLE_TX', offchainMessages: hoisted.settleMessages });
     vi.useFakeTimers();
   });
@@ -329,7 +333,9 @@ describe('abandoned settlement relay notifications (QA-F3)', () => {
 describe('a reverting claim is attempted once, not forever', () => {
   beforeEach(() => {
     hoisted.chainClock.t = 1_700_000;
+    hoisted.chainClock.step = 900;
     vi.clearAllMocks();
+    hoisted.readInfoMock.mockResolvedValue(LONG_PAST_THE_BAR);
     vi.useFakeTimers();
   });
   afterEach(() => { vi.useRealTimers(); });
@@ -345,5 +351,74 @@ describe('a reverting claim is attempted once, not forever', () => {
       'one automatic attempt; the player can retry deliberately').toBe(1);
     expect(hoisted.sendSettleMock).not.toHaveBeenCalled();
     expect(ws.notifyAbandonedGameSettled).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The contract refuses a claim until the game has been active
+ * MIN_ABANDON_SECONDS (eight minutes) of CHAIN time, and the relay offers the
+ * claim after a minute of idling — in a young game, well before that. The flow
+ * must wait the bar out rather than prove a claim that reverts "Too soon", and
+ * must stand down if the opponent comes back while it waits.
+ */
+describe('the claim waits for the abandonment bar', () => {
+  const ACTIVE_AT = 1_700_000;   // the game went active "now" on the chain clock
+
+  beforeEach(() => {
+    hoisted.chainClock.t = ACTIVE_AT;
+    hoisted.chainClock.step = 100;     // 100s of chain time per 5s poll
+    vi.clearAllMocks();
+    hoisted.sendSettleMock.mockResolvedValue({ txHash: '0xSETTLE_TX', offchainMessages: hoisted.settleMessages });
+    hoisted.sendClaimMock.mockImplementation(async () => '0xCLAIM_TX');
+    hoisted.readInfoMock.mockImplementation(async () => (hoisted.sendClaimMock.mock.calls.length === 0
+      // Before the claim: an active game, young.
+      ? { status: 2, activeAt: ACTIVE_AT, claimAt: 0, claimPlayer: '0x0' }
+      // After it: claimed once the bar had passed.
+      : { status: 5, activeAt: ACTIVE_AT, claimAt: ACTIVE_AT + 500, claimPlayer: '0xME' }));
+    vi.useFakeTimers();
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('does not prove the claim until the game is eight minutes old, and counts down meanwhile', async () => {
+    const ws = makeWs();
+    const { result } = renderHook(() => useGameSettlement({ ws, cardIds: [1, 2, 3, 4, 5], session, play }));
+
+    // First poll: 100s of the 480s gone. No claim yet; the countdown shows the rest.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(hoisted.sendClaimMock).not.toHaveBeenCalled();
+    expect(result.current.abandonBarCountdown).toBe(380);
+    expect(result.current.isClaimingAbandoned).toBe(true);
+    // The game stays 'active' while it waits — the opponent may yet return.
+    expect(session.transitionPhase).not.toHaveBeenCalledWith('settling');
+
+    // Five polls in, 500s of chain time: past the bar, so the claim goes out.
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    expect(hoisted.sendClaimMock).toHaveBeenCalledTimes(1);
+    expect(session.transitionPhase).toHaveBeenCalledWith('settling');
+    expect(hoisted.sendSettleMock).toHaveBeenCalledTimes(1);
+    expect(result.current.abandonBarCountdown).toBeNull();
+  });
+
+  it('stands down if the opponent moves while it waits', async () => {
+    let proofs = [...moveProofs];
+    const livePlay = { ...play, getMoveProofs: () => proofs };
+    const ws = makeWs();
+    const { result } = renderHook(() => useGameSettlement({ ws, cardIds: [1, 2, 3, 4, 5], session, play: livePlay }));
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(result.current.abandonBarCountdown).toBe(380);
+
+    // They are back: a new move proof arrives mid-wait.
+    proofs = [...proofs, { ...moveProofs[0], startStateHash: '0xS3', endStateHash: '0xS4' }];
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+
+    // A stale prefix of the transcript would still be accepted by the
+    // contract — against a player who is here. So nothing is claimed, and
+    // the live game keeps its phase.
+    expect(hoisted.sendClaimMock).not.toHaveBeenCalled();
+    expect(session.transitionPhase).not.toHaveBeenCalledWith('settling');
+    expect(session.transitionPhase).not.toHaveBeenCalledWith('idle');
+    expect(result.current.isClaimingAbandoned).toBe(false);
+    expect(result.current.abandonBarCountdown).toBeNull();
   });
 });

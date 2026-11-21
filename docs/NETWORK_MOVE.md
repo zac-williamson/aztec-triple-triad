@@ -148,3 +148,7 @@ Contract changes only ship with a redeploy, so batch them into a move:
   (contract, frontend, bot, tests): merge it before compiling the contracts
   for the redeploy. What it changes and what it leaves on `import_note`:
   [plan/OFFCHAIN_DELIVERY.md](plan/OFFCHAIN_DELIVERY.md).
+- An abandoned game becomes claimable after eight minutes instead of an hour
+  (`MIN_ABANDON_SECONDS` 3600 → 480, game contract). Also on
+  `spike/offchain-delivery`, with the browser claim flow waiting the bar out
+  on chain time; the trade-off it accepts is in ARCHITECTURE §8.

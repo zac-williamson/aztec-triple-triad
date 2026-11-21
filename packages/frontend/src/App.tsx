@@ -192,6 +192,7 @@ function AppInner() {
           takenCardId={game.takenCardId}
           abandonmentWarning={game.ws.abandonmentWarning}
           isClaimingAbandoned={game.isClaimingAbandoned}
+          abandonBarCountdown={game.abandonBarCountdown}
           abandonedDisputeCountdown={game.abandonedDisputeCountdown}
           onClaimAbandoned={game.handleClaimAbandoned}
           chainView={{

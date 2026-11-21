@@ -1,8 +1,9 @@
 /**
  * AbandonmentBanner — the present-but-idle abandonment UX
  * (docs/plan/ABANDONED_GAMES.md "Message contract"):
- *  - idle player sees a live countdown to the deadline + a forfeit warning,
- *    then "flagged as abandoned — move immediately" once claimable
+ *  - idle player sees a live countdown to the deadline, then "flagged as
+ *    abandoned — move immediately" once claimable (and no promise of a lost
+ *    card: a claim returns each side only its own stake)
  *  - non-idle player sees "Opponent isn't moving" + live countdown + a
  *    "Claim abandoned game" button that fires only once claimable
  *  - during the on-chain dispute window, the claimant sees the dispute banner.
@@ -32,7 +33,7 @@ describe('AbandonmentBanner', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('shows a live countdown + forfeit warning when I AM the idle player (impending)', () => {
+  it('shows a live countdown and the claim it leads to when I AM the idle player (impending)', () => {
     render(
       <AbandonmentBanner
         warning={warn({ idlePlayer: 'player1', secondsUntilClaimable: 5 })} myPlayer="player1"
@@ -44,7 +45,10 @@ describe('AbandonmentBanner', () => {
     // The idle player sees how long until they forfeit (a live countdown).
     expect(screen.getByTestId('abandonment-countdown-self').textContent).toBe('5s');
     expect(screen.getByText(/until the game is flagged abandoned/i)).toBeTruthy();
-    expect(screen.getByText(/forfeit a card/i)).toBeTruthy();
+    expect(screen.getByText(/your opponent can claim it/i)).toBeTruthy();
+    // Abandonment costs the game, not a card: a claim returns each side only
+    // its own stake. The banner used to threaten a forfeited card.
+    expect(screen.queryByText(/forfeit/i)).toBeNull();
     // The idle player gets NO claim button.
     expect(screen.queryByTestId('claim-abandoned-game')).toBeNull();
   });
@@ -60,7 +64,8 @@ describe('AbandonmentBanner', () => {
     // textContent (the <strong> splits the text nodes): full message check.
     const selfBanner = screen.getByTestId('abandonment-warning-self');
     expect(selfBanner.textContent).toMatch(/flagged as abandoned/i);
-    expect(selfBanner.textContent).toMatch(/move immediately or you forfeit/i);
+    expect(selfBanner.textContent).toMatch(/move immediately/i);
+    expect(selfBanner.textContent).not.toMatch(/forfeit/i);
     // No countdown once claimable, and still no claim button for the idle player.
     expect(screen.queryByTestId('abandonment-countdown-self')).toBeNull();
     expect(screen.queryByTestId('claim-abandoned-game')).toBeNull();
@@ -118,6 +123,23 @@ describe('AbandonmentBanner', () => {
     expect(dispute).toBeTruthy();
     expect(dispute.textContent).toMatch(/42s to dispute/);
     // The warning banner is replaced by the dispute banner.
+    expect(screen.queryByTestId('claim-abandoned-game')).toBeNull();
+  });
+
+  it('shows how long until the claim opens while it waits for the abandonment bar', () => {
+    // The relay offers the claim after a minute of idling; the contract takes
+    // it only once the game has run MIN_ABANDON_SECONDS. The flow waits that
+    // out rather than proving a claim that reverts, and says how long.
+    render(
+      <AbandonmentBanner
+        warning={warn({ idlePlayer: 'player2', secondsUntilClaimable: 0 })} myPlayer="player1"
+        isClaimingAbandoned={true} abandonBarCountdown={300} abandonedDisputeCountdown={null}
+        onClaimAbandoned={noop}
+      />,
+    );
+    const banner = screen.getByTestId('abandonment-dispute');
+    expect(banner.textContent).toMatch(/Claim opens in 300s/);
+    expect(banner.textContent).toMatch(/8 minutes/);
     expect(screen.queryByTestId('claim-abandoned-game')).toBeNull();
   });
 

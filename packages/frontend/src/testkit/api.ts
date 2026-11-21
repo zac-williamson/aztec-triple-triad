@@ -82,6 +82,7 @@ function snapshotPhase(): PhaseSnapshot | null {
           }
         : null,
       isClaimingAbandoned: game.isClaimingAbandoned,
+      barCountdown: game.abandonBarCountdown,
       disputeCountdown: game.abandonedDisputeCountdown,
       // Non-idle player may claim now: a warning is active for the OTHER side,
       // its countdown has elapsed, and a claim isn't already running.

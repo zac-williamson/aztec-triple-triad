@@ -144,7 +144,7 @@ describe('cards stranded in an unfinished game', () => {
       .toHaveBeenCalled();
   });
 
-  it('makes a finished game wait out the same hour as any other', async () => {
+  it('makes a finished game wait out the same bar as any other', async () => {
     // Completeness does not exempt it from the staleness bar: claiming early
     // would race the winner's own settlement and take the card they won.
     hoisted.loadGameMock.mockReturnValue({
@@ -187,12 +187,14 @@ describe('cards stranded in an unfinished game', () => {
     // The contract will not accept a claim inside MIN_ABANDON_SECONDS, so
     // offering one would revert. Saying how long is honest; a dead button is
     // the mistake this codebase has made three times.
+    // Five minutes in: three to go before the eight-minute bar.
     hoisted.readInfoMock.mockResolvedValue({
-      status: 2, activeAt: nowS() - 600, claimAt: 0, claimPlayer: '0x0',
+      status: 2, activeAt: nowS() - 300, claimAt: 0, claimPlayer: '0x0',
     });
     const { result } = renderHook(() => useGame('ws://test'));
     await waitFor(() => expect(result.current.stuckGame?.kind).toBe('too-soon'));
-    expect(result.current.stuckGame?.waitSeconds).toBeGreaterThan(0);
+    expect(result.current.stuckGame?.waitSeconds).toBeGreaterThan(170);
+    expect(result.current.stuckGame?.waitSeconds).toBeLessThanOrEqual(180);
 
     await act(async () => { await result.current.handleRecoverStuckGame(); });
     expect(hoisted.handleAbandonedGameMock).not.toHaveBeenCalled();

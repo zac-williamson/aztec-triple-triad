@@ -360,9 +360,16 @@ and recovery is the last resort that returns each side its own stake.**
    turn when play stopped, so you cannot walk away from your own turn and call
    the other player absent (`assert_claim_turn`). That check reads the stored
    player addresses; it was once a caller-supplied `bool`, which defeated it
-   entirely. A claim also requires `MIN_ABANDON_SECONDS` since the game went
-   active — SECONDS, not blocks, because measured block time on this testnet
-   ranges from 27 to 72 seconds.
+   entirely. A claim also requires `MIN_ABANDON_SECONDS` — eight minutes —
+   since the game went active: SECONDS, not blocks, because measured block time
+   on this testnet ranges from 27 to 72 seconds. The relay offers the claim once
+   the opponent has idled a minute, usually sooner, so the browser's claim flow
+   waits the bar out on the chain's clock (`waitForAbandonBar`) before proving
+   anything, and stands down if the opponent moves meanwhile. Eight minutes no
+   longer outlasts a slow game plus its settlement (it was an hour, which did):
+   a loser can now claim while the winner is still settling, and the winner's
+   answer is to contest (below) and then settle. The arena bot's sweep waits
+   its own game timeout, 30 minutes, before it claims anything.
 
 2. **Contest** — `contest_abandonment`. Either player who is not the claimant
    may object inside `DISPUTE_SECONDS`, with no proof required. The game returns

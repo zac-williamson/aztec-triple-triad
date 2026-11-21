@@ -135,8 +135,7 @@ export async function buildProcessGameArgs(inputs: ProcessGameInputs): Promise<u
 // order-critical argument list, rejected only on-chain if it is wrong.
 // ---------------------------------------------------------------------------
 
-/** Blocks that must elapse between claim and settle (contract-enforced). */
-/** Mirrors DISPUTE_SECONDS in the game contract. */
+/** Mirrors DISPUTE_SECONDS in the game contract: seconds between claim and settle. */
 export const DISPUTE_SECONDS = 600;
 
 export interface ClaimAbandonedInputs {
@@ -257,12 +256,9 @@ export function buildSettleAbandonedArgs(inputs: SettleAbandonedInputs): Promise
  * not. Fails loudly at the ceiling rather than waiting forever.
  */
 export async function waitForDisputeWindow(
-  node: {
-    getBlockNumber: () => Promise<number | bigint>;
-    getBlock: (n: number) => Promise<any>;
-  },
+  node: ChainClock,
   claimedAtSeconds: number,
-  opts: { maxMs?: number; pollMs?: number; onProgress?: (secondsLeft: number) => void } = {},
+  opts: ChainWaitOpts = {},
 ): Promise<void> {
   // A claim time of zero is the contract's "no claim on record", which happens
   // when this read lands before the claim is visible at the reader's anchor.
@@ -276,6 +272,68 @@ export async function waitForDisputeWindow(
       'Refusing to start the dispute window from an unknown time — retry the claim.',
     );
   }
+  return waitForChainSeconds(node, claimedAtSeconds, DISPUTE_SECONDS, opts, (elapsed, waitedMs) =>
+    `Dispute window did not open: ${elapsed}/${DISPUTE_SECONDS}s of chain time in ` +
+    `${Math.round(waitedMs / 1000)}s of ours. Refusing to settle early or wait indefinitely.`);
+}
+
+/** Mirrors MIN_ABANDON_SECONDS in the game contract. */
+export const MIN_ABANDON_SECONDS = 480;
+
+/**
+ * Wait until the game is old enough for the contract to accept an abandonment
+ * claim: MIN_ABANDON_SECONDS of CHAIN time since it went active.
+ *
+ * The relay offers the claim once the opponent has been idle for a minute,
+ * which in a young game is well before the contract will take it. Proving the
+ * claim anyway costs a recursive proof and reverts "Too soon to call this game
+ * abandoned" — and the automatic trigger, which fires once per game, then
+ * stays spent. So the claim flow waits the bar out first, counting down.
+ */
+export async function waitForAbandonBar(
+  node: ChainClock,
+  activeAtSeconds: number,
+  opts: ChainWaitOpts = {},
+): Promise<void> {
+  // Zero is the contract's "never went active": the join has not landed, or is
+  // not yet visible. As a timestamp it is 1970 and the wait would pass at once,
+  // straight into a claim the contract rejects for not being active.
+  if (!Number.isFinite(activeAtSeconds) || activeAtSeconds <= 0) {
+    throw new Error(
+      `This game has no active time on record (activeAt=${activeAtSeconds}) — ` +
+      'it is not active on-chain yet, so there is nothing to claim.',
+    );
+  }
+  return waitForChainSeconds(node, activeAtSeconds, MIN_ABANDON_SECONDS, opts, (elapsed, waitedMs) =>
+    `The abandonment bar did not pass: ${elapsed}/${MIN_ABANDON_SECONDS}s of chain time in ` +
+    `${Math.round(waitedMs / 1000)}s of ours. Refusing to claim early or wait indefinitely.`);
+}
+
+/** Reads the chain's clock: the latest block's timestamp. */
+export interface ChainClock {
+  getBlockNumber: () => Promise<number | bigint>;
+  getBlock: (n: number) => Promise<any>;
+}
+
+export interface ChainWaitOpts {
+  maxMs?: number;
+  pollMs?: number;
+  /** Called on each poll that is still short, with the seconds left. */
+  onProgress?: (secondsLeft: number) => void;
+}
+
+/**
+ * Poll the chain's own clock until `windowSeconds` have passed since
+ * `fromSeconds`. Immune to block-rate variance and to local clock skew, which a
+ * wall-clock sleep is not; fails loudly at `maxMs` rather than waiting forever.
+ */
+async function waitForChainSeconds(
+  node: ChainClock,
+  fromSeconds: number,
+  windowSeconds: number,
+  opts: ChainWaitOpts,
+  timeoutMessage: (elapsedSeconds: number, waitedMs: number) => string,
+): Promise<void> {
   const maxMs = opts.maxMs ?? 30 * 60 * 1000;
   const pollMs = opts.pollMs ?? 5000;
   const started = Date.now();
@@ -288,16 +346,12 @@ export async function waitForDisputeWindow(
 
   for (;;) {
     const now = await chainNow();
-    const elapsed = now - claimedAtSeconds;
-    if (elapsed >= DISPUTE_SECONDS) return;
+    const elapsed = now - fromSeconds;
+    if (elapsed >= windowSeconds) return;
     if (Date.now() - started > maxMs) {
-      throw new Error(
-        `Dispute window did not open: ${elapsed}/${DISPUTE_SECONDS}s of chain time in ` +
-        `${Math.round((Date.now() - started) / 1000)}s of ours. ` +
-        `Refusing to settle early or wait indefinitely.`,
-      );
+      throw new Error(timeoutMessage(elapsed, Date.now() - started));
     }
-    opts.onProgress?.(Math.max(0, DISPUTE_SECONDS - elapsed));
+    opts.onProgress?.(Math.max(0, windowSeconds - elapsed));
     await new Promise(r => setTimeout(r, pollMs));
   }
 }

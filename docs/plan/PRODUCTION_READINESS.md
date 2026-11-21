@@ -460,7 +460,9 @@ not a reliable clock.
 
 Now `MIN_ABANDON_SECONDS = 3600` and `DISPUTE_SECONDS = 600` off
 `context.timestamp()`. Two callers assumed the old units and were fixed with
-it: the sweep's `minAgeMs` and the frontend's recovery button.
+it: the sweep's `minAgeMs` and the frontend's recovery button. (21 Nov:
+`MIN_ABANDON_SECONDS` lowered to 480 — eight minutes — on
+`spike/offchain-delivery`, for the next redeploy; ARCHITECTURE §8.)
 
 ### 17. The contest window was designed and never built · `DONE` (1 Sep)
 The original intent for abandonment was a challenge window — the opponent gets

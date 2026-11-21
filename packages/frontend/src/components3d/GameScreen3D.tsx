@@ -38,6 +38,8 @@ interface GameScreenProps {
   abandonmentWarning?: AbandonmentWarning | null;
   /** True while the abandoned claim+settle flow runs. */
   isClaimingAbandoned?: boolean;
+  /** Seconds until the contract will accept the claim, while it waits (else null). */
+  abandonBarCountdown?: number | null;
   /** Seconds left in the on-chain dispute window during a claim (else null). */
   abandonedDisputeCountdown?: number | null;
   /** Trigger the abandoned-game claim flow (non-idle player's button). */
@@ -71,6 +73,7 @@ export function GameScreen3D({
   takenCardId,
   abandonmentWarning,
   isClaimingAbandoned,
+  abandonBarCountdown,
   abandonedDisputeCountdown,
   onClaimAbandoned,
   chainView,
@@ -296,6 +299,7 @@ export function GameScreen3D({
         takenCardId={takenCardId}
         abandonmentWarning={abandonmentWarning}
         isClaimingAbandoned={isClaimingAbandoned}
+        abandonBarCountdown={abandonBarCountdown}
         abandonedDisputeCountdown={abandonedDisputeCountdown}
         onClaimAbandoned={onClaimAbandoned}
         chainView={chainView}

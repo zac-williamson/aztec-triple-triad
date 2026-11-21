@@ -21,14 +21,19 @@ use aztec::macros::aztec;
 /// "Timestamps of Aztec blocks are not at reliably-fixed intervals ... use
 /// context.timestamp() for more-reliable time-based logic."
 ///
-/// An hour comfortably exceeds a game plus a settlement (~25 minutes at worst)
-/// and still returns a stranded hand the same afternoon.
-pub global MIN_ABANDON_SECONDS: u64 = 3600;
+/// Eight minutes: a player whose opponent walked away gets their cards back in
+/// the same sitting. It was an hour, chosen to outlast a game plus its
+/// settlement (~25 minutes at worst on testnet); eight minutes does not, so a
+/// slow winner can now be raced by a claim. The winner's remedy is the dispute
+/// window: contest ("I'm still here"), and the game goes back to active and
+/// settles normally. The arena bot does not race: its sweep waits its own game
+/// timeout (30 minutes by default) before claiming anything.
+pub global MIN_ABANDON_SECONDS: u64 = 480;
 
 /// Seconds a claim sits before it can be settled, during which the other
 /// player may contest it. Ten minutes: long enough that someone who returns
 /// mid-claim can object, short enough not to punish an honest claimant who has
-/// already waited an hour.
+/// already waited out the abandonment bar.
 pub global DISPUTE_SECONDS: u64 = 600;
 
 /**
@@ -811,18 +816,19 @@ pub contract TripleTriadGame {
         // apply and either player may claim. Neither wins a card: recovery is
         // per-player and returns only the caller's own stake. The winner
         // forfeits the prize card by never claiming it, which is the cost of
-        // walking away, and MIN_ABANDON_SECONDS gives them a long window to
-        // settle properly first.
+        // walking away; MIN_ABANDON_SECONDS is their window to settle first.
         //
         // KNOWN TRADE-OFF, and the one to weigh in an audit. A loser can claim a
         // completed game and thereby BLOCK the winner's settlement, because
         // settle_game requires status 2. It costs the loser nothing and denies
-        // the winner their prize. Three things bound it: the game must be an
-        // hour old, which a winner settling normally never is; the winner may
-        // contest inside the dispute window and then settle properly; and the
-        // loser gains no card either, recovering only their own stake. The
-        // alternative — both hands locked forever when a winner closes their tab
-        // on the result screen — is strictly worse, and is what this replaced.
+        // the winner their prize. Three things bound it: the game must be
+        // MIN_ABANDON_SECONDS old — eight minutes, which a slow winner CAN
+        // exceed (it was an hour, which a normal settlement never did); the
+        // winner may contest inside the dispute window and then settle
+        // properly; and the loser gains no card either, recovering only their
+        // own stake. The alternative — both hands locked forever when a winner
+        // closes their tab on the result screen — is strictly worse, and is what
+        // this replaced.
         crate::assert_valid_move_count(n);
 
         // ===== 1. Verify both hand proofs =====

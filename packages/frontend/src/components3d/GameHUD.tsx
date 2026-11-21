@@ -31,6 +31,8 @@ interface GameHUDProps {
   abandonmentWarning?: AbandonmentWarning | null;
   /** True while the abandoned claim+settle flow runs. */
   isClaimingAbandoned?: boolean;
+  /** Seconds until the contract will accept the claim, while it waits (else null). */
+  abandonBarCountdown?: number | null;
   /** Seconds left in the on-chain dispute window during a claim (else null). */
   abandonedDisputeCountdown?: number | null;
   /** Trigger the abandoned-game claim flow (non-idle player's button). */
@@ -89,6 +91,7 @@ export function GameHUD({
   takenCardId = null,
   abandonmentWarning = null,
   isClaimingAbandoned = false,
+  abandonBarCountdown = null,
   abandonedDisputeCountdown = null,
   onClaimAbandoned,
   chainView,
@@ -174,6 +177,7 @@ export function GameHUD({
           warning={abandonmentWarning}
           myPlayer={myPlayer}
           isClaimingAbandoned={isClaimingAbandoned}
+          abandonBarCountdown={abandonBarCountdown}
           abandonedDisputeCountdown={abandonedDisputeCountdown}
           onClaimAbandoned={onClaimAbandoned}
         />

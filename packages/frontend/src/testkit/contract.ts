@@ -71,6 +71,8 @@ export interface PhaseSnapshot {
   abandonment: {
     warning: { idlePlayer: PlayerSide; secondsIdle: number; secondsUntilClaimable: number } | null;
     isClaimingAbandoned: boolean;
+    /** Seconds until the contract accepts the claim, while the flow waits for it. */
+    barCountdown: number | null;
     disputeCountdown: number | null;
     claimAvailable: boolean;
   };

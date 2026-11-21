@@ -127,9 +127,9 @@ export function useGameStorage() {
    * This is the only copy a player has of their own transcript, and it is what
    * every recovery path reads. Two things used to destroy it at precisely the
    * moment it started to matter: GAME_OVER deleted it outright, and the resume
-   * TTL above expired it after two hours — while a claim cannot even be
-   * attempted for one hour (MIN_ABANDON_SECONDS) and, realistically, people
-   * come back the next day. A player who lost and whose opponent then walked
+   * TTL above expired it after two hours — while a claim could not even be
+   * attempted for the first hour (MIN_ABANDON_SECONDS, eight minutes since)
+   * and, realistically, people come back the next day. A player who lost and whose opponent then walked
    * away had no way to recover their cards at all.
    *
    * Thirty days is the retention, because that is a "come back next week and

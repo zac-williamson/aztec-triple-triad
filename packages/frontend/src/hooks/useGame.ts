@@ -9,6 +9,8 @@ import { useUnloadGuard } from './useUnloadGuard';
 import { useAztecContext } from '../aztec/AztecContext';
 import type { Screen, HandProofData, MoveProofData } from '../types';
 import { TOTAL_MOVES } from '../aztec/gameConstants';
+// The contract's abandonment timing, mirrored once (contractConstants.test).
+import { MIN_ABANDON_SECONDS, DISPUTE_SECONDS } from '../aztec/settlementArgs';
 
 /** Chain time is in seconds; so is everything compared against it here. */
 const nowSeconds = () => Math.floor(Date.now() / 1000);
@@ -41,10 +43,6 @@ export type StuckGameKind =
   /** Claimed, window closed: nothing left to do but let it complete. */
   | 'claimed-by-opponent';
 
-/** Mirrors MIN_ABANDON_SECONDS in the game contract. */
-const MIN_ABANDON_SECONDS = 3600;
-/** Mirrors DISPUTE_SECONDS in the game contract. */
-const DISPUTE_SECONDS = 600;
 
 // Re-export types consumers need
 export type { TxStatus, ProofStatus };
@@ -93,6 +91,8 @@ export interface UseGameReturn {
 
   // Abandoned game
   isClaimingAbandoned: boolean;
+  /** Seconds until the contract will accept the claim, while it waits; else null. */
+  abandonBarCountdown: number | null;
   abandonedDisputeCountdown: number | null;
   /** Claim a present-but-idle (or disconnected) opponent's abandoned game. */
   handleClaimAbandoned: () => void;
@@ -494,6 +494,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     opponentSettled: settlement.opponentSettled,
     takenCardId: settlement.takenCardId,
     isClaimingAbandoned: settlement.isClaimingAbandoned,
+    abandonBarCountdown: settlement.abandonBarCountdown,
     abandonedDisputeCountdown: settlement.abandonedDisputeCountdown,
     handleClaimAbandoned: settlement.handleAbandonedGame,
     canGoBack,

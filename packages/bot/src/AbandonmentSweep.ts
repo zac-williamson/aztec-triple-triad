@@ -71,7 +71,20 @@ export interface SweepDeps {
 export const SETTLED_RETENTION_MS = 7 * 24 * 60 * 60_000;
 
 /** Mirrors MIN_ABANDON_SECONDS in the game contract. */
-const MIN_ABANDON_SECONDS = 3600;
+export const MIN_ABANDON_SECONDS = 480;
+
+/**
+ * How long the sweep leaves a game alone before treating it as abandoned, when
+ * the caller does not say (production passes its game timeout, also 30 min).
+ *
+ * Deliberately far past the contract's eight-minute bar. A game the bot LOST
+ * stays outstanding in its journal until the human winner settles, and a
+ * claim filed while they are still settling blocks their settlement until
+ * they contest it. Thirty minutes outlasts a game plus a settlement at their
+ * slowest (~25 min on testnet); a recovery that waits is cheaper than a player
+ * robbed of a win.
+ */
+export const DEFAULT_SWEEP_MIN_AGE_MS = 30 * 60_000;
 
 export class AbandonmentSweep {
   /** Games already reported as permanently unrecoverable; reported once each. */
@@ -94,12 +107,11 @@ export class AbandonmentSweep {
     // A game in progress looks exactly like an abandoned one from the journal's
     // point of view. Only age separates them, and claiming a LIVE game would be
     // both wrong and rejected ("It must be opponent's turn to claim").
-    // Must not be SHORTER than the contract's own bar, or every claim in the
-    // gap reverts with "Too soon to call this game abandoned" and the sweep
-    // retries a certain failure — the exact mistake this file already made once
-    // with turn parity. The contract requires MIN_ABANDON_SECONDS (1 hour); a
-    // few minutes of headroom covers clock skew between the node and us.
-    this.minAgeMs = deps.minAgeMs ?? 65 * 60_000;
+    // Never SHORTER than the contract's own bar (MIN_ABANDON_SECONDS), or every
+    // claim in the gap reverts "Too soon to call this game abandoned" — and the
+    // chain-age check below enforces that bar regardless. The default is far
+    // longer on purpose: see DEFAULT_SWEEP_MIN_AGE_MS.
+    this.minAgeMs = deps.minAgeMs ?? DEFAULT_SWEEP_MIN_AGE_MS;
     this.txTimeoutMs = deps.txTimeoutMs ?? 600_000;
   }
 
