@@ -54,6 +54,9 @@ export interface SettlementSessionDeps {
   getSettlementInfo: () => SettlementInfo | null;
   backfillSettlementInfoFromWs: () => SettlementInfo | null;
   clearSettlementInfo: () => void;
+  /** The game is over on-chain: never run its create/join pipeline again.
+   *  Optional only so unit-test doubles may omit it; useGame always passes it. */
+  markLifecycleComplete?: () => void;
 }
 
 /**
@@ -265,6 +268,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     })();
 
     // Settlement complete on loser side — release the game lifecycle
+    session.markLifecycleComplete?.();
     session.transitionPhase('idle');
   }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, aztec.nodeClient, importRelayedCards, cardIds, aztec.refreshTokenBalance, session.transitionPhase, session.getSettlementInfo]);
 
@@ -295,6 +299,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
       },
       postEffects: async () => {
         setOpponentSettled(true);
+        session.markLifecycleComplete?.();
         session.transitionPhase('idle');
         // Wait for PXE to sync the block containing the settlement tx
         // before querying token balance (token notes use ONCHAIN_CONSTRAINED
@@ -560,8 +565,9 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
         await new Promise(r => setTimeout(r, 3000));
         aztec.refreshTokenBalance();
 
-        // Game's on-chain lifecycle is complete — mark idle so the pipeline
-        // effect won't re-trigger a spurious create_game on navigation.
+        // Game's on-chain lifecycle is complete: mark it so the pipeline never
+        // restarts it, then idle.
+        session.markLifecycleComplete?.();
         session.transitionPhase('idle');
         session.clearSettlementInfo();
       },
@@ -917,6 +923,10 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           // Refresh token balance (abandoned game settlement may mint tokens)
           aztec.refreshTokenBalance();
 
+          // Over for us on-chain: without the mark, the pipeline restarted on
+          // this same game the moment the phase went idle (seen in the browser:
+          // a fresh join preview, its randomness shared with a gone opponent).
+          session.markLifecycleComplete?.();
           session.transitionPhase('idle');
           setIsClaimingAbandoned(false);
           setAbandonedDisputeCountdown(null);

@@ -79,6 +79,12 @@ export interface UseGameSessionReturn {
    */
   backfillSettlementInfoFromWs: () => SettlementInfo | null;
   clearSettlementInfo: () => void;
+  /**
+   * Record that the current game's on-chain lifecycle has run to completion —
+   * settled (by either side) or recovered from abandonment — so the pipeline
+   * never starts it again. Call before the final transition to 'idle'.
+   */
+  markLifecycleComplete: () => void;
   restoreFromSave: (saved: PersistedGameState) => void;
   resetForMenu: () => void;
 }
@@ -111,6 +117,19 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
 
   // Typed phase ref (replaces 4 boolean guards)
   const onChainPhaseRef = useRef<OnChainPhase>('idle');
+
+  // The ws game whose on-chain lifecycle has run to completion. A finished
+  // lifecycle ends in 'idle' — which is also exactly where the pipeline below
+  // STARTS one. So any later re-render on that same game (an abandonment
+  // warning, a late GAME_STATE) restarted it: a join preview for player 2,
+  // sharing fresh randomness with an opponent who has gone, and for player 1
+  // a second create_game committing the five cards it had just got back.
+  const lifecycleDoneForRef = useRef<string | null>(null);
+  const wsGameIdRef = useRef(ws.gameId);
+  wsGameIdRef.current = ws.gameId;
+  const markLifecycleComplete = useCallback((): void => {
+    lifecycleDoneForRef.current = wsGameIdRef.current;
+  }, []);
 
   // Promise resolver for awaiting_join → active transition (P1 waiting for P2 join)
   const activePhaseResolveRef = useRef<(() => void) | null>(null);
@@ -346,6 +365,7 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
   useEffect(() => {
     if (screen === 'main-menu') return; // Never start pipeline during navigation
     if (!ws.gameId || !ws.gameState) return;
+    if (ws.gameId === lifecycleDoneForRef.current) return; // over on-chain: never again
     if (ws.gameState.status !== 'playing' && ws.gameState.status !== 'finished') return;
     if (!isContractAvailable) return;
 
@@ -506,6 +526,7 @@ export function useGameSession({ ws, screen, cardIds }: UseGameSessionParams): U
     getBlindingFactor,
     backfillSettlementInfoFromWs,
     clearSettlementInfo,
+    markLifecycleComplete,
     restoreFromSave,
     resetForMenu,
   };
