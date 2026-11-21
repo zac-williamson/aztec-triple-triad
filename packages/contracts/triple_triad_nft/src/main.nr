@@ -85,13 +85,10 @@ global DOM_SEP__STARTER_CLAIM: Field = 0x535441525445525f434c41494d;
 /// Cost of a card pack in Arena Tokens
 global CARD_PACK_COST: u128 = 100;
 
-/// IV field constants for note tagging scheme.
-/// Distinct domain separators hashed with poseidon2 to derive IVs.
-/// Kept under 128 bits to avoid Noir integer literal limits.
-/// "NoteTag" = 0x4e6f7465546167, "SecretIV" = 0x5365637265744956, "PayloadIV" = 0x5061796c6f61644956
-global AXOLOTL_NOTE_TAG_FIELD: Field = 0x4e6f7465546167;
+/// Domain separator for deterministic note randomness, hashed with poseidon2 to
+/// derive its IV. Kept under 128 bits to avoid Noir integer literal limits.
+/// "SecretIV" = 0x5365637265744956
 global AXOLOTL_NOTE_SECRET_IV_FIELD: Field = 0x5365637265744956;
-global AXOLOTL_PAYLOAD_IV_FIELD: Field = 0x5061796c6f61644956;
 
 /// IV for deterministic game_id derivation: "GameId" = 0x47616d654964
 global GAME_ID_IV_FIELD: Field = 0x47616d654964;
@@ -106,9 +103,8 @@ global GAME_ID_IV_FIELD: Field = 0x47616d654964;
 #[aztec]
 pub contract TripleTriadNFT {
     use super::{
-        AXOLOTL_NOTE_SECRET_IV_FIELD, AXOLOTL_NOTE_TAG_FIELD, AXOLOTL_PAYLOAD_IV_FIELD,
-        CARD_PACK_COST, derive_blinding_factor, DOM_SEP__STARTER_CLAIM, GAME_ID_IV_FIELD,
-        generate_card, STARTER_CARD_IDS,
+        AXOLOTL_NOTE_SECRET_IV_FIELD, CARD_PACK_COST, derive_blinding_factor,
+        DOM_SEP__STARTER_CLAIM, GAME_ID_IV_FIELD, generate_card, STARTER_CARD_IDS,
     };
     use super::filters::{filter_by_token_ids, filter_by_token_ids_10};
     use arena_token::ArenaToken;
@@ -166,15 +162,6 @@ pub contract TripleTriadNFT {
         token_id: Field,
         from: AztecAddress,
         to: AztecAddress,
-    }
-
-    /// Event emitted for each card created with deterministic tagging.
-    /// note_tag allows recipients to identify notes belonging to them.
-    /// note_payload is a symmetric encryption of [card_id, payload_iv] under note_randomness.
-    #[event]
-    struct CardCreated {
-        note_tag: Field,
-        note_payload: [Field; 2],
     }
 
     // --- Storage ---
@@ -249,49 +236,12 @@ pub contract TripleTriadNFT {
     // Updates are applied by FRESH REDEPLOY (new addresses), not the Aztec
     // contract-class upgrade pattern. See docs/plan/UPDATE_MODEL.md.
 
-    // --- Symmetric Encryption (from mpclib::common::crypto) ---
-
-    /// Expand a secret into N pseudorandom field elements using poseidon2.
-    #[contract_library_method]
-    fn expand_secret<let N: u32>(secret: Field) -> [Field; N] {
-        let mut rolling_secret: [Field; 2] = [0, secret];
-        let mut r: [Field; N] = [0; N];
-        for i in 0..N {
-            r[i] = poseidon2_hash(rolling_secret);
-            rolling_secret[1] += 1;
-        }
-        r
-    }
-
-    /// Symmetric encryption: ciphertext[i] = plaintext[i] + expand_secret(secret)[i]
-    #[contract_library_method]
-    fn symmetric_encrypt<let N: u32>(plaintext: [Field; N], secret: Field) -> [Field; N] {
-        let mut ciphertext: [Field; N] = [0; N];
-        let secrets: [Field; N] = expand_secret(secret);
-        for i in 0..N {
-            ciphertext[i] = secrets[i] + plaintext[i];
-        }
-        ciphertext
-    }
-
     // --- IV Computation Helpers ---
-
-    /// Compute the note_tag_iv: poseidon2([AXOLOTL_NOTE_TAG_FIELD])
-    #[contract_library_method]
-    fn compute_note_tag_iv() -> Field {
-        poseidon2_hash([AXOLOTL_NOTE_TAG_FIELD])
-    }
 
     /// Compute the note_randomness_secret_iv: poseidon2([AXOLOTL_NOTE_SECRET_IV_FIELD])
     #[contract_library_method]
     fn compute_note_randomness_secret_iv() -> Field {
         poseidon2_hash([AXOLOTL_NOTE_SECRET_IV_FIELD])
-    }
-
-    /// Compute the note_payload_iv: poseidon2([AXOLOTL_PAYLOAD_IV_FIELD])
-    #[contract_library_method]
-    fn compute_note_payload_iv() -> Field {
-        poseidon2_hash([AXOLOTL_PAYLOAD_IV_FIELD])
     }
 
     /// Derive deterministic note_randomness for a given note_nonce value and index.
@@ -318,22 +268,6 @@ pub contract TripleTriadNFT {
             result[i] = derive_note_randomness(nhk_app_secret, nonce_value, i as Field);
         }
         result
-    }
-
-    /// Derive note_tag from note_randomness.
-    /// note_tag = poseidon2([note_randomness, note_tag_iv])
-    #[contract_library_method]
-    fn derive_note_tag(note_randomness: Field) -> Field {
-        let iv = compute_note_tag_iv();
-        poseidon2_hash([note_randomness, iv])
-    }
-
-    /// Symmetric-encrypt card_id with note_randomness for the CardCreated event payload.
-    /// note_payload = symmetric_encrypt([card_id, note_payload_iv], note_randomness)
-    #[contract_library_method]
-    fn encrypt_card_payload(card_id: Field, note_randomness: Field) -> [Field; 2] {
-        let iv = compute_note_payload_iv();
-        symmetric_encrypt([card_id, iv], note_randomness)
     }
 
     // --- Nullifier Debug Logging ---
@@ -503,10 +437,11 @@ pub contract TripleTriadNFT {
         );
         self.context.push_nullifier_unsafe(claim_nullifier);
 
-        // Mint 5 starter cards with deterministic randomness and emit CardCreated events
+        // Mint 5 starter cards with deterministic randomness; the owner receives
+        // their messages with offchain_receive.
         for i in 0..5 {
             let note_randomness = derive_note_randomness(nhk_app_secret, 0, i as Field);
-            create_note_with_randomness(self.context, owner, STARTER_CARD_IDS[i], note_randomness)
+            create_and_push_note(self.context, owner, STARTER_CARD_IDS[i], note_randomness)
                 .deliver(MessageDelivery::offchain());
         }
 
@@ -534,7 +469,7 @@ pub contract TripleTriadNFT {
         for i in 0..10 {
             let note_randomness = derive_note_randomness(nhk_app_secret, nonce_value, i as Field);
             let (_, card_id) = generate_card(nhk_app_secret, nonce_value + i as Field);
-            create_note_with_randomness(self.context, owner, card_id as Field, note_randomness)
+            create_and_push_note(self.context, owner, card_id as Field, note_randomness)
                 .deliver(MessageDelivery::offchain());
         }
 
@@ -558,62 +493,24 @@ pub contract TripleTriadNFT {
         result
     }
 
-    // --- Custom Note Creation (no delivery/tagging) ---
+    // --- Custom Note Creation (explicit randomness) ---
 
-    /// Create a FieldNote with explicit randomness and return its note message.
+    /// Create a FieldNote in `owner`'s card set with randomness WE choose,
+    /// notify the local PXE and push the note hash. Returns the note,
+    /// undelivered.
     ///
-    /// The same note as `create_and_push_note`: the randomness is ours and
-    /// derivable, so recovery by `import_note` still needs nothing from the
-    /// sender. The difference is that the caller delivers the standard note
-    /// message (`.deliver(MessageDelivery::offchain())`), so the recipient can
-    /// ingest it with the macro-injected `offchain_receive` instead of
-    /// importing note by note. `create_note` would choose random randomness;
-    /// building the `NewNote` ourselves is what keeps it derivable.
+    /// The randomness is never random: players' notes derive it from their own
+    /// nhk_app secret (`derive_note_randomness`), the bot's stock gets it from
+    /// the provisioner's manifest. So an owner can always rebuild a note and
+    /// import it by hand (`import_note`) needing nothing from the sender — the
+    /// settlement and abandonment recovery paths depend on that.
     #[contract_library_method]
-    fn create_note_with_randomness(
+    fn push_card_note(
         context: &mut aztec::context::PrivateContext,
         owner: AztecAddress,
         value: Field,
         randomness: Field,
-    ) -> NoteMessage<FieldNote> {
-        let note = FieldNote { value };
-        let note_hash_counter = context.get_side_effect_counter();
-        let storage_slot = TripleTriadNFT::storage_layout().private_nfts.slot;
-        // Same formula as create_and_push_note, so either path yields the same note.
-        let note_hash = poseidon2_hash_with_separator(
-            [storage_slot, value, owner.to_field(), randomness],
-            DOM_SEP__NOTE_HASH,
-        );
-        notify_created_note(
-            owner,
-            storage_slot,
-            randomness,
-            FieldNote::get_id(),
-            note.pack(),
-            note_hash,
-            note_hash_counter,
-        );
-        context.push_note_hash(note_hash);
-        NoteMessage::new(
-            NewNote { note, owner, storage_slot, randomness, note_hash_counter },
-            context,
-        )
-    }
-
-    /// Create a FieldNote with explicit randomness.
-    /// Pushes the note hash to the tx accumulator and notifies the PXE.
-    /// Does NOT deliver (no tagging) --caller handles delivery via frontend relay.
-    #[contract_library_method]
-    fn create_and_push_note(
-        context: &mut aztec::context::PrivateContext,
-        owner: AztecAddress,
-        value: Field,
-        randomness: Field,
-    ) -> Field {
-        debug_log_format(
-            "[NFT] create_and_push_note: owner={0} token_id={1} randomness={2}",
-            [owner.to_field(), value, randomness],
-        );
+    ) -> NewNote<FieldNote> {
         let note = FieldNote { value };
         let note_hash_counter = context.get_side_effect_counter();
         // Owned<PrivateSet> uses the BASE storage slot (not a derived/mapped slot).
@@ -626,6 +523,10 @@ pub contract TripleTriadNFT {
             [storage_slot, value, owner.to_field(), randomness],
             DOM_SEP__NOTE_HASH,
         );
+        debug_log_format(
+            "[NFT] push_card_note: owner={0} token_id={1} note_hash={2}",
+            [owner.to_field(), value, note_hash],
+        );
 
         notify_created_note(
             owner,
@@ -636,13 +537,28 @@ pub contract TripleTriadNFT {
             note_hash,
             note_hash_counter,
         );
-
-        debug_log_format(
-            "[NFT] create_and_push_note: note_hash={0} slot={1}",
-            [note_hash, storage_slot],
-        );
         context.push_note_hash(note_hash);
-        note_hash
+        NewNote { note, owner, storage_slot, randomness, note_hash_counter }
+    }
+
+    /// `push_card_note`, returning the note's message for the caller to deliver.
+    ///
+    /// Every player-facing mint delivers it with `MessageDelivery::offchain()`:
+    /// the message comes back from the send as one of its `offchainMessages`,
+    /// and the owner hands it to the macro-injected `offchain_receive`, which
+    /// stores the note once its tx is found on-chain (and again after a reorg).
+    /// That is the normal path; `import_note` is for recovery. `create_note`
+    /// would choose random randomness — building the `NewNote` ourselves is what
+    /// keeps it derivable. See docs/plan/OFFCHAIN_DELIVERY.md.
+    #[contract_library_method]
+    fn create_and_push_note(
+        context: &mut aztec::context::PrivateContext,
+        owner: AztecAddress,
+        value: Field,
+        randomness: Field,
+    ) -> NoteMessage<FieldNote> {
+        let new_note = push_card_note(context, owner, value, randomness);
+        NoteMessage::new(new_note, context)
     }
 
     // --- Minting ---
@@ -691,7 +607,7 @@ pub contract TripleTriadNFT {
         let bot = self.storage.arena_bots.at(slot).read();
         assert(!bot.is_zero(), "Arena bot slot not registered");
 
-        // create_and_push_note, NOT a tagged `insert(...).deliver(onchain_constrained())`.
+        // push_card_note, NOT a tagged `insert(...).deliver(onchain_constrained())`.
         //
         // Constrained delivery consumes one tagging index per note per
         // (sender, recipient) pair, and that window is a hard 84 that only
@@ -701,15 +617,20 @@ pub contract TripleTriadNFT {
         // simply not reachable.
         //
         // Untagged notes have no such ceiling; the cost is that the recipient
-        // cannot discover them passively and must import each one. That is the
-        // right trade HERE and only here: the bot is our own infrastructure, the
-        // provisioner already writes it a manifest, and randomness supplied by
-        // the caller goes into that manifest for the bot to import from. It is
-        // the same path the card packs and starter cards already use.
+        // cannot discover them passively. The randomness supplied by the
+        // caller goes into the provisioner's manifest and the bot imports each
+        // note from it (`import_note`).
+        //
+        // And NO message, unlike every player-facing mint. Received offchain
+        // messages stay in the recipient's inbox until their block finalizes,
+        // and every contract sync re-fetches the receipt of each one's tx. That
+        // is one to three txs for a player; for a thousand-card stock minted
+        // ten per tx it is a hundred receipt reads per sync, against an RPC that
+        // rate-limits. The manifest import has no such cost: once a note is
+        // stored, nothing revisits it.
         for i in 0..10 {
             if (i as u32) < count {
-                let _: Field =
-                    create_and_push_note(self.context, bot, token_ids[i], randomness[i]);
+                let _ = push_card_note(self.context, bot, token_ids[i], randomness[i]);
             }
         }
 
@@ -871,11 +792,7 @@ pub contract TripleTriadNFT {
                 "[NFT] winner_mint[{0}]: token_id={1} randomness={2}",
                 [i as Field, token_ids[i], randomness[i]],
             );
-            let _: Field = create_and_push_note(self.context, to, token_ids[i], randomness[i]);
-            let note_tag = derive_note_tag(randomness[i]);
-            let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
-            self.emit(CardCreated { note_tag, note_payload }).deliver_to(
-                to,
+            create_and_push_note(self.context, to, token_ids[i], randomness[i]).deliver(
                 MessageDelivery::offchain(),
             );
         }
@@ -892,11 +809,7 @@ pub contract TripleTriadNFT {
                 "[NFT] loser_mint[{0}]: token_id={1} randomness={2}",
                 [i as Field, token_ids[i], randomness[i]],
             );
-            let _ = create_and_push_note(self.context, to, token_ids[i], randomness[i]);
-            let note_tag = derive_note_tag(randomness[i]);
-            let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
-            self.emit(CardCreated { note_tag, note_payload }).deliver_to(
-                to,
+            create_and_push_note(self.context, to, token_ids[i], randomness[i]).deliver(
                 MessageDelivery::offchain(),
             );
         }
@@ -916,7 +829,8 @@ pub contract TripleTriadNFT {
         }
     }
 
-    /// OFFCHAIN draw mint for settlement --uses explicit randomness, with tagging for PXE discovery.
+    /// OFFCHAIN draw mint for settlement: explicit randomness, each note's
+    /// message delivered offchain to `to`.
     #[external("private")]
     fn mint_for_game_draw_offchain(
         token_ids: [Field; 5],
@@ -927,11 +841,7 @@ pub contract TripleTriadNFT {
         assert(self.msg_sender() == game, "Only game contract can call");
 
         for i in 0..5 {
-            let _ = create_and_push_note(self.context, to, token_ids[i], randomness[i]);
-            let note_tag = derive_note_tag(randomness[i]);
-            let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
-            self.emit(CardCreated { note_tag, note_payload }).deliver_to(
-                to,
+            create_and_push_note(self.context, to, token_ids[i], randomness[i]).deliver(
                 MessageDelivery::offchain(),
             );
         }
@@ -943,11 +853,7 @@ pub contract TripleTriadNFT {
         let game = self.storage.game_contract.read();
         assert(self.msg_sender() == game, "Only game contract can call");
 
-        let _: Field = create_and_push_note(self.context, to, token_id, randomness);
-        let note_tag = derive_note_tag(randomness);
-        let note_payload = encrypt_card_payload(token_id, randomness);
-        self.emit(CardCreated { note_tag, note_payload }).deliver_to(
-            to,
+        create_and_push_note(self.context, to, token_id, randomness).deliver(
             MessageDelivery::offchain(),
         );
     }
@@ -1322,11 +1228,7 @@ pub contract TripleTriadNFT {
                 "[NFT] test_mint[{0}]: token_id={1} randomness={2}",
                 [i as Field, token_ids[i], randomness[i]],
             );
-            let _: Field = create_and_push_note(self.context, to, token_ids[i], randomness[i]);
-            let note_tag = derive_note_tag(randomness[i]);
-            let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
-            self.emit(CardCreated { note_tag, note_payload }).deliver_to(
-                to,
+            create_and_push_note(self.context, to, token_ids[i], randomness[i]).deliver(
                 MessageDelivery::offchain(),
             );
         }
@@ -1343,15 +1245,8 @@ pub contract TripleTriadNFT {
 
         for i in 0..5 {
             let note_randomness = derive_note_randomness(nhk_app_secret, nonce_value, i as Field);
-            let note_tag = derive_note_tag(note_randomness);
-            let note_payload = encrypt_card_payload(STARTER_CARD_IDS[i], note_randomness);
-
-            let _: Field =
-                create_and_push_note(self.context, owner, STARTER_CARD_IDS[i], note_randomness);
-            self.emit(CardCreated { note_tag, note_payload }).deliver_to(
-                owner,
-                MessageDelivery::offchain(),
-            );
+            create_and_push_note(self.context, owner, STARTER_CARD_IDS[i], note_randomness)
+                .deliver(MessageDelivery::offchain());
         }
 
         // Push nonce directly (no pop) -- mirrors real fn's push_note_nonce(... 5)
@@ -1390,11 +1285,7 @@ pub contract TripleTriadNFT {
                 "[NFT] test_mint[{0}]: token_id={1} randomness={2}",
                 [i as Field, token_ids[i], randomness[i]],
             );
-            let _: Field = create_and_push_note(self.context, to, token_ids[i], randomness[i]);
-            let note_tag = derive_note_tag(randomness[i]);
-            let note_payload = encrypt_card_payload(token_ids[i], randomness[i]);
-            self.emit(CardCreated { note_tag, note_payload }).deliver_to(
-                to,
+            create_and_push_note(self.context, to, token_ids[i], randomness[i]).deliver(
                 MessageDelivery::offchain(),
             );
         }
@@ -1444,11 +1335,7 @@ pub contract TripleTriadNFT {
 
         for i in 0..10 {
             let note_randomness = derive_note_randomness(nhk_app_secret, nonce_offset, i as Field);
-            let _: Field = create_and_push_note(self.context, to, token_ids[i], note_randomness);
-            let note_tag = derive_note_tag(note_randomness);
-            let note_payload = encrypt_card_payload(token_ids[i], note_randomness);
-            self.emit(CardCreated { note_tag, note_payload }).deliver_to(
-                to,
+            create_and_push_note(self.context, to, token_ids[i], note_randomness).deliver(
                 MessageDelivery::offchain(),
             );
         }

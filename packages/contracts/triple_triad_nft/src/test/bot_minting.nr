@@ -7,10 +7,12 @@ use crate::test::utils;
 /// gives, the exemption becomes an unlimited card faucet for whoever holds it.
 
 /// NOTE COUNTS ARE NOT AVAILABLE HERE. mint_bot_cards creates UNTAGGED notes
-/// (create_and_push_note), which the PXE cannot discover without an explicit
-/// import — that is deliberate, because the tagged path caps at ~84 notes per
-/// finalisation window. So these tests assert on the ACCESS CONTROL and on the
-/// public state the mint registers, which is what actually needs guarding.
+/// with no message (push_card_note), which the PXE cannot discover without an
+/// explicit import — that is deliberate: the tagged path caps at ~84 notes per
+/// finalisation window, and offchain messages would cost the bot a receipt read
+/// per stock tx on every sync (offchain_delivery.nr). So these tests assert on
+/// the ACCESS CONTROL and on the public state the mint registers, which is what
+/// actually needs guarding.
 unconstrained fn ranks_of(
     env: aztec::test::helpers::test_environment::TestEnvironment,
     contract_address: aztec::protocol::address::AztecAddress,
