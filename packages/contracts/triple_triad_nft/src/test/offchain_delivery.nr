@@ -71,7 +71,7 @@ unconstrained fn count_of(cards: BoundedVec<Field, MAX_CARDS>, id: Field) -> u32
 
 #[test]
 unconstrained fn starter_cards_arrive_through_offchain_receive() {
-    let (mut env, nft, _token, _minter, player) = utils::setup_full();
+    let (env, nft, _token, _minter, player) = utils::setup_full();
 
     env.call_private(player, TripleTriadNFT::at(nft).get_cards_for_new_player());
     let messages = last_call_messages(env);
@@ -97,7 +97,7 @@ unconstrained fn starter_cards_arrive_through_offchain_receive() {
 
 #[test]
 unconstrained fn pack_cards_arrive_through_offchain_receive() {
-    let (mut env, nft, _token, _minter, player) = utils::setup_full();
+    let (env, nft, _token, _minter, player) = utils::setup_full();
 
     env.call_private(player, TripleTriadNFT::at(nft).get_cards_for_new_player());
     let starter = last_call_messages(env);
@@ -144,7 +144,7 @@ unconstrained fn settlement_cards_arrive_for_their_owner_not_the_sender() {
 
 #[test]
 unconstrained fn bot_stock_mint_sends_no_messages() {
-    let (mut env, nft, minter, bot) = utils::setup();
+    let (env, nft, minter, bot) = utils::setup();
     env.call_public(minter, TripleTriadNFT::at(nft).set_arena_bot(0 as Field, bot));
 
     let token_ids: [Field; 10] = [7, 8, 9, 0, 0, 0, 0, 0, 0, 0];
@@ -164,7 +164,7 @@ unconstrained fn bot_stock_mint_sends_no_messages() {
 
 #[test]
 unconstrained fn receiving_twice_does_not_duplicate_cards() {
-    let (mut env, nft, _token, _minter, player) = utils::setup_full();
+    let (env, nft, _token, _minter, player) = utils::setup_full();
 
     env.call_private(player, TripleTriadNFT::at(nft).get_cards_for_new_player());
     let messages = last_call_messages(env);
