@@ -423,9 +423,10 @@ function makeOps(schedule: Schedule) {
       }),
 
     /**
-     * Inject NFT card notes into `owner`'s PXE via import_note — RECOVERY only:
-     * the boot-time restore from the card store, and the loser's cards, which
-     * reach them as plaintext over the relay rather than as messages.
+     * Inject NFT card notes into `owner`'s PXE via import_note — not the path a
+     * mint takes. It serves the boot-time restore from the card store, the
+     * loser's cards (which reach them as plaintext over the relay rather than
+     * as messages), and the bot's stock (which is minted with no messages).
      * Per-note failures are tolerated (idempotent re-import of an already-held
      * note). `txEffect` (a node read) is fetched by the caller and passed in,
      * so this op is pure PXE.

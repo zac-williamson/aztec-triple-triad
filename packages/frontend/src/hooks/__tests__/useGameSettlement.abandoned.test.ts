@@ -264,6 +264,22 @@ describe('abandoned settlement relay notifications (QA-F3)', () => {
     expect(settledOrder).toBeGreaterThan(receiveOrder);
   });
 
+  it('still receives our cards when the node cannot serve the tx effect for the card store', async () => {
+    // Storing for restore needs the tx effect; the receive does not. A node
+    // error while storing must not cost the player the cards themselves.
+    hoisted.fetchTxEffectDataMock.mockRejectedValueOnce(new Error('node unreachable'));
+    const ws = makeWs();
+    renderHook(() => useGameSettlement({ ws, cardIds: [1, 2, 3, 4, 5], session, play }));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(80_000);
+    });
+
+    expect(hoisted.addCardsMock).not.toHaveBeenCalled();
+    expect(hoisted.receiveCardMessagesMock).toHaveBeenCalledWith('0xME', '0xSETTLE_TX', hoisted.settleMessages);
+    expect(ws.notifyAbandonedGameSettled).toHaveBeenCalledWith('ws-game-1');
+  });
+
   it('stores exactly our five recovered cards — no claimed card, which the contract no longer mints', async () => {
     const ws = makeWs();
     renderHook(() => useGameSettlement({ ws, cardIds: [1, 2, 3, 4, 5], session, play }));

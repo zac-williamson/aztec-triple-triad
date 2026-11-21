@@ -42,7 +42,7 @@ type LogFn = (msg: string) => void;
  * their offchain messages to the PXE. Persist FIRST, so a receive that fails
  * still leaves the boot-time restore able to import them.
  */
-async function storeAndReceiveStarterCards(
+export async function storeAndReceiveStarterCards(
   ops: PxeOps,
   node: unknown,
   accountAddress: string,
@@ -65,9 +65,13 @@ async function storeAndReceiveStarterCards(
     } else {
       log('Starter cards: tx effect unavailable — not stored for restore');
     }
+  } catch (e) { log(`Failed to store starter cards for restore: ${e}`); }
+  // Separate step: the receive needs no tx effect, and these messages exist
+  // only in memory — a failed store must not cost the cards themselves.
+  try {
     const received = await ops.receiveCardMessages(accountAddress, txHash, messages);
-    log(`Starter cards stored and received (${received} messages)`);
-  } catch (e) { log(`Failed to store/receive starter cards: ${e}`); }
+    log(`Starter cards received (${received} messages)`);
+  } catch (e) { log(`Failed to receive starter cards: ${e}`); }
 }
 
 /**

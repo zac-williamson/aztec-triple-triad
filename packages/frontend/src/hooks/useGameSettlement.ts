@@ -173,8 +173,14 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     label: string,
   ) => {
     if (!aztec.accountAddress) return;
+    // Separate steps: the receive needs no tx effect, so a node that cannot
+    // serve one (or is unreachable) must not cost us the cards themselves.
     try {
       await persistCards(sent.txHash, notes, label);
+    } catch (err) {
+      console.error(`[useGameSettlement] ${label}: failed to store cards for restore:`, err);
+    }
+    try {
       const received = await facade.receiveCardMessages(aztec.accountAddress, sent.txHash, sent.offchainMessages);
       if (received !== notes.length) {
         console.warn(`[useGameSettlement] ${label}: expected ${notes.length} card messages for us, received ${received}`);
