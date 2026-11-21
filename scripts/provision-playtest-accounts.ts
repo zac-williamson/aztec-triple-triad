@@ -71,7 +71,8 @@ import { entryStatus, type Deployment, type PoolEntry } from '../packages/playte
 // coordinates are byte-identical to what the browser produces/expects. These
 // modules are import.meta-free (cardStore is type-only), so they load in Node.
 import { toFr } from '../packages/frontend/src/aztec/fieldUtils';
-import { fetchTxEffectData, type TxEffectData } from '../packages/frontend/src/aztec/noteImporter';
+import { fetchTxEffectData } from '../packages/frontend/src/aztec/noteImporter';
+import type { OffchainMessage } from '@aztec-labs/aztec.js/contracts';
 import { STARTER_CARD_IDS, STARTER_CARD_COUNT } from '../packages/frontend/src/aztec/gameConstants';
 import type { StoredCard } from '../packages/frontend/src/aztec/cardStore';
 
@@ -204,17 +205,20 @@ async function computeStarterRandomness(nft: any, address: any): Promise<string[
   return Array.from({ length: STARTER_CARD_COUNT }, (_, i) => toFr(Fr, result[i]).toString());
 }
 
-/** Inject the minted card notes into this PXE via import_note (mirrors pxe.ts importCardNotes). */
-async function importStarterCards(nft: any, address: any, cards: StoredCard[], txEffect: TxEffectData): Promise<void> {
-  const padded = new Array(64).fill(new Fr(0n));
-  for (let i = 0; i < txEffect.noteHashes.length && i < 64; i++) padded[i] = toFr(Fr, txEffect.noteHashes[i]);
-  const txHashFr = toFr(Fr, cards[0].txHash);
-  const firstNullFr = toFr(Fr, txEffect.firstNullifier);
-  for (const c of cards) {
-    await nft.methods
-      .import_note(address, new Fr(BigInt(c.cardId)), toFr(Fr, c.randomness), txHashFr, padded, txEffect.noteHashes.length, firstNullFr, address)
-      .simulate({ from: address });
+/** Hand the mint's own offchain messages to offchain_receive (mirrors pxe.ts receiveCardMessages). */
+async function receiveStarterCards(nft: any, address: any, txHash: string, messages: OffchainMessage[]): Promise<void> {
+  const mine = messages.filter((m) => m.recipient.equals(address) && m.contractAddress.equals(nft.address));
+  if (mine.length !== STARTER_CARD_COUNT) {
+    throw new Error(`expected ${STARTER_CARD_COUNT} starter card messages for ${address}, got ${mine.length}`);
   }
+  await nft.methods
+    .offchain_receive(mine.map((m) => ({
+      ciphertext: m.payload,
+      recipient: m.recipient,
+      tx_hash: toFr(Fr, txHash),
+      anchor_block_timestamp: m.anchorBlockTimestamp,
+    })))
+    .simulate({ from: address });
 }
 
 /** All non-zero card ids this PXE holds for `address` (paged get_nfts_for_user). */
@@ -352,13 +356,15 @@ async function provisionOne(index: number, opts: ProvisionOpts): Promise<Manifes
   // 2. Mint starter cards + 100 ARNA (account pays natively from claimed balance).
   console.log('  minting starter cards + 100 ARNA...');
   let mintTxHash: string;
+  let mintMessages: OffchainMessage[];
   try {
-    const { receipt } = await nft.methods.get_cards_for_new_player().send({
+    const { receipt, offchainMessages } = await nft.methods.get_cards_for_new_player().send({
       from: address,
       fee: { gasSettings: { maxFeesPerGas: await headroomMaxFeesPerGas(node) } },
       wait: { timeout: TX_TIMEOUT },
     });
     mintTxHash = receipt?.txHash?.toString() ?? '';
+    mintMessages = offchainMessages ?? [];
   } catch (err: any) {
     const msg = String(err?.cause?.message ?? err?.message ?? err);
     if (!freshlyDeployed && /nullifier|already|claimed/i.test(msg)) {
@@ -385,9 +391,11 @@ async function provisionOne(index: number, opts: ProvisionOpts): Promise<Manifes
   }));
 
   // 4. VERIFY (no mask): this PXE must hold exactly cards [1..5] and 100 tokens.
-  //    Cards need explicit import (create_and_push_note is not auto-discovered);
-  //    the 100-token note was auto-discovered by this minting/proving PXE.
-  await importStarterCards(nft, address, starterCards, txEffect);
+  //    The cards carry no tag, so they arrive only through the mint's own
+  //    offchain messages; the 100-token note was auto-discovered by this
+  //    minting/proving PXE. (The coordinates above are for the browser's
+  //    card store, which restores with import_note.)
+  await receiveStarterCards(nft, address, mintTxHash, mintMessages);
   const cards = await readPrivateCards(nft, address);
   assertEqual(cards, [...STARTER_CARD_IDS].sort((a, b) => a - b), `account #${index} starter cards`);
   const balance = await readTokenBalance(token, address);

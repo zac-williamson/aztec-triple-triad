@@ -203,12 +203,16 @@ test.describe.serial('multi-game with packs', () => {
     // ── Pack open (both) → 15 cards each, 0 tokens; assert discoverability ──
     await withDeadline('open packs (both)', DEADLINES.pack, [alice.dead, bob.dead, backend.dead], async () => {
       for (const d of [alice, bob]) {
+        const mark = d.consoleMark();
         const newIds = await d.openPack();
         expect(newIds.length, `${d.name} pack gives ${PACK_SIZE} cards`).toBe(PACK_SIZE);
-        // Chain layer: the 10 new notes are actually discoverable (import_note),
-        // not just minted — PXE must report 15 spendable cards.
+        // Chain layer: the 10 new notes are actually discoverable, not just
+        // minted — PXE must report 15 spendable cards.
         await d.expectEventually(`${d.name} chain card count = 15 after pack`,
           async () => (await d.privateCards()).length, STARTER_CARDS.length + PACK_SIZE);
+        // ...and they got there through the pack's own offchain messages, with
+        // no import_note at all (docs/plan/OFFCHAIN_DELIVERY.md).
+        d.expectCardsReceivedNotImported(mark, PACK_SIZE, 'pack');
         // Frontend layer: the menu collection reflects 15.
         expect((await d.phase()).ownedCardIds.length, `${d.name} UI collection = 15`).toBe(15);
         // Token economy (queued PXE read): starter 100 − pack 100 = 0.
@@ -267,6 +271,11 @@ async function playOneGame(
   const bobBeforeCards = await bob.privateCards();
   const aliceBeforeTokens = await alice.tokenBalance();
   const bobBeforeTokens = await bob.tokenBalance();
+
+  // Console positions at game start: the settlement assertions below check
+  // which path delivered a settler's cards, and a draw's settle auto-fires,
+  // so a mark taken later could already be past it.
+  const gameStartMark = new Map([[alice, alice.consoleMark()], [bob, bob.consoleMark()]]);
 
   const firstHand = pickHand((first === alice ? aliceBeforeCards : bobBeforeCards));
   const secondHand = pickHand((second === alice ? aliceBeforeCards : bobBeforeCards));
@@ -399,6 +408,9 @@ async function playOneGame(
       async () => (await alice.privateCards()).length, aliceBeforeCards.length);
     await bob.expectEventually(`game ${gameNum} draw: bob hand returned (net 0)`,
       async () => (await bob.privateCards()).length, bobBeforeCards.length);
+    // The settler's own five came back through the settle tx's messages. (The
+    // other player imports the relayed plaintext — step 3 of the plan.)
+    settlerD.expectCardsReceivedNotImported(gameStartMark.get(settlerD)!, HAND, `game ${gameNum} draw settler`);
     await alice.expectEventually(`game ${gameNum} draw: alice tokens +${GAME_REWARD}`,
       () => alice.tokenBalance(), aliceBeforeTokens + GAME_REWARD);
     await bob.expectEventually(`game ${gameNum} draw: bob tokens +${GAME_REWARD}`,
@@ -493,6 +505,9 @@ async function playOneGame(
     async () => [...countMap(await winnerD.privateCards())].sort(), [...winnerExpect].sort());
   await loserD.expectEventually(`${loserD.name} multiset lost #${claimed}`,
     async () => [...countMap(await loserD.privateCards())].sort(), [...loserExpect].sort());
+  // The winner's six (its five + the claimed card) came back through the settle
+  // tx's own messages. (The loser imports the relayed plaintext — step 3.)
+  winnerD.expectCardsReceivedNotImported(gameStartMark.get(winnerD)!, HAND + 1, `game ${gameNum} winner`);
 
   // ── Layer 2 (token economy): both +20 this game ───────────────────────
   await winnerD.expectEventually(`${winnerD.name} tokens +20`,

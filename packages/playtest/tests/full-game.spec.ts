@@ -78,6 +78,11 @@ test.describe.serial('ladder campaign', () => {
     for (const driver of [alice, bob]) {
       expect(await driver.privateCards(), `${driver.name} starter cards in PXE`).toEqual(STARTER_CARDS);
       expect(await driver.tokenBalance(), `${driver.name} starter tokens`).toBe(STARTER_TOKENS);
+      // The starter mint's own offchain messages were handed to the PXE. (The
+      // boot-time restore then import_notes every stored card too — the
+      // recovery path, by design — so only the receive is asserted here.)
+      expect(driver.consoleSince(0).some(l => l.includes('received 5 card note message(s)')),
+        `${driver.name} received the starter cards' messages`).toBe(true);
     }
 
     // ── Matchmaking ──────────────────────────────────────────────────────
@@ -154,6 +159,7 @@ test.describe.serial('ladder campaign', () => {
       expect(await driver.privateCards(), `${driver.name} cards nullified during game`).toEqual([]);
     }
 
+    const winnerMark = winnerDriver.consoleMark();
     await winnerDriver.pickSettleCard(claimedCard);
     await winnerDriver.waitSettleConfirmed();
     const loserSettled = await loserDriver.waitOpponentSettled();
@@ -170,6 +176,10 @@ test.describe.serial('ladder campaign', () => {
     await loserDriver.expectEventually(
       'loser PXE holds starter cards minus the claimed card',
       () => loserDriver.privateCards(), expectedLoserCards);
+    // The winner's six came back through the settle tx's own messages, with no
+    // import_note. (The loser imports the relayed plaintext — step 3 of
+    // docs/plan/OFFCHAIN_DELIVERY.md.)
+    winnerDriver.expectCardsReceivedNotImported(winnerMark, STARTER_CARDS.length + 1, 'settlement');
 
     // Winner's +20 reward is registered by their own settle tx — discovered
     // immediately (the loser's is a separate tracked finding, see below).

@@ -3,7 +3,7 @@
  * via selectors, the 3D board via real pointer events at testkit-projected
  * coordinates, and waits on app state (never wall-clock sleeps).
  */
-import type { Page, Browser } from '@playwright/test';
+import { expect, type Page, type Browser } from '@playwright/test';
 import { createWriteStream, writeFileSync, type WriteStream } from 'fs';
 import { cpus } from 'os';
 import { resolve } from 'path';
@@ -179,6 +179,9 @@ export interface LaunchOptions {
 
 export class PlayerDriver {
   private consoleLog: WriteStream | null = null;
+  /** Every console line the page has printed — so a spec can assert WHICH
+   *  code path a flow took, not only its outcome (consoleMark/consoleSince). */
+  private readonly consoleLines: string[] = [];
 
   /**
    * Rejects the instant the page is declared dead (renderer crash, or a WebGL
@@ -235,8 +238,11 @@ export class PlayerDriver {
     opts?: LaunchOptions,
   ): Promise<void> {
     this.consoleLog = createWriteStream(resolve(logsDir, `browser-${this.name}.log`));
-    this.page.on('console', msg =>
-      this.consoleLog!.write(`[${new Date().toISOString()}] [${msg.type()}] ${msg.text()}\n`));
+    this.page.on('console', msg => {
+      const line = `[${new Date().toISOString()}] [${msg.type()}] ${msg.text()}`;
+      this.consoleLines.push(line);
+      this.consoleLog!.write(line + '\n');
+    });
     this.page.on('pageerror', err =>
       this.consoleLog!.write(`[${new Date().toISOString()}] [pageerror] ${err.stack ?? err.message}\n`));
     // A renderer crash is an immediate, unambiguous death — fail the run now,
@@ -879,6 +885,31 @@ export class PlayerDriver {
       `${this.name}: "${label}" never reached expected value within ${timeout / 1000}s\n` +
       `expected: ${JSON.stringify(expected)}\nlast:     ${JSON.stringify(last)}`,
     );
+  }
+
+  /** A position in this page's console; pass it to consoleSince. */
+  consoleMark(): number {
+    return this.consoleLines.length;
+  }
+
+  /** The console lines printed since `mark` (from consoleMark). */
+  consoleSince(mark: number): string[] {
+    return this.consoleLines.slice(mark);
+  }
+
+  /**
+   * Assert that a mint's card notes reached this PXE as offchain messages:
+   * since `mark`, the app handed `count` messages to offchain_receive, and
+   * import_note — now only the recovery path — never ran. Pair it with an
+   * assertion that the cards actually arrived; together they say the
+   * messages are what delivered them.
+   */
+  expectCardsReceivedNotImported(mark: number, count: number, label: string): void {
+    const lines = this.consoleSince(mark);
+    const received = lines.filter(l => l.includes(`received ${count} card note message(s)`));
+    const imported = lines.filter(l => /\[pxe\] .+: importing \d+ notes/.test(l));
+    expect(received.length, `${this.name} ${label}: ${count} card messages received`).toBeGreaterThan(0);
+    expect(imported, `${this.name} ${label}: import_note ran (it should be recovery-only)`).toEqual([]);
   }
 
   /** Current app screen ('main-menu' | 'card-packs' | 'pack-opening' | 'game' | ...). */
