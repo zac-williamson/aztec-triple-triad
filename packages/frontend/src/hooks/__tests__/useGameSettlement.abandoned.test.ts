@@ -6,7 +6,8 @@
  *   abandoned settle begins (parity with the normal flow — gives an offline
  *   opponent the buffered OPPONENT_SETTLING card info).
  * - ABANDONED_GAME_SETTLED { gameId } ONLY after settle_abandoned_game is
- *   mined, after importNotes — the server unbinds both players on receipt.
+ *   mined, after our cards are received — the server unbinds both players on
+ *   receipt.
  *
  * Drives useGameSettlement directly with stub session/play deps and the
  * real txManager; the opponent-disconnected auto-trigger starts the flow.
@@ -16,12 +17,15 @@ import { renderHook, act } from '@testing-library/react';
 
 const hoisted = vi.hoisted(() => ({
   importCardNotesMock: vi.fn().mockResolvedValue([1, 2]),
+  receiveCardMessagesMock: vi.fn().mockResolvedValue(5),
+  settleMessages: [{ m: 'card-1' }, { m: 'card-2' }],
   fetchTxEffectDataMock: vi.fn().mockResolvedValue({ noteHashes: ['0xA'], firstNullifier: '0xN' }),
   addCardsMock: vi.fn(),
-  // The claim/settle sends now go through named pxe ops (which return a txHash
-  // string), not a raw contract.methods.*.send(...).
+  // The claim/settle sends now go through named pxe ops, not a raw
+  // contract.methods.*.send(...). The claim returns its txHash; the settle,
+  // which mints our cards back, also returns the notes' offchain messages.
   sendClaimMock: vi.fn().mockResolvedValue('0xCLAIM_TX'),
-  sendSettleMock: vi.fn().mockResolvedValue('0xSETTLE_TX'),
+  sendSettleMock: vi.fn(),
   // The mocked chain clock. It lives here, not in a module-level closure, so
   // beforeEach can rewind it: shared across tests it drifts past the dispute
   // window, and a later test then finds the window already open — or worse,
@@ -84,6 +88,7 @@ vi.mock('../../aztec/pxe', () => {
       status: 5, activeAt: 1_000_000, claimAt: 1_700_000, claimPlayer: '0xME',
     }),
     importCardNotes: hoisted.importCardNotesMock,
+    receiveCardMessages: hoisted.receiveCardMessagesMock,
   };
   return {
     pxe: ops,
@@ -219,6 +224,7 @@ describe('abandoned settlement relay notifications (QA-F3)', () => {
   beforeEach(() => {
     hoisted.chainClock.t = 1_700_000;   // rewind the chain clock for each test
     vi.clearAllMocks();
+    hoisted.sendSettleMock.mockResolvedValue({ txHash: '0xSETTLE_TX', offchainMessages: hoisted.settleMessages });
     vi.useFakeTimers();
   });
 
@@ -226,7 +232,7 @@ describe('abandoned settlement relay notifications (QA-F3)', () => {
     vi.useRealTimers();
   });
 
-  it('sends SETTLE_STARTED with the claimed card when the settle begins, and ABANDONED_GAME_SETTLED after the tx is mined (after importNotes)', async () => {
+  it('sends SETTLE_STARTED with the claimed card when the settle begins, and ABANDONED_GAME_SETTLED after the tx is mined (after our cards are received)', async () => {
     const ws = makeWs();
     renderHook(() => useGameSettlement({ ws, cardIds: [1, 2, 3, 4, 5], session, play }));
 
@@ -246,12 +252,33 @@ describe('abandoned settlement relay notifications (QA-F3)', () => {
     const settleSendOrder = hoisted.sendSettleMock.mock.invocationCallOrder[0];
     expect(settleStartedOrder).toBeLessThan(settleSendOrder);
 
-    // ABANDONED_GAME_SETTLED: ws gameId, sent only after the tx mined + notes imported
+    // Our cards come back through the settle tx's own messages, not import_note.
+    expect(hoisted.receiveCardMessagesMock).toHaveBeenCalledWith('0xME', '0xSETTLE_TX', hoisted.settleMessages);
+    expect(hoisted.importCardNotesMock).not.toHaveBeenCalled();
+
+    // ABANDONED_GAME_SETTLED: ws gameId, sent only after the tx mined + cards received
     expect(ws.notifyAbandonedGameSettled).toHaveBeenCalledWith('ws-game-1');
     const settledOrder = (ws.notifyAbandonedGameSettled as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
-    const importOrder = hoisted.importCardNotesMock.mock.invocationCallOrder[0];
+    const receiveOrder = hoisted.receiveCardMessagesMock.mock.invocationCallOrder[0];
     expect(settledOrder).toBeGreaterThan(settleSendOrder);
-    expect(settledOrder).toBeGreaterThan(importOrder);
+    expect(settledOrder).toBeGreaterThan(receiveOrder);
+  });
+
+  it('stores exactly our five recovered cards — no claimed card, which the contract no longer mints', async () => {
+    const ws = makeWs();
+    renderHook(() => useGameSettlement({ ws, cardIds: [1, 2, 3, 4, 5], session, play }));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(80_000);
+    });
+
+    // settle_abandoned_game recovers the caller's own stake and nothing else.
+    // Listing the opponent card (7) here once stored a card that does not
+    // exist and showed it in the collection until the next refresh.
+    expect(hoisted.addCardsMock).toHaveBeenCalledTimes(1);
+    const stored = hoisted.addCardsMock.mock.calls[0][1] as { cardId: number; randomness: string }[];
+    expect(stored.map(c => c.cardId)).toEqual([1, 2, 3, 4, 5]);
+    expect(stored.map(c => c.randomness)).toEqual(['0xr0', '0xr1', '0xr2', '0xr3', '0xr4']);
   });
 
   it('does not send ABANDONED_GAME_SETTLED when the claim tx fails', async () => {

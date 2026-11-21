@@ -72,32 +72,37 @@ export function useCardPacks(
           setPhase('sending');
           // Fee Juice paid natively by the sender; the send op applies the shared
           // base-fee headroom so the tx survives a base-fee climb during proving.
-          const txHash = await ops.sendPurchaseCardPack(capturedAccountAddress, {
+          const { txHash, offchainMessages } = await ops.sendPurchaseCardPack(capturedAccountAddress, {
             node: capturedNodeClient,
             timeoutMs: AZTEC_TX_TIMEOUT,
           });
 
-          // Import the minted notes and persist them for re-import after a refresh.
+          // Persist the cards first: the card store is what restores them after
+          // a PXE wipe, so a receive that fails must not cost that record.
           if (capturedNodeClient) {
             try {
               const randomness = await ops.computeNoteRandomness(capturedAccountAddress, nonce, CARDS_PER_PACK);
-              const notes = cardIds.map((id, i) => ({ tokenId: id, randomness: randomness[i] }));
-
               const txEffectData = await fetchTxEffectData(capturedNodeClient, txHash);
               if (txEffectData) {
-                const storedCards: StoredCard[] = notes.map((n) => ({
-                  cardId: n.tokenId,
-                  randomness: n.randomness,
+                const storedCards: StoredCard[] = cardIds.map((id, i) => ({
+                  cardId: id,
+                  randomness: randomness[i],
                   txHash,
                   noteHashes: txEffectData.noteHashes,
                   firstNullifier: txEffectData.firstNullifier,
                 }));
                 addCards(capturedAccountAddress, storedCards);
-                await ops.importCardNotes(capturedAccountAddress, txHash, notes, 'Card pack', txEffectData);
               }
-            } catch (importErr) {
-              console.warn('[useCardPacks] Failed to import card notes:', importErr);
+            } catch (storeErr) {
+              console.warn('[useCardPacks] Failed to store the pack for restore:', storeErr);
             }
+          }
+
+          // Then deliver them: the pack's own offchain messages, one per card.
+          try {
+            await ops.receiveCardMessages(capturedAccountAddress, txHash, offchainMessages);
+          } catch (receiveErr) {
+            console.warn('[useCardPacks] Failed to receive the pack\'s cards:', receiveErr);
           }
 
           return { cardIds, txHash };

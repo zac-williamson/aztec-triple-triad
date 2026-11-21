@@ -1,7 +1,7 @@
 /**
  * useCardPacks orchestrates the pack purchase through the PXE door (`pxe.ts`):
- * preview → purchase send → note-randomness → import, all inside one runPxeTx
- * queue item. This pins the ORCHESTRATION (the hook calls the right ops with the
+ * preview → purchase send → note-randomness + card store → receive the pack's
+ * offchain messages, all inside one runPxeTx queue item. This pins the ORCHESTRATION (the hook calls the right ops with the
  * right args); the ops' own contract-call shape + fee headroom are pinned in
  * pxe.test.ts.
  */
@@ -13,9 +13,10 @@ const hoisted = vi.hoisted(() => {
   const sendPurchaseCardPack = vi.fn();
   const computeNoteRandomness = vi.fn();
   const importCardNotes = vi.fn();
+  const receiveCardMessages = vi.fn();
   return {
-    ops: { previewCardPack, sendPurchaseCardPack, computeNoteRandomness, importCardNotes },
-    previewCardPack, sendPurchaseCardPack, computeNoteRandomness, importCardNotes,
+    ops: { previewCardPack, sendPurchaseCardPack, computeNoteRandomness, importCardNotes, receiveCardMessages },
+    previewCardPack, sendPurchaseCardPack, computeNoteRandomness, importCardNotes, receiveCardMessages,
     runPxeTx: vi.fn(),
     fetchTxEffectData: vi.fn(),
     addCards: vi.fn(),
@@ -59,13 +60,14 @@ describe('useCardPacks', () => {
     ).rejects.toThrow('Wallet not connected');
   });
 
-  it('hunt runs the full preview → purchase → import flow via pxe ops', async () => {
+  it('hunt runs the full preview → purchase → store → receive flow via pxe ops', async () => {
     const previewCardIds = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+    const offchainMessages = previewCardIds.map((id) => ({ card: id }));
 
     hoisted.previewCardPack.mockResolvedValue({ cardIds: previewCardIds, nonce: '0xNONCE' });
-    hoisted.sendPurchaseCardPack.mockResolvedValue('0xTX_HASH');
+    hoisted.sendPurchaseCardPack.mockResolvedValue({ txHash: '0xTX_HASH', offchainMessages });
     hoisted.computeNoteRandomness.mockResolvedValue(previewCardIds.map((_, i) => `0xrand${i}`));
-    hoisted.importCardNotes.mockResolvedValue(previewCardIds);
+    hoisted.receiveCardMessages.mockResolvedValue(previewCardIds.length);
     hoisted.fetchTxEffectData.mockResolvedValue({ noteHashes: ['0xnh1'], firstNullifier: '0xnull1' });
 
     const mockWallet = {};
@@ -94,13 +96,35 @@ describe('useCardPacks', () => {
         expect.objectContaining({ cardId: 10, randomness: '0xrand0', txHash: '0xTX_HASH', noteHashes: ['0xnh1'], firstNullifier: '0xnull1' }),
       ]),
     );
-    // ...and imported into the PXE via the named op.
-    expect(hoisted.importCardNotes).toHaveBeenCalledWith(
-      '0xACCOUNT', '0xTX_HASH',
-      expect.arrayContaining([{ tokenId: 10, randomness: '0xrand0' }]),
-      'Card pack',
-      { noteHashes: ['0xnh1'], firstNullifier: '0xnull1' },
-    );
+    // ...and delivered by handing the pack's OWN offchain messages to the PXE.
+    // import_note is the recovery path (the boot-time restore), not this one.
+    expect(hoisted.receiveCardMessages).toHaveBeenCalledWith('0xACCOUNT', '0xTX_HASH', offchainMessages);
+    expect(hoisted.importCardNotes).not.toHaveBeenCalled();
+    // Persisted BEFORE the receive: a receive that fails must not cost the
+    // restore its record.
+    expect(hoisted.addCards.mock.invocationCallOrder[0])
+      .toBeLessThan(hoisted.receiveCardMessages.mock.invocationCallOrder[0]);
+  });
+
+  it('hunt still receives the cards when the node never serves the tx effect', async () => {
+    const previewCardIds = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+    const offchainMessages = previewCardIds.map((id) => ({ card: id }));
+    hoisted.previewCardPack.mockResolvedValue({ cardIds: previewCardIds, nonce: '0xNONCE' });
+    hoisted.sendPurchaseCardPack.mockResolvedValue({ txHash: '0xTX_HASH', offchainMessages });
+    hoisted.computeNoteRandomness.mockResolvedValue(previewCardIds.map((_, i) => `0xrand${i}`));
+    hoisted.receiveCardMessages.mockResolvedValue(previewCardIds.length);
+    // The card store needs the tx effect; delivery does not. Before messages,
+    // a missing tx effect meant the pack's cards were never imported at all.
+    hoisted.fetchTxEffectData.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useCardPacks({}, {}, '0xACCOUNT'));
+    await act(async () => {
+      await result.current.hunt(RIVER);
+    });
+
+    expect(hoisted.addCards).not.toHaveBeenCalled();
+    expect(hoisted.receiveCardMessages).toHaveBeenCalledWith('0xACCOUNT', '0xTX_HASH', offchainMessages);
+    expect(result.current.txStatus).toBe('done');
   });
 
   it('hunt sets error state on failure', async () => {

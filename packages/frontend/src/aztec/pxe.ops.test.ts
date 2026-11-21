@@ -65,16 +65,19 @@ describe('pxe send ops — enqueue + base-fee headroom, contract stays inside', 
     expect(txHash).toBe('0xTX');
   });
 
-  it('sendProcessGame spreads the ordered args into the game method with headroom', async () => {
-    const send = vi.fn().mockResolvedValue({ receipt: { txHash: { toString: () => '0xPG' } } });
+  it('sendProcessGame spreads the ordered args into the game method with headroom, and returns its card messages', async () => {
+    const offchainMessages = [{ recipient: 'winner' }, { recipient: 'loser' }];
+    const send = vi.fn().mockResolvedValue({ receipt: { txHash: { toString: () => '0xPG' } }, offchainMessages });
     const process_game = vi.fn(() => ({ send }));
     h.ensureContracts.mockResolvedValue({ gameContract: { methods: { process_game } }, Fr: FakeFr, AztecAddress });
 
-    const txHash = await pxe.sendProcessGame('0xME', ['a', 'b', 'c'], { node: {}, timeoutMs: 9 });
+    const sent = await pxe.sendProcessGame('0xME', ['a', 'b', 'c'], { node: {}, timeoutMs: 9 });
 
     expect(process_game).toHaveBeenCalledWith('a', 'b', 'c');
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ fee: { gasSettings: { maxFeesPerGas: 'HEADROOM' } } }));
-    expect(txHash).toBe('0xPG');
+    // The settlement's card notes reach their owners through these messages;
+    // dropping them (as every caller once did) leaves the cards undiscoverable.
+    expect(sent).toEqual({ txHash: '0xPG', offchainMessages });
   });
 
   it('sendCancelGame recovers a creator\'s cards from an unjoined game', async () => {
@@ -127,6 +130,42 @@ describe('pxe read/import ops — values out, notes in', () => {
       blindingFactor: '0x99',
       status: 0,
     });
+  });
+
+  it('receiveCardMessages hands only our own NFT messages to offchain_receive, 16 per call', async () => {
+    const simulate = vi.fn().mockResolvedValue({ result: undefined });
+    const offchain_receive = vi.fn((_batch: unknown[]) => ({ simulate }));
+    const addr = (s: string) => ({ s, equals: (o: { s?: string } | undefined) => o?.s === s });
+    h.ensureContracts.mockResolvedValue({
+      nftContract: { address: addr('NFT'), methods: { offchain_receive } },
+      Fr: FakeFr,
+      AztecAddress: { fromStringUnsafe: (s: string) => addr(s) },
+    });
+    const msg = (recipient: string, contract: string, i: number) => ({
+      recipient: addr(recipient), contractAddress: addr(contract), payload: [`c${i}`], anchorBlockTimestamp: 7n,
+    });
+    const messages = [
+      ...Array.from({ length: 17 }, (_, i) => msg('0xME', 'NFT', i)),
+      // A settlement also carries the OTHER player's messages. A PXE can only
+      // process its own accounts' (the inbox is scoped by recipient).
+      msg('0xOPP', 'NFT', 99),
+      // And another contract's messages go to that contract, not the NFT.
+      msg('0xME', 'TOKEN', 98),
+    ];
+
+    const received = await pxe.receiveCardMessages('0xME', '0xTX', messages as never);
+
+    expect(received).toBe(17);
+    expect(h.enqueuePxe).toHaveBeenCalledTimes(1);
+    // offchain_receive takes a BoundedVec of at most 16.
+    expect(offchain_receive).toHaveBeenCalledTimes(2);
+    const first = offchain_receive.mock.calls[0][0];
+    expect(first).toHaveLength(16);
+    expect(first[0]).toEqual({
+      ciphertext: ['c0'], recipient: messages[0].recipient, tx_hash: '0xTX', anchor_block_timestamp: 7n,
+    });
+    expect(offchain_receive.mock.calls[1][0]).toHaveLength(1);
+    expect(simulate).toHaveBeenCalledWith({ from: expect.objectContaining({ s: '0xME' }) });
   });
 
   it('importCardNotes injects one note per import_note, enqueued', async () => {

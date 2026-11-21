@@ -5,7 +5,8 @@ import { useAztecContext } from '../aztec/AztecContext';
 import { fetchTxEffectData } from '../aztec/noteImporter';
 import { addCards, type StoredCard } from '../aztec/cardStore';
 import txManager from '../aztec/txManager';
-import { runPxeTx, pxe, type PxeOps } from '../aztec/pxe';
+import { runPxeTx, pxe, type PxeOps, type MintedTx } from '../aztec/pxe';
+import type { TxEffectData } from '../aztec/noteImporter';
 import { toFr as toFrUtil, toHexString, bytesToFrArray, base64ToFrArray, hexToFr } from '../aztec/fieldUtils';
 import { AZTEC_TX_TIMEOUT, AZTEC_SETTLE_TX_TIMEOUT, CARDS_PER_HAND, TOTAL_MOVES, MOVE_PROOF_WAIT_TIMEOUT, HAND_PROOF_WAIT_TIMEOUT, GAME_TOKEN_REWARD } from '../aztec/gameConstants';
 import { requireWallet, requireAccountAddress } from '../aztec/walletGuards';
@@ -131,49 +132,82 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
   // Idempotency guard preventing duplicate note imports
   const noteImportProcessedRef = useRef<string | null>(null);
 
-  // Import notes helper — imports into PXE AND persists the tx-effect aux
-  // data to localStorage so a fresh wallet can re-import on restart.
-  // Mirrors the pattern in useCardPacks.ts (pack purchases) so settlement,
-  // loser note-relay, and abandoned-game recovery all persist consistently.
-  const importNotes = useCallback(async (
+  // Persist cards to the card store — what restores them after a PXE wipe —
+  // and return the tx's effect data, or null if the node never served it.
+  // TxEffect is a NODE read (note hashes + first nullifier), not a PXE op.
+  const persistCards = useCallback(async (
+    txHashStr: string,
+    notes: { tokenId: number; randomness: string }[],
+    label: string,
+  ): Promise<TxEffectData | null> => {
+    if (!aztec.accountAddress || !aztec.nodeClient) return null;
+    const txEffectData = await fetchTxEffectData(aztec.nodeClient, txHashStr);
+    if (!txEffectData) {
+      console.warn(`[useGameSettlement] ${label}: TxEffect unavailable — cards not stored (would not survive a PXE wipe)`);
+      return null;
+    }
+    const storedCards: StoredCard[] = notes.map((n) => ({
+      cardId: n.tokenId,
+      randomness: n.randomness,
+      txHash: txHashStr,
+      noteHashes: txEffectData.noteHashes,
+      firstNullifier: txEffectData.firstNullifier,
+    }));
+    try {
+      addCards(aztec.accountAddress, storedCards);
+    } catch (persistErr) {
+      console.error(`[useGameSettlement] ${label}: failed to persist cards to localStorage:`, persistErr);
+    }
+    return txEffectData;
+  }, [aztec.accountAddress, aztec.nodeClient]);
+
+  // Our OWN cards from a tx we sent (settlement, abandoned-game recovery):
+  // persist them, then hand the tx's offchain messages for us to the PXE.
+  // Persist first, so a receive that fails still leaves the restore a record.
+  // `facade` is the serial queue when called standalone, inline inside a
+  // runPxeTx body.
+  const receiveOwnCards = useCallback(async (
+    facade: PxeOps,
+    sent: MintedTx,
+    notes: { tokenId: number; randomness: string }[],
+    label: string,
+  ) => {
+    if (!aztec.accountAddress) return;
+    try {
+      await persistCards(sent.txHash, notes, label);
+      const received = await facade.receiveCardMessages(aztec.accountAddress, sent.txHash, sent.offchainMessages);
+      if (received !== notes.length) {
+        console.warn(`[useGameSettlement] ${label}: expected ${notes.length} card messages for us, received ${received}`);
+      }
+      if (received > 0) {
+        aztec.updateOwnedCards(prev => [...prev, ...notes.map(n => n.tokenId)]);
+      }
+    } catch (err) {
+      console.error(`[useGameSettlement] ${label}: failed to receive cards:`, err);
+    }
+  }, [aztec.accountAddress, aztec.updateOwnedCards, persistCards]);
+
+  // The LOSER's cards. The winner sent the tx, so its messages for us stayed
+  // in the winner's browser; what reaches us over the relay is the plaintext
+  // (ids + randomness). Persist, then import_note each.
+  const importRelayedCards = useCallback(async (
     facade: PxeOps,
     txHashStr: string,
     notes: { tokenId: number; randomness: string }[],
     label: string,
   ) => {
-    if (!aztec.accountAddress || !aztec.nodeClient) return;
-    const accountAddress = aztec.accountAddress;
+    if (!aztec.accountAddress) return;
     try {
-      // TxEffect is a NODE read (note hashes + first nullifier) — not a PXE op.
-      // The actual import_note PXE calls run through `facade` (the serial queue
-      // when called standalone, inline when inside a runPxeTx body).
-      const txEffectData = await fetchTxEffectData(aztec.nodeClient, txHashStr);
-      if (!txEffectData) {
-        console.warn(`[useGameSettlement] ${label}: TxEffect unavailable — skipping import (would not survive a refresh)`);
-        return;
-      }
-
-      const storedCards: StoredCard[] = notes.map((n) => ({
-        cardId: n.tokenId,
-        randomness: n.randomness,
-        txHash: txHashStr,
-        noteHashes: txEffectData.noteHashes,
-        firstNullifier: txEffectData.firstNullifier,
-      }));
-      try {
-        addCards(accountAddress, storedCards);
-      } catch (persistErr) {
-        console.error(`[useGameSettlement] ${label}: failed to persist cards to localStorage (continuing with PXE import):`, persistErr);
-      }
-
-      const importedIds = await facade.importCardNotes(accountAddress, txHashStr, notes, label, txEffectData);
+      const txEffectData = await persistCards(txHashStr, notes, label);
+      if (!txEffectData) return;
+      const importedIds = await facade.importCardNotes(aztec.accountAddress, txHashStr, notes, label, txEffectData);
       if (importedIds.length > 0) {
         aztec.updateOwnedCards(prev => [...prev, ...importedIds]);
       }
     } catch (err) {
       console.error(`[useGameSettlement] ${label}: Failed to import notes:`, err);
     }
-  }, [aztec.accountAddress, aztec.nodeClient, aztec.updateOwnedCards]);
+  }, [aztec.accountAddress, aztec.updateOwnedCards, persistCards]);
 
   // Import notes received from opponent via WebSocket
   useEffect(() => {
@@ -190,7 +224,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
 
     (async () => {
       // Standalone (not inside a tx queue item) — enqueue via `pxe.*`.
-      await importNotes(pxe, txHash, notes, 'Loser import');
+      await importRelayedCards(pxe, txHash, notes, 'Loser import');
 
       // Settlement mints +20 ArenaToken to the loser via mint_reward — a
       // create_and_push note the loser's passive block scan never discovers.
@@ -215,7 +249,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
 
     // Settlement complete on loser side — release the game lifecycle
     session.transitionPhase('idle');
-  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, aztec.nodeClient, importNotes, cardIds, aztec.refreshTokenBalance, session.transitionPhase, session.getSettlementInfo]);
+  }, [ws.incomingNoteData, aztec.wallet, aztec.accountAddress, aztec.nodeClient, importRelayedCards, cardIds, aztec.refreshTokenBalance, session.transitionPhase, session.getSettlementInfo]);
 
   // Track opponent's settlement on the loser's side via txManager.
   // When the winner starts settling, the loser receives OPPONENT_SETTLING via WS.
@@ -283,7 +317,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
     const capturedPlayerNumber = ws.playerNumber;
     requireWallet(aztec.wallet);
     const addr = requireAccountAddress(aztec.accountAddress);
-    const capturedImportNotes = importNotes;
+    const capturedReceiveOwnCards = receiveOwnCards;
     const capturedRelayNoteData = (txHash: string, notes: PlaintextNoteData[]) =>
       ws.relayNoteData(capturedGameId, txHash, notes);
     const capturedNotifySettle = (gId: string, cardId: number) =>
@@ -458,12 +492,13 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           toFrUtil(Fr, capturedBlinding),
           toFrUtil(Fr, capturedOpponentBlinding),
         ];
-        const hash = await ops.sendProcessGame(addr, processArgs, { node: aztec.nodeClient, timeoutMs: AZTEC_SETTLE_TX_TIMEOUT });
-        return { hash, callerRandomness, opponentRandomness, capturedCardIds, capturedOpponentCardIds };
+        const sent = await ops.sendProcessGame(addr, processArgs, { node: aztec.nodeClient, timeoutMs: AZTEC_SETTLE_TX_TIMEOUT });
+        return { sent, callerRandomness, opponentRandomness, capturedCardIds, capturedOpponentCardIds };
       },
 
       postEffects: async (result, ops) => {
-        const { hash, callerRandomness, opponentRandomness, capturedCardIds, capturedOpponentCardIds } = result;
+        const { sent, callerRandomness, opponentRandomness, capturedCardIds, capturedOpponentCardIds } = result;
+        const hash = sent.txHash;
         setSettleTxHash(hash);
         setSettleTxStatus('confirmed');
         console.log('[useGameSettlement] Game settled on-chain, txHash:', hash);
@@ -495,9 +530,13 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
           }
         }
 
+        // The opponent's cards: their messages are in `sent` too, but this step
+        // still relays the plaintext and they import_note it (forwarding the
+        // messages instead is step 3 of docs/plan/OFFCHAIN_DELIVERY.md).
         capturedRelayNoteData(hash, opponentNotes);
-        // Winner import runs INLINE inside this tx's queue item (ops facade).
-        await capturedImportNotes(ops, hash, callerNotes, 'Winner import');
+        // Our own cards, from this tx's messages — INLINE inside this tx's
+        // queue item (ops facade).
+        await capturedReceiveOwnCards(ops, sent, callerNotes, 'Settlement return');
 
         // Refresh token balance (settlement mints 20 Arena Tokens to winner).
         // Small delay to ensure PXE has synced the block with the token notes.
@@ -520,7 +559,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
       session.clearSettlementInfo();
     });
   }, [ws.gameId, ws.playerNumber, ws.getOpponentBlinding,
-      aztec.wallet, aztec.accountAddress, importNotes, ws.relayNoteData, ws.notifySettleStarted,
+      aztec.wallet, aztec.accountAddress, receiveOwnCards, ws.relayNoteData, ws.notifySettleStarted,
       session.getPhase, session.waitForActivePhase, session.transitionPhase,
       session.getSettlementInfo, session.backfillSettlementInfoFromWs, session.clearSettlementInfo,
       play.getMyHandProof, play.getOpponentHandProof, play.waitForHandProofs,
@@ -786,7 +825,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
       if (capturedWsGameId) ws.notifySettleStarted(capturedWsGameId, claimedCardId);
 
       // Step 3: settle_abandoned_game
-      await runPxeTx<{ hash: string; callerRandomness: any[] }>({
+      await runPxeTx<{ sent: MintedTx; callerRandomness: any[] }>({
         type: 'settle_abandoned_game',
         label: 'Settling abandoned game...',
         gameId: ws.gameId ?? undefined,
@@ -807,29 +846,23 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
             callerRandomness,
             toFrUtil(Fr, capturedBlinding),
           ];
-          const hash = await ops.sendSettleAbandonedGame(addr, settleArgs, { node: aztec.nodeClient, timeoutMs: AZTEC_TX_TIMEOUT });
-          return { hash, callerRandomness };
+          const sent = await ops.sendSettleAbandonedGame(addr, settleArgs, { node: aztec.nodeClient, timeoutMs: AZTEC_TX_TIMEOUT });
+          return { sent, callerRandomness };
         },
         postEffects: async (result, ops) => {
-          const { hash, callerRandomness } = result;
-          console.log('[useGameSettlement] Abandoned game settled, txHash:', hash);
+          const { sent, callerRandomness } = result;
+          console.log('[useGameSettlement] Abandoned game settled, txHash:', sent.txHash);
 
-          // Import caller's returned cards (inline within this tx's queue item)
+          // Our five returned cards, from the tx's own messages (inline within
+          // this tx's queue item). ONLY those five: settle_abandoned_game
+          // recovers the caller's own stake and mints nothing else, so there
+          // is no claimed card to add — listing one stored a card that does not
+          // exist and showed it in the collection until the next refresh.
           const callerNotes: PlaintextNoteData[] = [];
           for (let i = 0; i < capturedCardIds.length && i < 5; i++) {
             callerNotes.push({ tokenId: capturedCardIds[i], randomness: toHexString(callerRandomness[i]) });
           }
-          // The contract ALSO mints the CLAIMED opponent card privately to the
-          // claimant (mint_single_card_private with caller_randomness[5]). Import
-          // it so the claimant actually RECEIVES the won card — parity with the
-          // normal settle's winner import (callerRandomness[5] there too). Without
-          // this the claimed card is on-chain-owned but never lands in the wallet
-          // (passive discovery is unreliable/too slow), so a claimed abandoned
-          // game silently drops the prize.
-          if (claimedCardId !== 0) {
-            callerNotes.push({ tokenId: claimedCardId, randomness: toHexString(callerRandomness[5]) });
-          }
-          await importNotes(ops, hash, callerNotes, 'Abandoned game recovery');
+          await receiveOwnCards(ops, sent, callerNotes, 'Abandoned game recovery');
 
           // QA-F3: report the MINED settlement to the relay — the server
           // releases both players' room bindings on receipt and replies with
@@ -852,7 +885,7 @@ export function useGameSettlement({ ws, cardIds, session, play }: UseGameSettlem
       abandonedClaimStartedRef.current = false;
       session.transitionPhase('idle');
     }
-  }, [ws, aztec.wallet, aztec.accountAddress, importNotes,
+  }, [ws, aztec.wallet, aztec.accountAddress, receiveOwnCards,
       session.transitionPhase, session.backfillSettlementInfoFromWs,
       play.getMoveProofs, play.getMyHandProof, play.getOpponentHandProof]);
 

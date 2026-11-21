@@ -17,6 +17,7 @@ import { addCards, loadCards, saveCards, type StoredCard } from './cardStore';
 import { AZTEC_TX_TIMEOUT, STARTER_CARD_IDS, STARTER_CARD_COUNT } from './gameConstants';
 import { gasSettingsWithHeadroom, type BaseFeeNode } from './feeSettings';
 import type { FeeJuiceClaim } from './fundDevnet';
+import type { OffchainMessage } from '@aztec-labs/aztec.js/contracts';
 
 export interface AztecConnectResult {
   wallet: unknown;
@@ -34,6 +35,40 @@ export interface PreparedConnection {
 }
 
 type LogFn = (msg: string) => void;
+
+/**
+ * The starter cards' last step, shared by both onboarding branches: persist
+ * them to the card store — what restores them after a PXE wipe — then hand
+ * their offchain messages to the PXE. Persist FIRST, so a receive that fails
+ * still leaves the boot-time restore able to import them.
+ */
+async function storeAndReceiveStarterCards(
+  ops: PxeOps,
+  node: unknown,
+  accountAddress: string,
+  txHash: string,
+  messages: OffchainMessage[],
+  log: LogFn,
+): Promise<void> {
+  try {
+    const randomness = await ops.computeNoteRandomness(accountAddress, '0', STARTER_CARD_COUNT);
+    const txEffectData = await fetchTxEffectData(node, txHash);
+    if (txEffectData) {
+      const storedCards: StoredCard[] = STARTER_CARD_IDS.map((id, i) => ({
+        cardId: id,
+        randomness: randomness[i],
+        txHash,
+        noteHashes: txEffectData.noteHashes,
+        firstNullifier: txEffectData.firstNullifier,
+      }));
+      addCards(accountAddress, storedCards);
+    } else {
+      log('Starter cards: tx effect unavailable — not stored for restore');
+    }
+    const received = await ops.receiveCardMessages(accountAddress, txHash, messages);
+    log(`Starter cards stored and received (${received} messages)`);
+  } catch (e) { log(`Failed to store/receive starter cards: ${e}`); }
+}
 
 /**
  * Phase 1: Create wallet, generate keys, compute address.
@@ -202,7 +237,7 @@ export async function deployAndRegister(
       getGasSettings: () => feeJuiceClaim.getGasSettings(),
     };
 
-    const { receipt } = await deployMethod.send({
+    const { receipt, offchainMessages } = await deployMethod.send({
       from: NO_FROM,
       fee: { paymentMethod: combinedPaymentMethod, gasSettings: await gasSettingsWithHeadroom(node as BaseFeeNode) },
       wait: { timeout: AZTEC_TX_TIMEOUT },
@@ -214,27 +249,8 @@ export async function deployAndRegister(
     const txHashStr = receipt?.txHash?.toString() || '';
     log(`Account deployed + cards minted: ${txHashStr}`);
 
-    // Import minted card notes
     if (txHashStr) {
-      try {
-        const randomness = await ops.computeNoteRandomness(accountAddress, '0', STARTER_CARD_COUNT);
-        const txEffectData = await fetchTxEffectData(node, txHashStr);
-
-        if (txEffectData) {
-          const storedCards: StoredCard[] = STARTER_CARD_IDS.map((id, i) => ({
-            cardId: id,
-            randomness: randomness[i],
-            txHash: txHashStr,
-            noteHashes: txEffectData.noteHashes,
-            firstNullifier: txEffectData.firstNullifier,
-          }));
-          addCards(accountAddress, storedCards);
-
-          const notes = storedCards.map((c) => ({ tokenId: c.cardId, randomness: c.randomness }));
-          await ops.importCardNotes(accountAddress, txHashStr, notes, 'Starter cards', txEffectData);
-          log('Starter cards stored and imported');
-        }
-      } catch (e) { log(`Failed to import starter cards: ${e}`); }
+      await storeAndReceiveStarterCards(ops, node, accountAddress, txHashStr, offchainMessages ?? [], log);
     }
   } else {
     // Deploy first (if needed), then fall through to mint (if needed).
@@ -258,31 +274,11 @@ export async function deployAndRegister(
     if (needsMint) {
     // Mint only (account already deployed)
     log('Minting starter cards...');
-    const txHashStr = await ops.sendMintStarterCards(accountAddress, { node, timeoutMs: AZTEC_TX_TIMEOUT });
+    const { txHash: txHashStr, offchainMessages } = await ops.sendMintStarterCards(accountAddress, { node, timeoutMs: AZTEC_TX_TIMEOUT });
     if (useStorage) localStorage.setItem(mintKey, 'true');
     log(`Starter cards minted: ${txHashStr}`);
 
-    if (txHashStr) {
-      try {
-        const randomness = await ops.computeNoteRandomness(accountAddress, '0', STARTER_CARD_COUNT);
-        const txEffectData = await fetchTxEffectData(node, txHashStr);
-
-        if (txEffectData) {
-          const storedCards: StoredCard[] = STARTER_CARD_IDS.map((id, i) => ({
-            cardId: id,
-            randomness: randomness[i],
-            txHash: txHashStr,
-            noteHashes: txEffectData.noteHashes,
-            firstNullifier: txEffectData.firstNullifier,
-          }));
-          addCards(accountAddress, storedCards);
-
-          const notes = storedCards.map((c) => ({ tokenId: c.cardId, randomness: c.randomness }));
-          await ops.importCardNotes(accountAddress, txHashStr, notes, 'Starter cards', txEffectData);
-          log('Starter cards stored and imported');
-        }
-      } catch (e) { log(`Failed to import starter cards: ${e}`); }
-    }
+    await storeAndReceiveStarterCards(ops, node, accountAddress, txHashStr, offchainMessages, log);
     }
   }
 
@@ -293,6 +289,12 @@ export async function deployAndRegister(
     if (storedCards.length > 0) {
       log(`Importing ${storedCards.length} cards from localStorage...`);
 
+      // The recovery path: re-derive every stored card and import_note it, so
+      // a wiped PXE (Repair chain sync) gets its notes back. It runs on every
+      // connect, so on the one that minted the starter cards it imports them
+      // a second time, after their messages were received above — harmless,
+      // because the PXE keys notes by nullifier and stores the card once.
+      //
       // Group cards by txHash to batch imports
       const byTx = new Map<string, StoredCard[]>();
       for (const card of storedCards) {

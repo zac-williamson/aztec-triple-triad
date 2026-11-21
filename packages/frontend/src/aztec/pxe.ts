@@ -20,6 +20,7 @@ import { toFr, toHexString } from './fieldUtils';
 import { gasSettingsWithHeadroom, type BaseFeeNode } from './feeSettings';
 import { CARDS_PER_HAND } from './gameConstants';
 import type { NoteToImport, TxEffectData } from './noteImporter';
+import type { OffchainMessage } from '@aztec-labs/aztec.js/contracts';
 import { diag } from './diagnostics';
 
 type Schedule = <T>(fn: () => Promise<T>) => Promise<T>;
@@ -30,6 +31,21 @@ export interface SendOpts {
   node: unknown;
   timeoutMs: number;
 }
+
+/**
+ * A mined send that created card notes: its hash, and the notes' offchain
+ * messages — one per note, each addressed to the card's owner — for
+ * `receiveCardMessages`. A settlement mints to both players from one tx, so
+ * its messages are for two recipients.
+ */
+export interface MintedTx {
+  txHash: string;
+  offchainMessages: OffchainMessage[];
+}
+
+/** aztec-nr's MAX_OFFCHAIN_MESSAGES_PER_RECEIVE_CALL: `offchain_receive` takes a
+ *  BoundedVec of at most this many. */
+const MAX_MESSAGES_PER_RECEIVE = 16;
 
 // The wallet the contracts are bound to. Set on connect, cleared on disconnect.
 // Owned here so no caller needs (or can capture) the raw wallet for PXE work.
@@ -320,24 +336,24 @@ function makeOps(schedule: Schedule) {
         return requireTxHash(receipt, 'join_game');
       })),
 
-    sendPurchaseCardPack: (owner: string, opts: SendOpts): Promise<string> =>
+    sendPurchaseCardPack: (owner: string, opts: SendOpts): Promise<MintedTx> =>
       schedule(() => withReorgRetry('purchase_card_pack', async () => {
         const { nftContract, AztecAddress } = await resolveContracts();
         const addr = AztecAddress.fromStringUnsafe(owner);
-        const { receipt } = await nftContract.methods
+        const sent = await nftContract.methods
           .purchase_card_pack()
           .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
-        return requireTxHash(receipt, 'purchase_card_pack');
+        return mintedTx(sent, 'purchase_card_pack');
       })),
 
-    sendMintStarterCards: (owner: string, opts: SendOpts): Promise<string> =>
+    sendMintStarterCards: (owner: string, opts: SendOpts): Promise<MintedTx> =>
       schedule(async () => {
         const { nftContract, AztecAddress } = await resolveContracts();
         const addr = AztecAddress.fromStringUnsafe(owner);
-        const { receipt } = await nftContract.methods
+        const sent = await nftContract.methods
           .get_cards_for_new_player()
           .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
-        return requireTxHash(receipt, 'get_cards_for_new_player');
+        return mintedTx(sent, 'get_cards_for_new_player');
       }),
 
     /**
@@ -345,7 +361,7 @@ function makeOps(schedule: Schedule) {
      * argument array (it owns the proof transcript + VK fields and needs Fr for
      * that anyway); the contract is resolved and invoked here so it never escapes.
      */
-    sendProcessGame: (owner: string, args: unknown[], opts: SendOpts): Promise<string> =>
+    sendProcessGame: (owner: string, args: unknown[], opts: SendOpts): Promise<MintedTx> =>
       schedule(() => sendGameMethod('process_game', owner, args, opts)),
     /**
      * Cancel a game nobody joined, re-minting the creator's five cards.
@@ -362,21 +378,57 @@ function makeOps(schedule: Schedule) {
         if (cardIds.length !== CARDS_PER_HAND) {
           throw new Error(`cancel_game needs exactly ${CARDS_PER_HAND} card ids, got ${cardIds.length}`);
         }
-        return sendGameMethod('cancel_game', owner, [
+        // cancel_game re-mints with tagged (onchain) delivery: no messages.
+        const { txHash } = await sendGameMethod('cancel_game', owner, [
           toFr(Fr, gameId),
           cardIds.map(id => new Fr(BigInt(id))),
         ], opts);
+        return txHash;
       }),
     sendClaimAbandonedGame: (owner: string, args: unknown[], opts: SendOpts): Promise<string> =>
-      schedule(() => sendGameMethod('claim_abandoned_game', owner, args, opts)),
-    sendSettleAbandonedGame: (owner: string, args: unknown[], opts: SendOpts): Promise<string> =>
+      schedule(async () => (await sendGameMethod('claim_abandoned_game', owner, args, opts)).txHash),
+    sendSettleAbandonedGame: (owner: string, args: unknown[], opts: SendOpts): Promise<MintedTx> =>
       schedule(() => sendGameMethod('settle_abandoned_game', owner, args, opts)),
 
-    // ── Note imports (create_and_push notes the PXE can't auto-discover) ──
+    // ── Card notes (explicit-randomness notes the PXE can't discover by tag) ──
     /**
-     * Inject NFT card notes into `owner`'s PXE via import_note. Per-note failures
-     * are tolerated (idempotent re-import of an already-held note). `txEffect`
-     * (a node read) is fetched by the caller and passed in, so this op is pure PXE.
+     * Hand a mint's offchain messages to the NFT contract's `offchain_receive`
+     * — the normal way a card note reaches its owner's PXE.
+     *
+     * Only the messages for `owner` from the NFT contract: a settlement mints
+     * to both players from one tx, and a PXE can process only its own
+     * accounts' messages (the inbox is scoped by recipient). Received messages
+     * wait in a persistent inbox; the PXE stores each note at the next NFT
+     * contract sync once the tx is found on-chain — any later NFT read or
+     * call triggers it — and processes it again after a reorg. Receiving the
+     * same message twice is harmless. Returns how many were handed over.
+     */
+    receiveCardMessages: (owner: string, txHash: string, messages: OffchainMessage[]): Promise<number> =>
+      schedule(async () => {
+        const { nftContract, Fr, AztecAddress } = await resolveContracts();
+        const me = AztecAddress.fromStringUnsafe(owner);
+        const mine = messages.filter((m) => m.recipient.equals(me) && m.contractAddress.equals(nftContract.address));
+        const txHashFr = toFr(Fr, txHash);
+        for (let i = 0; i < mine.length; i += MAX_MESSAGES_PER_RECEIVE) {
+          const batch = mine.slice(i, i + MAX_MESSAGES_PER_RECEIVE).map((m) => ({
+            ciphertext: m.payload,
+            recipient: m.recipient,
+            tx_hash: txHashFr,
+            anchor_block_timestamp: m.anchorBlockTimestamp,
+          }));
+          await nftContract.methods.offchain_receive(batch).simulate({ from: me });
+        }
+        console.log(`[pxe] received ${mine.length} card note message(s) from ${txHash}`);
+        return mine.length;
+      }),
+
+    /**
+     * Inject NFT card notes into `owner`'s PXE via import_note — RECOVERY only:
+     * the boot-time restore from the card store, and the loser's cards, which
+     * reach them as plaintext over the relay rather than as messages.
+     * Per-note failures are tolerated (idempotent re-import of an already-held
+     * note). `txEffect` (a node read) is fetched by the caller and passed in,
+     * so this op is pure PXE.
      */
     importCardNotes: (
       owner: string,
@@ -557,13 +609,13 @@ export async function withReorgRetry<T>(
 }
 
 /** Shared impl for the game-contract proof sends (process/claim/settle). */
-async function sendGameMethod(method: string, owner: string, args: unknown[], opts: SendOpts): Promise<string> {
+async function sendGameMethod(method: string, owner: string, args: unknown[], opts: SendOpts): Promise<MintedTx> {
   return withReorgRetry(method, async () => {
     const { gameContract, AztecAddress } = await resolveContracts();
     const addr = AztecAddress.fromStringUnsafe(owner);
-    const { receipt } = await gameContract.methods[method](...args)
+    const sent = await gameContract.methods[method](...args)
       .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
-    return requireTxHash(receipt, method);
+    return mintedTx(sent, method);
   });
 }
 
@@ -571,6 +623,11 @@ function requireTxHash(receipt: any, label: string): string {
   const txHash = receipt?.txHash?.toString();
   if (!txHash) throw new Error(`${label} tx returned no txHash`);
   return txHash;
+}
+
+/** A mined send's hash plus its offchain messages (`send()` returns both). */
+function mintedTx(sent: { receipt?: unknown; offchainMessages?: OffchainMessage[] }, label: string): MintedTx {
+  return { txHash: requireTxHash(sent.receipt, label), offchainMessages: sent.offchainMessages ?? [] };
 }
 
 export type PxeOps = ReturnType<typeof makeOps>;
