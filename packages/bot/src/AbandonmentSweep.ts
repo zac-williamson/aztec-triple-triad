@@ -344,28 +344,25 @@ export class AbandonmentSweep {
     this.log(`sweep: ${short(rec.onChainGameId)} claimed ${String(tx).slice(0, 18)}…`);
   }
 
-  private async importRecoveredCards(rec: GameRecord, txHash: string): Promise<void> {
+  private async receiveRecoveredCards(
+    rec: GameRecord,
+    sent: { txHash: string; offchainMessages: unknown[] },
+  ): Promise<void> {
+    // Our five, minted with caller_randomness[0..4]. There is no sixth card:
+    // recovery no longer takes anything from the opponent.
+    const expected = Math.min(rec.cardIds.length, 5);
     try {
-      const { fetchTxEffectData } = await import('../../frontend/src/aztec/noteImporter.js');
-      const txEffect = await fetchTxEffectData(this.deps.chain.nodeClient as any, txHash);
-      if (!txEffect) {
-        this.log(`sweep: WARNING no TxEffect for ${txHash.slice(0, 18)}… — ` +
-                 `cards are on-chain but not yet visible to the PXE`);
-        return;
-      }
-      // Our five, minted with caller_randomness[0..4]. There is no sixth card:
-      // recovery no longer takes anything from the opponent.
-      const notes = rec.cardIds.slice(0, 5).map((tokenId, i) => ({
-        tokenId, randomness: rec.randomness[i],
-      }));
-      await this.deps.chain.pxe.importCardNotes(
-        this.deps.chain.address, txHash, notes, 'abandoned-game recovery', txEffect,
+      const received: number = await this.deps.chain.pxe.receiveCardMessages(
+        this.deps.chain.address, sent.txHash, sent.offchainMessages,
       );
+      if (received !== expected) {
+        this.log(`sweep: WARNING expected ${expected} card message(s) for us, received ${received} — ` +
+                 'the missing cards are on-chain but invisible to the PXE');
+      }
     } catch (err) {
-      // Not fatal: the cards ARE ours on-chain, and a later sweep or a PXE
-      // resync can still surface them. Loud, though — an unimported note looks
-      // exactly like a failed recovery from the outside.
-      this.log(`sweep: WARNING note import failed: ${(err as Error).message}`);
+      // Not fatal: the cards ARE ours on-chain. Loud, though — an unreceived
+      // note looks exactly like a failed recovery from the outside.
+      this.log(`sweep: WARNING receiving recovered cards failed: ${(err as Error).message}`);
     }
   }
 
@@ -423,16 +420,18 @@ export class AbandonmentSweep {
       myBlinding: rec.blindingFactor!,
     });
 
-    const tx = await this.deps.chain.pxe.sendSettleAbandonedGame(this.deps.chain.address, args, {
-      node: this.deps.chain.nodeClient, timeoutMs: this.txTimeoutMs,
-    });
+    const sent: { txHash: string; offchainMessages: unknown[] } =
+      await this.deps.chain.pxe.sendSettleAbandonedGame(this.deps.chain.address, args, {
+        node: this.deps.chain.nodeClient, timeoutMs: this.txTimeoutMs,
+      });
+    const tx = sent.txHash;
 
-    // The cards are ours on-chain but INVISIBLE until imported: settle_abandoned_game
-    // re-mints them through create_and_push_note, which skips on-chain tagging, so
-    // the PXE cannot discover them (CLAUDE.md ground rule 9). Without this the
-    // sweep reports success while the bot's spendable count does not move — which
-    // is exactly what the first chain run of this code did.
-    await this.importRecoveredCards(rec, String(tx));
+    // The cards are ours on-chain but INVISIBLE until received: settle_abandoned_game
+    // re-mints them as untagged notes the PXE cannot discover (CLAUDE.md ground
+    // rule 9); their messages come back with the send. Without this the sweep
+    // reports success while the bot's spendable count does not move — which is
+    // exactly what the first chain run of this code did.
+    await this.receiveRecoveredCards(rec, sent);
 
     this.stats.recovered += 1;
     this.stats.cardsRecovered += rec.cardIds.length;

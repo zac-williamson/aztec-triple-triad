@@ -1082,25 +1082,25 @@ export class ArenaBot {
     });
 
     this.log(`settling ${winner === 'draw' ? '(draw, single settler)' : `(claiming card ${selectedCardId})`}…`);
-    const txHash = await chain.pxe.sendProcessGame(chain.address, args, { node: chain.nodeClient, timeoutMs: this.cfg.chainTxTimeoutMs });
+    const sent: { txHash: string; offchainMessages: unknown[] } =
+      await chain.pxe.sendProcessGame(chain.address, args, { node: chain.nodeClient, timeoutMs: this.cfg.chainTxTimeoutMs });
     this.stats.settlements += 1;
-    this.log(`settled on-chain: ${String(txHash).slice(0, 18)}…`);
+    this.log(`settled on-chain: ${sent.txHash.slice(0, 18)}…`);
 
     // Hand the loser back the plaintexts for THEIR returned cards.
     //
     // process_game re-mints the loser's non-wagered cards, but as untagged
-    // notes their PXE cannot discover on its own (ground rule 9) — only the
-    // settler can compute the randomness, so only the settler can tell them.
+    // notes their PXE cannot discover on its own (ground rule 9). Their
+    // messages came back to US, the settler, so we tell them.
     // A human winner does this (useGameSettlement relayNoteData); the bot did
     // not, so anyone who LOST to the bot watched "Opponent is settling…"
     // forever and never got four of their five cards back. Losing one card is
     // the game; losing the hand is a bug.
-    this.relayReturnedNotes(String(txHash), selectedCardId, winner);
-    // Take our OWN cards back into the PXE. process_game re-mints them with
-    // create_and_push_note + offchain delivery, which nothing discovers
-    // passively (ground rule 9) — settling without this silently burned all
-    // five every game, win or lose.
-    await this.importOwnReturnedCards(chain, String(txHash), selectedCardId, winner);
+    this.relayReturnedNotes(sent.txHash, selectedCardId, winner);
+    // Take our OWN cards back into the PXE, from the settle tx's messages for
+    // us. Nothing discovers these notes passively (ground rule 9) — settling
+    // without this silently burned all five every game, win or lose.
+    await this.receiveOwnReturnedCards(chain, sent, selectedCardId, winner);
     // Marked settled rather than deleted. The entry exists to mark cards as
     // locked, and settled cards are not locked — but the record is also the
     // only surviving copy of this game's randomness, which is what recovering
@@ -1223,64 +1223,50 @@ export class ArenaBot {
   }
 
   /**
-   * Re-import the cards process_game just minted back to us.
+   * Take back the cards process_game just minted to us, from the settle tx's
+   * own offchain messages.
    *
-   * Both mint paths use create_and_push_note with offchain delivery, so NOTHING
-   * discovers these passively — not the settler, not the opponent. The frontend
-   * winner has always done this ("Winner import"); the bot never did, so every
-   * settled game removed its five committed cards from view permanently. At
-   * five a game that is the arena's whole card supply on a timer.
+   * The notes carry no tag, so NOTHING discovers them passively — not the
+   * settler, not the opponent. The frontend winner has always taken its cards
+   * back; the bot once did not, so every settled game removed its five
+   * committed cards from view permanently. At five a game that is the arena's
+   * whole card supply on a timer.
    *
-   * Win : our five at randomness[0..4], plus the claimed card at randomness[5]
-   *       (mint_for_game_winner takes a [Field; 6] in exactly that order).
-   * Draw: our five at randomness[0..4]; nothing changes hands.
+   * Win : our five plus the claimed card (mint_for_game_winner mints six).
+   * Draw: our five; nothing changes hands.
+   *
+   * The journal keeps this game's randomness, so if this fails the notes can
+   * still be rebuilt and imported by hand (import_note).
    */
-  private async importOwnReturnedCards(
+  private async receiveOwnReturnedCards(
     chain: BotChainLike,
-    txHash: string,
+    sent: { txHash: string; offchainMessages: unknown[] },
     selectedCardId: number,
     winner: string,
   ): Promise<void> {
-    const randomness = this.myRandomness;
-    if (!randomness || this.hand.length < 5) {
-      this.stats.cardsUnimported += this.hand.length;
-      this.log(`WARNING: cannot re-import our own cards for ${txHash.slice(0, 18)}… ` +
-        `(no randomness) — ${this.hand.length} card(s) are ours on-chain but invisible`);
-      return;
-    }
-    const notes = this.hand.slice(0, 5).map((tokenId, i) => ({
-      tokenId, randomness: String(randomness[i]),
-    }));
-    if (winner !== 'draw' && selectedCardId !== 0) {
-      notes.push({ tokenId: selectedCardId, randomness: String(randomness[5]) });
-    }
+    const txHash = sent.txHash;
+    const expected = Math.min(this.hand.length, 5) + (winner !== 'draw' && selectedCardId !== 0 ? 1 : 0);
     try {
-      const { fetchTxEffectData } = await import('../../frontend/src/aztec/noteImporter.js');
-      const txEffect = await fetchTxEffectData(chain.nodeClient as never, txHash);
-      if (!txEffect) {
-        this.stats.cardsUnimported += notes.length;
-        this.log(`WARNING: no TxEffect for ${txHash.slice(0, 18)}… — ${notes.length} card(s) ` +
-          `are ours on-chain but the PXE cannot see them`);
-        return;
-      }
       const held = await chain.readCards();
-      await chain.pxe.importCardNotes(chain.address, txHash, notes, 'settlement return', txEffect);
-      // import_note swallows per-note failures, so the only honest check is
-      // whether the wallet can actually see more cards afterwards. Cards have
-      // definitely moved, so this read must not come from the cache.
+      const received: number = await chain.pxe.receiveCardMessages(chain.address, txHash, sent.offchainMessages);
+      // The PXE stores received notes at its next NFT contract sync, which
+      // this read triggers — so the only honest check is whether the wallet
+      // can see more cards afterwards. Cards have definitely moved, so this
+      // read must not come from the cache.
       chain.invalidateCards?.();
       const after = await chain.readCards({ force: true });
       const gained = after.length - held.length;
-      if (gained < notes.length) {
-        this.stats.cardsUnimported += notes.length - gained;
-        this.log(`WARNING: imported ${gained}/${notes.length} returned card(s) — ` +
-          `${notes.length - gained} are ours on-chain but invisible`);
+      if (received < expected || gained < expected) {
+        const missing = expected - Math.min(received, gained);
+        this.stats.cardsUnimported += missing;
+        this.log(`WARNING: expected ${expected} returned card(s), received ${received} message(s), ` +
+          `gained ${gained} — ${missing} are ours on-chain but invisible`);
       } else {
-        this.log(`re-imported ${notes.length} returned card(s); now holding ${after.length}`);
+        this.log(`received ${expected} returned card(s); now holding ${after.length}`);
       }
     } catch (err) {
-      this.stats.cardsUnimported += notes.length;
-      this.log(`WARNING: re-import of our own cards failed: ${(err as Error).message}`);
+      this.stats.cardsUnimported += expected;
+      this.log(`WARNING: receiving our own returned cards failed: ${(err as Error).message}`);
     }
   }
 

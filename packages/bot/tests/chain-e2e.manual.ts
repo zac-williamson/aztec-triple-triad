@@ -370,9 +370,9 @@ class ScriptedOpponent {
       opponentBlinding: this.oppBlinding!,
     });
     log('opponent', 'settling…');
-    const tx = await this.chain.pxe.sendProcessGame(this.chain.address, args, { node: this.chain.nodeClient, timeoutMs: 600_000 });
+    const { txHash } = await this.chain.pxe.sendProcessGame(this.chain.address, args, { node: this.chain.nodeClient, timeoutMs: 600_000 });
     this.settled = true;
-    log('opponent', `settled on-chain ${String(tx).slice(0, 16)}…`);
+    log('opponent', `settled on-chain ${String(txHash).slice(0, 16)}…`);
   }
 
   close() { this.ws?.close(); }

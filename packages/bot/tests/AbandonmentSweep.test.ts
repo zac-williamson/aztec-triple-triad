@@ -16,9 +16,6 @@ vi.mock('../../frontend/src/aztec/settlementArgs.js', () => ({
   waitForDisputeWindow: vi.fn(async () => {}),
   DISPUTE_SECONDS: 600,
 }));
-vi.mock('../../frontend/src/aztec/noteImporter.js', () => ({
-  fetchTxEffectData: vi.fn(async () => ({ noteHashes: ['0x1'], firstNullifier: '0x2' })),
-}));
 vi.mock('@aztec-labs/aztec.js/fields', () => ({ Fr: class {} }));
 vi.mock('@aztec-labs/aztec.js/addresses', () => ({ AztecAddress: { fromStringUnsafe: (s: string) => s } }));
 
@@ -27,6 +24,10 @@ beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'sweep-')); });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.clearAllMocks(); });
 
 const PROOF = { proof: 'p', publicInputs: ['0x0'], startStateHash: 's', endStateHash: 'e' };
+
+/** What settle_abandoned_game hands back: one offchain message per recovered
+ *  card. Tagged with the card here so the receive is legible in `calls`. */
+const SETTLE_MESSAGES = [1, 2, 3, 4, 5].map((card) => ({ card }));
 
 function record(over: Partial<GameRecord> = {}): GameRecord {
   return {
@@ -67,10 +68,14 @@ function harness(status: number, over: Record<string, any> = {}) {
       readGameStatus: over.readGameStatus ?? (async () => (claimed ? 5 : status)),
       readAbandonmentInfo: async () => ({ status: claimed ? 5 : status, activeAt: Math.floor(Date.now()/1000) - 7200, claimAt: claimed ? Math.floor(Date.now()/1000) - 1200 : 0, claimPlayer: '0x0' }),
       sendClaimAbandonedGame: async () => { claimed = true; calls.push('claim'); return '0xclaimtx'; },
-      sendSettleAbandonedGame: async () => { calls.push('settle'); return '0xsettletx'; },
-      importCardNotes: async (_o: string, _t: string, notes: any[]) => {
-        calls.push(`import:${notes.map(n => n.tokenId).join(',')}`);
-        return notes.map(n => n.tokenId);
+      sendSettleAbandonedGame: async () => {
+        calls.push('settle');
+        return { txHash: '0xsettletx', offchainMessages: SETTLE_MESSAGES };
+      },
+      receiveCardMessages: async (_o: string, txHash: string, messages: { card: number }[]) => {
+        expect(txHash).toBe('0xsettletx');
+        calls.push(`receive:${messages.map(m => m.card).join(',')}`);
+        return messages.length;
       },
       ...over.pxe,
     },
@@ -94,10 +99,10 @@ describe('AbandonmentSweep', () => {
 
     const stats = await h.sweep.run();
 
-    // The import is not optional bookkeeping: settle_abandoned_game re-mints via
-    // create_and_push_note, which the PXE cannot discover, so without it the
+    // The receive is not optional bookkeeping: settle_abandoned_game re-mints
+    // untagged notes the PXE cannot discover, so without the tx's messages the
     // cards are ours on-chain and invisible in the wallet.
-    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5']);
+    expect(h.calls).toEqual(['claim', 'settle', 'receive:1,2,3,4,5']);
     expect(stats.recovered).toBe(1);
     expect(stats.cardsRecovered).toBe(5);
     // Forgotten, or the next pass chases a game that is already resolved.
@@ -133,7 +138,7 @@ describe('AbandonmentSweep', () => {
     await h.sweep.run();
 
     // Re-claiming would revert; settling is what is actually outstanding.
-    expect(h.calls).toEqual(['settle', 'import:1,2,3,4,5']);
+    expect(h.calls).toEqual(['settle', 'receive:1,2,3,4,5']);
   });
 
   it('keeps the record when recovery FAILS, so the cards are not forgotten', async () => {
@@ -167,7 +172,7 @@ describe('AbandonmentSweep', () => {
 
     const stats = await h.sweep.run();
 
-    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5']);
+    expect(h.calls).toEqual(['claim', 'settle', 'receive:1,2,3,4,5']);
     expect(stats.recovered).toBe(1);
     // Only our own five come back — nobody forfeits a card here either.
     const { buildSettleAbandonedArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
@@ -190,7 +195,7 @@ describe('AbandonmentSweep', () => {
 
     const stats = await h.sweep.run();
 
-    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5']);
+    expect(h.calls).toEqual(['claim', 'settle', 'receive:1,2,3,4,5']);
     expect(stats.recovered).toBe(1);
   });
 
@@ -208,7 +213,7 @@ describe('AbandonmentSweep', () => {
     expect(call).not.toHaveProperty('claimedCardId');
     expect(call).not.toHaveProperty('opponentCardIds');
     expect(call).toMatchObject({ myCardIds: [1, 2, 3, 4, 5], myBlinding: '0xb1' });
-    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5']);
+    expect(h.calls).toEqual(['claim', 'settle', 'receive:1,2,3,4,5']);
   });
 
   it('refuses a game journalled without a blinding factor', async () => {
@@ -245,7 +250,7 @@ describe('AbandonmentSweep', () => {
     expect(h.calls).toEqual([]);
     release();
     await first;
-    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5']);
+    expect(h.calls).toEqual(['claim', 'settle', 'receive:1,2,3,4,5']);
   });
 
   it('survives a corrupt journal entry without discarding it', async () => {
@@ -257,33 +262,33 @@ describe('AbandonmentSweep', () => {
 
     // The good one recovers; the corrupt file stays on disk, because deleting it
     // would silently throw away the only record that five cards are locked.
-    expect(h.calls).toEqual(['claim', 'settle', 'import:1,2,3,4,5']);
+    expect(h.calls).toEqual(['claim', 'settle', 'receive:1,2,3,4,5']);
     expect(readdirSync(dir)).toContain('broken.json');
   });
 });
 
-describe('AbandonmentSweep note import', () => {
-  it('imports the claimed opponent card too, using randomness slot 5', async () => {
+describe('AbandonmentSweep card receive', () => {
+  it('receives exactly our five cards, even when the opponent played', async () => {
     const h = harness(GAME_STATUS.active);
     h.journal.write(record({ moveProofs: [PROOF, PROOF] }));   // opponent played
 
     await h.sweep.run();
 
-    // The contract mints the claimed card with caller_randomness[5]; missing it
-    // means winning the card on-chain and never receiving it.
-    expect(h.calls).toContain('import:1,2,3,4,5');
+    // Recovery returns our own stake and mints nothing else, so there is no
+    // claimed opponent card among the messages to receive.
+    expect(h.calls).toEqual(['claim', 'settle', 'receive:1,2,3,4,5']);
   });
 
-  it('still counts the recovery when the note import fails', async () => {
-    const { fetchTxEffectData } = await import('../../frontend/src/aztec/noteImporter.js');
-    vi.mocked(fetchTxEffectData).mockResolvedValueOnce(null as any);
-    const h = harness(GAME_STATUS.active);
+  it('still counts the recovery when receiving the cards fails', async () => {
+    const h = harness(GAME_STATUS.active, {
+      pxe: { receiveCardMessages: async () => { throw new Error('PXE unavailable'); } },
+    });
     h.journal.write(record());
 
     const stats = await h.sweep.run();
 
-    // The settle landed: the cards ARE ours on-chain. A later sweep or resync
-    // can surface them, so this is not a failed recovery.
+    // The settle landed: the cards ARE ours on-chain, so this is not a failed
+    // recovery.
     expect(stats.recovered).toBe(1);
     expect(h.calls).toEqual(['claim', 'settle']);
   });
@@ -457,8 +462,8 @@ describe('yielding between chain steps', () => {
             busy = true;          // a player is matched while the claim mines
             return '0x' + 'c'.repeat(64);
           },
-          sendSettleAbandonedGame: async () => { steps.push('settle'); return '0xdead'; },
-          importCardNotes: async () => [],
+          sendSettleAbandonedGame: async () => { steps.push('settle'); return { txHash: '0xdead', offchainMessages: [] }; },
+          receiveCardMessages: async () => 0,
         },
       } as never,
       proofs: {
@@ -505,8 +510,8 @@ describe('the card count after a recovery', () => {
           readGameStatus: async () => (claimed ? 5 : 2),
           readAbandonmentInfo: async () => ({ status: claimed ? 5 : 2, activeAt: Math.floor(Date.now()/1000) - 7200, claimAt: claimed ? Math.floor(Date.now()/1000) - 1200 : 0, claimPlayer: '0x0' }),
           sendClaimAbandonedGame: async () => { claimed = true; return '0x' + 'c'.repeat(64); },
-          sendSettleAbandonedGame: async () => '0xdead',
-          importCardNotes: async () => [1, 2, 3, 4, 5],
+          sendSettleAbandonedGame: async () => ({ txHash: '0xdead', offchainMessages: SETTLE_MESSAGES }),
+          receiveCardMessages: async () => 5,
         },
       } as never,
       proofs: {
@@ -563,8 +568,8 @@ describe('claims only when the chain would accept one', () => {
           readGameStatus: async () => 2,
           readAbandonmentInfo: async () => ({ status: 2, activeAt: Math.floor(Date.now()/1000) - 7200, claimAt: Math.floor(Date.now()/1000) - 1200, claimPlayer: '0x0' }),
           sendClaimAbandonedGame: async () => { claims.push('claim'); return '0x' + 'c'.repeat(64); },
-          sendSettleAbandonedGame: async () => '0xdead',
-          importCardNotes: async () => [],
+          sendSettleAbandonedGame: async () => ({ txHash: '0xdead', offchainMessages: [] }),
+          receiveCardMessages: async () => 0,
         },
       } as never,
       proofs: {
