@@ -12,7 +12,9 @@
  * Credentials live OUTSIDE the repo (so they never get committed):
  *   ~/.aztec-triad-private/vercel-token.txt                  # Vercel PAT
  *   (legacy fallback: <repo-parent>/vercel_token.txt)
- *   /Users/zac/aztec-triple-triad-ui/vercel_project_id.txt   # project ID
+ *   <repo-parent>/vercel_project_id.txt                      # project ID
+ *   (or VERCEL_PROJECT_ID — needed from a git worktree, whose parent
+ *   directory is not the main checkout's)
  *
  * Overrides:
  *   VERCEL_TEAM_ID    (optional; needed for team-owned projects)
@@ -84,7 +86,7 @@ interface VercelEnvVar {
 }
 
 const token = readToken();
-const projectId = readTrim(PROJECT_ID_FILE);
+const projectId = process.env.VERCEL_PROJECT_ID?.trim() || readTrim(PROJECT_ID_FILE);
 
 const frontendEnv = parseDotenv(FRONTEND_ENV_FILE);
 
