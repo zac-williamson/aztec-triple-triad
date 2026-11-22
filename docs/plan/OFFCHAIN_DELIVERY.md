@@ -1,36 +1,33 @@
 # Card notes on v6: `offchain_receive` instead of `import_note`
 
-**Status:** step 2 built on branch `spike/offchain-delivery` (21 November
-2026); see [Steps](#steps). It changes the NFT contract, and our contracts are
-not upgradeable, so it ships only with a redeploy. Bundle it with the next
-network move ([NETWORK_MOVE.md](../NETWORK_MOVE.md)).
+**Status:** shipped with the 22 November 2026 redeploy; see [Steps](#steps).
+Every player-facing card mint in production delivers its notes as offchain
+messages. Our contracts are not upgradeable, so this waited for a redeploy;
+what else that redeploy carried is in [NETWORK_MOVE.md](../NETWORK_MOVE.md).
 
-## How card notes work on the deployed contracts
+## How card notes worked before
 
-This is what production runs until that redeploy.
-
-Every card note is made by `create_and_push_note`
-(`packages/contracts/triple_triad_nft/src/main.nr:578`). It computes the note
-hash from randomness we choose, derived from the owner's `nhk_app` secret and a
-nonce. It then notifies the local PXE and pushes the hash. It sends no message.
-Eleven functions use it: starter cards, packs, the settlement and abandonment
+Every card note was made by `create_and_push_note`. It computed the note hash
+from randomness we choose, derived from the owner's `nhk_app` secret and a
+nonce, then notified the local PXE and pushed the hash. It sent no message.
+Eleven functions used it: starter cards, packs, the settlement and abandonment
 mints, the bot's stock, and four test helpers.
 
-With no message, the PXE cannot find these notes. So every recipient imports
-each note by hand (ground rule 9):
+With no message, the PXE could not find these notes. So every recipient
+imported each note by hand:
 
 1. Fetch the tx effect from the node, polling 5 × 3 s.
 2. Pad its note hashes to 64.
 3. Recompute the card ids and randomness.
 4. Call our `import_note` utility once per note.
 
-`import_note` (`:1207`, with a twin in `arena_token`) re-encodes the note as a
+`import_note` (with a twin in `arena_token`) re-encodes the note as a
 private-note message. It then calls aztec-nr's `process_private_note_msg` and
 `validate_and_store_enqueued_notes_and_events` directly. In effect it runs the
 framework's message pipeline from outside the framework. The earlier version of
 this approach broke when `attempt_note_discovery` went private in 4.3.1.
 
-Ten client call sites depend on it:
+Ten client call sites depended on it:
 - frontend: `connectToAztec.ts` ×3, `useCardPacks.ts`, `useGameSettlement.ts` ×2;
 - bot: `ArenaBot.ts` ×2, `BotChain.ts`, `AbandonmentSweep.ts`.
 
@@ -40,17 +37,17 @@ The settlement and abandonment recovery paths depend on that.
 
 ### Dead code found along the way
 
-Ten mint sites also emit a `CardCreated { note_tag, note_payload }` event next
-to each note, delivered with `MessageDelivery::offchain()`. Nothing receives
-these events:
-- No TypeScript reads `offchainMessages`. `instrumentedWallet.sendTx` returns
-  them and every caller drops them.
-- Importers recompute ids and randomness themselves (`previewCardPack` and
+Ten mint sites also emitted a `CardCreated { note_tag, note_payload }` event
+next to each note, delivered with `MessageDelivery::offchain()`. Nothing
+received these events:
+- No TypeScript read `offchainMessages`. `instrumentedWallet.sendTx` returned
+  them and every caller dropped them.
+- Importers recomputed ids and randomness themselves (`previewCardPack` and
   `computeNoteRandomness` in `useCardPacks.ts`).
 
 ARCHITECTURE.md §7 used to describe recipients tag-scanning these events; no
 code ever did. The events cost proving time: `derive_note_tag` and
-`encrypt_card_payload` run in constrained code for every card minted. Step 2
+`encrypt_card_payload` ran in constrained code for every card minted. Step 2
 measured it (gates, below).
 
 ## What v6 provides
@@ -207,6 +204,11 @@ internals, but no longer on the path every mint takes.
      with no `import_note`, and its phase stays idle afterwards (the first
      passing run showed the create/join pipeline restarting on the dead game,
      fixed in the same series).
+   - **Testnet, against the redeployed contracts, 22 November 2026:**
+     `abandonment.spec` passed on the real chain. The claim mined once the
+     game was eight minutes old by chain time, and after the ten-minute
+     dispute window the claimant's five cards arrived as offchain messages
+     (26.3 min). `multi-game` (a pack and five games) passed in 16.2 min.
 3. **Later, optional.** Forward the counterparty's settlement messages over
    the relay, so the player who didn't settle needs no `import_note` either.
    It would not hide anything new from the relay server, which already sees
@@ -221,7 +223,7 @@ internals, but no longer on the path every mint takes.
   `settle_abandoned_game` minted one. It no longer does, so that card went
   into the card store and the collection although it does not exist. Fixed,
   with a test. `mint_single_card_private`, which used to mint that card, had
-  no caller left, so it is removed for the redeploy.
+  no caller left, so the redeploy removed it.
 - **A pack no longer depends on the tx effect.** The card store needs the tx
   effect; delivery does not. Before, a tx effect the node never served meant
   the pack's cards were never imported at all.

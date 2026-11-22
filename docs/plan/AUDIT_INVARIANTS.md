@@ -45,9 +45,9 @@ contract tests could set state up, and anyone could call them on the deployed
 contract. Three minted cards of the caller's choosing: `test_mint_winner_cards`
 and its `_with_nonce` twin were `mint_for_game_winner` without the
 game-contract check, to any address, and `test_create_10_cards` minted ten to
-the caller. Found on 22 November 2026 while removing dead code and removed
-from the source for the next redeploy; until that runs, the NFT deployed on 20
-November 2026 still has them. Z4 keeps anything unreviewed from shipping again. Three
+the caller. Found on 22 November 2026 while removing dead code, and gone from
+production with that day's redeploy; the NFT deployed on 20 November 2026 had
+them. Z4 keeps anything unreviewed from shipping again. Three
 of the "properties the register did not name" (N1, N2, N5) were the asserts of
 dead or test-only code.
 

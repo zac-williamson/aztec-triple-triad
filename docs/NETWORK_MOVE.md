@@ -139,8 +139,8 @@ redeploy without a network move skips steps 0–2 and starts at step 3. Pass
 without the flag the script bridges 100 FJ from the treasury for an account
 deploy that fails with "Existing nullifier" (harmless, but a wasted bridge).
 
-Ready on branch `spike/offchain-delivery`; merge it before compiling the
-contracts for the redeploy:
+Shipped with the 22 November 2026 redeploy (no network move; NFT
+`0x02db82b8…`, Game `0x272c03ee…`, Token `0x2996e806…`):
 
 - The NFT's dead and test-only entry points are removed. That is the four
   public-escrow functions and their card lock; `reclaim_card` stays, without
@@ -148,9 +148,9 @@ contracts for the redeploy:
   `mint_single_card_private` and the two `mint_to_public_batch_*` of the first
   abandonment design. Last are eight test-only entry points: three of them let
   anyone mint any card ([plan/AUDIT_INVARIANTS.md](plan/AUDIT_INVARIANTS.md),
-  "A second gap"). **The NFT deployed on 20 November 2026 still has them until
-  the redeploy runs.** `scripts/contractEntryPoints.test.ts` keeps an
-  unreviewed entry point from shipping again.
+  "A second gap"); the NFT deployed on 20 November 2026 had them.
+  `scripts/contractEntryPoints.test.ts` keeps an unreviewed entry point from
+  shipping again.
 - Card notes are delivered as v6 offchain messages through `offchain_receive`
   instead of the hand-driven `import_note`, and the `CardCreated` events that
   nothing received are dropped:
