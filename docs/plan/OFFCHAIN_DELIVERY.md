@@ -221,7 +221,7 @@ internals, but no longer on the path every mint takes.
   `settle_abandoned_game` minted one. It no longer does, so that card went
   into the card store and the collection although it does not exist. Fixed,
   with a test. `mint_single_card_private`, which used to mint that card, had
-  no caller left, so the redeploy removed it.
+  no caller left, so it is removed for the redeploy.
 - **A pack no longer depends on the tx effect.** The card store needs the tx
   effect; delivery does not. Before, a tx effect the node never served meant
   the pack's cards were never imported at all.

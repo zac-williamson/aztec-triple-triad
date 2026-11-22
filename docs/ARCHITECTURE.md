@@ -330,12 +330,12 @@ A small public-ownership surface sits alongside the private set: the
 `transfer_public` (`:868-875`), `transfer_private_to_public` (`:880-890`), and
 `reclaim_card` back into the private set (`:898-905`, checked by
 `finalize_reclaim`, `:946-951`). No game flow uses it: games play private
-cards only. The November 2026 redeploy removed what an earlier design left
-behind — the escrow functions (`prepare_for_game`, `unlock_cards`,
-`game_transfer`) and their card lock, the public mints of the first
-abandonment design — and eight test-only entry points, three of which minted
-any card for anyone ([plan/AUDIT_INVARIANTS.md](plan/AUDIT_INVARIANTS.md), "A
-second gap"). `scripts/contractEntryPoints.test.ts` now lists every NFT entry
+cards only. Removed for the next redeploy (the NFT deployed on 20 November
+2026 still has them) are what an earlier design left behind — the escrow
+functions (`prepare_for_game`, `unlock_cards`, `game_transfer`) and their card
+lock, the public mints of the first abandonment design — and eight test-only
+entry points, three of which mint any card for anyone
+([plan/AUDIT_INVARIANTS.md](plan/AUDIT_INVARIANTS.md), "A second gap"). `scripts/contractEntryPoints.test.ts` now lists every NFT entry
 point and who may call it. The design-era escrow spec is archived at
 `docs/history/GAME_LIFECYCLE_SPEC.md`.
 

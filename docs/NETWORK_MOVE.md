@@ -133,22 +133,21 @@ inactivity, re-enable it by id (`gh workflow list --all`, then
 
 ## Bundle with the next redeploy
 
-Contract changes only ship with a redeploy, so batch them into a move. Nothing
-is waiting.
+Contract changes only ship with a redeploy, so batch them into a move. A
+redeploy without a network move skips steps 0–2 and starts at step 3.
 
-A redeploy without a network move (November 2026 had one, to ship the changes
-below) skips steps 0–2 and starts at step 3.
+Ready on branch `spike/offchain-delivery`; merge it before compiling the
+contracts for the redeploy:
 
-Shipped with the 22 November 2026 redeploy:
-
-- The NFT's dead and test-only entry points are gone. That is the four
+- The NFT's dead and test-only entry points are removed. That is the four
   public-escrow functions and their card lock; `reclaim_card` stays, without
   the lock, as the way back from public ownership. It is also
   `mint_single_card_private` and the two `mint_to_public_batch_*` of the first
   abandonment design. Last are eight test-only entry points: three of them let
   anyone mint any card ([plan/AUDIT_INVARIANTS.md](plan/AUDIT_INVARIANTS.md),
-  "A second gap"). `scripts/contractEntryPoints.test.ts` keeps an unreviewed
-  entry point from shipping again.
+  "A second gap"). **The NFT deployed on 20 November 2026 still has them until
+  the redeploy runs.** `scripts/contractEntryPoints.test.ts` keeps an
+  unreviewed entry point from shipping again.
 - Card notes are delivered as v6 offchain messages through `offchain_receive`
   instead of the hand-driven `import_note`, and the `CardCreated` events that
   nothing received are dropped:

@@ -45,8 +45,9 @@ contract tests could set state up, and anyone could call them on the deployed
 contract. Three minted cards of the caller's choosing: `test_mint_winner_cards`
 and its `_with_nonce` twin were `mint_for_game_winner` without the
 game-contract check, to any address, and `test_create_10_cards` minted ten to
-the caller. Found in November 2026 while removing dead code; removed with that
-month's redeploy, with Z4 to keep anything unreviewed from shipping again. Three
+the caller. Found on 22 November 2026 while removing dead code and removed
+from the source for the next redeploy; until that runs, the NFT deployed on 20
+November 2026 still has them. Z4 keeps anything unreviewed from shipping again. Three
 of the "properties the register did not name" (N1, N2, N5) were the asserts of
 dead or test-only code.
 
@@ -196,7 +197,7 @@ intuition, in one example.**
 | Z1 | Only the game contract can mint game cards. | `VERIFIED` | `triple_triad_nft/src/test/mint_authorization.nr`: a player calling each of the four `mint_for_game_*` fails "Only game contract can call"; the same call from the game goes through |
 | Z2 | Public ownership can only be set from inside the NFT contract. | `VERIFIED` | `#[only_self]` |
 | Z3 | Card ranks cannot be supplied by a player. | `MUTATION-COVERED` | Fixed in-circuit table; `card_data` tests |
-| Z4 | Every deployed entry point that creates cards is a reviewed mint, and nothing test-only is deployed. | `VERIFIED` | `scripts/contractEntryPoints.test.ts`: the NFT's entry points must equal a reviewed list naming who may call each card-creating one, and no shipped contract may have a `test_*` function. Fails on the artifact deployed before November 2026 |
+| Z4 | Every deployed entry point that creates cards is a reviewed mint, and nothing test-only is deployed. | `VERIFIED` | `scripts/contractEntryPoints.test.ts`: the NFT's entry points must equal a reviewed list naming who may call each card-creating one, and no shipped contract may have a `test_*` function. Fails on the artifact of the NFT deployed on 20 November 2026 |
 
 ### Hand commitment
 

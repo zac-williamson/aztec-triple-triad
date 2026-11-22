@@ -1,9 +1,9 @@
 /**
  * No contract we deploy carries an entry point nobody reviewed.
  *
- * Until November 2026 the NFT shipped eight test-only entry points written for
- * its contract tests, and anyone could call them on the deployed contract.
- * Three minted cards of the caller's choosing: `test_mint_winner_cards` and its
+ * The NFT deployed on 20 November 2026 carried eight test-only entry points
+ * written for its contract tests, and anyone could call them on the deployed
+ * contract. Three minted cards of the caller's choosing: `test_mint_winner_cards` and its
  * `_with_nonce` twin were `mint_for_game_winner` without the game-contract
  * check, to any address, and `test_create_10_cards` minted ten to the caller.
  * Contract tests now set state up through the test environment instead
