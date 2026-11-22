@@ -134,7 +134,10 @@ inactivity, re-enable it by id (`gh workflow list --all`, then
 ## Bundle with the next redeploy
 
 Contract changes only ship with a redeploy, so batch them into a move. A
-redeploy without a network move skips steps 0–2 and starts at step 3.
+redeploy without a network move skips steps 0–2 and starts at step 3. Pass
+`--skip-account` to `deploy-testnet.ts` then: the deployer already exists, and
+without the flag the script bridges 100 FJ from the treasury for an account
+deploy that fails with "Existing nullifier" (harmless, but a wasted bridge).
 
 Ready on branch `spike/offchain-delivery`; merge it before compiling the
 contracts for the redeploy:
