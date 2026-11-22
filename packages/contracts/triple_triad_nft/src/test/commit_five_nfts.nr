@@ -1,5 +1,6 @@
 use crate::TripleTriadNFT;
 use crate::test::utils;
+use crate::test_support;
 use aztec::note::constants::MAX_NOTES_PER_PAGE;
 
 unconstrained fn count_private_cards(
@@ -34,10 +35,7 @@ unconstrained fn mint_starter_cards(
         );
     }
     // Initialize nonce for player (needed by commit_five_nfts_*)
-    env.call_private(
-        player,
-        TripleTriadNFT::at(contract_address).test_init_nonce(5),
-    );
+    test_support::init_note_nonce(*env, contract_address, player, 5);
 }
 
 #[test]
@@ -83,10 +81,7 @@ unconstrained fn commit_five_nfts_with_duplicate_leaves_one() {
             TripleTriadNFT::at(contract_address).mint_to_private(player, (i + 1) as Field, 0),
         );
     }
-    env.call_private(
-        player,
-        TripleTriadNFT::at(contract_address).test_init_nonce(5),
-    );
+    test_support::init_note_nonce(env, contract_address, player, 5);
 
     assert(count_private_cards(env, contract_address, player) == 6, "Expected 6 cards after minting");
 

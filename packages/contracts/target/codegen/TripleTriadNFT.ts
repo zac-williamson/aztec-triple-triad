@@ -26,12 +26,6 @@ to: AztecAddressLike
       }
     
 
-      export type CardCreated = {
-        note_tag: FieldLike
-note_payload: FieldLike[]
-      }
-    
-
 /**
  * Type-safe interface for contract TripleTriadNFT;
  */
@@ -113,7 +107,7 @@ export class TripleTriadNFTContract extends ContractBase {
   }
   
 
-  public static get storage(): ContractStorageLayout<'name' | 'symbol' | 'minter' | 'token_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'card_game_lock' | 'game_contract' | 'note_nonce' | 'arena_bots'> {
+  public static get storage(): ContractStorageLayout<'name' | 'symbol' | 'minter' | 'token_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'game_contract' | 'note_nonce' | 'arena_bots'> {
       return {
         name: {
       slot: new Fr(1n),
@@ -139,19 +133,16 @@ public_owners: {
 card_ranks: {
       slot: new Fr(12n),
     },
-card_game_lock: {
+game_contract: {
       slot: new Fr(13n),
     },
-game_contract: {
-      slot: new Fr(14n),
-    },
 note_nonce: {
-      slot: new Fr(16n),
+      slot: new Fr(15n),
     },
 arena_bots: {
-      slot: new Fr(17n),
+      slot: new Fr(16n),
     }
-      } as ContractStorageLayout<'name' | 'symbol' | 'minter' | 'token_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'card_game_lock' | 'game_contract' | 'note_nonce' | 'arena_bots'>;
+      } as ContractStorageLayout<'name' | 'symbol' | 'minter' | 'token_contract' | 'private_nfts' | 'nft_exists' | 'public_owners' | 'card_ranks' | 'game_contract' | 'note_nonce' | 'arena_bots'>;
     }
     
 
@@ -173,17 +164,11 @@ arena_bots: {
     /** constructor(minter: struct, name: struct, symbol: struct) */
     constructor: ((minter: AztecAddressLike, name: { value: FieldLike }, symbol: { value: FieldLike }) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** game_transfer(from: struct, to: struct, token_id: field) */
-    game_transfer: ((from: AztecAddressLike, to: AztecAddressLike, token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
     /** get_card_ranks(token_id: field) */
     get_card_ranks: ((token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** get_cards_for_new_player() */
     get_cards_for_new_player: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_cards_for_new_player_test(nonce_value: field) */
-    get_cards_for_new_player_test: ((nonce_value: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** get_nfts_for_user(owner: struct, page_index: integer) */
     get_nfts_for_user: ((owner: AztecAddressLike, page_index: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -209,26 +194,14 @@ arena_bots: {
     /** mint_for_game_winner(token_ids: array, to: struct, randomness: array) */
     mint_for_game_winner: ((token_ids: FieldLike[], to: AztecAddressLike, randomness: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** mint_single_card_private(token_id: field, to: struct, randomness: field) */
-    mint_single_card_private: ((token_id: FieldLike, to: AztecAddressLike, randomness: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
     /** mint_to_private(to: struct, token_id: field, packed_ranks: field) */
     mint_to_private: ((to: AztecAddressLike, token_id: FieldLike, packed_ranks: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** mint_to_public(to: struct, token_id: field, packed_ranks: field) */
     mint_to_public: ((to: AztecAddressLike, token_id: FieldLike, packed_ranks: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** mint_to_public_batch_4(token_ids: array, to: struct) */
-    mint_to_public_batch_4: ((token_ids: FieldLike[], to: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** mint_to_public_batch_5(token_ids: array, to: struct) */
-    mint_to_public_batch_5: ((token_ids: FieldLike[], to: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
     /** offchain_receive(messages: struct) */
     offchain_receive: ((messages: { ciphertext: FieldLike[], recipient: AztecAddressLike, tx_hash: OptionLike<FieldLike>, anchor_block_timestamp: (bigint | number) }[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** prepare_for_game(card_ids: array, game_id: field) */
-    prepare_for_game: ((card_ids: FieldLike[], game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** preview_card_ids(nonce_value: field) */
     preview_card_ids: ((nonce_value: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -266,24 +239,6 @@ arena_bots: {
     /** sync_state(scope: struct) */
     sync_state: ((scope: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** test_create_10_cards(to: struct, token_ids: array, nonce_offset: field) */
-    test_create_10_cards: ((to: AztecAddressLike, token_ids: FieldLike[], nonce_offset: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** test_init_nonce(initial_value: field) */
-    test_init_nonce: ((initial_value: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** test_mint_winner_cards(token_ids: array, to: struct, randomness: array) */
-    test_mint_winner_cards: ((token_ids: FieldLike[], to: AztecAddressLike, randomness: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** test_mint_winner_cards_with_nonce(token_ids: array, to: struct, randomness: array) */
-    test_mint_winner_cards_with_nonce: ((token_ids: FieldLike[], to: AztecAddressLike, randomness: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** test_nullify_10_cards(owner: struct, token_ids: array) */
-    test_nullify_10_cards: ((owner: AztecAddressLike, token_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** test_nullify_cards(owner: struct, token_ids: array) */
-    test_nullify_cards: ((owner: AztecAddressLike, token_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
     /** transfer_private(from: struct, to: struct, token_id: field) */
     transfer_private: ((from: AztecAddressLike, to: AztecAddressLike, token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
@@ -292,13 +247,10 @@ arena_bots: {
 
     /** transfer_public(from: struct, to: struct, token_id: field) */
     transfer_public: ((from: AztecAddressLike, to: AztecAddressLike, token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** unlock_cards(token_ids: array, game_id: field) */
-    unlock_cards: ((token_ids: FieldLike[], game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
   };
 
   
-    public static get events(): { CardTransferred: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, CardMinted: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, CardCreated: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] } } {
+    public static get events(): { CardTransferred: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, CardMinted: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] } } {
     return {
       CardTransferred: {
         abiType: {
@@ -376,32 +328,6 @@ CardMinted: {
 },
         eventSelector: EventSelector.fromString("0x2ab54238"),
         fieldNames: ["token_id","to"],
-      },
-CardCreated: {
-        abiType: {
-    "kind": "struct",
-    "fields": [
-        {
-            "name": "note_tag",
-            "type": {
-                "kind": "field"
-            }
-        },
-        {
-            "name": "note_payload",
-            "type": {
-                "kind": "array",
-                "length": 2,
-                "type": {
-                    "kind": "field"
-                }
-            }
-        }
-    ],
-    "path": "TripleTriadNFT::CardCreated"
-},
-        eventSelector: EventSelector.fromString("0x3998527a"),
-        fieldNames: ["note_tag","note_payload"],
       }
     };
   }

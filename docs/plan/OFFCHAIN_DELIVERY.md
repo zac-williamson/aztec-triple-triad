@@ -152,10 +152,8 @@ internals, but no longer on the path every mint takes.
      encode as `BoundedVec`s.
 2. **Built 21 November 2026** on the same branch, for the next redeploy.
    - **Contract.** Every player-facing mint delivers offchain: starter,
-     pack, `mint_for_game_winner`, `mint_for_game_loser`,
-     `mint_for_game_draw_offchain`, `mint_single_card_private` (which nothing
-     calls any more — see below), and the test helpers. The bot's stock sends
-     none (above).
+     pack, `mint_for_game_winner`, `mint_for_game_loser` and
+     `mint_for_game_draw_offchain`. The bot's stock sends none (above).
    - **Gates** (each function's own circuit; the kernels dominate a full
      proof):
 
@@ -166,7 +164,7 @@ internals, but no longer on the path every mint takes.
      | `mint_for_game_winner` | 8,912 | 8,125 |
      | `mint_for_game_loser` | 8,513 | 7,988 |
      | `mint_for_game_draw_offchain` | 8,700 | 8,043 |
-     | `mint_single_card_private` | 7,901 | 7,768 |
+     | `mint_single_card_private` (since removed) | 7,901 | 7,768 |
      | `mint_bot_cards` | 11,153 | 11,153 |
 
    - **TXE:** NFT 32/32, Game 109/109, Token 11/11. New: a settlement's
@@ -181,12 +179,12 @@ internals, but no longer on the path every mint takes.
    - **Bot.** Its settlement return and the abandonment sweep receive, then
      check the cards surfaced; the journal keeps each game's randomness for
      `import_note` should one not.
-   - **Unit tests:** frontend 527, bot 186, scripts 74. They include the
+   - **Unit tests:** frontend 532, bot 186, scripts 74. They include the
      failure cases: a store that throws, or a tx effect the node never
      serves, must not cost the receive.
    - **Browser, local network, 21 November 2026:** `draw-game`,
      `full-game` (both tests) and `multi-game` with two games — 4 passed in
-     9.8 min. The specs now assert from each page's console which path
+     9.8 min, and again in 12.2 min on the branch's final commit. The specs now assert from each page's console which path
      delivered a mint (`expectCardsReceivedNotImported`), next to the
      existing checks that the cards arrived. The multi-game consoles:
 
@@ -222,8 +220,8 @@ internals, but no longer on the path every mint takes.
   card at `randomness[5]` alongside the caller's five, from when
   `settle_abandoned_game` minted one. It no longer does, so that card went
   into the card store and the collection although it does not exist. Fixed,
-  with a test. `mint_single_card_private`, which used to mint that card, has
-  had no caller since; it is left in place for the redeploy to decide.
+  with a test. `mint_single_card_private`, which used to mint that card, had
+  no caller left, so the redeploy removed it.
 - **A pack no longer depends on the tx effect.** The card store needs the tx
   effect; delivery does not. Before, a tx effect the node never served meant
   the pack's cards were never imported at all.

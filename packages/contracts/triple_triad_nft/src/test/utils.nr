@@ -4,8 +4,15 @@ use aztec::{protocol::address::AztecAddress, test::helpers::test_environment::Te
 use compressed_string::FieldCompressedString;
 
 /// Basic setup: deploy NFT with game_contract set to a dummy address.
-/// Sufficient for tests using get_cards_for_new_player_test and commit_five_nfts_*.
+/// Sufficient for tests of commit_five_nfts_*.
 pub unconstrained fn setup() -> (TestEnvironment, AztecAddress, AztecAddress, AztecAddress) {
+    let (env, contract_address, minter, player, _game) = setup_with_game();
+    (env, contract_address, minter, player)
+}
+
+/// `setup`, also returning the account registered as the game contract, so a
+/// test can make the calls only the game may make (the settlement mints).
+pub unconstrained fn setup_with_game() -> (TestEnvironment, AztecAddress, AztecAddress, AztecAddress, AztecAddress) {
     let mut env = TestEnvironment::new();
     let minter = env.create_light_account();
     let player = env.create_light_account();
@@ -22,7 +29,7 @@ pub unconstrained fn setup() -> (TestEnvironment, AztecAddress, AztecAddress, Az
     let game_dummy = env.create_light_account();
     env.call_public(minter, TripleTriadNFT::at(contract_address).set_game_contract(game_dummy));
 
-    (env, contract_address, minter, player)
+    (env, contract_address, minter, player, game_dummy)
 }
 
 /// Full setup: deploy NFT + ArenaToken, wire cross-references.

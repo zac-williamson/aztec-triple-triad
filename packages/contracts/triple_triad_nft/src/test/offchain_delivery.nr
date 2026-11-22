@@ -116,17 +116,18 @@ unconstrained fn pack_cards_arrive_through_offchain_receive() {
 
 #[test]
 unconstrained fn settlement_cards_arrive_for_their_owner_not_the_sender() {
-    let (mut env, nft, _token, _minter, settler) = utils::setup_full();
+    // `game` stands in for the game contract, sending the settlement's mint.
+    let (mut env, nft, _minter, _player, game) = utils::setup_with_game();
     let owner = env.create_light_account();
     let ids: [Field; 6] = [1, 2, 3, 4, 5, 6];
     let randomness: [Field; 6] = [11, 12, 13, 14, 15, 16];
 
     // Settlement mints to both players from one player's tx. The messages must
-    // be addressed to each card's OWNER: the settler forwards the other
-    // player's, and can only receive its own.
+    // be addressed to each card's OWNER, not to whoever sent the tx: the sender
+    // can only forward the other player's.
     env.call_private(
-        settler,
-        TripleTriadNFT::at(nft).test_mint_winner_cards(ids, owner, randomness),
+        game,
+        TripleTriadNFT::at(nft).mint_for_game_winner(ids, owner, randomness),
     );
     let messages = last_call_messages(env);
     assert_eq(messages.len(), 6, "expected one offchain message per minted card");
@@ -139,7 +140,7 @@ unconstrained fn settlement_cards_arrive_for_their_owner_not_the_sender() {
     env.execute_utility(TripleTriadNFT::at(nft).offchain_receive(messages));
 
     assert_eq(cards_of(env, nft, owner).len(), 6, "expected all six cards after receive");
-    assert_eq(cards_of(env, nft, settler).len(), 0, "the settler must not gain the owner's cards");
+    assert_eq(cards_of(env, nft, game).len(), 0, "the sender must not gain the owner's cards");
 }
 
 #[test]

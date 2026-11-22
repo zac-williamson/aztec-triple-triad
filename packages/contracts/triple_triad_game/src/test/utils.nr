@@ -1,5 +1,5 @@
 use crate::TripleTriadGame;
-use triple_triad_nft::TripleTriadNFT;
+use triple_triad_nft::{test_support, TripleTriadNFT};
 use arena_token::ArenaToken;
 use aztec::{protocol::address::AztecAddress, test::helpers::test_environment::TestEnvironment};
 use compressed_string::FieldCompressedString;
@@ -60,14 +60,8 @@ pub unconstrained fn setup_game() -> (TestEnvironment, AztecAddress, AztecAddres
     }
 
     // Initialize nonce for both players (needed by commit_five_nfts_*)
-    env.call_private(
-        player1,
-        TripleTriadNFT::at(nft_addr).test_init_nonce(5),
-    );
-    env.call_private(
-        player2,
-        TripleTriadNFT::at(nft_addr).test_init_nonce(5),
-    );
+    test_support::init_note_nonce(env, nft_addr, player1, 5);
+    test_support::init_note_nonce(env, nft_addr, player2, 5);
 
     (env, game_addr, nft_addr, token_addr, player1, player2)
 }

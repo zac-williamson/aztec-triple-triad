@@ -50,8 +50,8 @@ circuits/
 ```
 
 The two contracts are wired at deploy time: the game contract address is stored
-in the NFT contract (`triple_triad_nft/src/main.nr:155,178-183`) and gates every
-game-flow mint (e.g. `:673-674`); the NFT and token addresses are
+in the NFT contract (`triple_triad_nft/src/main.nr:178,208-212`) and gates every
+game-flow mint (e.g. `:784-785`); the NFT and token addresses are
 `PublicImmutable` in the game contract (`triple_triad_game/src/main.nr:86,97`).
 
 ## 3. Game lifecycle
@@ -91,7 +91,7 @@ Status machine (values documented at `triple_triad_game/src/main.nr:82`):
 ## 4. Hiding a hand: commitments
 
 When a player enters a game, the NFT contract
-(`commit_five_nfts_create`, `triple_triad_nft/src/main.nr:544-601`):
+(`commit_five_nfts_create`, `triple_triad_nft/src/main.nr:659-717`):
 
 1. Fetches the player's app-siloed nullifier secret `nhk_app_secret` from the
    PXE via `request_nhk_app` (`:552-554`). This secret never leaves the private
@@ -249,15 +249,15 @@ mint (onboarding/pack) ──► private note ──► commit_five_nfts_* POPS 
 ```
 
 - **Onboarding** (`get_cards_for_new_player`,
-  `triple_triad_nft/src/main.nr:385-414`): 5 fixed starter cards
-  (`STARTER_CARD_IDS`, `:52`), a nonce note initialized to 5 (`:409`), and 100
-  ArenaTokens (`:412-413`).
-- **Card packs** (`purchase_card_pack`, `:417-444`): burn 100 tokens
-  (`CARD_PACK_COST`, `:55`; `burn_from`, `arena_token/src/main.nr:72-79`),
+  `triple_triad_nft/src/main.nr:416-452`): 5 fixed starter cards
+  (`STARTER_CARD_IDS`, `:78`), a nonce note initialized to 5 (`:447`), and 100
+  ArenaTokens (`:451`).
+- **Card packs** (`purchase_card_pack`, `:456-475`): burn 100 tokens
+  (`CARD_PACK_COST`, `:86`; `burn_from`, `arena_token/src/main.nr:72-79`),
   generate 10 random cards in-circuit from `pedersen([nhk_app_secret, nonce+i])`
   with a 5-tier rarity roll over pools `[10,166,50,20,10]`
   (`generate_card`, `triple_triad_nft/src/main.nr:8,17-49`), advance the nonce
-  by 10 (`:443`). `preview_card_ids` (`:449-462`) lets the frontend show the
+  by 10 (`:474`). `preview_card_ids` (`:481-492`) lets the frontend show the
   pack contents via `.simulate()` before buying — same derivation, no tx.
 
   > **Card packs are ONE transaction and must stay one transaction.**
@@ -323,16 +323,20 @@ mint (onboarding/pack) ──► private note ──► commit_five_nfts_* POPS 
   for a thousand-card stock — so the bot imports its stock from the
   provisioner's manifest with `import_note`.
 - **Inspection**: `get_nfts_for_user` pages through the private set
-  (`:1076-1089`); `get_note_nonce` reads the counter (`:1093-1102`).
+  (`:1097-1109`); `get_note_nonce` reads the counter (`:1114-1122`).
 
-A small public-ownership surface exists alongside the private set:
-`public_owners` map + `transfer_public`/`transfer_private_to_public`
-(`:152,807-815,847-858`), used by the abandoned-game path to return cards to a
-player who isn't present (§8). The escrow-style functions
-`prepare_for_game`/`reclaim_card`/`unlock_cards`/`game_transfer`
-(`:862-888,817-843`) belong to a superseded design — **no current game flow
-calls them** (verified: `triple_triad_game/src/main.nr` never references them);
-the design-era spec describing that flow is archived at
+A small public-ownership surface sits alongside the private set: the
+`public_owners` map (`:176`), `mint_to_public` (minter only, `:639-651`),
+`transfer_public` (`:868-875`), `transfer_private_to_public` (`:880-890`), and
+`reclaim_card` back into the private set (`:898-905`, checked by
+`finalize_reclaim`, `:946-951`). No game flow uses it: games play private
+cards only. The November 2026 redeploy removed what an earlier design left
+behind — the escrow functions (`prepare_for_game`, `unlock_cards`,
+`game_transfer`) and their card lock, the public mints of the first
+abandonment design — and eight test-only entry points, three of which minted
+any card for anyone ([plan/AUDIT_INVARIANTS.md](plan/AUDIT_INVARIANTS.md), "A
+second gap"). `scripts/contractEntryPoints.test.ts` now lists every NFT entry
+point and who may call it. The design-era escrow spec is archived at
 `docs/history/GAME_LIFECYCLE_SPEC.md`.
 
 ## 8. Abandoned games
@@ -421,16 +425,16 @@ its anchor.
 
 | Aztec concept | Where to read it |
 |---------------|------------------|
-| Private state via notes (`Owned<PrivateSet<N>>`) | `triple_triad_nft/src/main.nr:150,158` |
-| Note pop with custom filter (spend by token id) | `triple_triad_nft/src/main.nr:579-582` + `src/filters.nr` |
-| Single-note counter ("nonce note") pattern | `triple_triad_nft/src/main.nr:347-379` |
-| Manual note creation (hash + `notify_created_note`) | `triple_triad_nft/src/main.nr:469-509` |
+| Private state via notes (`Owned<PrivateSet<N>>`) | `triple_triad_nft/src/main.nr:174,181` |
+| Note pop by token id (one oracle select per card) | `triple_triad_nft/src/main.nr:291-303` (`pop_cards_by_id`) |
+| Single-note counter ("nonce note") pattern | `triple_triad_nft/src/main.nr:377-408` |
+| Manual note creation (hash + `notify_created_note`) | `triple_triad_nft/src/main.nr:506-540` (`push_card_note`) |
 | Offchain note delivery (`.deliver(MessageDelivery::offchain())`) | `triple_triad_nft/src/main.nr` `create_and_push_note` and its callers |
 | Receiving offchain messages (macro-injected `offchain_receive`) | `packages/frontend/src/aztec/pxe.ts` `receiveCardMessages` |
 | Manual note import (recovery) / `import_note` utility | `triple_triad_nft/src/main.nr` `import_note` |
-| App-siloed key material (`request_nhk_app`) as KDF seed | `triple_triad_nft/src/main.nr:552-563` |
-| In-circuit id/randomness derivation (anti-grinding) | `triple_triad_nft/src/main.nr:246-262` |
-| `storage_layout()` instead of hardcoded slots | `triple_triad_nft/src/main.nr:484,1040` |
+| App-siloed key material (`request_nhk_app`) as KDF seed | `triple_triad_nft/src/main.nr:666-667` |
+| In-circuit id/randomness derivation (anti-grinding) | `triple_triad_nft/src/main.nr:248-269` |
+| `storage_layout()` instead of hardcoded slots | `triple_triad_nft/src/main.nr:516,1060` |
 | Private→public bridge (`enqueue_self` + `#[only_self]`) | `triple_triad_game/src/main.nr:138,141-154` |
 | Cross-contract private calls | `triple_triad_game/src/main.nr:130-132,679-681` |
 | Recursive UltraHonk verification in a private fn | `triple_triad_game/src/main.nr:578-590` |
@@ -439,10 +443,10 @@ its anchor.
 | Dummy-proof padding (variable-length proof sets) | `triple_triad_game/src/main.nr:283-316` + `circuits/dummy_move/src/main.nr` |
 | Block-number dispute window | `triple_triad_game/src/main.nr:491-494` |
 | Replay protection on settlement | `triple_triad_game/src/main.nr:761-770` |
-| `#[event]` + `deliver_to(…, OFFCHAIN)` | `triple_triad_nft/src/main.nr:136-140,685-688` |
-| Unconstrained utility fns (`.simulate()`-only API) | `triple_triad_nft/src/main.nr:963-1002,1076-1102` |
+| `#[event]` + `self.emit` (public events) | `triple_triad_nft/src/main.nr:154-160,650` |
+| Unconstrained utility fns (`.simulate()`-only API) | `triple_triad_nft/src/main.nr:1047-1122` |
 | Private fungible balances (`BalanceSet`) | `arena_token/src/main.nr:30,55-79` |
-| Contract-to-contract authorization (msg_sender gating) | `triple_triad_nft/src/main.nr:548-549` ; `arena_token/src/main.nr:61-64` |
+| Contract-to-contract authorization (msg_sender gating) | `triple_triad_nft/src/main.nr:660-663` ; `arena_token/src/main.nr:61-64` |
 | Pure-Noir game rules in a circuit | `circuits/game_move/src/main.nr:143-196` |
 
 ## 11. Extending it

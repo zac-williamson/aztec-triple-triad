@@ -1,5 +1,5 @@
-mod filters;
 mod test;
+pub mod test_support;
 
 use aztec::macros::aztec;
 
@@ -106,7 +106,6 @@ pub contract TripleTriadNFT {
         AXOLOTL_NOTE_SECRET_IV_FIELD, CARD_PACK_COST, derive_blinding_factor,
         DOM_SEP__STARTER_CLAIM, GAME_ID_IV_FIELD, generate_card, STARTER_CARD_IDS,
     };
-    use super::filters::{filter_by_token_ids, filter_by_token_ids_10};
     use arena_token::ArenaToken;
     use aztec::{
         keys::getters::get_public_keys,
@@ -176,7 +175,6 @@ pub contract TripleTriadNFT {
         nft_exists: Map<Field, PublicMutable<bool, Context>, Context>,
         public_owners: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
         card_ranks: Map<Field, PublicImmutable<Field, Context>, Context>,
-        card_game_lock: Map<Field, PublicMutable<Field, Context>, Context>,
         game_contract: PublicImmutable<AztecAddress, Context>,
 
         // Note nonce: a single FieldNote per user tracking nonce counter for deterministic randomness
@@ -847,42 +845,6 @@ pub contract TripleTriadNFT {
         }
     }
 
-    /// Mint a single card privately for abandoned game claim.
-    #[external("private")]
-    fn mint_single_card_private(token_id: Field, to: AztecAddress, randomness: Field) {
-        let game = self.storage.game_contract.read();
-        assert(self.msg_sender() == game, "Only game contract can call");
-
-        create_and_push_note(self.context, to, token_id, randomness).deliver(
-            MessageDelivery::offchain(),
-        );
-    }
-
-    /// Mint 5 cards to public ownership for abandoned game opponent recovery.
-    /// No randomness needed -- cards go to public storage.
-    /// Opponent can later call transfer_public_to_private.
-    #[external("private")]
-    fn mint_to_public_batch_5(token_ids: [Field; 5], to: AztecAddress) {
-        let game = self.storage.game_contract.read();
-        assert(self.msg_sender() == game, "Only game contract can call");
-
-        for i in 0..5 {
-            self.enqueue_self.set_public_owner(to, token_ids[i]);
-        }
-    }
-
-    /// Mint 4 cards to public ownership for abandoned game opponent recovery
-    /// (when one card was claimed by the remaining player).
-    #[external("private")]
-    fn mint_to_public_batch_4(token_ids: [Field; 4], to: AztecAddress) {
-        let game = self.storage.game_contract.read();
-        assert(self.msg_sender() == game, "Only game contract can call");
-
-        for i in 0..4 {
-            self.enqueue_self.set_public_owner(to, token_ids[i]);
-        }
-    }
-
     /// Build a NoteGetterOptions that selects a single card by token_id.
     #[contract_library_method]
     fn remove_one(token_id: Field) -> NoteGetterOptions<FieldNote, 1, Field, Field> {
@@ -912,34 +874,6 @@ pub contract TripleTriadNFT {
         self.emit(CardTransferred { token_id, from, to });
     }
 
-    #[external("public")]
-    fn game_transfer(from: AztecAddress, to: AztecAddress, token_id: Field) {
-        let game = self.storage.game_contract.read();
-        assert(self.msg_sender() == game, "Only game contract can call");
-
-        let owner = self.storage.public_owners.at(token_id).read();
-        assert(owner == from, "Not the owner");
-
-        self.storage.public_owners.at(token_id).write(to);
-        self.storage.card_game_lock.at(token_id).write(0);
-        self.emit(CardTransferred { token_id, from, to });
-    }
-
-    #[external("public")]
-    fn unlock_cards(token_ids: [Field; 5], game_id: Field) {
-        let game = self.storage.game_contract.read();
-        assert(self.msg_sender() == game, "Only game contract can call");
-
-        for i in 0..5 {
-            if token_ids[i] != 0 {
-                let lock = self.storage.card_game_lock.at(token_ids[i]).read();
-                if lock == game_id {
-                    self.storage.card_game_lock.at(token_ids[i]).write(0);
-                }
-            }
-        }
-    }
-
     // --- Private to Public ---
 
     #[external("private")]
@@ -955,26 +889,11 @@ pub contract TripleTriadNFT {
         self.enqueue_self.set_public_owner(from, token_id);
     }
 
-    // --- Public Escrow ---
+    // --- Public to Private ---
 
-    #[external("private")]
-    fn prepare_for_game(card_ids: [Field; 5], game_id: Field) {
-        let owner = self.msg_sender();
-        assert(game_id != 0, "game_id must be nonzero");
-
-        for i in 0..5 {
-            let options = NoteGetterOptions::new()
-                .select(FieldNote::properties().value, Comparator.EQ, card_ids[i])
-                .set_limit(1);
-            let notes = self.storage.private_nfts.at(owner).pop_notes(options);
-            assert(notes.len() == 1, "Card not found in private set");
-        }
-
-        for i in 0..5 {
-            self.enqueue_self.set_public_owner_and_lock(owner, card_ids[i], game_id);
-        }
-    }
-
+    /// Take a publicly owned card back into the caller's private set: the way
+    /// back from `transfer_private_to_public`, and the way in for a card
+    /// minted with `mint_to_public`.
     #[external("private")]
     fn reclaim_card(token_id: Field) {
         let owner = self.msg_sender();
@@ -1024,19 +943,9 @@ pub contract TripleTriadNFT {
 
     #[external("public")]
     #[only_self]
-    fn set_public_owner_and_lock(owner: AztecAddress, token_id: Field, game_id: Field) {
-        self.storage.public_owners.at(token_id).write(owner);
-        self.storage.card_game_lock.at(token_id).write(game_id);
-    }
-
-    #[external("public")]
-    #[only_self]
     fn finalize_reclaim(owner: AztecAddress, token_id: Field) {
         let current_owner = self.storage.public_owners.at(token_id).read();
         assert(current_owner == owner, "Not the public owner");
-
-        let game_lock = self.storage.card_game_lock.at(token_id).read();
-        assert(game_lock == 0, "Card is locked to an active game");
 
         self.storage.public_owners.at(token_id).write(AztecAddress::zero());
     }
@@ -1066,10 +975,6 @@ pub contract TripleTriadNFT {
     fn get_card_ranks(token_id: Field) -> Field {
         self.storage.card_ranks.at(token_id).read()
     }
-
-    #[external("public")]
-    #[only_self]
-    fn test_noop() {}
 
     // --- Randomness Derivation Utility ---
 
@@ -1214,145 +1119,5 @@ pub contract TripleTriadNFT {
         } else {
             notes.get(0).value
         }
-    }
-
-    // --- Test-only Functions ---
-
-    /// Same as mint_for_game_winner but without game contract authorization check.
-    /// Used for testing note creation via create_and_push_note path.
-    #[external("private")]
-    fn test_mint_winner_cards(token_ids: [Field; 6], to: AztecAddress, randomness: [Field; 6]) {
-        debug_log_format("[NFT] test_mint_winner_cards: to={0}", [to.to_field()]);
-        for i in 0..6 {
-            debug_log_format(
-                "[NFT] test_mint[{0}]: token_id={1} randomness={2}",
-                [i as Field, token_ids[i], randomness[i]],
-            );
-            create_and_push_note(self.context, to, token_ids[i], randomness[i]).deliver(
-                MessageDelivery::offchain(),
-            );
-        }
-    }
-
-    /// Same as get_cards_for_new_player but with a configurable nonce_value for randomness derivation.
-    /// Does not mint Arena Tokens. Used for testing to avoid randomness collisions.
-    #[external("private")]
-    fn get_cards_for_new_player_test(nonce_value: Field) {
-        let owner = self.msg_sender();
-
-        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
-        let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
-
-        for i in 0..5 {
-            let note_randomness = derive_note_randomness(nhk_app_secret, nonce_value, i as Field);
-            create_and_push_note(self.context, owner, STARTER_CARD_IDS[i], note_randomness)
-                .deliver(MessageDelivery::offchain());
-        }
-
-        // Push nonce directly (no pop) -- mirrors real fn's push_note_nonce(... 5)
-        push_note_nonce(self.context, self.storage, owner, nonce_value + 5);
-
-        // Enqueue a no-op public call to match the real fn's enqueue pattern
-        self.enqueue_self.test_noop();
-    }
-
-    /// Initialize a note nonce for the caller without minting any cards.
-    /// Used for testing when we want to mint cards first, then nullify them.
-    #[external("private")]
-    fn test_init_nonce(initial_value: Field) {
-        let owner = self.msg_sender();
-        debug_log_format(
-            "[NFT] test_init_nonce: owner={0} value={1}",
-            [owner.to_field(), initial_value],
-        );
-        push_note_nonce(self.context, self.storage, owner, initial_value);
-    }
-
-    /// Same as test_mint_winner_cards but also advances the nonce.
-    /// Used for testing the full mint+nonce-update flow.
-    #[external("private")]
-    fn test_mint_winner_cards_with_nonce(
-        token_ids: [Field; 6],
-        to: AztecAddress,
-        randomness: [Field; 6],
-    ) {
-        debug_log_format(
-            "[NFT] test_mint_winner_cards_with_nonce: to={0}",
-            [to.to_field()],
-        );
-        for i in 0..6 {
-            debug_log_format(
-                "[NFT] test_mint[{0}]: token_id={1} randomness={2}",
-                [i as Field, token_ids[i], randomness[i]],
-            );
-            create_and_push_note(self.context, to, token_ids[i], randomness[i]).deliver(
-                MessageDelivery::offchain(),
-            );
-        }
-        // Advance nonce by 6 (same as mint_for_game_winner)
-        let nonce_value = pop_note_nonce(self.context, self.storage, to);
-        push_note_nonce(self.context, self.storage, to, nonce_value + 6);
-    }
-
-    /// Nullify 5 cards by popping them from the private set.
-    /// Used for testing: consumes card notes so their nullifiers appear on-chain.
-    #[external("private")]
-    fn test_nullify_cards(owner: AztecAddress, token_ids: [Field; 5]) {
-        assert(self.msg_sender() == owner, "Only owner can nullify");
-
-        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
-        let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
-
-        // Log nullifiers before popping for diagnostic comparison
-        log_card_nullifiers(self.storage, owner, token_ids, nhk_app_secret);
-
-        let options = NoteGetterOptions::with_filter(filter_by_token_ids, token_ids);
-        let notes = self.storage.private_nfts.at(owner).pop_notes(options);
-        debug_log_format(
-            "[NFT] test_nullify_cards: popped {0} notes",
-            [notes.len() as Field],
-        );
-        assert(notes.len() == 5, "Could not find all 5 cards to nullify");
-
-        // update nonce
-        let nonce_value = pop_note_nonce(self.context, self.storage, self.msg_sender());
-        push_note_nonce(
-            self.context,
-            self.storage,
-            self.msg_sender(),
-            nonce_value + 6,
-        );
-    }
-
-    /// Create 10 card notes via create_and_push_note with deterministic randomness.
-    /// token_ids: 10 card IDs to create.
-    /// nonce_offset: used for randomness derivation (each batch should use a different offset).
-    /// Does NOT touch note_nonce -- caller manages nonce separately.
-    #[external("private")]
-    fn test_create_10_cards(to: AztecAddress, token_ids: [Field; 10], nonce_offset: Field) {
-        let owner_npk_m_hash = get_public_keys(to).npk_m_hash;
-        let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
-
-        for i in 0..10 {
-            let note_randomness = derive_note_randomness(nhk_app_secret, nonce_offset, i as Field);
-            create_and_push_note(self.context, to, token_ids[i], note_randomness).deliver(
-                MessageDelivery::offchain(),
-            );
-        }
-    }
-
-    /// Nullify 10 cards by popping them from the private set.
-    /// Does NOT touch note_nonce -- caller manages nonce separately.
-    #[external("private")]
-    fn test_nullify_10_cards(owner: AztecAddress, token_ids: [Field; 10]) {
-        assert(self.msg_sender() == owner, "Only owner can nullify");
-
-        let options = NoteGetterOptions::with_filter(filter_by_token_ids_10, token_ids);
-        let notes = self.storage.private_nfts.at(owner).pop_notes(options);
-        debug_log_format(
-            "[NFT] test_nullify_10_cards: popped {0} notes",
-            [notes.len() as Field],
-        );
-        assert(notes.len() == 10, "Could not find all 10 cards to nullify");
     }
 }

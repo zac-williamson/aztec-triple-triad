@@ -37,6 +37,19 @@ A missing row is invisible to every tool here: mutation testing can tell you an
 assertion is untested, but nothing can tell you a property was never written
 down. Only a person re-reading the protocol against this list can.
 
+## A second gap: what is deployed
+
+Every row reasoned about the functions the protocol uses. None asked what else
+the contract exposes. The NFT shipped eight test-only entry points, written so
+contract tests could set state up, and anyone could call them on the deployed
+contract. Three minted cards of the caller's choosing: `test_mint_winner_cards`
+and its `_with_nonce` twin were `mint_for_game_winner` without the
+game-contract check, to any address, and `test_create_10_cards` minted ten to
+the caller. Found in November 2026 while removing dead code; removed with that
+month's redeploy, with Z4 to keep anything unreviewed from shipping again. Three
+of the "properties the register did not name" (N1, N2, N5) were the asserts of
+dead or test-only code.
+
 ## Rules
 
 1. **A finding is an executable artifact or it does not exist.** Not a
@@ -180,9 +193,10 @@ intuition, in one example.**
 
 | # | Property | Status | Artifact |
 |---|---|---|---|
-| Z1 | Only the game contract can mint game cards. | `UNVERIFIED` | `msg_sender() == game_contract` on every `mint_for_game_*` |
+| Z1 | Only the game contract can mint game cards. | `VERIFIED` | `triple_triad_nft/src/test/mint_authorization.nr`: a player calling each of the four `mint_for_game_*` fails "Only game contract can call"; the same call from the game goes through |
 | Z2 | Public ownership can only be set from inside the NFT contract. | `VERIFIED` | `#[only_self]` |
 | Z3 | Card ranks cannot be supplied by a player. | `MUTATION-COVERED` | Fixed in-circuit table; `card_data` tests |
+| Z4 | Every deployed entry point that creates cards is a reviewed mint, and nothing test-only is deployed. | `VERIFIED` | `scripts/contractEntryPoints.test.ts`: the NFT's entry points must equal a reviewed list naming who may call each card-creating one, and no shipped contract may have a `test_*` function. Fails on the artifact deployed before November 2026 |
 
 ### Hand commitment
 
@@ -228,11 +242,11 @@ ownership, minting and locking rules that this list omitted entirely.
 
 | # | Property | Assertion |
 |---|---|---|
-| N1 | Only the owner may transfer or nullify their card. | "Not the owner", "Sender must be owner", "Only owner can nullify" |
-| N2 | A card locked to an active game cannot be reclaimed. | "Card is locked to an active game" |
+| N1 | Only the owner may transfer their card. | "Not the owner", "Sender must be owner" |
+| N2 | Removed in November 2026 with the escrow lock it described: nothing set a lock. | — |
 | N3 | Public ownership transfers require the current public owner. | "Not the public owner" |
 | N4 | A token id cannot be minted twice. | "Token already exists" |
-| N5 | Nullifying a hand must find every card named. | "Could not find all 5 cards to nullify", "...10 cards..." |
+| N5 | Committing a hand must find every card named. | "Could not find all 5 cards" (`pop_cards_by_id`). Its old assertions were in test-only helpers, now removed |
 | N6 | Only the minter may set the game and token contracts. | "Only minter can set game contract", "...token contract" |
 | N7 | A settlement's stored commitments must exist before use. | "Game card_commit_1 not set", "...card_commit_2..." |
 | N8 | A non-draw settlement must name a real transferred card and a valid winner. | "card_to_transfer must be nonzero for non-draw", "Invalid winner ID for non-draw" |
