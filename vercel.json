@@ -9,6 +9,14 @@
     }
   },
   "framework": null,
+  "redirects": [
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "aztec-arena.vercel.app" }],
+      "destination": "https://www.aztec-arena.com/:path*",
+      "permanent": true
+    }
+  ],
   "headers": [
     {
       "source": "/(.*)",
