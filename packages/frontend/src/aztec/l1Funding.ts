@@ -185,6 +185,41 @@ async function ensureChain(provider: ReturnType<typeof eip1193>, chainId: number
   });
 }
 
+/**
+ * `Inbox.sendL2Message`, which every deposit reaches, inserts into a frontier
+ * tree whose cost swings by about 40k gas with the message index the tx lands
+ * on. An estimate taken at a cheap index under-sizes a deposit that mines at a
+ * subtree boundary, and the deposit reverts out of gas: a new player's first
+ * bridge failing, as one did on production on 22 November 2026 (103,634 gas
+ * limit, `ReentrancySentryOOG` inside sendL2Message). The SDK doubles its
+ * deposit estimates for this reason (`inboxDepositGasConfig`), and so does
+ * `scripts/lib/feeJuiceBridge.ts`. Unused gas is not charged.
+ */
+export const DEPOSIT_GAS_MULTIPLIER = 2n;
+
+/** Send the portal deposit with a gas limit the Inbox insert cannot outgrow. */
+async function sendDeposit(params: {
+  pub: { estimateGas(args: { account: Address; to: Address; data: Hex }): Promise<bigint> };
+  wallet: { sendTransaction(args: { account: Address; chain: null; to: Address; data: Hex; gas: bigint }): Promise<Hex> };
+  account: Address;
+  portal: Address;
+  aztecAddress: Hex;
+  amount: bigint;
+  secretHash: Hex;
+}): Promise<Hex> {
+  const request = {
+    account: params.account,
+    to: params.portal,
+    data: encodeFunctionData({
+      abi: PORTAL_ABI,
+      functionName: 'depositToAztecPublic',
+      args: [params.aztecAddress, params.amount, params.secretHash],
+    }),
+  };
+  const gas = (await params.pub.estimateGas(request)) * DEPOSIT_GAS_MULTIPLIER;
+  return params.wallet.sendTransaction({ ...request, chain: null, gas });
+}
+
 /** Wait for a receipt, failing loudly on revert rather than continuing. */
 async function mined(pub: PublicClient, hash: Hex, what: string) {
   const receipt = await pub.waitForTransactionReceipt({ hash });
@@ -265,13 +300,14 @@ export async function fundAccountFromWallet(params: FundAccountParams): Promise<
   const { generateClaimSecret } = await import('@aztec-labs/aztec.js/ethereum');
   const [claimSecret, claimSecretHash] = await generateClaimSecret();
 
-  const depositHash = await wallet.sendTransaction({
-    account, chain: null, to: portal,
-    data: encodeFunctionData({
-      abi: PORTAL_ABI,
-      functionName: 'depositToAztecPublic',
-      args: [aztecAddress as Hex, amount, claimSecretHash.toString() as Hex],
-    }),
+  const depositHash = await sendDeposit({
+    pub: pub as never,
+    wallet: wallet as never,
+    account,
+    portal,
+    aztecAddress: aztecAddress as Hex,
+    amount,
+    secretHash: claimSecretHash.toString() as Hex,
   });
   const receipt = await mined(pub, depositHash, 'Bridge deposit');
 

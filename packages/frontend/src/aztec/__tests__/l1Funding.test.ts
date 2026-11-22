@@ -71,8 +71,13 @@ function depositReceipt(secretHash: Hex) {
 
 interface FakeOpts { balance?: bigint; allowance?: bigint; chainId?: number }
 
+/** What the wallet estimates for any call: the production deposit's figure. */
+const ESTIMATE = 103_634n;
+
 function installWallet(opts: FakeOpts = {}) {
   const sent: string[] = [];
+  /** The gas limit each sent transaction carried, by recipient. */
+  const gasFor: Record<string, string | undefined> = {};
   let balance = opts.balance ?? 0n;
   const allowance = opts.allowance ?? 0n;
 
@@ -94,9 +99,12 @@ function installWallet(opts: FakeOpts = {}) {
           }
           return '0x';
         }
+        case 'eth_estimateGas': return `0x${ESTIMATE.toString(16)}`;
         case 'eth_sendTransaction': {
-          const to = (params?.[0] as { to: string }).to.toLowerCase();
+          const tx = params?.[0] as { to: string; gas?: string };
+          const to = tx.to.toLowerCase();
           sent.push(to);
+          gasFor[to] = tx.gas;
           if (to === HANDLER.toLowerCase()) balance = 1000n;   // the mint lands
           return `0x${'11'.repeat(32)}`;
         }
@@ -109,7 +117,7 @@ function installWallet(opts: FakeOpts = {}) {
     },
   };
   (globalThis as { ethereum?: unknown }).ethereum = provider;
-  return { sent };
+  return { sent, gasFor };
 }
 
 const node = { getL1ToL2MessageMembershipWitness: async () => ({ ok: true }) };
@@ -142,6 +150,19 @@ describe('fundAccountFromWallet', () => {
     } as never);
     expect(sent.filter(a => a === ASSET.toLowerCase())).toHaveLength(0);
     expect(sent).toContain(PORTAL.toLowerCase());
+  });
+
+  it('sends the deposit with twice the estimate, so the Inbox insert cannot run it out of gas', async () => {
+    // Production, 22 November 2026: a newcomer's deposit went out at the
+    // wallet's own estimate, 103,634 gas, and reverted out of gas inside
+    // Inbox.sendL2Message, whose cost swings ~40k with the message index it
+    // lands on. The account was never funded.
+    const { gasFor } = installWallet({ balance: 5000n, allowance: 10_000n });
+    await fundAccountFromWallet({
+      aztecAddress: AZTEC_ADDR, l1, chainId: 11155111, node, route: { kind: 'mint' }, messageWaitSeconds: 2,
+    } as never);
+    expect(gasFor[PORTAL.toLowerCase()], 'the deposit must not leave its gas to the wallet').toBeDefined();
+    expect(BigInt(gasFor[PORTAL.toLowerCase()]!)).toBe(2n * ESTIMATE);
   });
 
   it('returns a claim carrying the message key and leaf index from the event', async () => {
