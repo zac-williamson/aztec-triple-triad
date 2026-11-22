@@ -30,8 +30,6 @@ import { PlayerDriver } from '../src/player.js';
 import { ChainClient, GAME_STATUS } from '../src/chain.js';
 import { createFundedL1Account, refundTreasury, type InjectedWallet } from '../src/walletShim.js';
 import { readStackInfo, TESTNET } from '../src/env.js';
-import { resolve } from 'path';
-import { ARTIFACTS_DIR } from '../src/env.js';
 
 const STARTER_CARDS = [1, 2, 3, 4, 5];
 /**
@@ -57,7 +55,7 @@ test('a new player with only an Ethereum account plays and settles a game', asyn
   test.setTimeout(60 * 60_000);
 
   const stack = readStackInfo();
-  const logsDir = resolve(ARTIFACTS_DIR, 'logs');
+  const logsDir = stack.logsDir;
   let wallet: InjectedWallet | null = null;
   let player: PlayerDriver | null = null;
 

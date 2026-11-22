@@ -4,7 +4,7 @@
  * coordinates, and waits on app state (never wall-clock sleeps).
  */
 import { expect, type Page, type Browser } from '@playwright/test';
-import { createWriteStream, writeFileSync, type WriteStream } from 'fs';
+import { createWriteStream, mkdirSync, writeFileSync, type WriteStream } from 'fs';
 import { cpus } from 'os';
 import { resolve } from 'path';
 import type { PhaseSnapshot, ClickTarget } from '../../frontend/src/testkit/contract.js';
@@ -237,6 +237,9 @@ export class PlayerDriver {
     localStorageSeed?: Record<string, string>,
     opts?: LaunchOptions,
   ): Promise<void> {
+    // A fresh checkout has no artifacts yet: the onboarding spec died here on
+    // ENOENT from a worktree before it opened a page.
+    mkdirSync(logsDir, { recursive: true });
     this.consoleLog = createWriteStream(resolve(logsDir, `browser-${this.name}.log`));
     this.page.on('console', msg => {
       const line = `[${new Date().toISOString()}] [${msg.type()}] ${msg.text()}`;
