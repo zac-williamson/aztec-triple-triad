@@ -19,10 +19,14 @@
  *   6. play nine moves, each with a real client-side proof
  *   7. settle on-chain, and have the chain agree it settled
  *
- * Run it (about 40 minutes, mostly proving):
+ * Run it against the deployed site, relay and bot (minutes, most of it the
+ * L1->L2 wait and proving); it funds the newcomer from the treasury and
+ * refunds what is left:
  *
- *   PLAYTEST_TESTNET=1 PLAYTEST_PXE_URL=https://aztec-testnet-fullnode.zkv.xyz \
+ *   PLAYTEST_TESTNET=1 PLAYTEST_PXE_URL=https://aztec-testnet.drpc.org \
  *   PLAYTEST_BACKEND_URL=https://ws.aztec-arena.com \
+ *   PLAYTEST_FRONTEND_URL='https://www.aztec-arena.com/?e2e=1' \
+ *   TESTNET_L1_RPC_URL=<Sepolia RPC> TREASURY_L1_KEY_FILE=~/.aztec-triad-private/treasury-l1-key.txt \
  *   npx playwright test new-user-onboarding --config packages/playtest/playwright.config.ts
  */
 import { test, expect } from '@playwright/test';
