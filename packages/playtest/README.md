@@ -106,6 +106,27 @@ the losing half — where the winner has to hand back the loser's returned cards
 E2E_PLAY_TO_LOSE=1 PLAYTEST_TESTNET=1 ...   # same vars, plays to lose
 ```
 
+## Play as a Nulo player (the real wallet extension)
+
+```bash
+# serve the app where the live relay accepts it (localhost:3000)
+cd packages/frontend && npx vite --mode testnet --port 3000 --strictPort
+# then, in another shell
+cd packages/playtest && npx tsx scripts/nulo-play.mts            # connect + a game vs the bot
+cd packages/playtest && npx tsx scripts/nulo-play.mts --connect-only
+```
+
+Everything is real except the hand on the mouse. `src/nulo.ts` downloads Nulo's
+Chrome release (checked against the release's SHASUMS256), creates a Nulo wallet
+in `.artifacts/nulo/profile` on first use (password and recovery phrase beside
+it, 0600), and answers Nulo's windows as a player would: the emoji grid is
+confirmed only if it matches the app's, and transactions pay with the account's
+own Fee Juice (`NULO_FEE=public|private`), never Nulo's sponsor. A wallet under
+20 FJ is topped up first: bridged from the treasury, then claimed for the
+account by the deployer (`scripts/claim-fee-juice.ts`), since only Nulo holds
+the account's keys. Point `NULO_DIR` at an empty directory to play as a
+brand-new Nulo player. Ends with one `RESULT: pass|fail …` line.
+
 ## Architecture
 
 | Piece | File | Role |
