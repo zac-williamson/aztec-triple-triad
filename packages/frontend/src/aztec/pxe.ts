@@ -343,7 +343,7 @@ function makeOps(schedule: Schedule) {
         const sent = await nftContract.methods
           .purchase_card_pack()
           .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
-        return mintedTx(sent, 'purchase_card_pack');
+        return mintedTx(sent, 'purchase_card_pack', opts.node);
       })),
 
     sendMintStarterCards: (owner: string, opts: SendOpts): Promise<MintedTx> =>
@@ -353,7 +353,7 @@ function makeOps(schedule: Schedule) {
         const sent = await nftContract.methods
           .get_cards_for_new_player()
           .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
-        return mintedTx(sent, 'get_cards_for_new_player');
+        return mintedTx(sent, 'get_cards_for_new_player', opts.node);
       }),
 
     /**
@@ -616,7 +616,7 @@ async function sendGameMethod(method: string, owner: string, args: unknown[], op
     const addr = AztecAddress.fromStringUnsafe(owner);
     const sent = await gameContract.methods[method](...args)
       .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
-    return mintedTx(sent, method);
+    return mintedTx(sent, method, opts.node);
   });
 }
 
@@ -626,9 +626,49 @@ function requireTxHash(receipt: any, label: string): string {
   return txHash;
 }
 
-/** A mined send's hash plus its offchain messages (`send()` returns both). */
-function mintedTx(sent: { receipt?: unknown; offchainMessages?: OffchainMessage[] }, label: string): MintedTx {
-  return { txHash: requireTxHash(sent.receipt, label), offchainMessages: sent.offchainMessages ?? [] };
+/** What mintedTx reads from the node: the block a tx landed in. */
+interface BlockDataNode {
+  getBlockData(block: unknown): Promise<{ header: { globalVariables: { timestamp: bigint } } } | undefined>;
+}
+
+/**
+ * A mined send's hash plus its offchain messages (`send()` returns both).
+ *
+ * Each message carries the timestamp of the block its tx was built against
+ * (`anchorBlockTimestamp`), and `offchain_receive` cannot take a message
+ * without one. A wallet behind the wallet-sdk (Nulo) returns `send()`'s result
+ * through the SDK's sendTx schema, which in aztec.js 6.0.0 has no such field,
+ * so its messages arrive without it — and the recipient, here or across the
+ * relay, could not receive its cards. aztec-nr uses the timestamp for one
+ * thing: evicting the message from the inbox MAX_MSG_TTL (the longest a tx can
+ * live, plus two hours) after it. The tx is mined by now, so the timestamp of
+ * its block stands in: no earlier than the anchor, later only by how long the
+ * tx waited, which keeps the message a little longer and changes nothing else.
+ * Never throws: the tx is already mined, and the callers retry a failed send.
+ */
+async function mintedTx(
+  sent: { receipt?: unknown; offchainMessages?: OffchainMessage[] },
+  label: string,
+  node: unknown,
+): Promise<MintedTx> {
+  const txHash = requireTxHash(sent.receipt, label);
+  const messages = sent.offchainMessages ?? [];
+  if (messages.every((m) => m.anchorBlockTimestamp !== undefined)) return { txHash, offchainMessages: messages };
+  const blockNumber = (sent.receipt as { blockNumber?: unknown } | undefined)?.blockNumber;
+  let timestamp: bigint;
+  try {
+    const block = await (node as BlockDataNode).getBlockData(blockNumber);
+    if (!block) throw new Error(`block ${String(blockNumber)} not found`);
+    timestamp = block.header.globalVariables.timestamp;
+  } catch (e) {
+    // Later than the anchor by a little more; it only keeps the message longer.
+    timestamp = BigInt(Math.floor(Date.now() / 1000));
+    console.warn(`[pxe] ${label}: no block time for its card messages (${e}); using the current time`);
+  }
+  return {
+    txHash,
+    offchainMessages: messages.map((m) => (m.anchorBlockTimestamp === undefined ? { ...m, anchorBlockTimestamp: timestamp } : m)),
+  };
 }
 
 export type PxeOps = ReturnType<typeof makeOps>;

@@ -66,7 +66,7 @@ describe('pxe send ops — enqueue + base-fee headroom, contract stays inside', 
   });
 
   it('sendProcessGame spreads the ordered args into the game method with headroom, and returns its card messages', async () => {
-    const offchainMessages = [{ recipient: 'winner' }, { recipient: 'loser' }];
+    const offchainMessages = [{ recipient: 'winner', anchorBlockTimestamp: 5n }, { recipient: 'loser', anchorBlockTimestamp: 5n }];
     const send = vi.fn().mockResolvedValue({ receipt: { txHash: { toString: () => '0xPG' } }, offchainMessages });
     const process_game = vi.fn(() => ({ send }));
     h.ensureContracts.mockResolvedValue({ gameContract: { methods: { process_game } }, Fr: FakeFr, AztecAddress });
@@ -78,6 +78,37 @@ describe('pxe send ops — enqueue + base-fee headroom, contract stays inside', 
     // The settlement's card notes reach their owners through these messages;
     // dropping them (as every caller once did) leaves the cards undiscoverable.
     expect(sent).toEqual({ txHash: '0xPG', offchainMessages });
+  });
+
+  it('gives card messages from a connected wallet the time of the block their tx landed in', async () => {
+    // Nulo hands send() results back through the wallet-sdk's sendTx schema,
+    // which drops each message's anchorBlockTimestamp; offchain_receive (ours,
+    // or the bot's across the relay) cannot take a message without one.
+    const offchainMessages = [{ recipient: 'winner' }, { recipient: 'loser', anchorBlockTimestamp: 3n }];
+    const send = vi.fn().mockResolvedValue({ receipt: { txHash: { toString: () => '0xPG' }, blockNumber: 41 }, offchainMessages });
+    h.ensureContracts.mockResolvedValue({ gameContract: { methods: { process_game: vi.fn(() => ({ send })) } }, Fr: FakeFr, AztecAddress });
+    const node = { getBlockData: vi.fn(async () => ({ header: { globalVariables: { timestamp: 1_800_000_000n } } })) };
+
+    const sent = await pxe.sendProcessGame('0xME', [], { node, timeoutMs: 9 });
+
+    expect(node.getBlockData).toHaveBeenCalledWith(41);
+    expect(sent.offchainMessages).toEqual([
+      { recipient: 'winner', anchorBlockTimestamp: 1_800_000_000n },
+      { recipient: 'loser', anchorBlockTimestamp: 3n },
+    ]);
+  });
+
+  it('still returns a mined send whose block it cannot read, timing its messages from now', async () => {
+    const send = vi.fn().mockResolvedValue({ receipt: { txHash: { toString: () => '0xPG' }, blockNumber: 41 }, offchainMessages: [{ recipient: 'winner' }] });
+    h.ensureContracts.mockResolvedValue({ gameContract: { methods: { process_game: vi.fn(() => ({ send })) } }, Fr: FakeFr, AztecAddress });
+    const node = { getBlockData: vi.fn(async () => { throw new Error('node down'); }) };
+    const before = BigInt(Math.floor(Date.now() / 1000));
+
+    const sent = await pxe.sendProcessGame('0xME', [], { node, timeoutMs: 9 });
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(sent.txHash).toBe('0xPG');
+    expect(sent.offchainMessages[0].anchorBlockTimestamp).toBeGreaterThanOrEqual(before);
   });
 
   it('sendCancelGame recovers a creator\'s cards from an unjoined game', async () => {
