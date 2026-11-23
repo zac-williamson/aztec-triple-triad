@@ -341,14 +341,6 @@ export async function restoreStoredCards(ops: PxeOps, accountAddress: string, lo
   return ownedCardIds;
 }
 
-/** A connected wallet's account cannot pay for the starter-card claim. */
-export class NeedsFeeJuiceError extends Error {
-  constructor(readonly accountAddress: string) {
-    super('Your Nulo account has no Fee Juice, so it cannot pay for transactions yet. Add Fee Juice to it in Nulo, then try again.');
-    this.name = 'NeedsFeeJuiceError';
-  }
-}
-
 /**
  * Set up an account that lives in a wallet the player connected (Nulo).
  *
@@ -357,6 +349,10 @@ export class NeedsFeeJuiceError extends Error {
  * cards this browser knows about restored, and, for an account that has never
  * played, its starter cards claimed. The claim is a transaction the player
  * approves in the wallet; `onClaimingStarterCards` says when to ask them.
+ *
+ * How the claim pays is the wallet's choice, not ours: Nulo offers the
+ * account's Fee Juice or its network's sponsor, so an empty Fee Juice balance
+ * does not mean the account cannot transact.
  */
 export async function setupConnectedWallet(
   wallet: any,
@@ -381,9 +377,6 @@ export async function setupConnectedWallet(
 
   const mintKey = AZTEC_CONFIG.storageKeys.cardsMintedPrefix + accountAddress + '_' + AZTEC_CONFIG.nftContractAddress;
   if (ownedCardIds.length === 0 && !localStorage.getItem(mintKey)) {
-    const { readFeeJuiceBalance } = await import('./feeJuice');
-    if (await readFeeJuiceBalance(node, accountAddress) === 0n) throw new NeedsFeeJuiceError(accountAddress);
-
     log('Claiming starter cards...');
     options.onClaimingStarterCards?.();
     try {

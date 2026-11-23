@@ -682,9 +682,10 @@ again from the menu's Switch Wallet):
   key, then one capability request scoped to our three contracts, in which the
   player picks the account. `setupConnectedWallet`
   (`aztec/connectToAztec.ts`) registers the contracts, restores this browser's
-  stored cards, and claims the starter cards for an account that has none
-  (refusing first if the account has no Fee Juice). Nulo asks the player to
-  approve every transaction; the tx toasts say so.
+  stored cards, and claims the starter cards for an account that has none.
+  Nulo asks the player to approve every transaction, and the player picks how
+  it pays there (Fee Juice, or the network's sponsor); the tx toasts say to
+  look in Nulo.
 - **The in-browser wallet**, described next.
 
 Everything after connect goes through the `pxe.ts` facade, which holds the

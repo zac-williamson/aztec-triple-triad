@@ -59,7 +59,7 @@ function fakeDiscovery(providers: ReturnType<typeof fakeProvider>[], opts: { han
   return { discovery, cancel };
 }
 
-const base = () => ({ chainInfo: CHAIN, contracts: CONTRACTS, appVersion: '1.0.0', onStep: vi.fn() });
+const base = () => ({ chainInfo: CHAIN, contracts: CONTRACTS, appVersion: '1.0.0', onStep: vi.fn<(s: NuloStep) => void>() });
 
 describe('isNulo', () => {
   it('recognises Nulo by its wallet id or its name, and nothing else', () => {
@@ -119,7 +119,7 @@ describe('connectNulo', () => {
     expect(shown[0]).toHaveLength(9);
     expect(nulo.pending.confirm).toHaveBeenCalled();
     expect(nulo.wallet.requestCapabilities).toHaveBeenCalledTimes(1);
-    expect(opts.onStep.mock.calls.map(([s]: [NuloStep]) => s.step)).toEqual(['discovering', 'verifying', 'permissions']);
+    expect(opts.onStep.mock.calls.map(([s]) => s.step)).toEqual(['discovering', 'verifying', 'permissions']);
   });
 
   it('refuses the connection when the emojis do not match, without confirming it', async () => {

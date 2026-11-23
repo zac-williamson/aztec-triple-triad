@@ -433,8 +433,17 @@ export class BotChain {
 
   /** Read the account's Fee Juice balance from public state. */
   async readFeeJuice(): Promise<bigint> {
-    const { readFeeJuiceBalance } = await import('../../frontend/src/aztec/feeJuice.js');
-    this.lastKnownFeeJuice = await readFeeJuiceBalance(this.node, this.address);
+    const [{ Fr }, { ProtocolContractAddress }, { deriveStorageSlotInMap }] = await Promise.all([
+      import('@aztec-labs/foundation/curves/bn254'),
+      import('@aztec-labs/protocol-contracts'),
+      import('@aztec-labs/stdlib/hash'),
+    ]);
+    const { AztecAddress } = await import('@aztec-labs/aztec.js/addresses');
+    // Slot 1 is FeeJuice's balances map — the derivation the SDK's own
+    // getFeeJuiceBalance uses, rather than a slot read off a layout dump.
+    const slot = await deriveStorageSlotInMap(new Fr(1), AztecAddress.fromStringUnsafe(this.address));
+    const raw = await this.node.getPublicStorageAt('latest', ProtocolContractAddress.FeeJuice, slot);
+    this.lastKnownFeeJuice = raw.toBigInt();
     return this.lastKnownFeeJuice;
   }
 

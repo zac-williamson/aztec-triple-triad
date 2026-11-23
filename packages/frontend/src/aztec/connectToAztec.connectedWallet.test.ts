@@ -8,7 +8,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const h = vi.hoisted(() => ({
   registerGameContracts: vi.fn(),
-  readFeeJuiceBalance: vi.fn(),
   fetchTxEffectData: vi.fn(),
   addCards: vi.fn(),
   loadCards: vi.fn(() => [] as unknown[]),
@@ -21,11 +20,10 @@ vi.mock('./config', () => ({
   },
 }));
 vi.mock('./contractArtifacts', () => ({ registerGameContracts: h.registerGameContracts }));
-vi.mock('./feeJuice', () => ({ readFeeJuiceBalance: h.readFeeJuiceBalance }));
 vi.mock('./noteImporter', () => ({ fetchTxEffectData: h.fetchTxEffectData, getNftArtifact: vi.fn() }));
 vi.mock('./cardStore', () => ({ addCards: h.addCards, loadCards: h.loadCards, saveCards: vi.fn() }));
 
-import { setupConnectedWallet, NeedsFeeJuiceError } from './connectToAztec';
+import { setupConnectedWallet } from './connectToAztec';
 
 const ME = '0xME';
 const WALLET = { nulo: true };
@@ -47,7 +45,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   h.fetchTxEffectData.mockResolvedValue({ noteHashes: ['0xh'], firstNullifier: '0xn' });
-  h.readFeeJuiceBalance.mockResolvedValue(10n ** 20n);
 });
 
 describe('setupConnectedWallet', () => {
@@ -75,14 +72,16 @@ describe('setupConnectedWallet', () => {
     expect(result.ownedCardIds).toEqual([1, 2, 3, 4, 5]);
   });
 
-  it('asks for Fee Juice instead of sending a claim the account cannot pay for', async () => {
-    h.readFeeJuiceBalance.mockResolvedValue(0n);
+  it('leaves how the claim pays to the wallet: it reads no Fee Juice balance first', async () => {
+    // Nulo can pay from the account's Fee Juice or through its network's
+    // sponsor, so an empty balance is no reason to hold the claim back.
+    const node = { getPublicStorageAt: vi.fn() };
     const ops = fakeOps([]);
 
-    await expect(setupConnectedWallet(WALLET, NODE, ME, ops as never, { log: () => {} }))
-      .rejects.toBeInstanceOf(NeedsFeeJuiceError);
-    expect(ops.sendMintStarterCards).not.toHaveBeenCalled();
-    expect(localStorage.getItem(MINTED_KEY)).toBeNull();
+    await setupConnectedWallet(WALLET, node, ME, ops as never, { log: () => {} });
+
+    expect(ops.sendMintStarterCards).toHaveBeenCalled();
+    expect(node.getPublicStorageAt).not.toHaveBeenCalled();
   });
 
   it('treats a claim the contract refuses as already made, so the account is out of cards, not broken', async () => {
