@@ -79,7 +79,19 @@ export async function verificationEmojis(hash: string): Promise<string[]> {
   const { hashToEmoji } = await import('@aztec-labs/wallet-sdk/crypto');
   // Every emoji in the SDK's 256-entry alphabet is one code point, so
   // splitting by code point splits by cell.
-  return Array.from(hashToEmoji(hash));
+  return Array.from(hashToEmoji(hash), asNuloDrawsIt);
+}
+
+/**
+ * The player compares our grid with Nulo's by eye, so draw each emoji the way
+ * Nulo's own grid does. Nulo asks for the colour form (U+FE0F) of every emoji
+ * that would otherwise default to a plain text symbol (🖥, 🛠, 🕹, …), and of ⬛
+ * and ⬜, which some platforms draw flat even though they default to colour.
+ */
+function asNuloDrawsIt(emoji: string): string {
+  const pictographic = /^\p{Extended_Pictographic}$/u.test(emoji);
+  const colourByDefault = /^\p{Emoji_Presentation}$/u.test(emoji) && emoji !== '⬛' && emoji !== '⬜';
+  return pictographic && !colourByDefault ? `${emoji}\uFE0F` : emoji;
 }
 
 /**
@@ -115,6 +127,10 @@ export async function capabilityManifest(
       { type: 'contracts', contracts: ours, canRegister: true, canGetMetadata: true },
       { type: 'simulation', transactions: { scope: anyFunctionOn }, utilities: { scope: anyFunctionOn } },
       { type: 'transaction', scope: anyFunctionOn },
+      // registerGameContracts registers each game contract as a note sender,
+      // so the wallet finds the cards and tokens they send the player. Wallets
+      // file that under the address book (Nulo refuses it without this grant).
+      { type: 'data', addressBook: true },
     ],
   };
 }

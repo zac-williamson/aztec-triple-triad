@@ -70,7 +70,7 @@ describe('isNulo', () => {
 });
 
 describe('the permission request', () => {
-  it('is a valid wallet-sdk manifest, scoped to the three game contracts and asking for no authwits', async () => {
+  it('is a valid wallet-sdk manifest, scoped to the three game contracts, asking for no authwits', async () => {
     const manifest = await capabilityManifest(CONTRACTS, '1.0.0', 'https://www.aztec-arena.com');
     // Check what Nulo receives: the extension wallet sends every call through
     // jsonStringify, and the wallet parses it with the SDK's own schema.
@@ -87,6 +87,9 @@ describe('the permission request', () => {
     for (const scope of [byType.simulation.transactions.scope, byType.simulation.utilities.scope, byType.transaction.scope]) {
       expect(scope.map((p: any) => [String(p.contract), p.function])).toEqual(ours.map(c => [c, '*']));
     }
+    // Registering the contracts as note senders is an address-book operation;
+    // no private events are read.
+    expect(byType.data).toEqual({ type: 'data', addressBook: true });
   });
 
   it('reads the shared accounts from the granted side of the response', () => {
@@ -94,6 +97,17 @@ describe('the permission request', () => {
       .toEqual([PLAYER]);
     expect(grantedAccounts({ granted: [] })).toEqual([]);
     expect(grantedAccounts(null)).toEqual([]);
+  });
+});
+
+describe('the verification emojis', () => {
+  it('are nine, one per byte of the hash, written the way Nulo draws them', async () => {
+    // 0x83 is 🖥 (a text symbol unless asked otherwise), 0x6d is ⬛ (colour by
+    // default, but drawn flat on some platforms), 0xe7 is 🔮 (always colour).
+    const emojis = await verificationEmojis('836de7'.repeat(11));
+
+    expect(emojis).toHaveLength(9);
+    expect(emojis.slice(0, 3)).toEqual(['🖥\uFE0F', '⬛\uFE0F', '🔮']);
   });
 });
 
