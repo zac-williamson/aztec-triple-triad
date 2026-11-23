@@ -186,39 +186,25 @@ async function ensureChain(provider: ReturnType<typeof eip1193>, chainId: number
 }
 
 /**
- * `Inbox.sendL2Message`, which every deposit reaches, inserts into a frontier
- * tree whose cost swings by about 40k gas with the message index the tx lands
- * on. An estimate taken at a cheap index under-sizes a deposit that mines at a
- * subtree boundary, and the deposit reverts out of gas: a new player's first
- * bridge failing, as one did on production on 22 November 2026 (103,634 gas
- * limit, `ReentrancySentryOOG` inside sendL2Message). The SDK doubles its
- * deposit estimates for this reason (`inboxDepositGasConfig`), and so does
- * `scripts/lib/feeJuiceBridge.ts`. Unused gas is not charged.
+ * The bridge deposit's gas limit: fixed, not estimated.
+ *
+ * Estimating failed a new player's first deposit on production twice
+ * (22 and 23 November 2026), two different ways:
+ * - The estimate was too low. `Inbox.sendL2Message` inserts into a frontier
+ *   tree whose cost swings by about 40k gas with the message index the deposit
+ *   lands on, and the first message of an L1 block also opens an Inbox bucket.
+ *   A 103,634 estimate reverted out of gas. (The SDK doubles its own deposit
+ *   estimates for this reason: `inboxDepositGasConfig`.)
+ * - The estimate read stale state. It is the deposit's only read after the
+ *   approve, and a load-balanced RPC can answer it from a node a block behind,
+ *   where `transferFrom` has no allowance and reverts.
+ * The deposit needs no pre-flight: it comes from the same sender as the
+ * approve, at the next nonce, so it cannot mine before it. Measured on Sepolia:
+ * about 107k gas for a deposit, about 303k when the bucket it opens has never
+ * been written. 400k covers both plus the insert swing; unused gas is not
+ * charged.
  */
-export const DEPOSIT_GAS_MULTIPLIER = 2n;
-
-/** Send the portal deposit with a gas limit the Inbox insert cannot outgrow. */
-async function sendDeposit(params: {
-  pub: { estimateGas(args: { account: Address; to: Address; data: Hex }): Promise<bigint> };
-  wallet: { sendTransaction(args: { account: Address; chain: null; to: Address; data: Hex; gas: bigint }): Promise<Hex> };
-  account: Address;
-  portal: Address;
-  aztecAddress: Hex;
-  amount: bigint;
-  secretHash: Hex;
-}): Promise<Hex> {
-  const request = {
-    account: params.account,
-    to: params.portal,
-    data: encodeFunctionData({
-      abi: PORTAL_ABI,
-      functionName: 'depositToAztecPublic',
-      args: [params.aztecAddress, params.amount, params.secretHash],
-    }),
-  };
-  const gas = (await params.pub.estimateGas(request)) * DEPOSIT_GAS_MULTIPLIER;
-  return params.wallet.sendTransaction({ ...request, chain: null, gas });
-}
+export const DEPOSIT_GAS_LIMIT = 400_000n;
 
 /** Wait for a receipt, failing loudly on revert rather than continuing. */
 async function mined(pub: PublicClient, hash: Hex, what: string) {
@@ -300,14 +286,14 @@ export async function fundAccountFromWallet(params: FundAccountParams): Promise<
   const { generateClaimSecret } = await import('@aztec-labs/aztec.js/ethereum');
   const [claimSecret, claimSecretHash] = await generateClaimSecret();
 
-  const depositHash = await sendDeposit({
-    pub: pub as never,
-    wallet: wallet as never,
-    account,
-    portal,
-    aztecAddress: aztecAddress as Hex,
-    amount,
-    secretHash: claimSecretHash.toString() as Hex,
+  const depositHash = await wallet.sendTransaction({
+    account, chain: null, to: portal,
+    data: encodeFunctionData({
+      abi: PORTAL_ABI,
+      functionName: 'depositToAztecPublic',
+      args: [aztecAddress as Hex, amount, claimSecretHash.toString() as Hex],
+    }),
+    gas: DEPOSIT_GAS_LIMIT,
   });
   const receipt = await mined(pub, depositHash, 'Bridge deposit');
 

@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { encodeEventTopics, encodeAbiParameters, type Hex } from 'viem';
-import { fundAccountFromWallet, DEPOSIT_EVENT_ABI } from '../l1Funding';
+import { fundAccountFromWallet, DEPOSIT_EVENT_ABI, DEPOSIT_GAS_LIMIT } from '../l1Funding';
 
 const PORTAL = '0x00000000000000000000000000000000000000aa';
 const ASSET = '0x00000000000000000000000000000000000000bb';
@@ -71,13 +71,12 @@ function depositReceipt(secretHash: Hex) {
 
 interface FakeOpts { balance?: bigint; allowance?: bigint; chainId?: number }
 
-/** What the wallet estimates for any call: the production deposit's figure. */
-const ESTIMATE = 103_634n;
-
 function installWallet(opts: FakeOpts = {}) {
   const sent: string[] = [];
   /** The gas limit each sent transaction carried, by recipient. */
   const gasFor: Record<string, string | undefined> = {};
+  /** Every eth_estimateGas the flow made, in order. */
+  const estimates: unknown[] = [];
   let balance = opts.balance ?? 0n;
   const allowance = opts.allowance ?? 0n;
 
@@ -99,7 +98,10 @@ function installWallet(opts: FakeOpts = {}) {
           }
           return '0x';
         }
-        case 'eth_estimateGas': return `0x${ESTIMATE.toString(16)}`;
+        case 'eth_estimateGas':
+          estimates.push(params?.[0]);
+          // The production deposit's estimate on 22 November: too low.
+          return `0x${(103_634n).toString(16)}`;
         case 'eth_sendTransaction': {
           const tx = params?.[0] as { to: string; gas?: string };
           const to = tx.to.toLowerCase();
@@ -117,7 +119,7 @@ function installWallet(opts: FakeOpts = {}) {
     },
   };
   (globalThis as { ethereum?: unknown }).ethereum = provider;
-  return { sent, gasFor };
+  return { sent, gasFor, estimates };
 }
 
 const node = { getL1ToL2MessageMembershipWitness: async () => ({ ok: true }) };
@@ -152,17 +154,19 @@ describe('fundAccountFromWallet', () => {
     expect(sent).toContain(PORTAL.toLowerCase());
   });
 
-  it('sends the deposit with twice the estimate, so the Inbox insert cannot run it out of gas', async () => {
-    // Production, 22 November 2026: a newcomer's deposit went out at the
-    // wallet's own estimate, 103,634 gas, and reverted out of gas inside
-    // Inbox.sendL2Message, whose cost swings ~40k with the message index it
-    // lands on. The account was never funded.
-    const { gasFor } = installWallet({ balance: 5000n, allowance: 10_000n });
+  it('sends the deposit with a fixed gas limit and estimates nothing', async () => {
+    // Production: on 22 November a newcomer's deposit went out at a 103,634
+    // estimate and reverted out of gas inside Inbox.sendL2Message; on 23
+    // November the estimate ran against a node that had not seen the approve
+    // and reverted. Either way the account was never funded.
+    const { gasFor, estimates } = installWallet({ balance: 5000n, allowance: 10_000n });
     await fundAccountFromWallet({
       aztecAddress: AZTEC_ADDR, l1, chainId: 11155111, node, route: { kind: 'mint' }, messageWaitSeconds: 2,
     } as never);
     expect(gasFor[PORTAL.toLowerCase()], 'the deposit must not leave its gas to the wallet').toBeDefined();
-    expect(BigInt(gasFor[PORTAL.toLowerCase()]!)).toBe(2n * ESTIMATE);
+    expect(BigInt(gasFor[PORTAL.toLowerCase()]!)).toBe(DEPOSIT_GAS_LIMIT);
+    expect(DEPOSIT_GAS_LIMIT, 'must cover a deposit that opens a never-written bucket (~303k)').toBeGreaterThan(303_000n);
+    expect(estimates, 'no estimate may stand between the approve and the deposit').toEqual([]);
   });
 
   it('returns a claim carrying the message key and leaf index from the event', async () => {
