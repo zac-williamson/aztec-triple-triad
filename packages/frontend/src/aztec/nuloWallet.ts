@@ -95,6 +95,31 @@ function asNuloDrawsIt(emoji: string): string {
 }
 
 /**
+ * Nulo's errors arrive as JSON-RPC error objects serialized into the message.
+ * Say what went wrong in words a player can act on.
+ */
+export function nuloErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? '');
+  let parsed: { message?: unknown; data?: { walletErrorCode?: unknown; capabilityType?: unknown } } | null = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // A plain message.
+  }
+  if (parsed?.data?.walletErrorCode === 'CAPABILITY_NOT_GRANTED') {
+    // The one permission Nulo lets the player switch off while approving the
+    // rest; registerGameContracts needs it to register the contracts as senders.
+    return parsed.data.capabilityType === 'data'
+      ? 'Axolotl Arena needs Nulo\'s "See your address book" permission to find the cards and tokens ' +
+          'the game sends you. Connect again and leave it switched on.'
+      : `Nulo did not give Axolotl Arena a permission it needs (${String(parsed.data.capabilityType)}). ` +
+          'Connect again and allow it.';
+  }
+  if (parsed && typeof parsed.message === 'string') return parsed.message;
+  return raw || 'Could not connect to Nulo';
+}
+
+/**
  * Everything the game asks of the wallet, requested once so Nulo can show a
  * single prompt. Scoped to our three contracts: the app proposes calls to
  * nothing else (fees and the account's own entrypoint are Nulo's business).

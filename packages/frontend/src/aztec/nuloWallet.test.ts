@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import {
-  connectNulo, capabilityManifest, grantedAccounts, isNulo, verificationEmojis,
+  connectNulo, capabilityManifest, grantedAccounts, isNulo, verificationEmojis, nuloErrorMessage,
   NuloCancelledError, NuloNotFoundError, NULO_APP_ID, type NuloStep, type WalletDiscovery,
 } from './nuloWallet';
 
@@ -108,6 +108,26 @@ describe('the verification emojis', () => {
 
     expect(emojis).toHaveLength(9);
     expect(emojis.slice(0, 3)).toEqual(['🖥\uFE0F', '⬛\uFE0F', '🔮']);
+  });
+});
+
+describe('nuloErrorMessage', () => {
+  const walletError = (data: object) => new Error(JSON.stringify({ code: 4100, message: 'x capability not granted.', data }));
+
+  it('tells a player who switched off the address book what it is for and what to do', () => {
+    const msg = nuloErrorMessage(walletError({ walletErrorCode: 'CAPABILITY_NOT_GRANTED', capabilityType: 'data' }));
+    expect(msg).toMatch(/See your address book/);
+    expect(msg).toMatch(/Connect again/);
+  });
+
+  it('names any other missing permission', () => {
+    expect(nuloErrorMessage(walletError({ walletErrorCode: 'CAPABILITY_NOT_GRANTED', capabilityType: 'transaction' })))
+      .toMatch(/permission it needs \(transaction\)/);
+  });
+
+  it('unwraps any other wallet error to its message, and leaves plain errors alone', () => {
+    expect(nuloErrorMessage(walletError({ walletErrorCode: 'OTHER' }))).toBe('x capability not granted.');
+    expect(nuloErrorMessage(new Error('Nulo did not answer.'))).toBe('Nulo did not answer.');
   });
 });
 

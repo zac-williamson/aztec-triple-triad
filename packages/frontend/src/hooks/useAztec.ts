@@ -182,8 +182,13 @@ export function useAztec(): UseAztecReturn {
       // A cancel has already put the screen back where the player wanted it.
       if (abort.signal.aborted) return;
       console.error('[useAztec] Nulo connection failed:', err);
+      // Nulo's errors are JSON-RPC objects; say what they mean in plain words.
+      const message = await import('../aztec/nuloWallet').then(
+        (m) => m.nuloErrorMessage(err),
+        () => (err instanceof Error ? err.message : 'Could not connect to Nulo'),
+      );
       setNuloStep(null);
-      setError(err instanceof Error ? err.message : 'Could not connect to Nulo');
+      setError(message);
       setStatus('error');
     } finally {
       emojiAnswerRef.current = null;

@@ -40,7 +40,12 @@ vi.mock('../../aztec/pxeKeepSynced', () => ({ startPxeKeepSynced: vi.fn(() => ()
 vi.mock('@aztec-labs/aztec.js/node', () => ({
   createAztecNodeClient: () => ({ getNodeInfo: h.getNodeInfo }),
 }));
-vi.mock('../../aztec/nuloWallet', () => ({ connectNulo: h.connectNulo }));
+// The real module (only type imports at load) words Nulo's errors; only the
+// connection itself is faked.
+vi.mock('../../aztec/nuloWallet', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../aztec/nuloWallet')>()),
+  connectNulo: h.connectNulo,
+}));
 // The real module takes seconds to load on a busy machine, which is long
 // enough to time a test out and leave its connection finishing in the next.
 vi.mock('@aztec-labs/aztec.js/fields', () => ({
@@ -147,6 +152,19 @@ describe('connecting Nulo', () => {
     expect(result.current.error).toBe('Nulo did not answer.');
     expect(result.current.walletKind).toBe('nulo');
     expect(localStorage.getItem(WALLET_KIND_KEY)).toBeNull();
+  });
+
+  it('says in plain words what to do when the player switched off the address book in Nulo', async () => {
+    h.connectNulo.mockRejectedValue(new Error(JSON.stringify({
+      code: 4100,
+      message: 'data capability not granted. Call requestCapabilities() first.',
+      data: { walletErrorCode: 'CAPABILITY_NOT_GRANTED', capabilityType: 'data' },
+    })));
+    const { result } = renderHook(() => useAztec());
+    await act(async () => { await result.current.chooseWallet('nulo'); });
+
+    expect(result.current.status).toBe('error');
+    expect(result.current.error).toMatch(/"See your address book" permission/);
   });
 
   it('goes back to the choice, with no error, when the player cancels', async () => {

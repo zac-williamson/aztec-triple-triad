@@ -679,8 +679,11 @@ again from the menu's Switch Wallet):
 - **Nulo**, an Aztec wallet extension for Chrome and Firefox, reached through
   the standard `@aztec-labs/wallet-sdk` (`aztec/nuloWallet.ts`). Discovery the
   player allows in Nulo, an emoji check that both ends derived the same channel
-  key, then one capability request scoped to our three contracts, in which the
-  player picks the account. `setupConnectedWallet`
+  key (the app writes each emoji the way Nulo's grid draws it, so the two look
+  alike), then one capability request scoped to our three contracts, in which
+  the player picks the account. Nulo enforces that request call by call: the
+  address book (`data.addressBook`) is in it because registering the
+  contracts as note senders needs it. `setupConnectedWallet`
   (`aztec/connectToAztec.ts`) registers the contracts, restores this browser's
   stored cards, and claims the starter cards for an account that has none.
   Nulo asks the player to approve every transaction, and the player picks how
