@@ -157,16 +157,22 @@ export function localSignerProvider(privateKey: Hex): {
         case 'wallet_addEthereumChain':
           return null;
         case 'eth_sendTransaction': {
-          const tx = (params[0] ?? {}) as { to?: Address; data?: Hex; value?: Hex; from?: Address };
+          const tx = (params[0] ?? {}) as { to?: Address; data?: Hex; value?: Hex; from?: Address; gas?: Hex };
           if (tx.from && tx.from.toLowerCase() !== account.address.toLowerCase()) {
             throw new Error(`Wallet asked to sign for ${tx.from}, which it does not hold`);
           }
-          // Gas, nonce and fees are filled by viem against the live node —
-          // the same job MetaMask does before showing a confirmation.
+          // Nonce and fees are filled by viem against the live node — the
+          // same job MetaMask does before showing a confirmation. So is gas,
+          // but only when the app left it out: a limit the app supplies is
+          // the wallet's limit, as in MetaMask. Dropping it once made this
+          // wallet re-estimate the bridge deposit against the public RPC, which
+          // answered from a node that had not seen the approve, and the run
+          // failed on a revert no real wallet would have hit.
           const hash = await wallet.sendTransaction({
             to: tx.to ?? null,
             data: tx.data,
             value: tx.value ? BigInt(tx.value) : undefined,
+            gas: tx.gas ? BigInt(tx.gas) : undefined,
           });
           console.log(`      [wallet] signed ${hash} -> ${tx.to}`);
           return hash;
