@@ -40,6 +40,8 @@ const WALLET = { id: 'wallet' };
 
 describe('useAztec refreshTokenBalance — reads via the PXE queue door (Stage 2)', () => {
   beforeEach(() => {
+    // A returning player who chose the in-browser wallet; a new one is asked first.
+    localStorage.setItem('aztec_tt_wallet_kind', 'embedded');
     vi.clearAllMocks();
     h.prepareConnection.mockResolvedValue({ wallet: WALLET, accountAddress: '0xACC', alreadyDeployed: true, node: {} });
     h.deployAndRegister.mockResolvedValue({ wallet: WALLET, node: {}, accountAddress: '0xACC', ownedCardIds: [] });

@@ -672,7 +672,26 @@ cycle, `addMessageListener` (`:50-53`) delivers messages synchronously in the
 `onmessage` tick — the bridge that keeps `settlementInfoRef` current
 (§12.2).
 
-The wallet layer is the two-phase onboarding documented at
+Before anything connects, the player chooses a wallet
+(`components/WalletChooser.tsx`; remembered in `aztec/walletChoice.ts`, asked
+again from the menu's Switch Wallet):
+
+- **Nulo**, an Aztec wallet extension for Chrome and Firefox, reached through
+  the standard `@aztec-labs/wallet-sdk` (`aztec/nuloWallet.ts`). Discovery the
+  player allows in Nulo, an emoji check that both ends derived the same channel
+  key, then one capability request scoped to our three contracts, in which the
+  player picks the account. `setupConnectedWallet`
+  (`aztec/connectToAztec.ts`) registers the contracts, restores this browser's
+  stored cards, and claims the starter cards for an account that has none
+  (refusing first if the account has no Fee Juice). Nulo asks the player to
+  approve every transaction; the tx toasts say so.
+- **The in-browser wallet**, described next.
+
+Everything after connect goes through the `pxe.ts` facade, which holds the
+wallet as an aztec.js `Wallet`. The in-browser wallet's PXE upkeep
+(`resyncPxe`, `pxeKeepSynced.ts`) does nothing for Nulo, which syncs its own.
+
+The in-browser wallet is the two-phase onboarding documented at
 `aztec/connectToAztec.ts:1-11` — prepare (derive keys, show address) → user
 funds it → `deployAndRegister` (deploy account, register contracts, mint
 starter cards), driven by `hooks/useAztec.ts` and wrapped in

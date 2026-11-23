@@ -287,46 +287,118 @@ export async function deployAndRegister(
   }
 
   // Load cards from localStorage and import into PXE
-  let ownedCardIds: number[] = [];
-  if (nftArtifact && AZTEC_CONFIG.nftContractAddress) {
-    const storedCards = loadCards(accountAddress);
-    if (storedCards.length > 0) {
-      log(`Importing ${storedCards.length} cards from localStorage...`);
+  const ownedCardIds = nftArtifact && AZTEC_CONFIG.nftContractAddress
+    ? await restoreStoredCards(ops, accountAddress, log)
+    : [];
 
-      // The recovery path: re-derive every stored card and import_note it, so
-      // a wiped PXE (Repair chain sync) gets its notes back. It runs on every
-      // connect, so on the one that minted the starter cards it imports them
-      // a second time, after their messages were received above — harmless,
-      // because the PXE keys notes by nullifier and stores the card once.
-      //
-      // Group cards by txHash to batch imports
-      const byTx = new Map<string, StoredCard[]>();
-      for (const card of storedCards) {
-        if (!byTx.has(card.txHash)) byTx.set(card.txHash, []);
-        byTx.get(card.txHash)!.push(card);
-      }
+  log(`Connected: ${accountAddress}`);
+  return { wallet, node, accountAddress, ownedCardIds };
+}
 
-      for (const [txHash, cards] of byTx) {
-        const notes = cards.map((c) => ({ tokenId: c.cardId, randomness: c.randomness }));
-        const txEffectData = { noteHashes: cards[0].noteHashes, firstNullifier: cards[0].firstNullifier };
-        try {
-          await ops.importCardNotes(accountAddress, txHash, notes, 'Restore', txEffectData);
-        } catch (e) { log(`Failed to import cards from tx ${txHash.slice(0, 16)}...: ${e}`); }
-      }
+/**
+ * Re-import every card this browser has stored for the account, then reconcile
+ * the store against what the wallet actually holds. Returns the held card ids
+ * when there was anything stored, else [] (the caller decides whether to read).
+ *
+ * The recovery path: re-derive every stored card and import_note it, so a
+ * wiped PXE (Repair chain sync) gets its notes back. It runs on every connect,
+ * so on the one that minted the starter cards it imports them a second time,
+ * after their messages were received — harmless, because the PXE keys notes
+ * by nullifier and stores the card once.
+ */
+export async function restoreStoredCards(ops: PxeOps, accountAddress: string, log: LogFn): Promise<number[]> {
+  const storedCards = loadCards(accountAddress);
+  if (storedCards.length === 0) return [];
+  log(`Importing ${storedCards.length} cards from localStorage...`);
 
-      // Verify: which cards the PXE actually holds (exist AND not nullified)
-      ownedCardIds = await ops.readPrivateCards(accountAddress);
+  // Group cards by txHash to batch imports
+  const byTx = new Map<string, StoredCard[]>();
+  for (const card of storedCards) {
+    if (!byTx.has(card.txHash)) byTx.set(card.txHash, []);
+    byTx.get(card.txHash)!.push(card);
+  }
 
-      // Reconcile: remove stale cards from localStorage
-      const validSet = new Set(ownedCardIds);
-      const reconciled = storedCards.filter((c) => validSet.has(c.cardId));
-      if (reconciled.length !== storedCards.length) {
-        log(`Reconciled: ${storedCards.length} stored → ${reconciled.length} valid`);
-        saveCards(accountAddress, reconciled);
-      }
+  for (const [txHash, cards] of byTx) {
+    const notes = cards.map((c) => ({ tokenId: c.cardId, randomness: c.randomness }));
+    const txEffectData = { noteHashes: cards[0].noteHashes, firstNullifier: cards[0].firstNullifier };
+    try {
+      await ops.importCardNotes(accountAddress, txHash, notes, 'Restore', txEffectData);
+    } catch (e) { log(`Failed to import cards from tx ${txHash.slice(0, 16)}...: ${e}`); }
+  }
 
-      log(`Owned cards: ${JSON.stringify(ownedCardIds)}`);
+  // Verify: which cards the PXE actually holds (exist AND not nullified)
+  const ownedCardIds = await ops.readPrivateCards(accountAddress);
+
+  // Reconcile: remove stale cards from localStorage
+  const validSet = new Set(ownedCardIds);
+  const reconciled = storedCards.filter((c) => validSet.has(c.cardId));
+  if (reconciled.length !== storedCards.length) {
+    log(`Reconciled: ${storedCards.length} stored → ${reconciled.length} valid`);
+    saveCards(accountAddress, reconciled);
+  }
+
+  log(`Owned cards: ${JSON.stringify(ownedCardIds)}`);
+  return ownedCardIds;
+}
+
+/** A connected wallet's account cannot pay for the starter-card claim. */
+export class NeedsFeeJuiceError extends Error {
+  constructor(readonly accountAddress: string) {
+    super('Your Nulo account has no Fee Juice, so it cannot pay for transactions yet. Add Fee Juice to it in Nulo, then try again.');
+    this.name = 'NeedsFeeJuiceError';
+  }
+}
+
+/**
+ * Set up an account that lives in a wallet the player connected (Nulo).
+ *
+ * The wallet owns the account: there is nothing to create, fund or deploy
+ * here. What the game needs is its contracts registered with the wallet, the
+ * cards this browser knows about restored, and, for an account that has never
+ * played, its starter cards claimed. The claim is a transaction the player
+ * approves in the wallet; `onClaimingStarterCards` says when to ask them.
+ */
+export async function setupConnectedWallet(
+  wallet: any,
+  node: any,
+  accountAddress: string,
+  ops: PxeOps,
+  options: { log?: LogFn; onClaimingStarterCards?: () => void } = {},
+): Promise<AztecConnectResult> {
+  const log = options.log ?? ((msg: string) => console.log('[connectToAztec]', msg));
+  const { registerGameContracts } = await import('./contractArtifacts');
+  await registerGameContracts(wallet, node, {
+    nft: AZTEC_CONFIG.nftContractAddress,
+    game: AZTEC_CONFIG.gameContractAddress,
+    token: AZTEC_CONFIG.tokenContractAddress,
+  }, log);
+  if (!AZTEC_CONFIG.nftContractAddress) return { wallet, node, accountAddress, ownedCardIds: [] };
+
+  await restoreStoredCards(ops, accountAddress, log);
+  // Read what the wallet holds whether or not this browser stored anything:
+  // the account may have played in another browser, and its wallet keeps its notes.
+  let ownedCardIds = await ops.readPrivateCards(accountAddress);
+
+  const mintKey = AZTEC_CONFIG.storageKeys.cardsMintedPrefix + accountAddress + '_' + AZTEC_CONFIG.nftContractAddress;
+  if (ownedCardIds.length === 0 && !localStorage.getItem(mintKey)) {
+    const { readFeeJuiceBalance } = await import('./feeJuice');
+    if (await readFeeJuiceBalance(node, accountAddress) === 0n) throw new NeedsFeeJuiceError(accountAddress);
+
+    log('Claiming starter cards...');
+    options.onClaimingStarterCards?.();
+    try {
+      const { txHash, offchainMessages } = await ops.sendMintStarterCards(accountAddress, { node, timeoutMs: AZTEC_TX_TIMEOUT });
+      localStorage.setItem(mintKey, 'true');
+      log(`Starter cards minted: ${txHash}`);
+      await storeAndReceiveStarterCards(ops, node, accountAddress, txHash, offchainMessages, log);
+    } catch (e) {
+      // The claim is once per account. An account that claimed and then lost
+      // every card in games is simply out of cards, not broken.
+      if (!/already|existing nullifier|duplicate nullifier/i.test(String(e))) throw e;
+      log(`Starter cards were already claimed by this account: ${e}`);
+      localStorage.setItem(mintKey, 'true');
     }
+    ownedCardIds = await ops.readPrivateCards(accountAddress);
   }
 
   log(`Connected: ${accountAddress}`);

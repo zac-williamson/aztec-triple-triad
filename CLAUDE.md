@@ -165,9 +165,13 @@ learned the hard way.
 2. **Contracts compile with `aztec compile`**, not `nargo compile` (misses AVM
    transpilation + VK generation). Standalone circuits use `nargo compile`.
 3. **Contract tests run against TXE** (see command above).
-4. **Wallets**: ONLY `EmbeddedWallet` from `@aztec-labs/wallets/embedded` with
-   `wallet.createSchnorrAccount(...)`. `test-wallet` / `TestWallet` (under
-   either scope) is **FORBIDDEN**.
+4. **Wallets**: the in-browser wallet is ONLY `EmbeddedWallet` from
+   `@aztec-labs/wallets/embedded` with `wallet.createSchnorrAccount(...)`.
+   A player may instead connect the Nulo extension, which arrives through
+   `@aztec-labs/wallet-sdk` as a plain aztec.js `Wallet`
+   (`aztec/nuloWallet.ts`); game code must work through that interface, not
+   the embedded wallet's extras. `test-wallet` / `TestWallet` (under either
+   scope) is **FORBIDDEN**.
 5. **SponsoredFPC / `SponsoredFeePaymentMethod` is BANNED.** Fee Juice flows
    only: bridge + claim at account deployment, then senders pay natively
    (omit the `fee` option). The legacy usages were removed in A2.

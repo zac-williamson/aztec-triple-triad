@@ -1,12 +1,16 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { AZTEC_CONFIG } from '../aztec/AztecContext';
-import { prepareConnection, deployAndRegister, type PreparedConnection } from '../aztec/connectToAztec';
+import { prepareConnection, deployAndRegister, setupConnectedWallet, type PreparedConnection } from '../aztec/connectToAztec';
+import { loadWalletKind, saveWalletKind, type WalletKind } from '../aztec/walletChoice';
+import type { NuloStep } from '../aztec/nuloWallet';
 import type { FeeJuiceClaim } from '../aztec/fundDevnet';
 import type { AcquireRoute } from '../aztec/l1Funding';
 import { pxe, setPxeWallet, runPxeTx } from '../aztec/pxe';
 import { startPxeKeepSynced } from '../aztec/pxeKeepSynced';
 export type ConnectionStatus =
   | 'disconnected'
+  | 'choosing-wallet' // no wallet chosen yet: Nulo or the in-browser wallet
+  | 'nulo-connecting' // walking the player through Nulo's approvals
   | 'connecting'
   | 'needs-funding' // non-local network → manual Fee Juice funding via the official Aztec faucet
   | 'deploying'
@@ -50,7 +54,25 @@ export interface UseAztecReturn {
   updateOwnedCards: (updater: (prev: number[]) => number[]) => void;
   tokenBalance: number;
   refreshTokenBalance: () => Promise<void>;
+  /** The wallet in use or being connected; null until the player chooses. */
+  walletKind: WalletKind | null;
+  /** Use Nulo or the in-browser wallet, and connect with it. */
+  chooseWallet: (kind: WalletKind) => Promise<void>;
+  /** Forget the choice and ask again (reloads the app). */
+  switchWallet: () => void;
+  /** Where a Nulo connection is, for the screen that walks the player through it. */
+  nuloStep: NuloUiStep | null;
+  /** The player's answer to "do these emojis match the ones in Nulo?". */
+  answerNuloEmojis: (match: boolean) => void;
+  /** Stop a Nulo connection in progress and go back to the choice. */
+  cancelNulo: () => void;
 }
+
+/** A Nulo connection's steps, plus the account setup after it. */
+export type NuloUiStep = NuloStep | { step: 'setting-up' } | { step: 'claiming' };
+
+/** What this app tells Nulo it is, in the permission prompt. */
+const APP_VERSION = '1.0.0';
 
 /** A swap the player has been shown but not yet agreed to. */
 export interface SwapQuote {
@@ -76,10 +98,99 @@ export function useAztec(): UseAztecReturn {
   const walletRef = useRef<unknown>(null);
   const nodeClientRef = useRef<unknown>(null);
   const preparedRef = useRef<PreparedConnection | null>(null);
+  const [walletKind, setWalletKind] = useState<WalletKind | null>(() => loadWalletKind());
+  const [nuloStep, setNuloStep] = useState<NuloUiStep | null>(null);
+  const emojiAnswerRef = useRef<((match: boolean) => void) | null>(null);
+  const nuloAbortRef = useRef<AbortController | null>(null);
+  const nuloProviderRef = useRef<{ disconnect(): Promise<void> } | null>(null);
 
   const log = (msg: string) => console.log('[useAztec]', msg);
 
-  const connect = useCallback(async () => {
+  /** Connect Nulo, then set its account up for the game. */
+  const connectNuloWallet = useCallback(async () => {
+    if (!AZTEC_CONFIG.enabled) {
+      setStatus('unsupported');
+      setError('Aztec integration is disabled');
+      return;
+    }
+    nuloAbortRef.current?.abort();
+    const abort = new AbortController();
+    nuloAbortRef.current = abort;
+    setWalletKind('nulo');
+    setStatus('nulo-connecting');
+    setError(null);
+    setNuloStep({ step: 'discovering' });
+
+    try {
+      const [{ createAztecNodeClient }, { Fr }, { connectNulo }] = await Promise.all([
+        import('@aztec-labs/aztec.js/node'),
+        import('@aztec-labs/aztec.js/fields'),
+        import('../aztec/nuloWallet'),
+      ]);
+      const node = createAztecNodeClient(AZTEC_CONFIG.pxeUrl);
+      const info = await node.getNodeInfo();
+      const { wallet, provider, accountAddress: address } = await connectNulo({
+        // Nulo answers for the network the game is on: Aztec testnet, by its
+        // L1 chain and rollup version.
+        chainInfo: { chainId: new Fr(info.l1ChainId), version: new Fr(info.rollupVersion) },
+        contracts: {
+          nft: AZTEC_CONFIG.nftContractAddress,
+          game: AZTEC_CONFIG.gameContractAddress,
+          token: AZTEC_CONFIG.tokenContractAddress,
+        },
+        appVersion: APP_VERSION,
+        url: window.location.origin,
+        onStep: setNuloStep,
+        confirmEmojis: () => new Promise<boolean>(resolve => { emojiAnswerRef.current = resolve; }),
+        signal: abort.signal,
+      });
+      if (abort.signal.aborted) return;
+
+      nuloProviderRef.current = provider;
+      provider.onDisconnect(() => {
+        if (nuloProviderRef.current !== provider) return;
+        nuloProviderRef.current = null;
+        walletRef.current = null;
+        setPxeWallet(null);
+        setError('Nulo disconnected. Connect again to keep playing.');
+        setStatus('error');
+      });
+
+      setNuloStep({ step: 'setting-up' });
+      setAccountAddress(address);
+      // Bind the PXE door BEFORE the setup so its ops resolve contracts for this wallet.
+      setPxeWallet(wallet);
+      const result = await runPxeTx({
+        type: 'connect_wallet',
+        label: 'Setting up your Nulo account...',
+        execute: async (ops, setPhase) => {
+          setPhase('sending');
+          return setupConnectedWallet(wallet, node, address, ops, {
+            log,
+            onClaimingStarterCards: () => setNuloStep({ step: 'claiming' }),
+          });
+        },
+      });
+      if (abort.signal.aborted) return;
+      walletRef.current = wallet;
+      nodeClientRef.current = node;
+      setOwnedCardIds(result.ownedCardIds);
+      saveWalletKind('nulo');
+      setNuloStep(null);
+      setStatus('connected');
+    } catch (err) {
+      // A cancel has already put the screen back where the player wanted it.
+      if (abort.signal.aborted) return;
+      console.error('[useAztec] Nulo connection failed:', err);
+      setNuloStep(null);
+      setError(err instanceof Error ? err.message : 'Could not connect to Nulo');
+      setStatus('error');
+    } finally {
+      emojiAnswerRef.current = null;
+    }
+  }, []);
+
+  const connectEmbedded = useCallback(async () => {
     if (!AZTEC_CONFIG.enabled) {
       setStatus('unsupported');
       setError('Aztec integration is disabled');
@@ -140,6 +251,60 @@ export function useAztec(): UseAztecReturn {
       setError(err instanceof Error ? err.message : 'Unknown error');
       setStatus('error');
     }
+  }, []);
+
+  /** Connect with the wallet the player chose before, or ask them to choose. */
+  const connect = useCallback(async () => {
+    const kind = loadWalletKind();
+    if (kind === 'nulo') return connectNuloWallet();
+    if (kind === 'embedded') return connectEmbedded();
+    setStatus('choosing-wallet');
+  }, [connectNuloWallet, connectEmbedded]);
+
+  const chooseWallet = useCallback(async (kind: WalletKind) => {
+    if (kind === 'embedded') {
+      // Leaving Nulo (from its error screen, say): drop whatever it connected.
+      nuloAbortRef.current?.abort();
+      void nuloProviderRef.current?.disconnect().catch(() => {});
+      nuloProviderRef.current = null;
+      setNuloStep(null);
+      // The in-browser wallet always connects (its funding step is in-app),
+      // so the choice can be remembered now. Nulo's is remembered once it
+      // connects: a player without Nulo is asked again next visit.
+      saveWalletKind('embedded');
+      setWalletKind('embedded');
+      return connectEmbedded();
+    }
+    return connectNuloWallet();
+  }, [connectNuloWallet, connectEmbedded]);
+
+  const answerNuloEmojis = useCallback((match: boolean) => {
+    const answer = emojiAnswerRef.current;
+    emojiAnswerRef.current = null;
+    answer?.(match);
+  }, []);
+
+  const cancelNulo = useCallback(() => {
+    nuloAbortRef.current?.abort();
+    // Unblock a connection waiting on the emoji answer; the abort makes it a cancel.
+    emojiAnswerRef.current?.(false);
+    emojiAnswerRef.current = null;
+    void nuloProviderRef.current?.disconnect().catch(() => {});
+    nuloProviderRef.current = null;
+    setPxeWallet(null);
+    setNuloStep(null);
+    setError(null);
+    setWalletKind(loadWalletKind());
+    setStatus('choosing-wallet');
+  }, []);
+
+  const switchWallet = useCallback(() => {
+    void nuloProviderRef.current?.disconnect().catch(() => {});
+    nuloProviderRef.current = null;
+    saveWalletKind(null);
+    // The in-browser wallet holds open database handles and the game holds a
+    // relay session; a reload is the one reset that closes all of them.
+    window.location.reload();
   }, []);
 
   /** Called when the user confirms they've funded their address */
@@ -267,6 +432,8 @@ export function useAztec(): UseAztecReturn {
   const confirmFunded = useCallback(() => confirmFundedWith(undefined), [confirmFundedWith]);
 
   const disconnect = useCallback(() => {
+    void nuloProviderRef.current?.disconnect().catch(() => {});
+    nuloProviderRef.current = null;
     walletRef.current = null;
     setPxeWallet(null);
     nodeClientRef.current = null;
@@ -337,14 +504,15 @@ export function useAztec(): UseAztecReturn {
   // Without it, any idle window (joiner waiting on the opponent's create_game,
   // lobby time) ages the anchor past the testnet's prune horizon and the next
   // proof is rejected — the idle-joiner wedge.
+  // (The in-browser wallet's PXE only: Nulo runs and syncs its own.)
   useEffect(() => {
-    if (status !== 'connected') return;
+    if (status !== 'connected' || walletKind === 'nulo') return;
     return startPxeKeepSynced();
-  }, [status]);
+  }, [status, walletKind]);
 
   return {
     status,
-    isConnecting: status === 'connecting' || status === 'deploying',
+    isConnecting: status === 'connecting' || status === 'deploying' || status === 'nulo-connecting',
     hasConnected: status === 'connected',
     accountAddress,
     isAvailable: status === 'connected',
@@ -363,5 +531,11 @@ export function useAztec(): UseAztecReturn {
     updateOwnedCards: setOwnedCardIds,
     tokenBalance,
     refreshTokenBalance,
+    walletKind,
+    chooseWallet,
+    switchWallet,
+    nuloStep,
+    answerNuloEmojis,
+    cancelNulo,
   };
 }

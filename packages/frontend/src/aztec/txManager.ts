@@ -14,7 +14,7 @@
 
 import { diag } from './diagnostics';
 
-export type TxType = 'deploy_account' | 'create_game' | 'join_game' | 'settle_game' | 'purchase_card_pack' | 'claim_abandoned_game' | 'settle_abandoned_game';
+export type TxType = 'deploy_account' | 'connect_wallet' | 'create_game' | 'join_game' | 'settle_game' | 'purchase_card_pack' | 'claim_abandoned_game' | 'settle_abandoned_game';
 
 /**
  * Priority map — lower number = higher priority = runs first.
@@ -23,6 +23,7 @@ export type TxType = 'deploy_account' | 'create_game' | 'join_game' | 'settle_ga
  */
 const TX_PRIORITY: Record<TxType, number> = {
   deploy_account: 0,
+  connect_wallet: 0,
   create_game: 1,
   join_game: 1,
   purchase_card_pack: 2,

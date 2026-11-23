@@ -1,5 +1,6 @@
 import { useTxStatus } from '../hooks/useTxStatus';
 import txManager, { type TxPhase } from '../aztec/txManager';
+import { loadWalletKind } from '../aztec/walletChoice';
 import './TxStatusOverlay.css';
 
 const PHASE_LABELS: Record<TxPhase, string> = {
@@ -14,6 +15,8 @@ const PHASE_LABELS: Record<TxPhase, string> = {
 
 export function TxStatusOverlay() {
   const entries = useTxStatus();
+  // Nulo makes the player approve every transaction; say where to look.
+  const nulo = loadWalletKind() === 'nulo';
 
   const visible = entries.filter((e) => {
     if (e.phase === 'completed') return Date.now() - e.updatedAt < 5000;
@@ -37,6 +40,9 @@ export function TxStatusOverlay() {
           <div className="tx-toast__body">
             <div className="tx-toast__label">{entry.label}</div>
             <div className="tx-toast__phase">{PHASE_LABELS[entry.phase]}</div>
+            {nulo && (entry.phase === 'sending' || entry.phase === 'proving') && (
+              <div className="tx-toast__phase" data-testid="tx-approve-in-nulo">Approve it in Nulo if it asks.</div>
+            )}
             {entry.error && <div className="tx-toast__error">{entry.error}</div>}
           </div>
           {entry.phase === 'error' && (

@@ -17,6 +17,8 @@ export function connectionBadge(
   if (aztecStatus === 'unsupported') return { label: 'Aztec disabled', tone: 'error' };
   if (!relayConnected) return { label: 'Connecting to game server...', tone: 'pending' };
   if (aztecStatus === 'needs-funding') return { label: 'Account needs funding', tone: 'pending' };
+  if (aztecStatus === 'choosing-wallet') return { label: 'Choose a wallet', tone: 'pending' };
+  if (aztecStatus === 'nulo-connecting') return { label: 'Connecting to Nulo...', tone: 'pending' };
   if (aztecStatus === 'connected') return { label: 'Connected', tone: 'ok' };
   return { label: 'Connecting to Aztec...', tone: 'pending' };
 }
@@ -28,6 +30,10 @@ interface MainMenuProps {
   aztecError: string | null;
   /** Start over after an Aztec failure (the app reloads: the wallet store may hold a lock). */
   onRetryAztec: () => void;
+  /** Which wallet holds the account; the in-browser wallet's repair tools only apply to it. */
+  walletKind?: 'embedded' | 'nulo' | null;
+  /** Forget the wallet choice and ask again. */
+  onSwitchWallet?: () => void;
   aztecConnecting: boolean;
   aztecReady: boolean;
   cardCount: number;
@@ -50,6 +56,8 @@ export function MainMenu({
   aztecStatus,
   aztecError,
   onRetryAztec,
+  walletKind,
+  onSwitchWallet,
   aztecConnecting,
   aztecReady,
   cardCount,
@@ -247,6 +255,20 @@ export function MainMenu({
           top of each other. One row that owns the corner; the buttons lay
           themselves out inside it. */}
       <div className="main-menu__utility-bar">
+        {onSwitchWallet && (
+          <button
+            className="main-menu__btn-clear"
+            data-testid="switch-wallet"
+            title={walletKind === 'nulo'
+              ? 'Disconnects Nulo and asks which wallet to use. Nothing is deleted.'
+              : 'Asks which wallet to use. Your in-browser account and cards are kept.'}
+            onClick={onSwitchWallet}
+          >
+            Switch Wallet{walletKind === 'nulo' ? ' (Nulo)' : ''}
+          </button>
+        )}
+
+        {walletKind !== 'nulo' && (<>
         <button
           className="main-menu__btn-clear"
           data-testid="repair-chain-sync"
@@ -270,6 +292,7 @@ export function MainMenu({
         >
           Clear All State
         </button>
+        </>)}
       </div>
 
       {showNotEnoughCards && (

@@ -12,6 +12,8 @@ import { TutorialScreen } from './components/TutorialScreen';
 import { TutorialPrompt } from './components/TutorialPrompt';
 import { PracticeScreen } from './practice/PracticeScreen';
 import { FundingPrompt } from './components/FundingPrompt';
+import { WalletChooser } from './components/WalletChooser';
+import { NuloConnect } from './components/NuloConnect';
 import { FundingProgress } from './components/FundingProgress';
 import { TxNotificationCenter } from './components/TxNotificationCenter';
 import { GameScreen3D as GameScreen } from './components3d/GameScreen3D';
@@ -66,6 +68,8 @@ function AppInner() {
   const tutorialPromptVisible =
     showTutorialPrompt &&
     aztec.status !== 'needs-funding' &&
+    aztec.status !== 'choosing-wallet' &&
+    aztec.status !== 'nulo-connecting' &&
     (aztec.status === 'deploying' || game.screen === 'main-menu');
 
   // The decorative menu 3D scene renders continuously on every menu screen.
@@ -94,6 +98,21 @@ function AppInner() {
         <FundingProgress status={aztec.status} />
       )}
 
+      {aztec.status === 'choosing-wallet' && (
+        <WalletChooser onChoose={(kind) => { void aztec.chooseWallet(kind); }} />
+      )}
+
+      {(aztec.status === 'nulo-connecting' || (aztec.status === 'error' && aztec.walletKind === 'nulo')) && (
+        <NuloConnect
+          step={aztec.nuloStep}
+          error={aztec.status === 'error' ? aztec.error : null}
+          onAnswerEmojis={aztec.answerNuloEmojis}
+          onCancel={aztec.cancelNulo}
+          onRetry={() => { void aztec.chooseWallet('nulo'); }}
+          onUseInBrowser={() => { void aztec.chooseWallet('embedded'); }}
+        />
+      )}
+
       {aztec.status === 'needs-funding' && aztec.accountAddress && (
         <FundingPrompt
           accountAddress={aztec.accountAddress}
@@ -116,6 +135,8 @@ function AppInner() {
           connected={game.ws.connected}
           aztecStatus={aztec.status}
           aztecError={aztec.error}
+          walletKind={aztec.walletKind}
+          onSwitchWallet={aztec.switchWallet}
           onRetryAztec={() => window.location.reload()}
           aztecConnecting={aztec.isConnecting}
           aztecReady={aztec.hasConnected}
