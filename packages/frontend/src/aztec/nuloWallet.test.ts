@@ -166,6 +166,16 @@ describe('connectNulo', () => {
     expect(nulo.pending.cancel).toHaveBeenCalled();
   });
 
+  it('lets go of Nulo when the player refuses the permissions', async () => {
+    const wallet = fakeWallet({ granted: [PLAYER] });
+    wallet.requestCapabilities.mockRejectedValue(new Error('User rejected the request'));
+    const nulo = fakeProvider('nulo', 'Nulo', wallet);
+    const { discovery } = fakeDiscovery([nulo]);
+
+    await expect(connectNulo({ ...base(), discovery, confirmEmojis: async () => true })).rejects.toThrow(/rejected/);
+    expect(nulo.disconnect).toHaveBeenCalled();
+  });
+
   it('says Nulo is missing when only other wallets answer', async () => {
     const { discovery, cancel } = fakeDiscovery([fakeProvider('azguard', 'Azguard')]);
 

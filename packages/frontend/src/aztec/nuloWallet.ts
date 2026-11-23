@@ -8,8 +8,8 @@
  *  1. Discovery. The app asks; Nulo shows the request and the player allows
  *     it. Until then Nulo does not reveal that it is installed.
  *  2. A secure channel. Both sides derive the same key and show it as a grid of
- *     emojis; the player confirms here that the grids match. A script on the
- *     page could otherwise sit between the app and Nulo.
+ *     emojis; the player checks the grids match and says so in Nulo and here.
+ *     A script on the page could otherwise sit between the app and Nulo.
  *  3. Permissions. One request for everything the game needs (an account, our
  *     three contracts, simulations and transactions on them), which Nulo shows
  *     as one prompt where the player also picks the account to play with.
@@ -253,12 +253,14 @@ export async function connectNulo(opts: {
       accounts = (await wallet.getAccounts()).map(a => a.item.toString());
     }
     if (accounts.length === 0) {
-      await provider.disconnect().catch(() => {});
       throw new Error('Nulo did not share an account. Connect again and pick an account when Nulo asks.');
     }
     return { wallet, provider, accountAddress: accounts[0] };
   } catch (err) {
-    pending?.cancel();
+    // Before the channel is confirmed, withdraw it; after, close it, so a
+    // refused permission prompt does not leave a session open in Nulo.
+    if (pending) pending.cancel();
+    else await provider.disconnect().catch(() => {});
     throw err;
   }
 }
