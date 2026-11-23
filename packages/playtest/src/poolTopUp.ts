@@ -18,10 +18,7 @@ import { resolve } from 'path';
 import { createInterface } from 'readline';
 import { ARTIFACTS_DIR, PLAYTEST_ACCOUNTS_PATH, PXE_URL, ROOT, readContractAddresses } from './env.js';
 import { countClaimable, nextFreeIndex, type PoolEntry } from './playtestPool.js';
-
-/** Sepolia RPC to bridge through when TESTNET_L1_RPC_URL is unset — the same
- *  public endpoint fund-fee-juice.ts defaults to. */
-const DEFAULT_L1_RPC = 'https://ethereum-sepolia-rpc.publicnode.com';
+import { L1_RPC } from './walletShim.js';
 
 /** Per-account budget: L1 mint + approve + deposit, up to 10 min for the
  *  L1->L2 message, then the deploy and mint transactions. ~4 min is typical. */
@@ -82,7 +79,7 @@ function runProvisioner(start: number, count: number, log: (m: string) => void):
         env: {
           ...process.env,
           AZTEC_PXE_URL: PXE_URL,
-          TESTNET_L1_RPC_URL: process.env.TESTNET_L1_RPC_URL || DEFAULT_L1_RPC,
+          TESTNET_L1_RPC_URL: L1_RPC,
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       },

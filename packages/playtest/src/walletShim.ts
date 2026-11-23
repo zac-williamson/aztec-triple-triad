@@ -27,11 +27,12 @@ import { dirname } from 'path';
 // A plain named import across that boundary fails to resolve under Playwright's
 // transform, so require it — still the one treasury-key reader, no second copy
 // of the "labelled key file" parsing rule.
-const { readFunderKey } = createRequire(import.meta.url)(
+const { readFunderKey, DEFAULT_L1_RPC } = createRequire(import.meta.url)(
   '../../../scripts/lib/feeJuiceBridge.ts',
-) as { readFunderKey: (env?: NodeJS.ProcessEnv) => string };
+) as { readFunderKey: (env?: NodeJS.ProcessEnv) => string; DEFAULT_L1_RPC: string };
 
-export const L1_RPC = process.env.TESTNET_L1_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com';
+/** The Sepolia RPC everything here reads and sends through (see DEFAULT_L1_RPC). */
+export const L1_RPC = process.env.TESTNET_L1_RPC_URL || DEFAULT_L1_RPC;
 
 /**
  * Where funded throwaway keys are noted down until they are refunded.

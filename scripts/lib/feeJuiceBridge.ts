@@ -146,6 +146,21 @@ export function claimStorePath(env: NodeJS.ProcessEnv = process.env): string {
  * not a 0x 32-byte hex key. Used by both fund-testnet and deploy-testnet's
  * inline-bridge path so the key handling stays in one place.
  */
+/**
+ * The Sepolia RPC the scripts and the playtest harness use when
+ * TESTNET_L1_RPC_URL is unset.
+ *
+ * It has to answer reads consistently with the receipts it hands out, and the
+ * public publicnode endpoint does not: it balances across nodes, and on
+ * 23 November 2026 7 of 24 nonce reads taken straight after a receipt came
+ * from a node that had not seen the transaction. Every failure that caused
+ * looked like an app bug: a funded wallet read as empty ("have 0"), an
+ * approved allowance read as none. thirdweb's endpoint gave none in 72 (same
+ * test: a 0-ETH self-transfer from the treasury, then six nonce reads 300 ms
+ * apart once its receipt arrived). Set TESTNET_L1_RPC_URL to override.
+ */
+export const DEFAULT_L1_RPC = 'https://sepolia.rpc.thirdweb.com';
+
 export function readFunderKey(env: NodeJS.ProcessEnv = process.env): string {
   let key = env.TREASURY_L1_KEY?.trim();
   if (!key) {

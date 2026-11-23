@@ -73,7 +73,7 @@ npm run test:e2e -w packages/integration -- tests/e2e-aztec-settlement.test.ts  
 
 ```bash
 export $(grep -E '^DEPLOYER_(SECRET|SALT|SIGNING_KEY)=' ~/.aztec-triad-private/deployer-testnet-key.txt | xargs)
-export AZTEC_PXE_URL=<node url> TESTNET_L1_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com \
+export AZTEC_PXE_URL=<node url> TESTNET_L1_RPC_URL=https://sepolia.rpc.thirdweb.com \
        TREASURY_L1_KEY_FILE=~/.aztec-triad-private/treasury-l1-key.txt
 npx tsx scripts/deploy-testnet.ts
 AZTEC_PXE_URL=<node url> npx tsx scripts/check-testnet-state.ts
@@ -93,7 +93,16 @@ cd packages/playtest && PLAYTEST_TESTNET=1 PLAYTEST_LOCAL_BACKEND=1 \
 
 The harness provisions its own players from the treasury when the pool has
 none for the new NFT. Healthy: every game `settle OK`, sends at anchor lag 0,
-no 429s. Reboot first if swap is nearly full — a SIGKILL mid-run looks exactly
+no 429s.
+
+**What the tests spend.** Each player the harness provisions is a 100 FJ
+bridge from the treasury's L1 Fee Juice float. When the float runs short, the
+bridge mints more from the testnet faucet (1,000 FJ a mint) in the same
+transaction. Production checks front each throwaway wallet 0.02 Sepolia ETH
+and refund it at the end; `packages/playtest/scripts/sweep-throwaways.mts`
+collects any refund that missed. On 23 November 2026 Sepolia gas cost about
+19 wei, so a bridge cost about 6×10⁻¹² ETH. The treasury's 1.65 ETH is not
+the constraint; the faucet is, and minting from it still worked. Reboot first if swap is nearly full — a SIGKILL mid-run looks exactly
 like someone pressing stop.
 
 ## 7. Cutover
