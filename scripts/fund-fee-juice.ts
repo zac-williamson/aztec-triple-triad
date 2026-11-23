@@ -6,10 +6,11 @@
  * message to land in the L2 tree, and persists + prints the resulting CLAIM.
  *
  * Fee Juice is NON-TRANSFERABLE on L2 (see scripts/lib/feeJuiceBridge.ts): this
- * bridges and produces a claim; the destination account turns it into spendable
- * balance by CONSUMING the claim in its next transaction
- * (`FeeJuicePaymentMethodWithClaim`) — e.g. at account deployment, or a standalone
- * claim tx for an already-deployed account.
+ * bridges and produces a claim, which becomes spendable balance once a
+ * transaction CONSUMES it. The destination account can do that in its own next
+ * transaction (`FeeJuicePaymentMethodWithClaim`, e.g. at account deployment);
+ * for an account in a wallet we do not drive (a Nulo player's), the deployer
+ * claims it on the account's behalf with scripts/claim-fee-juice.ts.
  *
  * Usage:
  *   npx tsx scripts/fund-fee-juice.ts <0x-aztec-address> [more addresses...]
@@ -95,7 +96,8 @@ async function main(): Promise<void> {
   if (ok.length) {
     log(
       `\nNext: the account consumes its claim in its next tx via FeeJuicePaymentMethodWithClaim ` +
-        `(e.g. at deploy). The claim is in the claim store above.`,
+        `(e.g. at deploy), or the deployer claims it for the account with scripts/claim-fee-juice.ts. ` +
+        `The claim is in the claim store above.`,
     );
   }
   process.exit(bad.length ? 1 : 0);

@@ -3,8 +3,10 @@
  *
  * Fee Juice is NON-TRANSFERABLE on L2: an account cannot send it to another
  * account. The ONLY way to fund an account is to bridge from L1 through the
- * Fee Juice portal and have the account *claim* the resulting L1->L2 message
- * in a transaction (FeeJuicePaymentMethodWithClaim). This module
+ * Fee Juice portal and *claim* the resulting L1->L2 message in a transaction:
+ * the account itself (FeeJuicePaymentMethodWithClaim), or anyone holding the
+ * claim's secret, since FeeJuice.claim credits the bridged-to address whoever
+ * sends it (scripts/claim-fee-juice.ts). This module
  * generalizes the proven local-devnet flow (packages/frontend/src/aztec/
  * fundDevnet.ts) to any network by taking the L1 RPC URL + an L1 funder key
  * from the caller instead of hardcoding Anvil's mnemonic.
