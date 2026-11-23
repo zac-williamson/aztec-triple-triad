@@ -113,6 +113,12 @@ async function main() {
 
     log(`opening ${URL} as a first-time visitor…`);
     await page.goto(`${URL}/?e2e=1`, { waitUntil: 'domcontentloaded' });
+    {
+      // The app asks which wallet to use before it connects; these runs play a
+      // new player on the in-browser wallet. (Absent on builds before the choice.)
+      const choose = page.getByTestId('choose-embedded');
+      await choose.waitFor({ state: 'visible', timeout: 60_000 }).then(() => choose.click(), () => {});
+    }
     await until(page, 'the app to boot', /First time here|Fund with My Wallet|Play/i, 120_000);
     await shot(page, 'landing');
 

@@ -106,6 +106,12 @@ class Seat {
       content: `localStorage.setItem('triad_proof_threads','${PROOF_THREADS}')`,
     });
     await this.page.goto(`${URL}/?e2e=1`, { waitUntil: 'domcontentloaded' });
+    {
+      // The app asks which wallet to use before it connects; these runs play a
+      // new player on the in-browser wallet. (Absent on builds before the choice.)
+      const choose = this.page.getByTestId('choose-embedded');
+      await choose.waitFor({ state: 'visible', timeout: 60_000 }).then(() => choose.click(), () => {});
+    }
   }
 
   /** From a cold profile to five cards in hand. */

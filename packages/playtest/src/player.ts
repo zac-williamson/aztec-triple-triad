@@ -299,6 +299,13 @@ export class PlayerDriver {
         for (const k in entries) localStorage.setItem(k, entries[k]);
       }, localStorageSeed);
     }
+    // The app asks which wallet to use before it connects. A harness player is
+    // a returning player who chose the in-browser wallet; a genuinely new one
+    // (`seed: null`) is asked, and answers below like anyone would.
+    const newPlayer = opts?.seed === null;
+    if (!newPlayer) {
+      await this.page.addInitScript(() => localStorage.setItem('aztec_tt_wallet_kind', 'embedded'));
+    }
     // Last chance to install anything that must exist before app JS — the
     // injected wallet provider, for one: the app reads window.ethereum on the
     // click, and a provider added after navigation would race it.
@@ -307,6 +314,10 @@ export class PlayerDriver {
     await this.page.waitForFunction(() => !!window.__triadTest, undefined, {
       timeout: TIMEOUTS.install, polling: POLL_MS,
     });
+    if (newPlayer) {
+      await this.page.getByTestId('wallet-chooser').waitFor({ state: 'visible', timeout: TIMEOUTS.install });
+      await this.page.getByTestId('choose-embedded').click();
+    }
     // A new player (the restore seed deliberately omits `tutorial_seen`) is
     // offered the Xochitl tutorial. Since 2f11ede the prompt appears DURING
     // 'deploying': the restored, already-deployed account still transits

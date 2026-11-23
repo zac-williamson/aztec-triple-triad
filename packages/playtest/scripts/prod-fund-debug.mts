@@ -17,6 +17,12 @@ const reqFail: string[] = [];
 page.on('requestfailed', r => reqFail.push(`${r.method()} ${r.url().slice(0, 90)} — ${r.failure()?.errorText}`));
 
 await page.goto('https://www.aztec-arena.com', { waitUntil: 'domcontentloaded' });
+{
+  // The app asks which wallet to use before it connects; these runs play a
+  // new player on the in-browser wallet. (Absent on builds before the choice.)
+  const choose = page.getByTestId('choose-embedded');
+  await choose.waitFor({ state: 'visible', timeout: 60_000 }).then(() => choose.click(), () => {});
+}
 await page.getByTestId('tutorial-skip').click({ timeout: 120_000 }).catch(() => log('no tutorial'));
 await page.getByTestId('fund-with-wallet').waitFor({ state: 'visible', timeout: 180_000 });
 log('clicking Fund with My Wallet');
