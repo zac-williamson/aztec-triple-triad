@@ -10,4 +10,6 @@ fn main(
     end_state_hash: pub Field,
     game_ended: pub Field,
     winner_id: pub Field,
+    placed_card_id: pub Field,
+    placed_slot: pub Field,
 ) {}

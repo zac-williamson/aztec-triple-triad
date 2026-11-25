@@ -84,9 +84,16 @@ fn main(
     end_state_hash: pub Field,
     game_ended: pub Field,
     winner_id: pub Field,
+    // The placed card and the hand slot it came from. Both are face-up
+    // information (the card lands on the board for both players to see), and
+    // they are public so that settlement -- which only ever sees these proofs
+    // as private inputs of its own tx -- can tell which of the loser's
+    // prepared return notes to hold back when it awards the prize card.
+    // See docs/plan/PRIVATE_GAMES.md section 4.
+    placed_card_id: pub Field,
+    placed_slot: pub Field,
     // Private inputs - move data
     current_player: Field,       // 1 or 2
-    card_id: Field,              // ID of card being placed
     row: Field,                  // 0-2
     col: Field,                  // 0-2
     // Private inputs - board state
@@ -104,6 +111,8 @@ fn main(
     player_card_ids: [Field; 5],
     blinding_factor: Field,
 ) {
+    let card_id = placed_card_id;
+
     // ===== 1. Validate current player =====
     assert(
         (current_player == 1) | (current_player == 2),
@@ -133,14 +142,16 @@ fn main(
         assert(recomputed_commit == card_commit_2, "Player 2 card commit mismatch");
     }
 
-    // ===== 4. Verify placed card is in committed hand =====
-    let mut card_found: bool = false;
-    for i in 0..5 {
-        if player_card_ids[i] == card_id {
-            card_found = true;
-        }
-    }
-    assert(card_found, "Placed card not in committed hand");
+    // ===== 4. Verify placed card is the committed hand's card at placed_slot =====
+    // Hands hold five DISTINCT ids (enforced when the hand is committed on-chain),
+    // so a card has exactly one slot and naming it costs the prover nothing.
+    // `as u32` truncates, so also require the round trip: a public slot of
+    // 2^32 + 1 would otherwise pass here as slot 1 and mean something else to
+    // settlement.
+    let slot = placed_slot as u32;
+    assert((slot as Field) == placed_slot, "Placed card not in committed hand");
+    assert(slot < 5, "Placed card not in committed hand");
+    assert(player_card_ids[slot] == card_id, "Placed card not in committed hand");
 
     // ===== 4b. Replay prevention (C2): a player may not place a card they have
     // already placed this game. Reject if any cell holds this card_id AND was
@@ -388,6 +399,61 @@ fn orig_after(
 }
 
 
+/// The tests predate `placed_slot` and pass the move the old way: the mover,
+/// then the card id. This finds the card's slot in the mover's hand (slot 0 if
+/// it is not there, which main then rejects as "not in committed hand") and
+/// calls main with the public slot.
+fn run_move(
+    card_commit_1: Field,
+    card_commit_2: Field,
+    start_state_hash: Field,
+    end_state_hash: Field,
+    game_ended: Field,
+    winner_id: Field,
+    current_player: Field,
+    card_id: Field,
+    row: Field,
+    col: Field,
+    board_before: [Field; 18],
+    board_after: [Field; 18],
+    scores_before: [Field; 2],
+    scores_after: [Field; 2],
+    current_turn_before: Field,
+    original_owners_before: [Field; 9],
+    original_owners_after: [Field; 9],
+    player_card_ids: [Field; 5],
+    blinding_factor: Field,
+) {
+    let mut slot: Field = 0;
+    for i in 0..5 {
+        if player_card_ids[i] == card_id {
+            slot = i as Field;
+        }
+    }
+    main(
+        card_commit_1,
+        card_commit_2,
+        start_state_hash,
+        end_state_hash,
+        game_ended,
+        winner_id,
+        card_id,
+        slot,
+        current_player,
+        row,
+        col,
+        board_before,
+        board_after,
+        scores_before,
+        scores_after,
+        current_turn_before,
+        original_owners_before,
+        original_owners_after,
+        player_card_ids,
+        blinding_factor,
+    );
+}
+
 // ====================== TESTS ======================
 
 #[test]
@@ -410,7 +476,7 @@ fn test_first_move_no_capture() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,       // game not ended
@@ -449,7 +515,7 @@ fn test_second_move_no_capture() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -490,7 +556,7 @@ fn test_capture_one_card() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -538,7 +604,7 @@ fn test_capture_multiple_cards() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -575,7 +641,7 @@ fn test_no_capture_higher_adjacent() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -624,7 +690,7 @@ fn test_final_move_game_ends_p1_wins() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         1, 1,       // game ended, player 1 wins
@@ -671,7 +737,7 @@ fn test_game_ends_draw() {
     let ooa = orig_after(board_before2, board_after2, oob);
     let end_hash2 = hash_board_state(board_after2, scores_after2, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash2, end_hash2,
         1, 3,       // game ended, draw
@@ -731,7 +797,7 @@ fn test_final_move_game_ends_p2_wins() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         1, 2,       // game ended, player 2 wins
@@ -768,7 +834,7 @@ fn test_fail_place_on_occupied_cell() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -801,7 +867,7 @@ fn test_fail_wrong_player_turn() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -828,7 +894,7 @@ fn test_fail_row_out_of_bounds() {
     let start_hash = hash_board_state(board_before, scores_before, current_turn_before, oob);
     let end_hash = start_hash;
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -860,7 +926,7 @@ fn test_fail_card_not_in_hand() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -892,7 +958,7 @@ fn test_fail_wrong_blinding_factor() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -926,7 +992,7 @@ fn test_fail_false_capture() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -959,7 +1025,7 @@ fn test_fail_missing_capture() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -992,7 +1058,7 @@ fn test_fail_card_id_changed() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -1029,7 +1095,7 @@ fn test_player2_move_with_capture() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -1066,7 +1132,7 @@ fn test_equal_ranks_no_capture() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -1101,7 +1167,7 @@ fn test_score_fabrication_rejected() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -1143,7 +1209,7 @@ fn test_exact_scores_after_capture() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -1183,7 +1249,7 @@ fn test_card_replay_rejected() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -1225,7 +1291,7 @@ fn test_duplicate_deck_p2_plays_shared_id() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -1270,7 +1336,7 @@ fn test_duplicate_deck_p2_plays_captured_collision() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -1309,7 +1375,7 @@ fn test_different_card_after_same_id_on_board() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -1354,7 +1420,7 @@ fn test_chain_capture_two_levels() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -1403,7 +1469,7 @@ fn test_chain_capture_three_levels() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -1445,7 +1511,7 @@ fn test_chain_capture_stops_when_rank_too_low() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -1485,7 +1551,7 @@ fn test_chain_capture_missing_chain_rejected() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -1527,7 +1593,7 @@ fn test_chain_capture_false_chain_rejected() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         cc1, cc2,
         start_hash, end_hash,
         0, 0,
@@ -1563,7 +1629,7 @@ fn test_proof_chain_assembles_across_player_boundary() {
     let oo1 = orig_after(board0, board1, oo0); // P1 computes [1,0,...]
     let end0 = hash_board_state(board1, scores1, 2, oo1);
 
-    main(
+    run_move(
         cc1, cc2, start0, end0, 0, 0,
         1, 1, 0, 0,
         board0, board1, scores0, scores1, 1,
@@ -1587,7 +1653,7 @@ fn test_proof_chain_assembles_across_player_boundary() {
     let oo2 = orig_after(board1, board2, oo1_p2);
     let end1 = hash_board_state(board2, scores2, 1, oo2);
 
-    main(
+    run_move(
         cc1, cc2, start1, end1, 0, 0,
         2, 10, 1, 1,
         board1, board2, scores1, scores2, 2,
@@ -1636,7 +1702,7 @@ fn forge_capture_that_ranks_do_not_earn() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
         1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
         1, oob, ooa, p1_card_ids(), P1_BLINDING,
@@ -1660,7 +1726,7 @@ fn forge_score_without_capture() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
         1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
         1, oob, ooa, p1_card_ids(), P1_BLINDING,
@@ -1684,7 +1750,7 @@ fn forge_card_not_in_hand() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
         1, 99, 0, 0, board_before, board_after, scores_before, scores_after,
         1, oob, ooa, p1_card_ids(), P1_BLINDING,
@@ -1707,7 +1773,7 @@ fn forge_placement_on_occupied_cell() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
         1, 1, 0, 1, board_before, board_after, scores_before, scores_after,
         1, oob, ooa, p1_card_ids(), P1_BLINDING,
@@ -1732,7 +1798,7 @@ fn forge_move_out_of_turn() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
         1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
         2, oob, ooa, p1_card_ids(), P1_BLINDING,   // THE LIE: player 1 moves on P2's turn
@@ -1757,7 +1823,7 @@ fn forge_original_owner_rewrite() {
     ooa[1] = 1;   // THE LIE: claim P1 originally placed P2's card at (0,1)
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
         1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
         1, oob, ooa, p1_card_ids(), P1_BLINDING,
@@ -1781,7 +1847,7 @@ fn forge_early_game_end() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash, end_hash,
         1, 1,   // THE LIE: game_ended = 1, winner = P1, on a 3-card board
         1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
@@ -1806,7 +1872,7 @@ fn forge_placement_elsewhere_than_row_col() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
         1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
         1, oob, ooa, p1_card_ids(), P1_BLINDING,
@@ -1830,7 +1896,7 @@ fn forge_erase_opponent_card() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
         1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
         1, oob, ooa, p1_card_ids(), P1_BLINDING,
@@ -1869,7 +1935,7 @@ fn forge_start_state_hash_not_matching_board() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(),
         honest_start + 1,   // THE LIE: a start state unrelated to board_before
         end_hash, 0, 0,
@@ -1894,7 +1960,7 @@ fn forge_end_state_hash_not_matching_board() {
     let ooa = orig_after(board_before, board_after, oob);
     let honest_end = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash,
         honest_end + 1,     // THE LIE: publish an end state we did not reach
         0, 0,
@@ -1936,7 +2002,7 @@ fn forge_opponent_card_commit() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
-    main(
+    run_move(
         get_p1_commit(),
         get_p2_commit() + 1,   // THE LIE: not the commitment P2 is bound to
         start_hash, end_hash, 0, 0,
@@ -1963,7 +2029,7 @@ fn opponent_card_commit_move_is_otherwise_valid() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 1, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
         2, 10, 2, 2, board_before, board_after, scores_before, scores_after,
         2, oob, ooa, p2_card_ids(), P2_BLINDING,
@@ -1987,7 +2053,7 @@ fn forge_opponent_score_only() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
         1, 1, 0, 0, board_before, board_after, scores_before, scores_after,
         1, oob, ooa, p1_card_ids(), P1_BLINDING,
@@ -2019,7 +2085,7 @@ fn forge_wrong_winner_on_completed_board() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash, end_hash,
         1, 2,       // THE LIE: game ended (true) but P2 won (false — it is 7-3 to P1)
         1, 5, 2, 2, board_before, board_after, scores_before, scores_after,
@@ -2051,7 +2117,7 @@ fn forge_completed_board_declared_unfinished() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash, end_hash,
         0, 0,       // THE LIE: a full board declared unfinished, so it never settles
         1, 5, 2, 2, board_before, board_after, scores_before, scores_after,
@@ -2075,7 +2141,7 @@ fn forge_column_out_of_bounds() {
     let ooa = orig_after(board_before, board_after, oob);
     let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
 
-    main(
+    run_move(
         get_p1_commit(), get_p2_commit(), start_hash, end_hash, 0, 0,
         1, 1, 0, 7,   // THE LIE: column 7
         board_before, board_after, scores_before, scores_after,
@@ -2096,7 +2162,7 @@ fn diff_g0_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2110,7 +2176,7 @@ fn diff_g0_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2124,7 +2190,7 @@ fn diff_g0_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2138,7 +2204,7 @@ fn diff_g0_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 0, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2152,7 +2218,7 @@ fn diff_g0_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -2165,7 +2231,7 @@ fn diff_g0_m4_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2179,7 +2245,7 @@ fn diff_g0_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -2192,7 +2258,7 @@ fn diff_g0_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2206,7 +2272,7 @@ fn diff_g0_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 2, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2220,7 +2286,7 @@ fn diff_g0_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2234,7 +2300,7 @@ fn diff_g0_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2248,7 +2314,7 @@ fn diff_g1_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 5, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2262,7 +2328,7 @@ fn diff_g1_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2276,7 +2342,7 @@ fn diff_g1_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2290,7 +2356,7 @@ fn diff_g1_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 0, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2304,7 +2370,7 @@ fn diff_g1_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2318,7 +2384,7 @@ fn diff_g1_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -2331,7 +2397,7 @@ fn diff_g1_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2345,7 +2411,7 @@ fn diff_g1_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2359,7 +2425,7 @@ fn diff_g1_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2373,7 +2439,7 @@ fn diff_g1_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 4, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2387,7 +2453,7 @@ fn diff_g2_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2401,7 +2467,7 @@ fn diff_g2_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 0, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2415,7 +2481,7 @@ fn diff_g2_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2429,7 +2495,7 @@ fn diff_g2_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2443,7 +2509,7 @@ fn diff_g2_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -2456,7 +2522,7 @@ fn diff_g2_m4_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2470,7 +2536,7 @@ fn diff_g2_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -2483,7 +2549,7 @@ fn diff_g2_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2497,7 +2563,7 @@ fn diff_g2_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2511,7 +2577,7 @@ fn diff_g2_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -2524,7 +2590,7 @@ fn diff_g2_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2538,7 +2604,7 @@ fn diff_g2_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 5, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2552,7 +2618,7 @@ fn diff_g3_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2566,7 +2632,7 @@ fn diff_g3_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2580,7 +2646,7 @@ fn diff_g3_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2594,7 +2660,7 @@ fn diff_g3_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 0, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2608,7 +2674,7 @@ fn diff_g3_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2622,7 +2688,7 @@ fn diff_g3_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2636,7 +2702,7 @@ fn diff_g3_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2650,7 +2716,7 @@ fn diff_g3_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -2663,7 +2729,7 @@ fn diff_g3_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2677,7 +2743,7 @@ fn diff_g3_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2691,7 +2757,7 @@ fn diff_g4_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2705,7 +2771,7 @@ fn diff_g4_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2719,7 +2785,7 @@ fn diff_g4_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 2, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2733,7 +2799,7 @@ fn diff_g4_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 0, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2747,7 +2813,7 @@ fn diff_g4_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2761,7 +2827,7 @@ fn diff_g4_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2775,7 +2841,7 @@ fn diff_g4_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -2788,7 +2854,7 @@ fn diff_g4_m6_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2802,7 +2868,7 @@ fn diff_g4_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -2815,7 +2881,7 @@ fn diff_g4_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2829,7 +2895,7 @@ fn diff_g4_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -2842,7 +2908,7 @@ fn diff_g4_m8_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2856,7 +2922,7 @@ fn diff_g5_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2870,7 +2936,7 @@ fn diff_g5_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2884,7 +2950,7 @@ fn diff_g5_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2898,7 +2964,7 @@ fn diff_g5_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2912,7 +2978,7 @@ fn diff_g5_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -2925,7 +2991,7 @@ fn diff_g5_m4_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2939,7 +3005,7 @@ fn diff_g5_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -2952,7 +3018,7 @@ fn diff_g5_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -2966,7 +3032,7 @@ fn diff_g5_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [8, 2];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -2979,7 +3045,7 @@ fn diff_g5_m6_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -2993,7 +3059,7 @@ fn diff_g5_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [8, 2];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3007,7 +3073,7 @@ fn diff_g5_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [8, 2];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3021,7 +3087,7 @@ fn diff_g6_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3035,7 +3101,7 @@ fn diff_g6_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 0, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3049,7 +3115,7 @@ fn diff_g6_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3063,7 +3129,7 @@ fn diff_g6_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -3076,7 +3142,7 @@ fn diff_g6_m3_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3090,7 +3156,7 @@ fn diff_g6_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -3103,7 +3169,7 @@ fn diff_g6_m4_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3117,7 +3183,7 @@ fn diff_g6_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -3130,7 +3196,7 @@ fn diff_g6_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3144,7 +3210,7 @@ fn diff_g6_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -3157,7 +3223,7 @@ fn diff_g6_m6_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3171,7 +3237,7 @@ fn diff_g6_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3185,7 +3251,7 @@ fn diff_g6_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
          1, 5, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -3198,7 +3264,7 @@ fn diff_g6_m8_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
          1, 5, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3212,7 +3278,7 @@ fn diff_g7_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3226,7 +3292,7 @@ fn diff_g7_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -3239,7 +3305,7 @@ fn diff_g7_m1_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3253,7 +3319,7 @@ fn diff_g7_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3267,7 +3333,7 @@ fn diff_g7_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3281,7 +3347,7 @@ fn diff_g7_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 5, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3295,7 +3361,7 @@ fn diff_g7_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3309,7 +3375,7 @@ fn diff_g7_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -3322,7 +3388,7 @@ fn diff_g7_m6_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3336,7 +3402,7 @@ fn diff_g7_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -3349,7 +3415,7 @@ fn diff_g7_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3363,7 +3429,7 @@ fn diff_g7_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 2, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3377,7 +3443,7 @@ fn diff_g8_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3391,7 +3457,7 @@ fn diff_g8_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3405,7 +3471,7 @@ fn diff_g8_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3419,7 +3485,7 @@ fn diff_g8_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3433,7 +3499,7 @@ fn diff_g8_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3447,7 +3513,7 @@ fn diff_g8_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -3460,7 +3526,7 @@ fn diff_g8_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3474,7 +3540,7 @@ fn diff_g8_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3488,7 +3554,7 @@ fn diff_g8_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3502,7 +3568,7 @@ fn diff_g8_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 5, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -3515,7 +3581,7 @@ fn diff_g8_m8_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 5, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3529,7 +3595,7 @@ fn diff_g9_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3543,7 +3609,7 @@ fn diff_g9_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3557,7 +3623,7 @@ fn diff_g9_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3571,7 +3637,7 @@ fn diff_g9_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3585,7 +3651,7 @@ fn diff_g9_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 5, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3599,7 +3665,7 @@ fn diff_g9_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -3612,7 +3678,7 @@ fn diff_g9_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3626,7 +3692,7 @@ fn diff_g9_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3640,7 +3706,7 @@ fn diff_g9_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3654,7 +3720,7 @@ fn diff_g9_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 2, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3668,7 +3734,7 @@ fn diff_g10_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3682,7 +3748,7 @@ fn diff_g10_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3696,7 +3762,7 @@ fn diff_g10_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3710,7 +3776,7 @@ fn diff_g10_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -3723,7 +3789,7 @@ fn diff_g10_m3_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3737,7 +3803,7 @@ fn diff_g10_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3751,7 +3817,7 @@ fn diff_g10_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -3764,7 +3830,7 @@ fn diff_g10_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3778,7 +3844,7 @@ fn diff_g10_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3792,7 +3858,7 @@ fn diff_g10_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -3805,7 +3871,7 @@ fn diff_g10_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3819,7 +3885,7 @@ fn diff_g10_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
          1, 3, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -3832,7 +3898,7 @@ fn diff_g10_m8_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
          1, 3, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3846,7 +3912,7 @@ fn diff_g11_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3860,7 +3926,7 @@ fn diff_g11_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3874,7 +3940,7 @@ fn diff_g11_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3888,7 +3954,7 @@ fn diff_g11_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -3901,7 +3967,7 @@ fn diff_g11_m3_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3915,7 +3981,7 @@ fn diff_g11_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 5, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3929,7 +3995,7 @@ fn diff_g11_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -3942,7 +4008,7 @@ fn diff_g11_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3956,7 +4022,7 @@ fn diff_g11_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -3970,7 +4036,7 @@ fn diff_g11_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -3983,7 +4049,7 @@ fn diff_g11_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -3997,7 +4063,7 @@ fn diff_g11_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
          1, 3, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -4010,7 +4076,7 @@ fn diff_g11_m8_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
          1, 3, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4024,7 +4090,7 @@ fn diff_g12_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4038,7 +4104,7 @@ fn diff_g12_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4052,7 +4118,7 @@ fn diff_g12_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4066,7 +4132,7 @@ fn diff_g12_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4080,7 +4146,7 @@ fn diff_g12_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4094,7 +4160,7 @@ fn diff_g12_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -4107,7 +4173,7 @@ fn diff_g12_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4121,7 +4187,7 @@ fn diff_g12_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 2, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4135,7 +4201,7 @@ fn diff_g12_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4149,7 +4215,7 @@ fn diff_g12_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 5, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4163,7 +4229,7 @@ fn diff_g13_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4177,7 +4243,7 @@ fn diff_g13_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -4190,7 +4256,7 @@ fn diff_g13_m1_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4204,7 +4270,7 @@ fn diff_g13_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4218,7 +4284,7 @@ fn diff_g13_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 0, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4232,7 +4298,7 @@ fn diff_g13_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4246,7 +4312,7 @@ fn diff_g13_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -4259,7 +4325,7 @@ fn diff_g13_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4273,7 +4339,7 @@ fn diff_g13_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -4286,7 +4352,7 @@ fn diff_g13_m6_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4300,7 +4366,7 @@ fn diff_g13_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -4313,7 +4379,7 @@ fn diff_g13_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4327,7 +4393,7 @@ fn diff_g13_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 5, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -4340,7 +4406,7 @@ fn diff_g13_m8_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 5, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4354,7 +4420,7 @@ fn diff_g14_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4368,7 +4434,7 @@ fn diff_g14_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 0, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4382,7 +4448,7 @@ fn diff_g14_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4396,7 +4462,7 @@ fn diff_g14_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4410,7 +4476,7 @@ fn diff_g14_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4424,7 +4490,7 @@ fn diff_g14_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4438,7 +4504,7 @@ fn diff_g14_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -4451,7 +4517,7 @@ fn diff_g14_m6_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4465,7 +4531,7 @@ fn diff_g14_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -4478,7 +4544,7 @@ fn diff_g14_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4492,7 +4558,7 @@ fn diff_g14_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
          1, 5, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -4505,7 +4571,7 @@ fn diff_g14_m8_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
          1, 5, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4519,7 +4585,7 @@ fn diff_g15_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4533,7 +4599,7 @@ fn diff_g15_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4547,7 +4613,7 @@ fn diff_g15_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -4560,7 +4626,7 @@ fn diff_g15_m2_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4574,7 +4640,7 @@ fn diff_g15_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4588,7 +4654,7 @@ fn diff_g15_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4602,7 +4668,7 @@ fn diff_g15_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4616,7 +4682,7 @@ fn diff_g15_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -4629,7 +4695,7 @@ fn diff_g15_m6_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4643,7 +4709,7 @@ fn diff_g15_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -4656,7 +4722,7 @@ fn diff_g15_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4670,7 +4736,7 @@ fn diff_g15_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4684,7 +4750,7 @@ fn diff_g16_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4698,7 +4764,7 @@ fn diff_g16_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4712,7 +4778,7 @@ fn diff_g16_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4726,7 +4792,7 @@ fn diff_g16_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4740,7 +4806,7 @@ fn diff_g16_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 5, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -4753,7 +4819,7 @@ fn diff_g16_m4_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 5, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4767,7 +4833,7 @@ fn diff_g16_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4781,7 +4847,7 @@ fn diff_g16_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4795,7 +4861,7 @@ fn diff_g16_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -4808,7 +4874,7 @@ fn diff_g16_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4822,7 +4888,7 @@ fn diff_g16_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 4, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4836,7 +4902,7 @@ fn diff_g17_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4850,7 +4916,7 @@ fn diff_g17_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4864,7 +4930,7 @@ fn diff_g17_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4878,7 +4944,7 @@ fn diff_g17_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -4891,7 +4957,7 @@ fn diff_g17_m3_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4905,7 +4971,7 @@ fn diff_g17_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 5, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -4918,7 +4984,7 @@ fn diff_g17_m4_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 5, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4932,7 +4998,7 @@ fn diff_g17_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -4945,7 +5011,7 @@ fn diff_g17_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4959,7 +5025,7 @@ fn diff_g17_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -4973,7 +5039,7 @@ fn diff_g17_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -4987,7 +5053,7 @@ fn diff_g17_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
          1, 3, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -5000,7 +5066,7 @@ fn diff_g17_m8_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
          1, 3, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5014,7 +5080,7 @@ fn diff_g18_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5028,7 +5094,7 @@ fn diff_g18_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 0, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5042,7 +5108,7 @@ fn diff_g18_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5056,7 +5122,7 @@ fn diff_g18_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -5069,7 +5135,7 @@ fn diff_g18_m3_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5083,7 +5149,7 @@ fn diff_g18_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5097,7 +5163,7 @@ fn diff_g18_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5111,7 +5177,7 @@ fn diff_g18_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -5124,7 +5190,7 @@ fn diff_g18_m6_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5138,7 +5204,7 @@ fn diff_g18_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5152,7 +5218,7 @@ fn diff_g18_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5166,7 +5232,7 @@ fn diff_g19_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5180,7 +5246,7 @@ fn diff_g19_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5194,7 +5260,7 @@ fn diff_g19_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5208,7 +5274,7 @@ fn diff_g19_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -5221,7 +5287,7 @@ fn diff_g19_m3_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5235,7 +5301,7 @@ fn diff_g19_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5249,7 +5315,7 @@ fn diff_g19_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -5262,7 +5328,7 @@ fn diff_g19_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5276,7 +5342,7 @@ fn diff_g19_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5290,7 +5356,7 @@ fn diff_g19_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [1, 9];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -5303,7 +5369,7 @@ fn diff_g19_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5317,7 +5383,7 @@ fn diff_g19_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -5330,7 +5396,7 @@ fn diff_g19_m8_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [1, 9];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5344,7 +5410,7 @@ fn diff_g20_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5358,7 +5424,7 @@ fn diff_g20_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5372,7 +5438,7 @@ fn diff_g20_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5386,7 +5452,7 @@ fn diff_g20_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5400,7 +5466,7 @@ fn diff_g20_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5414,7 +5480,7 @@ fn diff_g20_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5428,7 +5494,7 @@ fn diff_g20_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [8, 2];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -5441,7 +5507,7 @@ fn diff_g20_m6_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5455,7 +5521,7 @@ fn diff_g20_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -5468,7 +5534,7 @@ fn diff_g20_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5482,7 +5548,7 @@ fn diff_g20_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
          1, 5, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5496,7 +5562,7 @@ fn diff_g21_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5510,7 +5576,7 @@ fn diff_g21_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5524,7 +5590,7 @@ fn diff_g21_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5538,7 +5604,7 @@ fn diff_g21_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 0, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5552,7 +5618,7 @@ fn diff_g21_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5566,7 +5632,7 @@ fn diff_g21_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5580,7 +5646,7 @@ fn diff_g21_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5594,7 +5660,7 @@ fn diff_g21_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -5607,7 +5673,7 @@ fn diff_g21_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5621,7 +5687,7 @@ fn diff_g21_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5635,7 +5701,7 @@ fn diff_g22_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5649,7 +5715,7 @@ fn diff_g22_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 0, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5663,7 +5729,7 @@ fn diff_g22_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5677,7 +5743,7 @@ fn diff_g22_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5691,7 +5757,7 @@ fn diff_g22_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5705,7 +5771,7 @@ fn diff_g22_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -5718,7 +5784,7 @@ fn diff_g22_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5732,7 +5798,7 @@ fn diff_g22_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5746,7 +5812,7 @@ fn diff_g22_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -5759,7 +5825,7 @@ fn diff_g22_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5773,7 +5839,7 @@ fn diff_g22_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
          1, 5, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -5786,7 +5852,7 @@ fn diff_g22_m8_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
          1, 5, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5800,7 +5866,7 @@ fn diff_g23_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5814,7 +5880,7 @@ fn diff_g23_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5828,7 +5894,7 @@ fn diff_g23_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5842,7 +5908,7 @@ fn diff_g23_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -5855,7 +5921,7 @@ fn diff_g23_m3_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5869,7 +5935,7 @@ fn diff_g23_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -5882,7 +5948,7 @@ fn diff_g23_m4_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5896,7 +5962,7 @@ fn diff_g23_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5910,7 +5976,7 @@ fn diff_g23_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5924,7 +5990,7 @@ fn diff_g23_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -5937,7 +6003,7 @@ fn diff_g23_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5951,7 +6017,7 @@ fn diff_g23_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 4, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5965,7 +6031,7 @@ fn diff_g24_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -5979,7 +6045,7 @@ fn diff_g24_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -5993,7 +6059,7 @@ fn diff_g24_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -6006,7 +6072,7 @@ fn diff_g24_m2_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6020,7 +6086,7 @@ fn diff_g24_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6034,7 +6100,7 @@ fn diff_g24_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6048,7 +6114,7 @@ fn diff_g24_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -6061,7 +6127,7 @@ fn diff_g24_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6075,7 +6141,7 @@ fn diff_g24_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -6088,7 +6154,7 @@ fn diff_g24_m6_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6102,7 +6168,7 @@ fn diff_g24_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [1, 9];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -6115,7 +6181,7 @@ fn diff_g24_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6129,7 +6195,7 @@ fn diff_g24_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [1, 9];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6143,7 +6209,7 @@ fn diff_g25_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6157,7 +6223,7 @@ fn diff_g25_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6171,7 +6237,7 @@ fn diff_g25_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6185,7 +6251,7 @@ fn diff_g25_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -6198,7 +6264,7 @@ fn diff_g25_m3_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6212,7 +6278,7 @@ fn diff_g25_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6226,7 +6292,7 @@ fn diff_g25_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -6239,7 +6305,7 @@ fn diff_g25_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6253,7 +6319,7 @@ fn diff_g25_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -6266,7 +6332,7 @@ fn diff_g25_m6_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6280,7 +6346,7 @@ fn diff_g25_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 1, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6294,7 +6360,7 @@ fn diff_g25_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6308,7 +6374,7 @@ fn diff_g26_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 2, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6322,7 +6388,7 @@ fn diff_g26_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 0, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6336,7 +6402,7 @@ fn diff_g26_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 2, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6350,7 +6416,7 @@ fn diff_g26_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6364,7 +6430,7 @@ fn diff_g26_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -6377,7 +6443,7 @@ fn diff_g26_m4_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6391,7 +6457,7 @@ fn diff_g26_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -6404,7 +6470,7 @@ fn diff_g26_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6418,7 +6484,7 @@ fn diff_g26_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -6431,7 +6497,7 @@ fn diff_g26_m6_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [6, 4];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6445,7 +6511,7 @@ fn diff_g26_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6459,7 +6525,7 @@ fn diff_g26_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [7, 3];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 1,
          1, 5, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6473,7 +6539,7 @@ fn diff_g27_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6487,7 +6553,7 @@ fn diff_g27_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6501,7 +6567,7 @@ fn diff_g27_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 2, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6515,7 +6581,7 @@ fn diff_g27_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 0, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6529,7 +6595,7 @@ fn diff_g27_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6543,7 +6609,7 @@ fn diff_g27_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -6556,7 +6622,7 @@ fn diff_g27_m5_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6570,7 +6636,7 @@ fn diff_g27_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -6583,7 +6649,7 @@ fn diff_g27_m6_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 1, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6597,7 +6663,7 @@ fn diff_g27_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6611,7 +6677,7 @@ fn diff_g27_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 3,
          1, 5, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6625,7 +6691,7 @@ fn diff_g28_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 1, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6639,7 +6705,7 @@ fn diff_g28_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 2, 0, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6653,7 +6719,7 @@ fn diff_g28_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6667,7 +6733,7 @@ fn diff_g28_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -6680,7 +6746,7 @@ fn diff_g28_m3_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 13, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6694,7 +6760,7 @@ fn diff_g28_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 3, 2, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6708,7 +6774,7 @@ fn diff_g28_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 0, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6722,7 +6788,7 @@ fn diff_g28_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6736,7 +6802,7 @@ fn diff_g28_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -6749,7 +6815,7 @@ fn diff_g28_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6763,7 +6829,7 @@ fn diff_g28_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 5, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6777,7 +6843,7 @@ fn diff_g29_m0_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 1, 2, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6791,7 +6857,7 @@ fn diff_g29_m1_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 14, 2, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6805,7 +6871,7 @@ fn diff_g29_m2_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 4, 1, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6819,7 +6885,7 @@ fn diff_g29_m3_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 10, 2, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6833,7 +6899,7 @@ fn diff_g29_m4_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 5, 0, 1, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6847,7 +6913,7 @@ fn diff_g29_m5_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 12, 1, 2, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6861,7 +6927,7 @@ fn diff_g29_m6_accepts_engine_transition() {
     let sa: [Field; 2] = [5, 5];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          1, 2, 0, 0, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 
@@ -6875,7 +6941,7 @@ fn diff_g29_m7_accepts_engine_transition() {
     let sa: [Field; 2] = [2, 8];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 #[test(should_fail)]
@@ -6888,7 +6954,7 @@ fn diff_g29_m7_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 2, oob);
     let eh = hash_board_state(ba, sa, 1, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 0, 0,
          2, 11, 1, 1, bb, ba, sb, sa, 2, oob, ooa, p2_card_ids(), P2_BLINDING);
 }
 
@@ -6902,7 +6968,7 @@ fn diff_g29_m8_accepts_engine_transition() {
     let sa: [Field; 2] = [4, 6];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 3, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 #[test(should_fail)]
@@ -6915,7 +6981,58 @@ fn diff_g29_m8_rejects_uncaptured_flip() {
     let sa: [Field; 2] = [3, 7];
     let sh = hash_board_state(bb, sb, 1, oob);
     let eh = hash_board_state(ba, sa, 2, ooa);
-    main(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
+    run_move(get_p1_commit(), get_p2_commit(), sh, eh, 1, 2,
          1, 3, 0, 2, bb, ba, sb, sa, 1, oob, ooa, p1_card_ids(), P1_BLINDING);
 }
 // ===== END GENERATED DIFFTEST =====
+
+// ====================== PLACED SLOT (PRIVATE_GAMES.md section 4) ======================
+
+/// The first move of the suite, with an explicit slot. Player 1's hand is
+/// [1, 2, 3, 4, 5], so card 1 sits in slot 0.
+fn first_move_with_slot(placed_card_id: Field, placed_slot: Field) {
+    let cc1 = get_p1_commit();
+    let cc2 = get_p2_commit();
+    let board_before: [Field; 18] = [0; 18];
+    let scores_before: [Field; 2] = [5, 5];
+    let oob = orig_owners(board_before);
+    let start_hash = hash_board_state(board_before, scores_before, 1, oob);
+    let mut board_after: [Field; 18] = [0; 18];
+    board_after[0] = placed_card_id;
+    board_after[1] = 1;
+    let scores_after: [Field; 2] = [5, 5];
+    let ooa = orig_after(board_before, board_after, oob);
+    let end_hash = hash_board_state(board_after, scores_after, 2, ooa);
+    main(
+        cc1, cc2, start_hash, end_hash, 0, 0,
+        placed_card_id, placed_slot,
+        1, 0, 0,
+        board_before, board_after, scores_before, scores_after, 1,
+        oob, ooa,
+        p1_card_ids(), P1_BLINDING,
+    );
+}
+
+#[test]
+fn test_placed_slot_names_the_cards_hand_position() {
+    first_move_with_slot(1, 0);
+    first_move_with_slot(5, 4);
+}
+
+#[test(should_fail_with = "Placed card not in committed hand")]
+fn test_fail_placed_slot_holds_a_different_card() {
+    // Card 1 is in slot 0, not slot 2.
+    first_move_with_slot(1, 2);
+}
+
+#[test(should_fail_with = "Placed card not in committed hand")]
+fn test_fail_placed_slot_past_the_hand() {
+    first_move_with_slot(1, 5);
+}
+
+#[test(should_fail_with = "Placed card not in committed hand")]
+fn test_fail_placed_slot_that_truncates_into_range() {
+    // 2^32 truncates to slot 0 under `as u32`; the round-trip check refuses it,
+    // since settlement would read the untruncated public value.
+    first_move_with_slot(1, 4294967296);
+}
