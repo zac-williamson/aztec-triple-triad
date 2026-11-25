@@ -58,9 +58,6 @@ async function computeCardCommit(cardIds: bigint[], blindingFactor: bigint): Pro
   return poseidon2Hash([...cardIds, blindingFactor]);
 }
 
-async function computePlayerStateHash(randomness: bigint[]): Promise<string> {
-  return poseidon2Hash(randomness);
-}
 
 describe('real UltraHonk proof generation', () => {
   beforeAll(async () => {
@@ -77,21 +74,19 @@ describe('real UltraHonk proof generation', () => {
     if (bb) await bb.destroy();
   });
 
-  describe('prove_hand', () => {
+  describe('prove_hand (the open-cards proof)', () => {
     it('generates and verifies an UltraHonk proof', async () => {
       const cardIds = [1n, 2n, 3n, 4n, 5n];
       const blindingFactor = 12345n;
-      const oppRandomness = [100n, 200n, 300n, 400n, 500n, 600n];
 
       const cardCommitHash = await computeCardCommit(cardIds, blindingFactor);
-      const oppStateHash = await computePlayerStateHash(oppRandomness);
 
+      // The three open cards are the hand's first three committed slots.
       const inputs = {
         card_commit_hash: cardCommitHash,
-        opponent_player_state_hash: oppStateHash,
+        open_cards: cardIds.slice(0, 3).map(toHex),
         card_ids: cardIds.map(toHex),
         blinding_factor: toHex(blindingFactor),
-        opponent_randomness: oppRandomness.map(toHex),
       };
 
       // Step 1: Generate witness
@@ -107,8 +102,8 @@ describe('real UltraHonk proof generation', () => {
       expect(proofData.proof).toBeDefined();
       expect(proofData.proof.length).toBeGreaterThan(0);
       expect(proofData.publicInputs).toBeDefined();
-      // prove_hand has 2 public inputs: card_commit_hash, opponent_player_state_hash
-      expect(proofData.publicInputs.length).toBeGreaterThanOrEqual(1);
+      // card_commit_hash + the three open cards
+      expect(proofData.publicInputs.length).toBe(4);
 
       // Step 3: Verify the proof
       const vk = await backend.getVerificationKey();
@@ -138,9 +133,12 @@ describe('real UltraHonk proof generation', () => {
       // Before: P1 has 5 in hand, P2 has 5 in hand → scores 5,5
       // After: P1 has 4 in hand + 1 on board = 5, P2 has 5 in hand = 5 → scores 5,5
 
-      // Compute board hashes using pedersen (21 fields: 18 board + 2 scores + currentTurn)
-      const boardBeforeFields = [...Array(18).fill(0n), 5n, 5n, 1n]; // scores 5-5, turn=player1
-      const boardAfterFields = [1n, 1n, ...Array(16).fill(0n), 5n, 5n, 2n]; // card1@p1, scores 5-5, turn=player2
+      // Board hashes: pedersen over 30 fields -- 18 board + 2 scores + turn +
+      // 9 per-cell ORIGINAL owners (who first placed the card there).
+      const ownersBefore = Array(9).fill(0n);
+      const ownersAfter = [1n, ...Array(8).fill(0n)];
+      const boardBeforeFields = [...Array(18).fill(0n), 5n, 5n, 1n, ...ownersBefore]; // turn=player1
+      const boardAfterFields = [1n, 1n, ...Array(16).fill(0n), 5n, 5n, 2n, ...ownersAfter]; // card1@p1, turn=player2
 
       const startStateHash = await pedersenHash(boardBeforeFields);
       const endStateHash = await pedersenHash(boardAfterFields);
@@ -153,9 +151,10 @@ describe('real UltraHonk proof generation', () => {
         end_state_hash: endStateHash,
         game_ended: toHex(0n),
         winner_id: toHex(0n),
+        placed_card_id: toHex(1n),
+        placed_slot: toHex(0n),
         // Private inputs
         current_player: toHex(1n),
-        card_id: toHex(1n),
         row: toHex(0n),
         col: toHex(0n),
         board_before: emptyBoard,
@@ -163,6 +162,8 @@ describe('real UltraHonk proof generation', () => {
         scores_before: [toHex(5n), toHex(5n)],
         scores_after: [toHex(5n), toHex(5n)],
         current_turn_before: toHex(1n),
+        original_owners_before: ownersBefore.map(toHex),
+        original_owners_after: ownersAfter.map(toHex),
         player_card_ids: cardIds.map(toHex),
         blinding_factor: toHex(blindingFactor),
       };
@@ -180,8 +181,8 @@ describe('real UltraHonk proof generation', () => {
       expect(proofData.proof).toBeDefined();
       expect(proofData.proof.length).toBeGreaterThan(0);
       expect(proofData.publicInputs).toBeDefined();
-      // game_move has 6 public inputs
-      expect(proofData.publicInputs.length).toBeGreaterThanOrEqual(6);
+      // game_move has 8 public inputs (the last two: placed card and its slot)
+      expect(proofData.publicInputs.length).toBe(8);
 
       // Step 3: Verify the proof
       const vk = await backend.getVerificationKey();
