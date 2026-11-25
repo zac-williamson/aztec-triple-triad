@@ -23,11 +23,11 @@ A full game costs exactly three transactions, regardless of how the match goes:
 The nine moves in between never touch the chain. Each move is a client-side ZK
 proof (`circuits/game_move/`) exchanged peer-to-peer over a WebSocket relay
 (`packages/backend/`). Settlement verifies the nine move proofs *inside* the
-private `settle_game` function (`triple_triad_game/src/main.nr:494`).
+private `settle_game` function (`triple_triad_game/src/main.nr:572`).
 
 What the chain learns: nothing about the game. There is no public storage beyond
 the deployment's immutables, no public call and no event
-(`triple_triad_game/src/main.nr:264-275`). A game's state is a set of
+(`triple_triad_game/src/main.nr:324-338`). A game's state is a set of
 **nullifiers** derived from `game_key`, a secret only its two players share
 (§3), so create, join and settle are unlinkable to each other and to the game
 contract. What any tx still shows: its fee payer, gas, counts of nullifiers and
@@ -49,7 +49,8 @@ circuits/
   game_move/           "This move is legal" (full capture rules in-circuit)
   dummy_move/          Zero-constraint move stand-in, accepted only by
                        --permissive-vks TEST deployments
-  prove_hand/          Not used by the Phase A protocol (see PRIVATE_GAMES.md §4)
+  prove_hand/          Open cards: a hand's first three cards against its commitment,
+                       checked by the opponent and, in an abandonment claim, on-chain
   card_data/           Shared 256-card rank table (CARD_RANKS / get_card_ranks)
 ```
 
@@ -79,25 +80,25 @@ winner: settle_game(game_key, record_1, record_2, 9 proofs, prize_move) ─► N
   `[seat, hand_commit, ret_0..ret_4, prize_partial, reward_note_hash]`
   (`triple_triad_game/src/main.nr:36-41`). Every field is a hiding hash.
 - **Game id.** `game_id = poseidon2_sep([game_key, record_hash(record_1)])`
-  (`game_id_of`, `:338`). It is never published; nobody without `game_key` can
+  (`game_id_of`, `:404`). It is never published; nobody without `game_key` can
   compute any of the game's nullifiers.
 - **Seats.** A player is identified by `seat = H(H(nhk_app_game, game_key))`
-  (`player_secret`/`seat_of`, `:310-322`): proving a seat means recomputing it
+  (`player_secret`/`seat_of`, `:376-388`): proving a seat means recomputing it
   from the player's own key, which is how cancel, claim and contest know who is
   calling without any address being recorded. The same account recomputes the
   same seat, so `join_game` refuses self-play.
-- **State as nullifiers** (`n_created`…`n_resolved`, `:353-399`): `N_created`
+- **State as nullifiers** (`n_created`…`n_forfeit`, `:419-476`): `N_created`
   (create), `N_seat2` (pushed by join AND cancel, so exactly one happens),
   `N_joined` (binds the joiner's record), `N_done` (pushed by settle, finalize
   and cancel, so a game resolves once), and the abandonment set (§8).
-  Existence checks use `assert_nullifier_exists` (`assert_recorded`, `:402`);
-  `joined_game` (`:412`) authenticates both records in one check, because the
+  Existence checks use `assert_nullifier_exists` (`assert_recorded`, `:480`);
+  `joined_game` (`:490`) authenticates both records in one check, because the
   join itself verified record 1.
-- `create_game` (`:429`), `join_game` (`:444`), `cancel_game` (`:471`). Cancel
+- `create_game` (`:507`), `join_game` (`:522`), `cancel_game` (`:549`). Cancel
   releases exactly the creator's five prepared return notes, so it cannot mint
   anything else.
 - Clients read a game's state by looking up the siloed nullifiers that
-  `game_nullifiers` (`:699`) computes; the node reports the block each one
+  `game_nullifiers` (`:826`) computes; the node reports the block each one
   landed in, which the abandonment functions use as a clock.
 
 ## 4. Hiding a hand and preparing its payouts
@@ -122,7 +123,7 @@ When a player commits, the NFT contract (`commit_hand`,
 
 Nothing derived here leaves the player's device. The client reads its own
 secrets with the simulate-only `compute_game_secrets` (`:840`) and its record
-with `preview_record` (`triple_triad_game/src/main.nr:684`).
+with `preview_record` (`triple_triad_game/src/main.nr:811`).
 
 This is why **ground rule #10** exists: per-game values are derived in-circuit
 from the player's own keys, never supplied by the client, so they cannot be
@@ -175,22 +176,22 @@ canonical empty board to the final position.
 
 ## 6. Settlement: settle_game
 
-`settle_game` (`triple_triad_game/src/main.nr:494`) takes `game_key`, both
+`settle_game` (`triple_triad_game/src/main.nr:572`) takes `game_key`, both
 records, the move VK, the nine proofs with their 8 public inputs each, and
 `prize_move`:
 
 1. `joined_game` authenticates both records (`N_joined` exists).
 2. Verifies the nine proofs against the stored `move_vk_hash`.
-3. `assert_transcript` (`:106`): every move bound to both records'
+3. `assert_transcript` (`:126`): every move bound to both records'
    `hand_commit`s, chained, anchored to the empty board
    (`compute_initial_state_hash`), only move 9 ending the game with winner 1, 2
    or 3.
 4. Pushes `N_done(game_id)` — a second settlement, or one after an unwound
    abandonment, fails on it.
-5. **Win:** `prize_of` (`:142`) reads the prize from the move `prize_move`,
+5. **Win:** `prize_of` (`:162`) reads the prize from the move `prize_move`,
    which must have the loser's parity (player 1 moves at even indices). The NFT
    releases the winner's five returns, the loser's four that were not the prize
-   slot (`win_returns`, `:164`), and completes the winner's prize partial with
+   slot (`win_returns`, `:184`), and completes the winner's prize partial with
    the prize card. **Draw:** both hands' ten returns.
    Either way 12 note hashes are released (10 cards + 2 rewards), so the count
    does not reveal the result.
@@ -232,27 +233,50 @@ emitted: the owner always knows the value already.
 
 ## 8. Abandoned games
 
-No proofs and no transcript: claims are timed from the blocks their nullifiers
-landed in, using `get_block_header_at` and `assert_nullifier_existed_by` /
+No transcript: claims are timed from the blocks their nullifiers landed in,
+using `get_block_header_at` and `assert_nullifier_existed_by` /
 `assert_nullifier_did_not_exist_by`. `MIN_ABANDON_SECONDS` = 480 and
 `DISPUTE_SECONDS` = 600 (`triple_triad_game/src/main.nr:25-29`).
 
-- **Claim** (`claim_abandoned_game`, `:582`): a player proves their seat; the
+**Walking away costs a card.** A player who leaves a game the opponent joined
+forfeits one of their three *open* cards — the ones the opponent already sees
+— to the player who stayed. A creator who leaves before anyone joined loses
+nothing: `cancel_game` has no bar and no window (§3), and the client sends it
+by itself.
+
+- **Claim** (`claim_abandoned_game`, `:668`): a player proves their seat; the
   clock nullifier (`N_joined` for claim 1, `N_contest(c-1)` after a contest)
   must have existed `MIN_ABANDON_SECONDS` before the anchor; `N_done` must not
-  exist. Pushes `N_claim_slot(c)` and `N_claim(c, side)`. Claims are numbered
-  1..3.
-- **Contest** (`contest_abandonment`, `:617`): the OTHER player, inside the
+  exist. The claim names what it takes by `forfeit_slot`: 0..2 is the OTHER
+  player's open card in that hand slot, proven by their open-cards proof
+  (`prove_hand`, verified against the stored `hand_vk_hash`) whose first input
+  must be their record's `hand_commit` (`forfeit_card_of`, `open_cards_side`,
+  `assert_open_cards_of`, `:257-294`); 3 takes nothing and carries the
+  claimant's OWN open-cards proof, so a claim never depends on the leaver
+  having sent theirs. Pushes `N_claim_slot(c)`, `N_claim(c, side)` and the
+  terms `N_forfeit(c, side, slot, card)` (`:471`). Claims are numbered 1..3.
+- **Contest** (`contest_abandonment`, `:715`): the OTHER player, inside the
   window — measured from a block in which the claim did not yet exist. Pushes
   `N_contested_by(side)` (once per side), `N_contest(c)` (restarts the clock)
-  and `N_resolved(c)`.
-- **Finalize** (`finalize_abandoned_game`, `:650`): anyone, once the window has
-  passed since a block in which the claim already existed. Pushes `N_resolved(c)`
-  and `N_done`, and releases both players' own five cards. No rewards.
+  and `N_resolved(c)`. The claim and its forfeit are gone.
+- **Finalize** (`finalize_abandoned_game`, `:752`): anyone, once the window has
+  passed since a block in which the claim's terms nullifier already existed —
+  so the finalizer must name the claim's real terms (`forfeit_nullifiers`,
+  `:861`, gives the four candidates). Pushes `N_resolved(c)` and `N_done`. A
+  forfeit releases the claimant's five returns, the leaver's four (every slot
+  but the forfeited one) and the card on the claimant's prize partial — the
+  shape of a won prize; no forfeit releases both hands. Ten note hashes either
+  way, no rewards. The leaver may finalize too: every note was prepared for
+  its owner, so nothing can be redirected.
 
 Contest and finalize of one claim both push `N_resolved(c)`, so only one lands;
 no tx expiry is needed (an expiry would be a public fingerprint). A full
 transcript outranks a standing claim: settlement needs only `N_done` to be free.
+
+What the bar and the single contest cannot stop: with no transcript in a
+claim, the player who is stalling may claim too. A client in a live game
+therefore contests a claim against it as soon as it lands (§12); a staller who
+claims again after that can win the card, because each side contests once.
 
 ## 9. ArenaToken
 
@@ -275,14 +299,15 @@ onboarding, +20 per settled game per player, −100 per card pack.
 | Offchain note delivery | `triple_triad_nft/src/main.nr` `create_and_push_note` and its callers |
 | Manual note import from a tx's effects | `triple_triad_nft/src/main.nr:863` (`import_note`) |
 | `storage_layout()` instead of hardcoded slots | `triple_triad_nft/src/main.nr` `prepared_payouts`, `push_card_note` |
-| State machine as nullifiers (no public state) | `triple_triad_game/src/main.nr:353-399` |
-| Private existence checks on nullifiers | `triple_triad_game/src/main.nr:402` (`assert_recorded`) |
-| Historical block headers as a clock | `triple_triad_game/src/main.nr:582-680` |
-| Cross-contract private calls | `triple_triad_game/src/main.nr:429-470` |
-| Recursive UltraHonk verification in a private fn | `triple_triad_game/src/main.nr:494` |
-| VK pinning via `PublicImmutable` (readable from private) | `triple_triad_game/src/main.nr:264-275` |
-| Proof chaining (hash-linked state transcript) | `triple_triad_game/src/main.nr:106` |
-| Unconstrained utility fns (`.simulate()`-only API) | `triple_triad_game/src/main.nr:699` ; `triple_triad_nft/src/main.nr:863` |
+| State machine as nullifiers (no public state) | `triple_triad_game/src/main.nr:419-476` |
+| Private existence checks on nullifiers | `triple_triad_game/src/main.nr:480` (`assert_recorded`) |
+| Historical block headers as a clock | `triple_triad_game/src/main.nr:668-804` |
+| A client-side proof verified on-chain to bind a claim (open cards) | `triple_triad_game/src/main.nr:668` (`claim_abandoned_game`) |
+| Cross-contract private calls | `triple_triad_game/src/main.nr:507-548` |
+| Recursive UltraHonk verification in a private fn | `triple_triad_game/src/main.nr:572` |
+| VK pinning via `PublicImmutable` (readable from private) | `triple_triad_game/src/main.nr:324-338` |
+| Proof chaining (hash-linked state transcript) | `triple_triad_game/src/main.nr:126` |
+| Unconstrained utility fns (`.simulate()`-only API) | `triple_triad_game/src/main.nr:826` ; `triple_triad_nft/src/main.nr:863` |
 | Private fungible balances (`BalanceSet`) | `arena_token/src/main.nr` |
 | Contract-to-contract authorization (msg_sender gating) | `triple_triad_nft/src/main.nr:616,660` ; `arena_token/src/main.nr:101` |
 | Pure-Noir game rules in a circuit | `circuits/game_move/src/main.nr:79` |
@@ -314,240 +339,216 @@ state encoding; keep everything else.
 
 ## 12. Frontend layer
 
-How a browser drives all of the above. Anchors target the post-decomposition
-layout (revival work item B). All paths in this section are under
-`packages/frontend/src/`.
+How a browser drives all of the above. All paths in this section are under
+`packages/frontend/src/`. The protocol it implements is
+[PRIVATE_GAMES.md](plan/PRIVATE_GAMES.md) §5–6: each client runs the game
+itself, and the relay is a pipe for sealed messages.
 
-### 12.1 Layering: React hooks over module-level infrastructure
+### 12.1 Layering
 
-The Aztec machinery deliberately lives **outside React**: `txManager`
-(`aztec/txManager.ts:1-13`) and the contract cache (`aztec/contracts.ts:28-49`)
-are module-level singletons, so in-flight transactions and PXE state survive
-component unmounts and screen navigation. React hooks subscribe to them
-(`useSyncExternalStore` snapshots, `aztec/txManager.ts:91-97`) and translate
-them into render state. One provider (`aztec/AztecContext.tsx:11`) exposes the
-wallet layer to every hook via `useAztecContext` (`:33`).
+The Aztec machinery lives **outside React**, as module-level code that
+survives unmounts and navigation:
 
-The game logic itself is a facade plus three hooks, composed once
-(`hooks/useGame.ts:93-118`) and consumed only through the facade:
+- `aztec/pxe.ts` is the one door to the wallet: one implementation per chain
+  operation, all scheduled on the serial PXE queue (`pxe`, `:780`;
+  `runPxeTx`, `:796`).
+- `aztec/txManager.ts` is that queue (§12.8).
+- `aztec/gameActions.ts` holds every game action — commit, settle, import,
+  cancel, claim, contest, finalize. Every chain write goes through
+  `runPxeTx`; every wait (for a nullifier, for chain time) happens outside it,
+  so nothing holds the queue while time passes.
+
+React sees it through one facade, `useGame` (`hooks/useGame.ts:152`), which
+composes four hooks and is the only thing screens consume:
 
 ```
-useGame (hooks/useGame.ts:100)         facade: screens, matchmaking, persistence
- ├─ useGameSession                     on-chain lifecycle (create/join pipeline)
- ├─ useGamePlay                        proof orchestration (hand + 9 moves)
- └─ useGameSettlement                  process_game + abandoned-game flows
-       consumes session/play ONLY through identity-stable accessor functions
-       (SettlementSessionDeps/SettlementPlayDeps, hooks/useGameSettlement.ts:20-39)
+useGame                 screens, matchmaking, the menu's stuck games, persistence
+ ├─ useGameChannel      key exchange; sealed PEER payloads in and out
+ ├─ useGameSession      on-chain lifecycle: create / join, the records
+ ├─ useGamePlay         the game itself: our moves proven, theirs checked
+ └─ useGameSettlement   settle, import, abandonment
 ```
 
-Two design rules carry the whole layer (stated in the architecture comment at
-`hooks/useGame.ts:62-91`): values the UI renders are React state; values read
-by async closures are refs; and **cross-hook access goes only through
-identity-stable functions** (`getPhase`, `getSettlementInfo`, `getMoveProofs`,
-`waitFor*`) — never raw refs — so callbacks stay memoized while always reading
-current values. Where an effect must read live WebSocket state without
-re-firing on every message, the hook mirrors that state into render-updated
-refs (`hooks/useGameSession.ts:126-138`).
+Values the UI renders are React state; values async code reads are refs; and
+cross-hook access goes only through identity-stable accessors (`getPhase`,
+`getGame`, `getMoveProofs`, `waitFor*`), so callbacks stay memoized while
+reading current values.
 
-### 12.2 The on-chain pipeline (useGameSession)
+### 12.2 The channel: key exchange and sealed payloads
 
-The lifecycle is an explicit state machine: `OnChainPhase`
-(`hooks/useGameSession.ts:15-24`) with a legal-transition table enforced by
-`transitionPhase` (`:26-36,140-156`). One consolidated effect drives the
-pipeline (`:417-545`): player 1 runs `create_game` (`:426-469`), player 2 runs
-a read-only prepare step (`:472-511`) and then `join_game` once P1's tx is
-confirmed (`:514-540`) — each step wrapped in `txManager.runTx` with
-`postEffects` that share data with the opponent and advance the phase.
+At `MATCH_FOUND` each client makes an ephemeral P-256 key pair
+(`generateGameKeyPair`, `aztec/gameKeys.ts:76`) and sends its public half as
+`KEY_EXCHANGE`. From the opponent's half, `deriveGameChannel` (`:87`) derives
+with HKDF the game's `game_key` (reduced into the field) and an AES-256-GCM
+channel key; `sealPeerPayload` / `openPeerPayload` (`:116`, `:127`) bind the
+room id as associated data. `hooks/useGameChannel.ts` (`:65`) runs the
+exchange, persists the key pair with the game so a reload can still open the
+channel, and delivers `PEER` payloads (`aztec/peerChannel.ts:25`: `RECORD`,
+`OPEN_CARDS`, `SETTLING`, `SETTLED`, `CANCELLED`). The exchange is
+unauthenticated (PRIVATE_GAMES.md §5.1).
 
-`createGameOnChain` (`:202-299`) shows the simulate-then-send shape: four
-**serial** `.simulate()` calls (`get_note_nonce` → `preview_game_data` →
-`get_game_status` → `compute_blinding_factor`, `:215-231`) recover the
-in-circuit-derived `game_id`, randomness, and blinding factor *before* the tx,
-including a stale-nonce guard (`:233-235`); then `create_game` is sent
-(`:263-265`). The preview values are shared with the opponent over the relay
-the moment React state updates — a deliberate effect *outside* the PXE
-execution context (`:359-375`).
+### 12.3 The on-chain pipeline (useGameSession)
 
-Settlement's inputs accumulate in `settlementInfoRef`
-(`SettlementInfo`, `:43-50`): seeded by pipeline postEffects (`:453-461`),
-merged synchronously when `OPPONENT_AZTEC_INFO`/`GAME_OVER` arrive (a raw
-message listener, not an effect — `:381-407`), and backfilled on demand from
-the ws-mirror refs for any field a race left empty (`:173-194`). It is
-deliberately **not** cleared on navigation (`:557-563` explains the spurious
-`create_game` race that motivates this).
+The lifecycle is an explicit state machine: `OnChainPhase` with a
+legal-transition table (`hooks/useGameSession.ts:17-37`).
 
-### 12.3 Proof orchestration (useGamePlay)
+- **Creator** (`:386`): `createGameOnChain` (`aztec/gameActions.ts:186`) reads
+  the note nonce, derives the secrets, previews the record and persists it
+  BEFORE sending `create_game` — all in one queue item, so nothing advances
+  the nonce in between. Once `created` is visible on the node,
+  `announceRecord` (`:255`) sends the sealed `RECORD` and `TX_CONFIRMED`.
+- **Leaving before a join.** Leave works in every phase before a join. A
+  creator who leaves during the preview sends nothing (`shouldSend`,
+  `CommitAbandonedError`, `gameActions.ts:172`); one whose create was already
+  on its way tells nobody when it lands — no `RECORD`, no `TX_CONFIRMED`, so
+  no opponent joins — and the menu cancels the game (§12.7).
+- **Joiner** (`:451`): on the creator's `RECORD` it waits for `created`, then
+  `joinGameOnChain` (`gameActions.ts:217`) and replies with its own `RECORD`.
+  `acceptRecord` (`:269`) authenticates a joiner's record by its `joined`
+  nullifier before the game becomes `active`.
+- `getGame` (`:192`) is everything the chain actions need: hand, key, nonce,
+  both records, and both sides' open cards (read from storage when asked,
+  `openCardsOf`, `hooks/useGameStorage.ts`).
 
-The hand proof auto-generates the moment its preconditions are met
-(`hooks/useGamePlay.ts:246-278`): a 5-card hand, the session's blinding
-factor, and the **opponent's 6 randomness values** received over the relay —
-§4's randomness exchange, consumed here. Commitment and state hashes are
-recomputed client-side to match the circuits exactly
-(`aztec/proofWorker.ts:146-159,161-178,185-192` — poseidon2/pedersen via the
-shared bb.js API).
+### 12.4 The game (useGamePlay)
 
-Placement is optimistic: `handlePlaceCard` (`:357-407`) sends the move to the
-relay immediately (`:374`), applies the rules locally via the game-logic
-engine, and then either proves the move now (both hand proofs ready, `:387-394`)
-or queues it (`:396-402`). Queued moves replay later against board snapshots
-recorded per move number (`gameStateHistoryRef`, `:209-225`, drained at
-`:289-345`) — proofs are deferred, never skipped. Both players accumulate all
-nine move proofs (own + opponent's via relay, deduped by state-hash pair,
-`:127-135`), so **either** player holds a full transcript at game end
-(`canSettle`, `:91`).
+Each client runs the game with `packages/game-logic` (`aztec/localGame.ts`):
+its own hand is its five committed cards in committed order; the opponent's
+is their three open cards plus two hidden placeholders, filled in as they are
+played.
 
-Proof generation itself (`aztec/proofWorker.ts`) is `Noir.execute` (witness) +
-`UltraHonkBackend.generateProof` per circuit, with backends cached per circuit
-(`:16-27`) over one Barretenberg instance (`aztec/proofBackend.ts`). Circuit
-artifacts are fetched from `/circuits/*.json` (`aztec/circuitLoader.ts:19,30,42`
-— the compiled outputs `npm run copy-circuits` publishes). The module itself
-runs on the main thread, but bb.js runs the prover in its own Web Workers (the
-build's `main.worker`/`thread.worker` assets), so only witness generation and
-marshalling touch the main thread. Measured in Chrome on a 12-core Mac with v6
-(20 Nov 2026): a `game_move` proof takes ~0.45 s, cold or warm, with one
-~60-70 ms main-thread task; `prove_hand` ~0.2 s with one ~66 ms task. No visible
-freeze, so moving this into a worker would buy nothing. The cost also overlaps
-the opponent's thinking time by construction: the move is relayed before
-proving starts (`hooks/useGamePlay.ts:374` vs `:387-394`).
+- **Open cards.** Once both records are known, each client proves its hand's
+  first three cards against its hand commitment (`generateOpenCardsProof`,
+  `hooks/useGamePlay.ts:493`) and sends `OPEN_CARDS` (`sendOpenCards`, `:243`).
+  The opponent's are checked (`checkOpenCards`, `aztec/moveChecks.ts:128`,
+  called at `useGamePlay.ts:268`) before any of their moves; the checked
+  payload stays in storage, because an abandonment claim takes one of those
+  cards with it (§12.6).
+- **Our move** (`handlePlaceCard`, `:400`): applied locally, proven with
+  `game_move` (8 public inputs, including `placed_card_id` and `placed_slot`),
+  sealed and sent as `MOVE {moveNumber}`.
+- **Their move**: opened and checked — bounds, the local transition and its
+  state hashes, the proof's public inputs, and the proof itself
+  (`checkOpponentMove`, `moveChecks.ts:89`, called at `useGamePlay.ts:307`). A
+  move that fails is refused; such a game can never settle and goes the
+  abandonment way.
+- All bb.js work — our proofs and our checks of theirs — runs one at a time on
+  `onProver` (`aztec/proverQueue.ts:15`).
+- **Reconnects.** The transcript is persisted as it grows. After a `RESUME`
+  the relay replays the opponent's sealed moves from its log, and
+  `ROOM_STATE` tells the client which of its own to resend (`:520-531`).
 
-### 12.4 Settlement (useGameSettlement)
+### 12.5 Settlement and import (useGameSettlement)
 
-`handleSettle` (`hooks/useGameSettlement.ts:228-465`) is one `txManager.runTx`
-whose `execute` is a wait-ladder: wait for the on-chain phase to reach
-`active` (`:259-268`), for both hand proofs (`:270-281`), for the settlement
-info (`:283-285`), for all nine move proofs (`:291-292`), then backfill any
-race-emptied fields (`:294-298`). Only then does it prove: load both circuits,
-derive the two VKs in-browser, order the move proofs into the hash chain
-(`sortProofChain`, `:746-763`, seeded from the canonical initial hash
-`:765-770`), and call `process_game` with all 31 arguments (`:382-399`).
+The winner settles (`handleSettle`, `hooks/useGameSettlement.ts:271`):
+`SETTLING {prizeMove}`, then `settleGame` (`aztec/gameActions.ts:287`), then
+`SETTLED {txHash}`. A draw is settled by player 1 alone.
 
-`postEffects` (`:406-451`) then mirrors the contract's settlement math in
-TypeScript: the winner's 6 note randomness pairs and the loser's 4 (same
-duplicate-aware removal as `triple_triad_game/src/main.nr:683-697`), relays
-the loser's plaintext note data over the WebSocket (`:439`), imports the
-winner's own notes (§12.6), and releases the phase machine.
+Everyone then imports their OWN notes: `importResolution` (`:344`) rebuilds
+each note from the player's own hand and secrets (`selectOwnNotes`,
+`aztec/privateGame.ts`) and imports it from the tx effect with `import_note`;
+a wrong guess imports nothing rather than something false. The other player
+finds the tx from `SETTLED` or — with nobody to tell them — from the game's
+`done` nullifier (`importTheirResolution`, `useGameSettlement.ts:183`;
+`importDiscoveredResolution`, `gameActions.ts:523`). Nothing about the
+opponent is needed beyond the two records and the transcript.
 
-The abandoned-game flow (`:468-689`) auto-triggers when the opponent
-disconnects mid-game with moves on the table (`:691-699`). The claimant
-generates the **dummy padding proofs in-browser** — `Noir.execute` over the
-zero-constraint circuit, one per missing move (`:539-555`) — sends
-`claim_abandoned_game` (`:587-603`), counts down the dispute window in the UI
-(65 s for 5 blocks, `:611-618`), then sends `settle_abandoned_game`
-(`:620-679`).
+### 12.6 Abandonment
 
-The loser's side is event-driven: `OPPONENT_SETTLING` parks a synthetic
-txManager entry so the navigation guard holds (`:179-216`), and `NOTE_DATA`
-delivers the plaintext notes for import (`:145-172`), including detecting
-which card was taken (`:151-154`).
+- **Claiming** (`handleAbandonedGame`, `useGameSettlement.ts:362`), from the
+  relay's idle warning or an opponent's disconnect. `claimAbandonment`
+  (`gameActions.ts:646`) prepares the forfeit first (`claimForfeitFor`,
+  `:619`): the opponent's strongest checked open card by `cardStrength`, with
+  their open-cards proof — or, without it, nothing, with our own proof. It
+  waits for the bar on chain time, sends the claim, then
+  `finalizeAbandonment` (`:742`) waits out the window, finalizes with the
+  claim's terms and imports: our five plus the card. A contested claim
+  stands down and the game goes on.
+- **Terms we did not choose.** `claimTermsOf` (`:707`) looks up the four
+  `forfeit_nullifiers` of a claim; `finalizedClaimOf` (`:791`) reads a
+  finished abandonment's terms, so an import knows whether we took a card or
+  lost one.
+- **The watcher.** A client in a live game checks every `CLAIM_WATCH_MS`
+  (`useGameSettlement.ts:34`) for a claim against it and contests it as it
+  lands (`:454-488`): the player is demonstrably here.
+- **Races.** Anyone may finalize and both clients do; the loser of a race
+  sees `done`, returns null and imports from the winning tx.
 
-### 12.5 PXE serialization (txManager)
+### 12.7 The menu: games that still hold cards
+
+`inspectStuckGame` (`hooks/stuckGameCheck.ts:73`) walks the stored records
+whenever the player sits on the menu, and once a minute while one needs
+them. `assessStuckGame` (`aztec/stuckGame.ts:80`) offers only what the
+contract will accept right now — cancellable, settleable, claimable,
+contestable, finalizable — or says how long to wait. Resolved games are
+imported and forgotten.
+
+What needs no decision happens without a click: a game nobody joined is
+cancelled, and a claim whose window has closed is finalized, whichever side
+the player is on (`AUTO_RECOVER_KINDS`, `hooks/useGame.ts:39`; `:263`), once
+per game per page load. Claims and contests stay buttons.
+
+### 12.8 PXE serialization (txManager)
 
 Ground rule #6 — all PXE operations serial per wallet — is enforced
-structurally, not by convention: every simulate/prove/send funnels through one
-queue that processes a single item at a time (`aztec/txManager.ts:200-221`).
-Two policies matter:
+structurally: every simulate, prove and send funnels through one queue that
+runs a single item at a time. Lifecycle txs jump ahead of settlement only
+among items of the same game (`TX_PRIORITY`, `aztec/txManager.ts:27`), and a
+tx's `execute` and `postEffects` run as one queue item (`runTx`, `:282-299`), so a
+queued settlement can never start between a commit and the step that records
+it. React reads the queue through `useSyncExternalStore` (`:92-102`).
 
-- **Priority within a game, FIFO across games** (`:170-198`): lifecycle txs
-  (`deploy_account` 0, `create_game`/`join_game` 1) jump ahead of settlement
-  (3–4) *only* among items of the same game (`TX_PRIORITY`, `:22-30`) —
-  preventing the deadlock where a queued settlement waits forever on a
-  `join_game` stuck behind it.
-- **`execute` and `postEffects` run as one queue item** (`:244-258`), so a
-  queued settlement can never start between `create_game`'s tx and the
-  postEffect that records its result.
+### 12.9 Card delivery and persistence
 
-### 12.6 Card delivery and persistence
+Starter cards and packs are delivered as offchain messages: the client passes
+the ones addressed to it to the NFT's `offchain_receive` and persists each
+card's `(cardId, randomness, txHash, noteHashes, firstNullifier)` to the card
+store (`aztec/cardStore.ts`) first, so a failed receive still leaves a record.
+Game payouts are never delivered: every owner imports their own from the
+resolving tx (§12.5), and the import writes the same card-store entries. On
+every connect, `restoreStoredCards` (`aztec/connectToAztec.ts:309`) re-imports
+the stored cards with `import_note` — idempotent, because the PXE keys notes
+by nullifier — which is what survives a wiped PXE store.
 
-Every mint the player sent — starter cards (`connectToAztec.ts`
-`storeAndReceiveStarterCards`), packs (`hooks/useCardPacks.ts`), the
-winner's settlement return and the abandoned-game recovery
-(`hooks/useGameSettlement.ts` `receiveOwnCards`) — does two things, in this
-order (§7; ground rule #9):
+### 12.10 The relay, and what it sees
 
-1. **Persist** each card's `(cardId, randomness, txHash, noteHashes,
-   firstNullifier)` to the card store (`aztec/cardStore.ts`) — enough to
-   replay the notes into a fresh PXE after its store is wiped. The note hashes
-   come from the `TxEffect` (`fetchTxEffectData`, `aztec/noteImporter.ts`,
-   retried because the tx may have just mined).
-2. **Receive** the send's offchain messages: `receiveCardMessages`
-   (`aztec/pxe.ts`) passes the ones addressed to us, from the NFT contract,
-   to `offchain_receive` in batches of 16. The notes appear at the next NFT
-   read, which triggers the contract sync that processes them.
+`hooks/useWebSocket.ts` (`:69`) is the client's whole relay surface. In clear,
+the relay reads room ids, public keys, move numbers, tx types and session
+tokens; `PEER` and `MOVE` bodies are AES-GCM ciphertext under the channel key.
+It pairs players, forwards and buffers sealed payloads, keeps each room's
+sealed moves for replay, and times turns for the idle warning
+(`GAME_ABANDONMENT_WARNING`, which names the idle player and nothing else). It
+sees IPs, pairing, message kinds and sizes, the move count and its timing —
+no cards, moves, results, records or keys. Sessions survive reconnects: a
+stored token is replayed with `RESUME`, and `connected` turns true only on
+`SESSION_ESTABLISHED`.
 
-Persisting first means a receive that fails still leaves a record. On every
-connect the boot-time restore (`connectToAztec.ts`) re-imports every stored
-card with `import_note` and reconciles the store against what the PXE holds —
-the recovery path; it is idempotent, because the PXE keys notes by nullifier.
-
-The settlement **loser** is the one remaining import on the normal path:
-their messages stayed in the winner's browser, so the winner relays the
-plaintext (`RELAY_NOTE_DATA`) and the loser imports it
-(`importRelayedCards`). The loser's +20 ArenaToken reward is likewise an
-untagged note (`mint_reward`), imported with `importTokenRewardNote`; the
-winner's own reward is `ONCHAIN_CONSTRAINED` and needs only the PXE to sync
-the settlement block, hence the balance-refresh delay.
-
-### 12.7 The relay (useWebSocket) and wallet layer
-
-The WebSocket hook (`hooks/useWebSocket.ts:9-54` is the full surface) carries
-four traffic families: matchmaking, game moves, **proof exchange**
-(`submitHandProof`/`submitMoveProof` and their opponent-side mirrors), and
-**settlement coordination** (`shareAztecInfo` for address+randomness,
-`notifyTxConfirmed` for the create/join handshake, `notifySettleStarted`, and
-`relayNoteData` for the loser's plaintext notes). Sessions survive reconnects:
-a stored session token is replayed via `RESUME` (`:99-106`) with exponential
-backoff (`:108-121`), and `connected` only turns true on
-`SESSION_ESTABLISHED`. For async code that cannot wait on React's render
-cycle, `addMessageListener` (`:50-53`) delivers messages synchronously in the
-`onmessage` tick — the bridge that keeps `settlementInfoRef` current
-(§12.2).
+### 12.11 The wallet
 
 Before anything connects, the player chooses a wallet
-(`components/WalletChooser.tsx`; remembered in `aztec/walletChoice.ts`, asked
-again from the menu's Switch Wallet):
+(`components/WalletChooser.tsx`; remembered in `aztec/walletChoice.ts`):
 
-- **Nulo**, an Aztec wallet extension for Chrome and Firefox, reached through
-  the standard `@aztec-labs/wallet-sdk` (`aztec/nuloWallet.ts`). Discovery the
-  player allows in Nulo, an emoji check that both ends derived the same channel
-  key (the app writes each emoji the way Nulo's grid draws it, so the two look
-  alike), then one capability request scoped to our three contracts, in which
-  the player picks the account. Nulo enforces that request call by call: the
-  address book (`data.addressBook`) is in it because registering the
-  contracts as note senders needs it. `setupConnectedWallet`
-  (`aztec/connectToAztec.ts`) registers the contracts, restores this browser's
-  stored cards, and claims the starter cards for an account that has none.
-  Nulo asks the player to approve every transaction, and the player picks how
-  it pays there (Fee Juice, or the network's sponsor); the tx toasts say to
-  look in Nulo.
-- **The in-browser wallet**, described next.
+- **Nulo**, an Aztec wallet extension, reached through
+  `@aztec-labs/wallet-sdk` (`aztec/nuloWallet.ts`): discovery the player
+  allows, an emoji check that both ends derived the same channel key, then one
+  capability request scoped to our three contracts. `setupConnectedWallet`
+  (`aztec/connectToAztec.ts:357`) registers the contracts, restores this
+  browser's stored cards and claims the starter cards for a new account. Nulo
+  asks the player to approve every transaction.
+- **The in-browser wallet**: the two-phase onboarding of
+  `aztec/connectToAztec.ts` — prepare (derive keys, show the address), the
+  player funds it, then `deployAndRegister` (`:169`) deploys the account,
+  registers the contracts and mints the starter cards.
 
-Everything after connect goes through the `pxe.ts` facade, which holds the
-wallet as an aztec.js `Wallet`. The in-browser wallet's PXE upkeep
-(`resyncPxe`, `pxeKeepSynced.ts`) does nothing for Nulo, which syncs its own.
+Either way, every transaction pays its own fee in Fee Juice with headroom over
+the live base fee (`gasSettingsWithHeadroom`, `aztec/feeSettings.ts`);
+sponsored fee payment is banned (`aztec/contracts.ts:19`).
 
-The in-browser wallet is the two-phase onboarding documented at
-`aztec/connectToAztec.ts:1-11` — prepare (derive keys, show address) → user
-funds it → `deployAndRegister` (deploy account, register contracts, mint
-starter cards), driven by `hooks/useAztec.ts` and wrapped in
-`InstrumentedWallet`, an `EmbeddedWallet` subclass that emits per-phase timing
-events for the tx-progress UI (`aztec/instrumentedWallet.ts:1-8`). Field
-decoding throughout uses the prefix-checking helpers
-(`toFr`/`safeToField`, `aztec/fieldUtils.ts:23`,
-`aztec/proofWorker.ts:93-107`) — ground rule #8, because `.simulate()`
-results stringify as decimal.
-
-> **Known divergence (work item I):** game transactions currently pay fees via
-> `SponsoredFeePaymentMethod` built in `aztec/contracts.ts:9-26` — the method
-> the ground rules ban. The Fee Juice onboarding path already exists
-> (`FeeJuicePaymentMethodWithClaim`, `aztec/connectToAztec.ts`); migrating the
-> in-game fee path to it is revival work item I. Do not copy the SponsoredFPC
-> pattern into new code.
-
-### 12.8 Ground rules → frontend code
+### 12.12 Ground rules → frontend code
 
 | Ground rule | Where it's enforced |
 |-------------|---------------------|
-| #6 serial PXE ops | the txManager queue (`aztec/txManager.ts:200-221`) — nothing touches PXE outside it |
-| #8 decimal `.simulate()` results | `toFr` (`aztec/fieldUtils.ts:23`), `safeToField` (`aztec/proofWorker.ts:97-107`) |
-| #9 untagged card notes need delivering | `receiveCardMessages` (`aztec/pxe.ts`) after every mint we send; `import_note` for the boot-time restore and the loser's relayed cards (§12.6) |
-| #10 in-circuit `game_id`/randomness | frontend only *previews* them via `.simulate()` (`hooks/useGameSession.ts:215-231`), never supplies them to a tx |
+| #6 serial PXE ops | the txManager queue (`aztec/txManager.ts`) — nothing touches the PXE outside `aztec/pxe.ts` |
+| #8 decimal `.simulate()` results | `normalizeField` (`aztec/privateGame.ts:34`), `toFr` (`aztec/fieldUtils.ts`) |
+| #9 untagged notes need delivering | `offchain_receive` for starters and packs; `import_note` by each owner for every game payout (§12.5) |
+| #10 per-game values derived in-circuit | the client reads its own with simulate-only `compute_game_secrets` and `preview_record`, and never supplies them to a tx |
