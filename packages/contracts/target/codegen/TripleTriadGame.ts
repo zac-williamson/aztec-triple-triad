@@ -13,52 +13,6 @@ import TripleTriadGameContractArtifactJson from '../triple_triad_game-TripleTria
 export const TripleTriadGameContractArtifact = loadContractArtifact(TripleTriadGameContractArtifactJson as NoirCompiledContract);
 
 
-      export type GameSettled = {
-        game_id: FieldLike
-winner: AztecAddressLike
-loser: AztecAddressLike
-transferred_card_id: FieldLike
-      }
-    
-
-      export type GameJoined = {
-        game_id: FieldLike
-player2: AztecAddressLike
-card_commit_hash: FieldLike
-      }
-    
-
-      export type GameCreated = {
-        game_id: FieldLike
-player1: AztecAddressLike
-card_commit_hash: FieldLike
-      }
-    
-
-      export type GameCancelled = {
-        game_id: FieldLike
-      }
-    
-
-      export type GameAbandoned = {
-        game_id: FieldLike
-claimant: AztecAddressLike
-num_valid_moves: FieldLike
-      }
-    
-
-      export type AbandonmentContested = {
-        game_id: FieldLike
-contester: AztecAddressLike
-      }
-    
-
-      export type AbandonedGameSettled = {
-        game_id: FieldLike
-claimant: AztecAddressLike
-claimed_card_id: FieldLike
-      }
-    
 
 /**
  * Type-safe interface for contract TripleTriadGame;
@@ -93,13 +47,13 @@ export class TripleTriadGameContract extends ContractBase {
    * @param instantiation - Optional address-affecting parameters (salt, deployer / universalDeploy, publicKeys).
    *                       Salt defaults to a random value; the deployer is locked lazily from the first send-time `from`.
    */
-  public static deploy(wallet: Wallet, admin: AztecAddressLike, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, token_address: AztecAddressLike, dummy_vk_hash: FieldLike, permissive_vks: boolean, instantiation?: DeployInstantiationOptions) {
+  public static deploy(wallet: Wallet, admin: AztecAddressLike, nft_address: AztecAddressLike, move_vk_hash: FieldLike, token_address: AztecAddressLike, dummy_vk_hash: FieldLike, permissive_vks: boolean, instantiation?: DeployInstantiationOptions) {
     return DeployMethod.create<TripleTriadGameContract>(
       wallet,
       {
         artifact: TripleTriadGameContractArtifact,
         postDeployCtor: (instance, wallet) => TripleTriadGameContract.at(instance.address, wallet),
-        args: [admin, nft_address, hand_vk_hash, move_vk_hash, token_address, dummy_vk_hash, permissive_vks],
+        args: [admin, nft_address, move_vk_hash, token_address, dummy_vk_hash, permissive_vks],
       },
       instantiation,
     );
@@ -141,7 +95,7 @@ export class TripleTriadGameContract extends ContractBase {
   }
   
 
-  public static get storage(): ContractStorageLayout<'admin' | 'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_status' | 'game_player1' | 'game_player2' | 'game_recovered' | 'game_card_commit_1' | 'game_card_commit_2' | 'game_player_state_1' | 'game_player_state_2' | 'token_contract' | 'dummy_vk_hash' | 'permissive_vks' | 'game_claim_player' | 'game_claim_at' | 'game_active_at' | 'game_contested'> {
+  public static get storage(): ContractStorageLayout<'admin' | 'nft_contract' | 'token_contract' | 'move_vk_hash' | 'dummy_vk_hash' | 'permissive_vks'> {
       return {
         admin: {
       slot: new Fr(1n),
@@ -149,391 +103,67 @@ export class TripleTriadGameContract extends ContractBase {
 nft_contract: {
       slot: new Fr(3n),
     },
-hand_vk_hash: {
+token_contract: {
       slot: new Fr(5n),
     },
 move_vk_hash: {
       slot: new Fr(7n),
     },
-game_settled: {
+dummy_vk_hash: {
       slot: new Fr(9n),
     },
-game_status: {
-      slot: new Fr(10n),
-    },
-game_player1: {
-      slot: new Fr(11n),
-    },
-game_player2: {
-      slot: new Fr(12n),
-    },
-game_recovered: {
-      slot: new Fr(13n),
-    },
-game_card_commit_1: {
-      slot: new Fr(14n),
-    },
-game_card_commit_2: {
-      slot: new Fr(15n),
-    },
-game_player_state_1: {
-      slot: new Fr(16n),
-    },
-game_player_state_2: {
-      slot: new Fr(17n),
-    },
-token_contract: {
-      slot: new Fr(18n),
-    },
-dummy_vk_hash: {
-      slot: new Fr(20n),
-    },
 permissive_vks: {
-      slot: new Fr(22n),
-    },
-game_claim_player: {
-      slot: new Fr(24n),
-    },
-game_claim_at: {
-      slot: new Fr(25n),
-    },
-game_active_at: {
-      slot: new Fr(26n),
-    },
-game_contested: {
-      slot: new Fr(27n),
+      slot: new Fr(11n),
     }
-      } as ContractStorageLayout<'admin' | 'nft_contract' | 'hand_vk_hash' | 'move_vk_hash' | 'game_settled' | 'game_status' | 'game_player1' | 'game_player2' | 'game_recovered' | 'game_card_commit_1' | 'game_card_commit_2' | 'game_player_state_1' | 'game_player_state_2' | 'token_contract' | 'dummy_vk_hash' | 'permissive_vks' | 'game_claim_player' | 'game_claim_at' | 'game_active_at' | 'game_contested'>;
+      } as ContractStorageLayout<'admin' | 'nft_contract' | 'token_contract' | 'move_vk_hash' | 'dummy_vk_hash' | 'permissive_vks'>;
     }
     
 
   /** Type-safe wrappers for the public methods exposed by the contract. */
   public declare methods: {
     
-    /** cancel_game(game_id: field, card_ids: array) */
-    cancel_game: ((game_id: FieldLike, card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** cancel_game(game_key: field, record_1: array) */
+    cancel_game: ((game_key: FieldLike, record_1: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** claim_abandoned_game(game_id: field, num_valid_moves: field, caller_is_player1: boolean, hand_vk: array, move_vk: array, dummy_vk: array, hand_proof_1: array, hand_proof_1_inputs: array, hand_proof_2: array, hand_proof_2_inputs: array, move_proof_1: array, move_inputs_1: array, move_proof_2: array, move_inputs_2: array, move_proof_3: array, move_inputs_3: array, move_proof_4: array, move_inputs_4: array, move_proof_5: array, move_inputs_5: array, move_proof_6: array, move_inputs_6: array, move_proof_7: array, move_inputs_7: array, move_proof_8: array, move_inputs_8: array, move_proof_9: array, move_inputs_9: array) */
-    claim_abandoned_game: ((game_id: FieldLike, num_valid_moves: FieldLike, caller_is_player1: boolean, hand_vk: FieldLike[], move_vk: FieldLike[], dummy_vk: FieldLike[], hand_proof_1: FieldLike[], hand_proof_1_inputs: FieldLike[], hand_proof_2: FieldLike[], hand_proof_2_inputs: FieldLike[], move_proof_1: FieldLike[], move_inputs_1: FieldLike[], move_proof_2: FieldLike[], move_inputs_2: FieldLike[], move_proof_3: FieldLike[], move_inputs_3: FieldLike[], move_proof_4: FieldLike[], move_inputs_4: FieldLike[], move_proof_5: FieldLike[], move_inputs_5: FieldLike[], move_proof_6: FieldLike[], move_inputs_6: FieldLike[], move_proof_7: FieldLike[], move_inputs_7: FieldLike[], move_proof_8: FieldLike[], move_inputs_8: FieldLike[], move_proof_9: FieldLike[], move_inputs_9: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** claim_abandoned_game(game_key: field, record_1: array, record_2: array, side: field, claim_no: field, clock_block: integer) */
+    claim_abandoned_game: ((game_key: FieldLike, record_1: FieldLike[], record_2: FieldLike[], side: FieldLike, claim_no: FieldLike, clock_block: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** constructor(admin: struct, nft_address: struct, hand_vk_hash: field, move_vk_hash: field, token_address: struct, dummy_vk_hash: field, permissive_vks: boolean) */
-    constructor: ((admin: AztecAddressLike, nft_address: AztecAddressLike, hand_vk_hash: FieldLike, move_vk_hash: FieldLike, token_address: AztecAddressLike, dummy_vk_hash: FieldLike, permissive_vks: boolean) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** constructor(admin: struct, nft_address: struct, move_vk_hash: field, token_address: struct, dummy_vk_hash: field, permissive_vks: boolean) */
+    constructor: ((admin: AztecAddressLike, nft_address: AztecAddressLike, move_vk_hash: FieldLike, token_address: AztecAddressLike, dummy_vk_hash: FieldLike, permissive_vks: boolean) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** contest_abandonment(game_id: field) */
-    contest_abandonment: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** contest_abandonment(game_key: field, record_1: array, record_2: array, side: field, claim_no: field, claim_side: field, before_claim_block: integer) */
+    contest_abandonment: ((game_key: FieldLike, record_1: FieldLike[], record_2: FieldLike[], side: FieldLike, claim_no: FieldLike, claim_side: FieldLike, before_claim_block: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** create_game(card_ids: array) */
-    create_game: ((card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** create_game(game_key: field, card_ids: array) */
+    create_game: ((game_key: FieldLike, card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** get_game_active_at(game_id: field) */
-    get_game_active_at: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** finalize_abandoned_game(game_key: field, record_1: array, record_2: array, claim_no: field, claim_side: field, claim_block: integer) */
+    finalize_abandoned_game: ((game_key: FieldLike, record_1: FieldLike[], record_2: FieldLike[], claim_no: FieldLike, claim_side: FieldLike, claim_block: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** get_game_card_commit_1(game_id: field) */
-    get_game_card_commit_1: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_game_card_commit_2(game_id: field) */
-    get_game_card_commit_2: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_game_claim_at(game_id: field) */
-    get_game_claim_at: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_game_claim_player(game_id: field) */
-    get_game_claim_player: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_game_player_state_1(game_id: field) */
-    get_game_player_state_1: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_game_player_state_2(game_id: field) */
-    get_game_player_state_2: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_game_player1(game_id: field) */
-    get_game_player1: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_game_player2(game_id: field) */
-    get_game_player2: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** get_game_status(game_id: field) */
-    get_game_status: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** has_contested(game_id: field, player: struct) */
-    has_contested: ((game_id: FieldLike, player: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** game_nullifiers(game_key: field, record_1: array, record_2: array) */
+    game_nullifiers: ((game_key: FieldLike, record_1: FieldLike[], record_2: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** has_permissive_vks() */
     has_permissive_vks: (() => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** is_game_settled(game_id: field) */
-    is_game_settled: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** join_game(game_id: field, card_ids: array) */
-    join_game: ((game_id: FieldLike, card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** join_game(game_key: field, record_1: array, card_ids: array) */
+    join_game: ((game_key: FieldLike, record_1: FieldLike[], card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** offchain_receive(messages: struct) */
     offchain_receive: ((messages: { ciphertext: FieldLike[], recipient: AztecAddressLike, tx_hash: OptionLike<FieldLike>, anchor_block_timestamp: (bigint | number) }[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** process_game(game_id: field, hand_vk: array, move_vk: array, hand_proof_1: array, hand_proof_1_inputs: array, hand_proof_2: array, hand_proof_2_inputs: array, move_proof_1: array, move_inputs_1: array, move_proof_2: array, move_inputs_2: array, move_proof_3: array, move_inputs_3: array, move_proof_4: array, move_inputs_4: array, move_proof_5: array, move_inputs_5: array, move_proof_6: array, move_inputs_6: array, move_proof_7: array, move_inputs_7: array, move_proof_8: array, move_inputs_8: array, move_proof_9: array, move_inputs_9: array, opponent: struct, card_to_transfer: field, caller_card_ids: array, opponent_card_ids: array, caller_randomness: array, opponent_randomness: array, caller_blinding: field, opponent_blinding: field) */
-    process_game: ((game_id: FieldLike, hand_vk: FieldLike[], move_vk: FieldLike[], hand_proof_1: FieldLike[], hand_proof_1_inputs: FieldLike[], hand_proof_2: FieldLike[], hand_proof_2_inputs: FieldLike[], move_proof_1: FieldLike[], move_inputs_1: FieldLike[], move_proof_2: FieldLike[], move_inputs_2: FieldLike[], move_proof_3: FieldLike[], move_inputs_3: FieldLike[], move_proof_4: FieldLike[], move_inputs_4: FieldLike[], move_proof_5: FieldLike[], move_inputs_5: FieldLike[], move_proof_6: FieldLike[], move_inputs_6: FieldLike[], move_proof_7: FieldLike[], move_inputs_7: FieldLike[], move_proof_8: FieldLike[], move_inputs_8: FieldLike[], move_proof_9: FieldLike[], move_inputs_9: FieldLike[], opponent: AztecAddressLike, card_to_transfer: FieldLike, caller_card_ids: FieldLike[], opponent_card_ids: FieldLike[], caller_randomness: FieldLike[], opponent_randomness: FieldLike[], caller_blinding: FieldLike, opponent_blinding: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** preview_record(game_key: field, card_ids: array, nonce_value: field) */
+    preview_record: ((game_key: FieldLike, card_ids: FieldLike[], nonce_value: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** public_dispatch(selector: field) */
     public_dispatch: ((selector: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** settle_abandoned_game(game_id: field, caller_card_ids: array, caller_randomness: array, caller_blinding: field) */
-    settle_abandoned_game: ((game_id: FieldLike, caller_card_ids: FieldLike[], caller_randomness: FieldLike[], caller_blinding: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** settle_game(game_key: field, record_1: array, record_2: array, move_vk: array, move_proof_1: array, move_inputs_1: array, move_proof_2: array, move_inputs_2: array, move_proof_3: array, move_inputs_3: array, move_proof_4: array, move_inputs_4: array, move_proof_5: array, move_inputs_5: array, move_proof_6: array, move_inputs_6: array, move_proof_7: array, move_inputs_7: array, move_proof_8: array, move_inputs_8: array, move_proof_9: array, move_inputs_9: array, prize_move: field) */
+    settle_game: ((game_key: FieldLike, record_1: FieldLike[], record_2: FieldLike[], move_vk: FieldLike[], move_proof_1: FieldLike[], move_inputs_1: FieldLike[], move_proof_2: FieldLike[], move_inputs_2: FieldLike[], move_proof_3: FieldLike[], move_inputs_3: FieldLike[], move_proof_4: FieldLike[], move_inputs_4: FieldLike[], move_proof_5: FieldLike[], move_inputs_5: FieldLike[], move_proof_6: FieldLike[], move_inputs_6: FieldLike[], move_proof_7: FieldLike[], move_inputs_7: FieldLike[], move_proof_8: FieldLike[], move_inputs_8: FieldLike[], move_proof_9: FieldLike[], move_inputs_9: FieldLike[], prize_move: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** sync_state(scope: struct) */
     sync_state: ((scope: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
   };
 
-  
-    public static get events(): { GameSettled: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, GameJoined: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, GameCreated: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, GameCancelled: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, GameAbandoned: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, AbandonmentContested: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] }, AbandonedGameSettled: {abiType: AbiType, eventSelector: EventSelector, fieldNames: string[] } } {
-    return {
-      GameSettled: {
-        abiType: {
-    "kind": "struct",
-    "fields": [
-        {
-            "name": "game_id",
-            "type": {
-                "kind": "field"
-            }
-        },
-        {
-            "name": "winner",
-            "type": {
-                "kind": "struct",
-                "fields": [
-                    {
-                        "name": "inner",
-                        "type": {
-                            "kind": "field"
-                        }
-                    }
-                ],
-                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
-            }
-        },
-        {
-            "name": "loser",
-            "type": {
-                "kind": "struct",
-                "fields": [
-                    {
-                        "name": "inner",
-                        "type": {
-                            "kind": "field"
-                        }
-                    }
-                ],
-                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
-            }
-        },
-        {
-            "name": "transferred_card_id",
-            "type": {
-                "kind": "field"
-            }
-        }
-    ],
-    "path": "TripleTriadGame::GameSettled"
-},
-        eventSelector: EventSelector.fromString("0x5893bc52"),
-        fieldNames: ["game_id","winner","loser","transferred_card_id"],
-      },
-GameJoined: {
-        abiType: {
-    "kind": "struct",
-    "fields": [
-        {
-            "name": "game_id",
-            "type": {
-                "kind": "field"
-            }
-        },
-        {
-            "name": "player2",
-            "type": {
-                "kind": "struct",
-                "fields": [
-                    {
-                        "name": "inner",
-                        "type": {
-                            "kind": "field"
-                        }
-                    }
-                ],
-                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
-            }
-        },
-        {
-            "name": "card_commit_hash",
-            "type": {
-                "kind": "field"
-            }
-        }
-    ],
-    "path": "TripleTriadGame::GameJoined"
-},
-        eventSelector: EventSelector.fromString("0x6f89fa40"),
-        fieldNames: ["game_id","player2","card_commit_hash"],
-      },
-GameCreated: {
-        abiType: {
-    "kind": "struct",
-    "fields": [
-        {
-            "name": "game_id",
-            "type": {
-                "kind": "field"
-            }
-        },
-        {
-            "name": "player1",
-            "type": {
-                "kind": "struct",
-                "fields": [
-                    {
-                        "name": "inner",
-                        "type": {
-                            "kind": "field"
-                        }
-                    }
-                ],
-                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
-            }
-        },
-        {
-            "name": "card_commit_hash",
-            "type": {
-                "kind": "field"
-            }
-        }
-    ],
-    "path": "TripleTriadGame::GameCreated"
-},
-        eventSelector: EventSelector.fromString("0x7776648f"),
-        fieldNames: ["game_id","player1","card_commit_hash"],
-      },
-GameCancelled: {
-        abiType: {
-    "kind": "struct",
-    "fields": [
-        {
-            "name": "game_id",
-            "type": {
-                "kind": "field"
-            }
-        }
-    ],
-    "path": "TripleTriadGame::GameCancelled"
-},
-        eventSelector: EventSelector.fromString("0x0047a3f8"),
-        fieldNames: ["game_id"],
-      },
-GameAbandoned: {
-        abiType: {
-    "kind": "struct",
-    "fields": [
-        {
-            "name": "game_id",
-            "type": {
-                "kind": "field"
-            }
-        },
-        {
-            "name": "claimant",
-            "type": {
-                "kind": "struct",
-                "fields": [
-                    {
-                        "name": "inner",
-                        "type": {
-                            "kind": "field"
-                        }
-                    }
-                ],
-                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
-            }
-        },
-        {
-            "name": "num_valid_moves",
-            "type": {
-                "kind": "field"
-            }
-        }
-    ],
-    "path": "TripleTriadGame::GameAbandoned"
-},
-        eventSelector: EventSelector.fromString("0xf27d7959"),
-        fieldNames: ["game_id","claimant","num_valid_moves"],
-      },
-AbandonmentContested: {
-        abiType: {
-    "kind": "struct",
-    "fields": [
-        {
-            "name": "game_id",
-            "type": {
-                "kind": "field"
-            }
-        },
-        {
-            "name": "contester",
-            "type": {
-                "kind": "struct",
-                "fields": [
-                    {
-                        "name": "inner",
-                        "type": {
-                            "kind": "field"
-                        }
-                    }
-                ],
-                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
-            }
-        }
-    ],
-    "path": "TripleTriadGame::AbandonmentContested"
-},
-        eventSelector: EventSelector.fromString("0x34c1aa2c"),
-        fieldNames: ["game_id","contester"],
-      },
-AbandonedGameSettled: {
-        abiType: {
-    "kind": "struct",
-    "fields": [
-        {
-            "name": "game_id",
-            "type": {
-                "kind": "field"
-            }
-        },
-        {
-            "name": "claimant",
-            "type": {
-                "kind": "struct",
-                "fields": [
-                    {
-                        "name": "inner",
-                        "type": {
-                            "kind": "field"
-                        }
-                    }
-                ],
-                "path": "arena_token::aztec::protocol_types::address::aztec_address::AztecAddress"
-            }
-        },
-        {
-            "name": "claimed_card_id",
-            "type": {
-                "kind": "field"
-            }
-        }
-    ],
-    "path": "TripleTriadGame::AbandonedGameSettled"
-},
-        eventSelector: EventSelector.fromString("0x6fc613a7"),
-        fieldNames: ["game_id","claimant","claimed_card_id"],
-      }
-    };
-  }
   
 }

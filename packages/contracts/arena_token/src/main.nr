@@ -2,27 +2,19 @@ mod test;
 
 use aztec::macros::aztec;
 
-/// Domain separator for the deterministic, recipient-derivable randomness of a
-/// reward balance note. "ArenaReward" as big-endian ASCII. Keeps the reward
-/// note's randomness distinct from any card-note randomness.
-global REWARD_NOTE_IV: Field = 0x4172656e61526577617264;
-
 /// Arena Token - private fungible token for the Aztec Arena game.
 ///
 /// Minting authority is shared between admin, NFT contract, and game contract.
 /// - NFT contract mints 100 tokens during new player onboarding
-/// - Game contract mints 20 tokens to each player after settlement
 /// - NFT contract burns 100 tokens when a player purchases a card pack
+/// - Game contract releases each player's prepared 20-token reward at settlement
 ///
-/// The game submitter (winner) discovers their own +20 reward via the normal
-/// ONCHAIN_CONSTRAINED delivery (their PXE proved the settle tx). The OTHER
-/// player (loser / draw opponent) never proved the tx and so cannot discover an
-/// ONCHAIN_CONSTRAINED note. For them the game uses `mint_reward`, which creates
-/// a DISCOVERABLE balance note with deterministic, recipient-derivable
-/// randomness (mirroring the NFT card flow): the note hash lands in the tx
-/// effects, the winner relays `(amount, randomness)`, and the recipient injects
-/// it into their PXE via `import_note`. The reward stays a real balance note, so
-/// it is spendable via `burn_from`.
+/// Game rewards are not minted to an address. Each player PREPARES their own
+/// reward note when they commit to a game (the NFT computes it from the
+/// player's own secrets), and settlement releases the prepared hash with
+/// `release_reward_notes`. Nobody but the owner ever knows who a reward note
+/// belongs to; the owner imports it from the settlement tx with `import_note`.
+/// See docs/plan/PRIVATE_GAMES.md section 3.6.
 #[aztec]
 pub contract ArenaToken {
     use aztec::{
@@ -52,7 +44,6 @@ pub contract ArenaToken {
     use balance_set::BalanceSet;
     use uint_note::UintNote;
 
-    use super::REWARD_NOTE_IV;
 
     #[storage]
     struct Storage<Context> {
@@ -102,26 +93,19 @@ pub contract ArenaToken {
         self.storage.balances.at(to).add(amount).deliver(MessageDelivery::onchain_constrained());
     }
 
-    /// Mint a reward to a recipient who is NOT the tx submitter (the game loser,
-    /// or either player on a draw besides the submitter), as a DISCOVERABLE
-    /// balance note. Only callable by admin or the game contract.
-    ///
-    /// The note randomness is derived deterministically from the recipient's
-    /// PRIVATE per-game randomness (`player_randomness`, the [Field; 6] committed
-    /// via their player_state_hash) -- known to both the winner (a settle input)
-    /// and the loser (their own state), but not publicly computable. The
-    /// recipient imports the note via `import_note`.
+    /// Release prepared reward notes: push each non-zero hash. The hashes are
+    /// `UintNote` hashes the players' own commits prepared (owner, amount and
+    /// randomness all fixed then), so this needs to know nothing about whom
+    /// they belong to. Only the game contract may release.
     #[external("private")]
-    fn mint_reward(to: AztecAddress, amount: u128, player_randomness: [Field; 6]) {
-        let caller = self.msg_sender();
-        let admin = self.storage.admin.read();
+    fn release_reward_notes(note_hashes: [Field; 2]) {
         let game = self.storage.game_contract.read();
-        assert(
-            (caller == admin) | (caller == game),
-            "Unauthorized: only admin or game contract can mint rewards",
-        );
-        let randomness = derive_reward_randomness(player_randomness);
-        let _ = create_and_push_reward_note(self.context, to, amount, randomness);
+        assert(self.msg_sender() == game, "Only game contract can release rewards");
+        for i in 0..2 {
+            if note_hashes[i] != 0 {
+                self.context.push_note_hash(note_hashes[i]);
+            }
+        }
     }
 
     /// Burn tokens from a player's private balance.
@@ -144,14 +128,6 @@ pub contract ArenaToken {
 
     // Updates are applied by FRESH REDEPLOY (new addresses), not the Aztec
     // contract-class upgrade pattern. See docs/plan/UPDATE_MODEL.md.
-
-    /// Frontend getter: compute a reward note's randomness from the recipient's
-    /// per-game randomness, so the winner can relay it (or the loser derive it).
-    /// NFT analog: `compute_blinding_factor`. Call via `.simulate()`.
-    #[external("utility")]
-    unconstrained fn compute_reward_randomness(player_randomness: [Field; 6]) -> Field {
-        derive_reward_randomness(player_randomness)
-    }
 
     /// Import a reward balance note created by a settlement tx into the
     /// recipient's PXE. Called via `.simulate()` -- NO on-chain tx. Mirrors the
@@ -198,54 +174,5 @@ pub contract ArenaToken {
         );
 
         validate_and_store_enqueued_notes_and_events(recipient);
-    }
-
-    /// Derive the deterministic, recipient-derivable randomness for a reward note
-    /// from the recipient's private per-game randomness. The inputs are private
-    /// (only the committed hash is public), so the result is not publicly
-    /// computable, preserving the note's unlinkability.
-    #[contract_library_method]
-    fn derive_reward_randomness(player_randomness: [Field; 6]) -> Field {
-        poseidon2_hash([
-            player_randomness[0],
-            player_randomness[1],
-            player_randomness[2],
-            player_randomness[3],
-            player_randomness[4],
-            player_randomness[5],
-            REWARD_NOTE_IV,
-        ])
-    }
-
-    /// Create a discoverable `UintNote` in `owner`'s balance set with explicit,
-    /// recipient-derivable randomness and push its hash into the tx. Does NOT
-    /// deliver/tag (the caller relays randomness; the recipient imports). The
-    /// note is a real balance note, summed by `balance_of` and spendable by
-    /// `burn_from` once imported. Mirrors the NFT's `create_and_push_note`.
-    #[contract_library_method]
-    fn create_and_push_reward_note(
-        context: &mut PrivateContext,
-        owner: AztecAddress,
-        value: u128,
-        randomness: Field,
-    ) -> Field {
-        let note = UintNote { value };
-        let note_hash_counter = context.get_side_effect_counter();
-        let storage_slot = ArenaToken::storage_layout().balances.slot;
-        // UintNote is a partial note; its hash uses a commitment scheme, so we
-        // call its own compute_note_hash rather than re-deriving by hand.
-        let note_hash = note.compute_note_hash(owner, storage_slot, randomness);
-
-        notify_created_note(
-            owner,
-            storage_slot,
-            randomness,
-            UintNote::get_id(),
-            note.pack(),
-            note_hash,
-            note_hash_counter,
-        );
-        context.push_note_hash(note_hash);
-        note_hash
     }
 }

@@ -149,14 +149,11 @@ arena_bots: {
   /** Type-safe wrappers for the public methods exposed by the contract. */
   public declare methods: {
     
-    /** commit_five_nfts_create(owner: struct, token_ids: array) */
-    commit_five_nfts_create: ((owner: AztecAddressLike, token_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** commit_hand(owner: struct, token_ids: array, reward: integer) */
+    commit_hand: ((owner: AztecAddressLike, token_ids: FieldLike[], reward: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** commit_five_nfts_join(owner: struct, token_ids: array, game_id: field) */
-    commit_five_nfts_join: ((owner: AztecAddressLike, token_ids: FieldLike[], game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** compute_blinding_factor(game_id: field) */
-    compute_blinding_factor: ((game_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** compute_game_secrets(nonce_value: field) */
+    compute_game_secrets: ((nonce_value: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** compute_note_randomness(nonce_value: field, count: integer) */
     compute_note_randomness: ((nonce_value: FieldLike, count: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -182,18 +179,6 @@ arena_bots: {
     /** mint_bot_cards(slot: field, token_ids: array, packed_ranks: array, randomness: array, count: integer) */
     mint_bot_cards: ((slot: FieldLike, token_ids: FieldLike[], packed_ranks: FieldLike[], randomness: FieldLike[], count: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** mint_for_game_draw(token_ids: array, to: struct) */
-    mint_for_game_draw: ((token_ids: FieldLike[], to: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** mint_for_game_draw_offchain(token_ids: array, to: struct, randomness: array) */
-    mint_for_game_draw_offchain: ((token_ids: FieldLike[], to: AztecAddressLike, randomness: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** mint_for_game_loser(token_ids: array, to: struct, randomness: array) */
-    mint_for_game_loser: ((token_ids: FieldLike[], to: AztecAddressLike, randomness: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
-    /** mint_for_game_winner(token_ids: array, to: struct, randomness: array) */
-    mint_for_game_winner: ((token_ids: FieldLike[], to: AztecAddressLike, randomness: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
-
     /** mint_to_private(to: struct, token_id: field, packed_ranks: field) */
     mint_to_private: ((to: AztecAddressLike, token_id: FieldLike, packed_ranks: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
@@ -206,8 +191,8 @@ arena_bots: {
     /** preview_card_ids(nonce_value: field) */
     preview_card_ids: ((nonce_value: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** preview_game_data(nonce_value: field) */
-    preview_game_data: ((nonce_value: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** preview_commit(owner: struct, token_ids: array, nonce_value: field, reward: integer) */
+    preview_commit: ((owner: AztecAddressLike, token_ids: FieldLike[], nonce_value: FieldLike, reward: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** public_dispatch(selector: field) */
     public_dispatch: ((selector: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -226,6 +211,9 @@ arena_bots: {
 
     /** reclaim_card(token_id: field) */
     reclaim_card: ((token_id: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** release_game_cards(note_hashes: array, count: integer, prize_partial: field, prize_card: field) */
+    release_game_cards: ((note_hashes: FieldLike[], count: (bigint | number), prize_partial: FieldLike, prize_card: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** set_arena_bot(slot: field, bot: struct) */
     set_arena_bot: ((slot: FieldLike, bot: AztecAddressLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;

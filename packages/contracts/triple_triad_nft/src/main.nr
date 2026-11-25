@@ -1,5 +1,6 @@
 mod test;
 pub mod test_support;
+pub mod card_note;
 
 use aztec::macros::aztec;
 
@@ -48,31 +49,38 @@ pub fn generate_card(seed: Field, counter: Field) -> (u8, u32) {
     (rarity, global_card_id)
 }
 
-/// The blinding factor that hides a player's hand, and the ONLY thing binding a
-/// hand commitment to one particular game.
+/// A hand a player may commit: five DISTINCT card ids, each a real card.
 ///
-/// `card_commit = poseidon2([card_ids[0..5], blinding_factor])`. Drop `game_id`
-/// from this hash and the same five cards commit to the same value in every
-/// game, so a move proof built for one game verifies against another's
-/// transcript — the register's T4 ("a move proof cannot be reused in a different
-/// game") rests entirely on this line.
+/// Distinct because a move proof places a card by naming its hand slot and
+/// rejects replaying an id this player already placed (game_move section 4b),
+/// so a hand holding one id twice could never place its fifth card. In range
+/// because the move circuit looks every id up in the card table, and settlement
+/// awards the prize card by id. This used to be the hand proof's job; doing it
+/// here, on-chain, at the moment the cards are taken, is what lets settlement
+/// drop the two hand proofs (docs/plan/PRIVATE_GAMES.md section 4).
 ///
-/// It is a function because it was three copies of one expression, in
-/// `commit_five_nfts_create`, `commit_five_nfts_join` and
-/// `compute_blinding_factor`. The frontend reads the third to build proofs the
-/// first two must agree with, so a drift between any two of them is a silent
-/// break, and nothing tested that they matched.
-///
-/// At module scope, not inside the contract, because that is the only place a
-/// `nargo test` can call it — the same reason the game contract's validators
-/// live outside its contract block.
-pub fn derive_blinding_factor(
-    nhk_app_secret: Field,
-    contract_address: Field,
-    game_id: Field,
-) -> Field {
-    poseidon::poseidon2::Poseidon2::hash([nhk_app_secret, contract_address, game_id], 3)
+/// At module scope so `nargo test` can reach it.
+pub fn validate_hand(card_ids: [Field; 5]) {
+    for i in 0..5 {
+        let id = card_ids[i];
+        assert((id as u32) as Field == id, "Card ID out of range");
+        assert(((id as u32) >= 1) & ((id as u32) <= 256), "Card ID out of range");
+        for j in (i + 1)..5 {
+            assert(card_ids[i] != card_ids[j], "Duplicate card IDs not allowed");
+        }
+    }
 }
+
+/// Per-game secrets a committing player derives, by `derive_note_randomness`
+/// index (docs/plan/PRIVATE_GAMES.md section 3.2). The nonce advances past all
+/// of them.
+pub global GAME_SECRET_COUNT: u32 = 8;
+/// Slot of the prize partial note's randomness among the game secrets.
+pub global PRIZE_SECRET_INDEX: u32 = 5;
+/// Slot of the reward note's randomness.
+pub global REWARD_SECRET_INDEX: u32 = 6;
+/// Slot of the hand blinding factor.
+pub global BLINDING_SECRET_INDEX: u32 = 7;
 
 /// Fixed starter set card IDs (common cards)
 global STARTER_CARD_IDS: [Field; 5] = [1, 2, 3, 4, 5];
@@ -90,9 +98,6 @@ global CARD_PACK_COST: u128 = 100;
 /// "SecretIV" = 0x5365637265744956
 global AXOLOTL_NOTE_SECRET_IV_FIELD: Field = 0x5365637265744956;
 
-/// IV for deterministic game_id derivation: "GameId" = 0x47616d654964
-global GAME_ID_IV_FIELD: Field = 0x47616d654964;
-/// IV for deterministic game randomness derivation: "GameRand" = 0x47616d6552616e64
 
 /// Storage slot for private_nfts: use TripleTriadNFT::storage_layout().private_nfts.slot
 /// The #[storage] macro assigns slots including hidden internal fields, so never hardcode.
@@ -103,9 +108,11 @@ global GAME_ID_IV_FIELD: Field = 0x47616d654964;
 #[aztec]
 pub contract TripleTriadNFT {
     use super::{
-        AXOLOTL_NOTE_SECRET_IV_FIELD, CARD_PACK_COST, derive_blinding_factor,
-        DOM_SEP__STARTER_CLAIM, GAME_ID_IV_FIELD, generate_card, STARTER_CARD_IDS,
+        AXOLOTL_NOTE_SECRET_IV_FIELD, BLINDING_SECRET_INDEX, CARD_PACK_COST, DOM_SEP__STARTER_CLAIM,
+        GAME_SECRET_COUNT, generate_card, PRIZE_SECRET_INDEX, REWARD_SECRET_INDEX,
+        STARTER_CARD_IDS, validate_hand,
     };
+    use super::card_note::{card_partial_commitment, CardNote, complete_card_note_hash};
     use arena_token::ArenaToken;
     use aztec::{
         keys::getters::get_public_keys,
@@ -126,19 +133,15 @@ pub contract TripleTriadNFT {
             lifecycle::NewNote,
             NoteMessage,
             note_getter_options::NoteGetterOptions,
-            note_interface::{NoteProperties, NoteType},
+            note_interface::{NoteHash, NoteProperties, NoteType},
             note_viewer_options::NoteViewerOptions,
-            utils::compute_confirmed_note_hash_for_nullification,
         },
         history::nullifier::assert_nullifier_did_not_exist_by,
         oracle::{logging::debug_log_format, notes::notify_created_note},
         protocol::{
             address::AztecAddress,
-            constants::{
-                DOM_SEP__NOTE_HASH,
-                DOM_SEP__NOTE_NULLIFIER, MAX_NOTE_HASHES_PER_TX,
-            },
-            hash::{compute_siloed_nullifier, poseidon2_hash, poseidon2_hash_with_separator},
+            constants::MAX_NOTE_HASHES_PER_TX,
+            hash::{compute_siloed_nullifier, poseidon2_hash},
             traits::{Hash, Packable, ToField},
         },
         state_vars::{Map, Owned, PrivateSet, PublicImmutable, PublicMutable, StateVariable},
@@ -171,7 +174,7 @@ pub contract TripleTriadNFT {
         symbol: PublicImmutable<FieldCompressedString, Context>,
         minter: PublicImmutable<AztecAddress, Context>,
         token_contract: PublicImmutable<AztecAddress, Context>,
-        private_nfts: Owned<PrivateSet<FieldNote, Context>, Context>,
+        private_nfts: Owned<PrivateSet<CardNote, Context>, Context>,
         nft_exists: Map<Field, PublicMutable<bool, Context>, Context>,
         public_owners: Map<Field, PublicMutable<AztecAddress, Context>, Context>,
         card_ranks: Map<Field, PublicImmutable<Field, Context>, Context>,
@@ -250,27 +253,56 @@ pub contract TripleTriadNFT {
         poseidon2_hash([nhk_app_secret, nonce_value + index, iv])
     }
 
-    /// Derive deterministic game_id from nhk_app_secret and nonce_value.
+    /// The per-game secrets of a commit (docs/plan/PRIVATE_GAMES.md section
+    /// 3.2): return-note randomness for slots 0..4, then the prize and reward
+    /// randomness and the hand blinding factor. All from the owner's own
+    /// nhk_app and nonce, so the owner can always re-derive them and nobody
+    /// else can.
     #[contract_library_method]
-    fn derive_game_id(nhk_app_secret: Field, nonce_value: Field) -> Field {
-        let iv = poseidon2_hash([GAME_ID_IV_FIELD]);
-        poseidon2_hash([nhk_app_secret, nonce_value, iv])
-    }
-
-    /// Derive deterministic game randomness (6 values) from nhk_app_secret and nonce_value.
-    /// Uses derive_note_randomness internally so all note randomness uses the same IV and formula.
-    #[contract_library_method]
-    fn derive_game_randomness(nhk_app_secret: Field, nonce_value: Field) -> [Field; 6] {
-        let mut result: [Field; 6] = [0; 6];
-        for i in 0..6 {
+    fn derive_game_secrets(nhk_app_secret: Field, nonce_value: Field) -> [Field; GAME_SECRET_COUNT] {
+        let mut result: [Field; GAME_SECRET_COUNT] = [0; GAME_SECRET_COUNT];
+        for i in 0..GAME_SECRET_COUNT {
             result[i] = derive_note_randomness(nhk_app_secret, nonce_value, i as Field);
         }
         result
     }
 
-    // --- Nullifier Debug Logging ---
+    /// What a commit of `token_ids` at `nonce_value` prepares for `owner`:
+    /// `[hand_commit, ret_0..ret_4, prize_partial, reward_note_hash]`. Shared by
+    /// the commit itself and its preview so the two cannot drift.
+    #[contract_library_method]
+    fn prepared_payouts(
+        owner: AztecAddress,
+        nhk_app_secret: Field,
+        nonce_value: Field,
+        token_ids: [Field; 5],
+        reward: u128,
+    ) -> [Field; 8] {
+        let secrets = derive_game_secrets(nhk_app_secret, nonce_value);
+        let card_slot = TripleTriadNFT::storage_layout().private_nfts.slot;
 
-    /// Peek at card notes via get_notes, compute their nullifiers, and log them.
+        let mut out: [Field; 8] = [0; 8];
+        // hand_commit = poseidon2([card_ids[0..5], blinding]) -- the formula the
+        // move circuit recomputes.
+        out[0] = poseidon2_hash([
+            token_ids[0], token_ids[1], token_ids[2], token_ids[3], token_ids[4],
+            secrets[BLINDING_SECRET_INDEX],
+        ]);
+        // One fully formed return note per hand slot, owned by the committer.
+        for i in 0..5 {
+            out[1 + i] = CardNote { card_id: token_ids[i] }.compute_note_hash(owner, card_slot, secrets[i]);
+        }
+        out[6] = card_partial_commitment(owner, secrets[PRIZE_SECRET_INDEX]);
+        out[7] = UintNote { value: reward }.compute_note_hash(
+            owner,
+            ArenaToken::storage_layout().balances.slot,
+            secrets[REWARD_SECRET_INDEX],
+        );
+        out
+    }
+
+    // --- Card Selection ---
+
     /// Pop exactly one note per requested token_id, selecting in the ORACLE.
     ///
     /// NOT `NoteGetterOptions::with_filter`, which is what this replaced.
@@ -294,79 +326,11 @@ pub contract TripleTriadNFT {
         token_ids: [Field; 5],
     ) {
         for i in 0..5 {
-            let options: NoteGetterOptions<FieldNote, 1, Field, Field> = NoteGetterOptions::new()
-                .select(FieldNote::properties().value, Comparator.EQ, token_ids[i])
+            let options: NoteGetterOptions<CardNote, 1, Field, Field> = NoteGetterOptions::new()
+                .select(CardNote::properties().card_id, Comparator.EQ, token_ids[i])
                 .set_limit(1);
             let popped = storage.private_nfts.at(owner).pop_notes(options);
             assert(popped.len() == 1, "Could not find all 5 cards");
-        }
-    }
-
-    /// Called BEFORE pop_notes so the code path under test is unchanged.
-    #[contract_library_method]
-    fn log_card_nullifiers(
-        storage: Storage<&mut aztec::context::PrivateContext>,
-        owner: AztecAddress,
-        token_ids: [Field; 5],
-        nhk_app_secret: Field,
-    ) {
-        // Per-card oracle select, for the same reason as pop_cards_by_id: the
-        // old batch filter only ever saw the first 16 notes, so for a large
-        // collection this logged nullifiers for the WRONG cards (or none) —
-        // diagnostics that mislead precisely when you need them.
-        for i in 0..5 {
-            let options: NoteGetterOptions<FieldNote, 1, Field, Field> = NoteGetterOptions::new()
-                .select(FieldNote::properties().value, Comparator.EQ, token_ids[i])
-                .set_limit(1);
-            let peeked = storage.private_nfts.at(owner).get_notes(options);
-            if peeked.len() == 1 {
-                let cn = peeked.get(0);
-                let note_hash_for_nul = compute_confirmed_note_hash_for_nullification(cn);
-                let nullifier = poseidon2_hash_with_separator(
-                    [note_hash_for_nul, nhk_app_secret],
-                    DOM_SEP__NOTE_NULLIFIER as Field,
-                );
-                debug_log_format(
-                    "[NFT] card_nullifier[{0}]: value={1} note_hash={2} nullifier={3}",
-                    [i as Field, cn.note.value, note_hash_for_nul, nullifier],
-                );
-            } else {
-                debug_log_format(
-                    "[NFT] card_nullifier[{0}]: NO NOTE for token_id={1}",
-                    [i as Field, token_ids[i]],
-                );
-            }
-        }
-    }
-
-    /// Peek at the nonce note via get_notes, compute its nullifier, and log it.
-    /// Called BEFORE pop_note_nonce so the code path under test is unchanged.
-    #[contract_library_method]
-    fn log_nonce_nullifier(
-        storage: Storage<&mut aztec::context::PrivateContext>,
-        owner: AztecAddress,
-        nhk_app_secret: Field,
-    ) {
-        let options: NoteGetterOptions<FieldNote, 1, Field, Field> =
-            NoteGetterOptions::new().set_limit(1);
-        let peeked = storage.note_nonce.at(owner).get_notes(options);
-        debug_log_format(
-            "[NFT] log_nonce_nullifier: found {0} nonce notes for owner={1}",
-            [peeked.len() as Field, owner.to_field()],
-        );
-        for i in 0..1 {
-            if i < peeked.len() {
-                let cn = peeked.get(i);
-                let note_hash_for_nul = compute_confirmed_note_hash_for_nullification(cn);
-                let nullifier = poseidon2_hash_with_separator(
-                    [note_hash_for_nul, nhk_app_secret],
-                    DOM_SEP__NOTE_NULLIFIER as Field,
-                );
-                debug_log_format(
-                    "[NFT] nonce_nullifier: value={0} note_hash={1} nullifier={2}",
-                    [cn.note.value, note_hash_for_nul, nullifier],
-                );
-            }
         }
     }
 
@@ -493,44 +457,31 @@ pub contract TripleTriadNFT {
 
     // --- Custom Note Creation (explicit randomness) ---
 
-    /// Create a FieldNote in `owner`'s card set with randomness WE choose,
+    /// Create a card note in `owner`'s card set with randomness WE choose,
     /// notify the local PXE and push the note hash. Returns the note,
     /// undelivered.
     ///
     /// The randomness is never random: players' notes derive it from their own
     /// nhk_app secret (`derive_note_randomness`), the bot's stock gets it from
     /// the provisioner's manifest. So an owner can always rebuild a note and
-    /// import it by hand (`import_note`) needing nothing from the sender — the
-    /// settlement and abandonment recovery paths depend on that.
+    /// import it by hand (`import_note`) needing nothing from the sender.
     #[contract_library_method]
     fn push_card_note(
         context: &mut aztec::context::PrivateContext,
         owner: AztecAddress,
         value: Field,
         randomness: Field,
-    ) -> NewNote<FieldNote> {
-        let note = FieldNote { value };
+    ) -> NewNote<CardNote> {
+        let note = CardNote { card_id: value };
         let note_hash_counter = context.get_side_effect_counter();
         // Owned<PrivateSet> uses the BASE storage slot (not a derived/mapped slot).
-        // Use the auto-generated storage_layout() to get the correct slot.
         let storage_slot = TripleTriadNFT::storage_layout().private_nfts.slot;
-        // FieldNote hash must match the #[note] macro's generated compute_note_hash:
-        //   data = pack(self).concat([owner, randomness]) = [value, owner, randomness]
-        //   compute_note_hash(storage_slot, data) = poseidon2([storage_slot, value, owner, randomness], DOM_SEP)
-        let note_hash = poseidon2_hash_with_separator(
-            [storage_slot, value, owner.to_field(), randomness],
-            DOM_SEP__NOTE_HASH,
-        );
-        debug_log_format(
-            "[NFT] push_card_note: owner={0} token_id={1} note_hash={2}",
-            [owner.to_field(), value, note_hash],
-        );
-
+        let note_hash = note.compute_note_hash(owner, storage_slot, randomness);
         notify_created_note(
             owner,
             storage_slot,
             randomness,
-            FieldNote::get_id(),
+            CardNote::get_id(),
             note.pack(),
             note_hash,
             note_hash_counter,
@@ -554,7 +505,7 @@ pub contract TripleTriadNFT {
         owner: AztecAddress,
         value: Field,
         randomness: Field,
-    ) -> NoteMessage<FieldNote> {
+    ) -> NoteMessage<CardNote> {
         let new_note = push_card_note(context, owner, value, randomness);
         NoteMessage::new(new_note, context)
     }
@@ -566,7 +517,7 @@ pub contract TripleTriadNFT {
         let minter = self.storage.minter.read();
         assert(self.msg_sender() == minter, "Only minter can mint");
 
-        let note = FieldNote { value: token_id };
+        let note = CardNote { card_id: token_id };
         self.storage.private_nfts.at(to).insert(note).deliver(MessageDelivery::onchain_constrained());
 
         self.enqueue_self.finalize_mint(to, token_id, packed_ranks);
@@ -583,7 +534,7 @@ pub contract TripleTriadNFT {
     /// The bot is not a collector: it needs a deep stock of ordinary cards to
     /// wager, and which INSTANCE it holds is meaningless. So for the bot, and
     /// only the bot, a token_id is a card TYPE and it may hold many. The notes
-    /// are ordinary FieldNotes, so nothing downstream changes: nullifiers come
+    /// are ordinary CardNotes, so nothing downstream changes: nullifiers come
     /// from note randomness, not from the id, and ranks are already registered
     /// per id.
     ///
@@ -652,204 +603,85 @@ pub contract TripleTriadNFT {
 
     // --- Transfers ---
 
-    /// Commit 5 NFTs for creating a new game. Returns [card_commit_hash, player_state_hash, game_id].
-    /// game_id and randomness are DERIVED IN-CIRCUIT from nhk_app_secret + nonce_value.
-    /// Called by TripleTriadGame.create_game.
+    /// Commit a hand to a game: take the five cards, and PREPARE everything the
+    /// player could be paid back at settlement (docs/plan/PRIVATE_GAMES.md
+    /// section 3.3). Returns
+    /// `[hand_commit, ret_0..ret_4, prize_partial, reward_note_hash]`.
+    ///
+    /// Every payout is prepared here, inside the committing player's own tx,
+    /// from secrets only they hold -- so settlement can release them without
+    /// anyone learning their address, their randomness or their hand. Only
+    /// the game contract may commit (a commit consumes the cards).
     #[external("private")]
-    fn commit_five_nfts_create(owner: AztecAddress, token_ids: [Field; 5]) -> [Field; 3] {
-        let caller = self.msg_sender();
-        debug_log_format("Caller = {0}", [owner.to_field()]);
+    fn commit_hand(owner: AztecAddress, token_ids: [Field; 5], reward: u128) -> [Field; 8] {
         let game = self.storage.game_contract.read();
-        assert((caller == game) | (caller == owner), "Only game contract or owner can commit");
+        assert(self.msg_sender() == game, "Only game contract can call");
+        validate_hand(token_ids);
 
-        // Get nhk_app_secret first (needed for nullifier logging and derivations)
         let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
 
-        // Log nonce note nullifier before popping
-        log_nonce_nullifier(self.storage, owner, nhk_app_secret);
-
         let nonce_value = pop_note_nonce(self.context, self.storage, owner);
-
-        // Derive game_id and randomness deterministically in-circuit
-        let game_id = derive_game_id(nhk_app_secret, nonce_value);
-        let randomness = derive_game_randomness(nhk_app_secret, nonce_value);
-
-        debug_log_format(
-            "[NFT] commit_five_nfts_create: owner={0} nonce={1} game_id={2}",
-            [owner.to_field(), nonce_value, game_id],
-        );
-        for i in 0..5 {
-            debug_log_format(
-                "[NFT] commit_create: requesting token_id={0}",
-                [token_ids[i]],
-            );
-        }
-
-        // Log card nullifiers before popping (read-only peek)
-        log_card_nullifiers(self.storage, owner, token_ids, nhk_app_secret);
-
-        // Pop the 5 card notes (unchanged code path)
         pop_cards_by_id(self.storage, owner, token_ids);
-
-        // card_commit_hash = poseidon2([card_ids[0..5], blinding_factor])
-        let mut to_hash: [Field; 6] = [0; 6];
-        for i in 0..5 {
-            to_hash[i] = token_ids[i];
-        }
-        to_hash[5] = derive_blinding_factor(nhk_app_secret, self.address.to_field(), game_id);
-        let card_commit_hash = poseidon2_hash(to_hash);
-
-        let player_state_hash = poseidon2_hash(randomness);
-
-        // Advance the nonce past the 6 randomness slots this game consumed:
-        // derive_game_randomness reads slots [nonce_value, nonce_value + 6) (one
-        // per gameRandomness [Field; 6] element, main.nr derive_game_randomness),
-        // so +6 guarantees no later pack/game derivation reuses a slot. Mirrors
-        // purchase_card_pack's +10 for its 10 cards. (QA-A2: per-game delta = +6.)
-        push_note_nonce(self.context, self.storage, owner, nonce_value + 6);
-
-        debug_log_format(
-            "[NFT] commit_create: card_commit={0} player_state={1}",
-            [card_commit_hash, player_state_hash],
-        );
-        [card_commit_hash, player_state_hash, game_id]
+        let prepared = prepared_payouts(owner, nhk_app_secret, nonce_value, token_ids, reward);
+        // Past every secret this game derived, so no later pack or game reuses one.
+        push_note_nonce(self.context, self.storage, owner, nonce_value + GAME_SECRET_COUNT as Field);
+        prepared
     }
 
-    /// Commit 5 NFTs for joining an existing game. Returns [card_commit_hash, player_state_hash].
-    /// game_id is provided (from the game creator). Randomness is DERIVED IN-CIRCUIT.
-    /// Called by TripleTriadGame.join_game.
+    /// What `commit_hand` would return at `nonce_value`, without taking
+    /// anything. Simulate-only: the client builds its record from it before it
+    /// commits.
     #[external("private")]
-    fn commit_five_nfts_join(
+    #[view]
+    fn preview_commit(
         owner: AztecAddress,
         token_ids: [Field; 5],
-        game_id: Field,
-    ) -> [Field; 2] {
+        nonce_value: Field,
+        reward: u128,
+    ) -> [Field; 8] {
         let caller = self.msg_sender();
         let game = self.storage.game_contract.read();
-        assert((caller == game) | (caller == owner), "Only game contract or owner can commit");
-
-        // Get nhk_app_secret first (needed for nullifier logging and derivations)
+        assert((caller == game) | (caller == owner), "Only the owner or game contract can preview");
+        validate_hand(token_ids);
         let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
-
-        // Log nonce note nullifier before popping
-        log_nonce_nullifier(self.storage, owner, nhk_app_secret);
-
-        let nonce_value = pop_note_nonce(self.context, self.storage, owner);
-
-        // Derive randomness deterministically in-circuit
-        let randomness = derive_game_randomness(nhk_app_secret, nonce_value);
-
-        debug_log_format(
-            "[NFT] commit_five_nfts_join: owner={0} nonce={1} game_id={2}",
-            [owner.to_field(), nonce_value, game_id],
-        );
-        for i in 0..5 {
-            debug_log_format("[NFT] commit_join: requesting token_id={0}", [token_ids[i]]);
-        }
-
-        // Log card nullifiers before popping (read-only peek)
-        log_card_nullifiers(self.storage, owner, token_ids, nhk_app_secret);
-
-        // Pop the 5 card notes (unchanged code path)
-        pop_cards_by_id(self.storage, owner, token_ids);
-
-        // card_commit_hash = poseidon2([card_ids[0..5], blinding_factor])
-        let mut to_hash: [Field; 6] = [0; 6];
-        for i in 0..5 {
-            to_hash[i] = token_ids[i];
-        }
-        to_hash[5] = derive_blinding_factor(nhk_app_secret, self.address.to_field(), game_id);
-        let card_commit_hash = poseidon2_hash(to_hash);
-
-        let player_state_hash = poseidon2_hash(randomness);
-
-        // Advance the nonce past the 6 randomness slots this game consumed:
-        // derive_game_randomness reads slots [nonce_value, nonce_value + 6) (one
-        // per gameRandomness [Field; 6] element, main.nr derive_game_randomness),
-        // so +6 guarantees no later pack/game derivation reuses a slot. Mirrors
-        // purchase_card_pack's +10 for its 10 cards. (QA-A2: per-game delta = +6.)
-        push_note_nonce(self.context, self.storage, owner, nonce_value + 6);
-        debug_log_format(
-            "[NFT] commit_join: card_commit={0} player_state={1}",
-            [card_commit_hash, player_state_hash],
-        );
-
-        [card_commit_hash, player_state_hash]
+        prepared_payouts(owner, nhk_app_secret, nonce_value, token_ids, reward)
     }
 
+    /// Release prepared card notes: the first `count` of `note_hashes`, and,
+    /// when `prize_card` is non-zero, the prize card completed into
+    /// `prize_partial`. Nothing is delivered -- each owner rebuilds their own
+    /// notes from secrets they already hold and imports them from this tx.
+    ///
+    /// The game contract is the only caller, and everything it passes comes
+    /// from records committed in the players' own commit txs.
     #[external("private")]
-    fn mint_for_game_winner(token_ids: [Field; 6], to: AztecAddress, randomness: [Field; 6]) {
-        let game = self.storage.game_contract.read();
-        assert(self.msg_sender() == game, "Only game contract can call");
-
-        debug_log_format("[NFT] mint_for_game_winner: to={0}", [to.to_field()]);
-        for i in 0..6 {
-            debug_log_format(
-                "[NFT] winner_mint[{0}]: token_id={1} randomness={2}",
-                [i as Field, token_ids[i], randomness[i]],
-            );
-            create_and_push_note(self.context, to, token_ids[i], randomness[i]).deliver(
-                MessageDelivery::offchain(),
-            );
-        }
-    }
-
-    #[external("private")]
-    fn mint_for_game_loser(token_ids: [Field; 4], to: AztecAddress, randomness: [Field; 4]) {
-        let game = self.storage.game_contract.read();
-        assert(self.msg_sender() == game, "Only game contract can call");
-
-        debug_log_format("[NFT] mint_for_game_loser: to={0}", [to.to_field()]);
-        for i in 0..4 {
-            debug_log_format(
-                "[NFT] loser_mint[{0}]: token_id={1} randomness={2}",
-                [i as Field, token_ids[i], randomness[i]],
-            );
-            create_and_push_note(self.context, to, token_ids[i], randomness[i]).deliver(
-                MessageDelivery::offchain(),
-            );
-        }
-    }
-
-    /// ONCHAIN_CONSTRAINED draw mint --kept unchanged for cancel_game.
-    #[external("private")]
-    fn mint_for_game_draw(token_ids: [Field; 5], to: AztecAddress) {
-        let game = self.storage.game_contract.read();
-        assert(self.msg_sender() == game, "Only game contract can call");
-
-        for i in 0..5 {
-            let note = FieldNote { value: token_ids[i] };
-            self.storage.private_nfts.at(to).insert(note).deliver(
-                MessageDelivery::onchain_constrained(),
-            );
-        }
-    }
-
-    /// OFFCHAIN draw mint for settlement: explicit randomness, each note's
-    /// message delivered offchain to `to`.
-    #[external("private")]
-    fn mint_for_game_draw_offchain(
-        token_ids: [Field; 5],
-        to: AztecAddress,
-        randomness: [Field; 5],
+    fn release_game_cards(
+        note_hashes: [Field; 10],
+        count: u32,
+        prize_partial: Field,
+        prize_card: Field,
     ) {
         let game = self.storage.game_contract.read();
         assert(self.msg_sender() == game, "Only game contract can call");
-
-        for i in 0..5 {
-            create_and_push_note(self.context, to, token_ids[i], randomness[i]).deliver(
-                MessageDelivery::offchain(),
-            );
+        assert(count <= 10, "count exceeds batch size");
+        for i in 0..10 {
+            if i < count {
+                self.context.push_note_hash(note_hashes[i]);
+            }
+        }
+        if prize_card != 0 {
+            let storage_slot = TripleTriadNFT::storage_layout().private_nfts.slot;
+            self.context.push_note_hash(complete_card_note_hash(prize_partial, storage_slot, prize_card));
         }
     }
 
     /// Build a NoteGetterOptions that selects a single card by token_id.
     #[contract_library_method]
-    fn remove_one(token_id: Field) -> NoteGetterOptions<FieldNote, 1, Field, Field> {
+    fn remove_one(token_id: Field) -> NoteGetterOptions<CardNote, 1, Field, Field> {
         NoteGetterOptions::new()
-            .select(FieldNote::properties().value, Comparator.EQ, token_id)
+            .select(CardNote::properties().card_id, Comparator.EQ, token_id)
             .set_limit(1)
     }
 
@@ -860,7 +692,7 @@ pub contract TripleTriadNFT {
         let notes = self.storage.private_nfts.at(from).pop_notes(remove_one(token_id));
         assert(notes.len() == 1, "Card not found");
 
-        let note = FieldNote { value: token_id };
+        let note = CardNote { card_id: token_id };
         self.storage.private_nfts.at(to).insert(note).deliver(MessageDelivery::onchain_constrained());
     }
 
@@ -881,7 +713,7 @@ pub contract TripleTriadNFT {
         assert(self.msg_sender() == from, "Sender must be owner");
 
         let options = NoteGetterOptions::new()
-            .select(FieldNote::properties().value, Comparator.EQ, token_id)
+            .select(CardNote::properties().card_id, Comparator.EQ, token_id)
             .set_limit(1);
         let notes = self.storage.private_nfts.at(from).pop_notes(options);
         assert(notes.len() == 1, "Card not found");
@@ -898,7 +730,7 @@ pub contract TripleTriadNFT {
     fn reclaim_card(token_id: Field) {
         let owner = self.msg_sender();
 
-        let note = FieldNote { value: token_id };
+        let note = CardNote { card_id: token_id };
         self.storage.private_nfts.at(owner).insert(note).deliver(MessageDelivery::onchain_constrained());
 
         self.enqueue_self.finalize_reclaim(owner, token_id);
@@ -997,43 +829,27 @@ pub contract TripleTriadNFT {
         result
     }
 
-    // --- Game Data Preview Utility ---
+    // --- Game Secrets Utility ---
 
-    /// Preview the game_id and randomness that will be derived for a given nonce_value.
-    /// Call via .simulate({ from: playerAddr }) -- no on-chain tx.
-    /// Frontend should call get_note_nonce() first to get current nonce_value.
-    /// Returns [game_id, randomness[0], randomness[1], ..., randomness[5]] (7 values).
-    /// Used before calling create_game to know the game_id to share with opponent.
+    /// The caller's per-game secrets at `nonce_value`:
+    /// `[blinding, r_0..r_4, prize_randomness, reward_randomness]`.
+    /// Simulate-only. The client needs the blinding to prove moves and the
+    /// randomness to import what settlement releases to it.
     #[external("private")]
-    fn preview_game_data(nonce_value: Field) -> [Field; 7] {
+    #[view]
+    fn compute_game_secrets(nonce_value: Field) -> [Field; 8] {
         let owner = self.msg_sender();
         let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
         let nhk_app_secret = self.context.request_nhk_app(owner_npk_m_hash);
-
-        let game_id = derive_game_id(nhk_app_secret, nonce_value);
-        let randomness = derive_game_randomness(nhk_app_secret, nonce_value);
-
-        let mut result = [0 as Field; 7];
-        result[0] = game_id;
-        for i in 0..6 {
-            result[i + 1] = randomness[i];
+        let secrets = derive_game_secrets(nhk_app_secret, nonce_value);
+        let mut out: [Field; 8] = [0; 8];
+        out[0] = secrets[BLINDING_SECRET_INDEX];
+        for i in 0..5 {
+            out[1 + i] = secrets[i];
         }
-        result
-    }
-
-    // --- Blinding Factor Utility ---
-
-
-    /// Compute the blinding factor for the calling player for a specific game.
-    /// This is the same value used in commit_five_nfts:
-    ///   blinding_factor = poseidon2_hash([nhk_app_secret, contract_address, game_id])
-    /// Call via .simulate({ from: playerAddr }) to retrieve without a transaction.
-    #[external("private")]
-    fn compute_blinding_factor(game_id: Field) -> Field {
-        let owner = self.msg_sender();
-        let owner_npk_m_hash = get_public_keys(owner).npk_m_hash;
-        let seed = self.context.request_nhk_app(owner_npk_m_hash);
-        derive_blinding_factor(seed, self.address.to_field(), game_id)
+        out[6] = secrets[PRIZE_SECRET_INDEX];
+        out[7] = secrets[REWARD_SECRET_INDEX];
+        out
     }
 
     // --- Note Import Utility ---
@@ -1059,7 +875,7 @@ pub contract TripleTriadNFT {
         // Use the auto-generated storage_layout() to get the correct slot.
         let storage_slot = TripleTriadNFT::storage_layout().private_nfts.slot;
 
-        let note = FieldNote { value };
+        let note = CardNote { card_id: value };
 
         // Build BoundedVec of unique note hashes from the tx
         let mut unique_hashes_vec: BoundedVec<Field, MAX_NOTE_HASHES_PER_TX> = BoundedVec::new();
@@ -1102,7 +918,7 @@ pub contract TripleTriadNFT {
         let notes = self.storage.private_nfts.at(owner).view_notes(NoteViewerOptions::new()
             .set_offset(page_index * MAX_NOTES_PER_PAGE));
         for i in 0..notes.len() {
-            page[i] = notes.get(i).value;
+            page[i] = notes.get(i).card_id;
         }
         let has_more: bool = notes.len() == MAX_NOTES_PER_PAGE;
         (page, has_more)

@@ -1,8 +1,7 @@
 mod utils;
-mod commit_five_nfts;
+mod hand_rules;
+mod commit_hand;
 mod minting;
 mod bot_minting;
-mod game_lifecycle;
-mod blinding;
 mod offchain_delivery;
 mod mint_authorization;
