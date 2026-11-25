@@ -76,6 +76,9 @@ site, must map to at least one row below. Unmapped means unexamined.
 node scripts/audit/mutate.mjs --list     # assert sites per target
 ```
 
+**This table measures the contracts as they were BEFORE the private-games
+redesign.** The new contracts have not been swept yet.
+
 | Target | Asserts | Survivors | Untested |
 |---|---|---|---|
 | `circuits/prove_hand` | 5 | **0** | 0% |
@@ -141,81 +144,95 @@ intuition, in one example.**
 
 ## Invariants
 
-### Settlement binding
+**Rewritten for the private-games contracts (docs/plan/PRIVATE_GAMES.md,
+November 2026).** The rows the previous contracts carried (S, T, A, L, Z, H, P)
+described public game state, addresses and a settlement that minted the other
+player's notes; that code is gone, and so are those rows (see git history).
+New rows use new letters so the old mutation snapshot, which measured the old
+code, cannot be mistaken for coverage of the new. Statuses below are TXE and
+circuit tests that fail for the reason named (every negative contract test is
+pinned to its failure message); no mutation sweep of the new contracts has run
+yet, so nothing here is `MUTATION-COVERED`.
 
-| # | Property | Status | Artifact |
+### Settlement releases what the players prepared
+
+| # | Property | Status | Evidence |
 |---|---|---|---|
-| S1 | A settlement can only mint card ids that hash to the commitment stored at create/join. | `UNVERIFIED` | `settle_game` / `settle_game_draw` asserts; historical bug's regression |
-| S2 | The transferred card must be one the loser committed. | `UNVERIFIED` | `card_found` loop + S1 |
-| S3 | A settlement pays out only to the two players of that game. | `VERIFIED` | Finding 1 fix; `is_player_pair` + 3 tests |
-| S4 | The caller of a win/loss settlement is the player the transcript names as winner. | `UNVERIFIED` | `winner == player1/2` keyed off proof `winner_id` |
-| S5 | Randomness used to re-mint matches what was committed. | `UNVERIFIED` | `player_state_hash` asserts |
+| R1 | Settlement, cancel and unwinding release only notes the players' own commits prepared; a forged record cannot join, cancel or settle. | `VERIFIED` | `joining_needs_the_creators_real_record`, `a_cancel_cannot_name_other_cards`, `settlement_needs_the_joiners_real_record` — each fails "reading an unknown nullifier" |
+| R2 | The prize is a card the LOSER placed, from the slot its move proof names; the loser keeps the other four. | `VERIFIED` | `prize_of` validator tests; `player_1_wins…`, `player_2_wins…`, `the_winner_cannot_take_their_own_card` |
+| R3 | Each player imports exactly their own notes, from data they already hold. | `VERIFIED` | Every settlement/cancel/unwind test imports with the owner's own secrets only; `e2e-aztec-settlement.test.ts` does it with real proofs |
+| R4 | A win and a draw release the same number of notes. | `VERIFIED` | Both settlement tests assert 12 |
+| R5 | Who settles changes nothing: anyone with the records and transcript may, and the payout is the same. | `VERIFIED` | `anyone_holding_the_records_and_transcript_can_settle` |
 
 ### Transcript integrity
 
-| # | Property | Status | Artifact |
+| # | Property | Status | Evidence |
 |---|---|---|---|
-| T1 | Moves chain: each move's end state is the next move's start state. | `VERIFIED` | `process_game` §5 |
-| T2 | The first move starts from the canonical empty board. | `VERIFIED` | §6 + `initial_state` tests |
-| T3 | Only the ninth move may end the game, and must name a valid winner. | `UNVERIFIED` | §7 + `forge_early_game_end` |
-| T4 | A move proof cannot be reused in a different game. | `PARTIAL` | Holds via per-game blinding in `card_commit`; no test pins the derivation — F8 |
-| T5 | A board position cannot recur, so a move cannot be replayed. | `UNVERIFIED` | Argued from game logic (each move adds a card), not from the hash construction |
-| T6 | The prover cannot forge the post-move board, scores or owners. | `VERIFIED` | 16 forgery tests in `game_move` |
-| T8 | The published start/end state hashes are the board actually operated on. | `VERIFIED` | `forge_start_state_hash_not_matching_board`, `forge_end_state_hash_not_matching_board` — found missing by mutation |
-| T9 | A completed board must be declared finished, with the correct winner. | `PARTIAL` | `forge_wrong_winner_on_completed_board`, `forge_completed_board_declared_unfinished`; the p2-win and draw branches (`:298`, `:300`) remain unkilled |
-| T7 | Cascading multi-captures propagate exactly as far as the rules allow. | `VERIFIED` | 270 differential cases from 30 engine-played games; 81 capture-mutations rejected |
+| C1 | Every move is bound to both records' hand commitments. | `VERIFIED` | `a_move_bound_to_another_hand_fails`, `moves_must_be_bound_to_this_games_hands` |
+| C2 | Moves chain, from the canonical empty board, and only the ninth ends the game with a valid winner. | `VERIFIED` | `assert_transcript` validator tests; `initial_state` tests |
+| C3 | A move places only a committed card, from the slot it names. | `VERIFIED` | `game_move`: `test_fail_placed_slot_*`, `test_fail_card_not_in_hand` |
+| C4 | The prover cannot forge the post-move board, scores, owners or result. | `VERIFIED` | 402 `game_move` tests (unchanged rules) |
+| C5 | Move proofs verify against the stored move VK. | `PARTIAL` | Real proofs settle on a local network (`e2e-aztec-settlement.test.ts`); that a network rejects a bad proof is the recursion primitive's job (G3) |
 
-### Abandonment and recovery
+### Lifecycle: each step happens once
 
-| # | Property | Status | Artifact |
+| # | Property | Status | Evidence |
 |---|---|---|---|
-| A1 | A claimant must be a player in the game. | `VERIFIED` | `claim_abandoned_game_public` |
-| A2 | A claimant must not be the player who owes the next move (n < 9). | `UNVERIFIED` | Finding 2 fix; public-half check against stored addresses |
-| A3 | A claim cannot be filed before `MIN_ABANDON_SECONDS`. | `UNVERIFIED` | chain-timestamp assert |
-| A4 | Recovery returns only the caller's own committed stake. | `UNVERIFIED` | `settle_abandoned_game` binds to caller's own commitment |
-| A5 | Each player recovers at most once. | `UNVERIFIED` | `game_recovered` keyed `[game_id, player]` |
-| A6 | A contest and a recovery can never both apply to one claim. | `VERIFIED` | Windows are `<` and `>=` of the same bound — mutually exclusive |
-| A7 | A contest restores the game and restarts the abandonment clock. | `UNVERIFIED` | Finding 3 fix |
-| A8 | A player may contest at most once per game. | `ACCEPTED` | Bounded by A7; a determined opponent can still out-wait one contest. **No longer the winner's last line of defence** — see A9 |
-| A9 | A standing claim cannot deny a winner their prize. | `VERIFIED` | F9 closed. `assert_settleable` admits status 5 while neither player has recovered, so a verified nine-move transcript outranks a claim at any `n` the claimant chose. 7 tests, including both partial-recovery double-mints |
+| E1 | A game resolves at most once — settle, finalize and cancel share one nullifier. | `VERIFIED` | `a_game_settles_once`, `a_settled_game_cannot_be_unwound`, `a_game_is_cancelled_once` — "duplicate nullifiers" |
+| E2 | Seat 2 closes once: a game is joined once, and join and cancel exclude each other. | `VERIFIED` | `a_game_is_joined_once`, `a_joined_game_cannot_be_cancelled`, `a_cancelled_game_cannot_be_joined` |
+| E3 | Joining needs the shared key and the creator's real record. | `VERIFIED` | `joining_needs_the_shared_key`, `joining_needs_the_creators_real_record` |
+| E4 | A player cannot join their own game. | `VERIFIED` | `a_player_cannot_join_their_own_game` |
+| E5 | Only the creator can cancel, and cancel returns exactly the creator's hand. **Closes the cancel_game arbitrary-card mint by construction.** | `VERIFIED` | `only_the_creator_can_cancel`, `cancelling_gives_the_creator_exactly_their_hand_back`, `a_cancel_cannot_name_other_cards` |
 
-### Idempotence and lifecycle
+### Abandonment
 
-| # | Property | Status | Artifact |
+| # | Property | Status | Evidence |
 |---|---|---|---|
-| L1 | A game can be settled at most once, by any route. | `UNVERIFIED` | `status == 2` + `game_settled` on both settle paths |
-| L2 | A `game_id` is never reusable. | `UNVERIFIED` | `create_game_public` requires status 0; no path writes 0 |
-| L3 | A claimed game cannot also be settled normally. | `VERIFIED` | `status == 2` guard (the double-mint fix) |
-| L5 | Only the creator can cancel a game. | `UNVERIFIED` | `player == player1` exists; `:303` survives mutation. **Cancel re-mints the creator's five cards, so this is an authorization check on a supply-affecting path.** |
-| L6 | A game can only be cancelled before it is joined. | `UNVERIFIED` | `status == 1` exists; `:300` survives. Cancelling a JOINED game would re-mint the creator's cards while the opponent's stay committed — supply inflation on one side and permanent loss on the other. |
-| L4 | A player cannot join their own game. | `UNVERIFIED` | `player2 != player1` exists but `:267` survives mutation — nothing tests it. **Downgraded: this row was wrongly marked VERIFIED on the strength of reading. See F7.** |
+| D1 | Only a player can claim, and only from their own seat. | `VERIFIED` | `only_a_player_can_claim`, `a_player_cannot_claim_from_the_other_seat` |
+| D2 | No claim before `MIN_ABANDON_SECONDS` since the join, or since the last contest. | `VERIFIED` | `a_claim_right_after_joining_is_too_soon`, `a_second_claim_too_soon_after_a_contest_is_refused`, validator edge tests |
+| D3 | A contest is only inside the window, only by the other side, once per side. | `VERIFIED` | `a_contest_after_the_window_is_refused`, `a_claimant_cannot_contest_their_own_claim`, `each_side_contests_once` |
+| D4 | Finalize only after the window; contest and finalize of one claim exclude each other. | `VERIFIED` | `a_claim_cannot_be_finalized_inside_its_window`, `a_contested_claim_cannot_be_finalized` |
+| D5 | A full transcript outranks a standing claim; an unwound game cannot be settled, nor a settled one unwound. | `VERIFIED` | `a_full_transcript_outranks_a_standing_claim`, `a_settled_game_cannot_be_unwound` |
+| D6 | Unwinding returns each player exactly their own hand, with no reward. | `VERIFIED` | `an_uncontested_claim_unwinds_the_game_for_both_players` |
+| D7 | Claim numbers are used once, and there are at most three. | `VERIFIED` | `a_claim_number_is_used_once`, `a_fourth_claim_is_refused` |
+| D8 | A claim no longer proves whose turn it is. | `ACCEPTED` | The old parity rule was defeated by truncating the transcript anyway; the defences are D3 (contest) and D5 (a full transcript wins). A staller who claims twice can unwind a game they were losing once both contests are spent — as before |
 
 ### Authorization
 
-| # | Property | Status | Artifact |
+| # | Property | Status | Evidence |
 |---|---|---|---|
-| Z1 | Only the game contract can mint game cards. | `VERIFIED` | `triple_triad_nft/src/test/mint_authorization.nr`: a player calling each of the four `mint_for_game_*` fails "Only game contract can call"; the same call from the game goes through |
-| Z2 | Public ownership can only be set from inside the NFT contract. | `VERIFIED` | `#[only_self]` |
-| Z3 | Card ranks cannot be supplied by a player. | `MUTATION-COVERED` | Fixed in-circuit table; `card_data` tests |
-| Z4 | Every deployed entry point that creates cards is a reviewed mint, and nothing test-only is deployed. | `VERIFIED` | `scripts/contractEntryPoints.test.ts`: the NFT's entry points must equal a reviewed list naming who may call each card-creating one, and no shipped contract may have a `test_*` function. Fails on the artifact of the NFT deployed on 20 November 2026 |
+| U1 | Only the game contract may commit hands, release game cards or release rewards. | `VERIFIED` | `triple_triad_nft/src/test/mint_authorization.nr`, `a_player_cannot_commit_directly`, token `only_the_game_can_release_rewards` |
+| U2 | A player's prepared payouts can be previewed only by the player or the game. | `VERIFIED` | `a_stranger_cannot_preview_someone_elses_payouts` |
+| U3 | Every deployed entry point is reviewed; nothing test-only ships. | `VERIFIED` | `scripts/contractEntryPoints.test.ts` (both NFT and game lists) |
+| U4 | Public card ownership can only be set from inside the NFT contract. | `VERIFIED` | `#[only_self]` |
 
-### Hand commitment
+### Hands and per-game secrets
 
-| # | Property | Status | Artifact |
+| # | Property | Status | Evidence |
 |---|---|---|---|
-| H1 | A hand proof binds five distinct card ids in 1..256. | `MUTATION-COVERED` | `prove_hand`, 0 mutation survivors of 4 |
-| H2 | A hand a client can select is always one it can prove. | `VERIFIED` | Finding 4 fix; `selectHand` refuses duplicates |
-| H3 | A move can only place a card in the committed hand. | `VERIFIED` | `forge_card_not_in_hand` |
+| K1 | A committed hand is five distinct real cards the player holds. | `VERIFIED` | `hand_rules.nr`; `a_hand_with_a_repeated_card_cannot_be_committed`, `a_card_the_player_does_not_hold_cannot_be_committed` |
+| K2 | Prepared payouts are exactly what the owner can rebuild from their own secrets. | `VERIFIED` | `the_prepared_payouts_are_exactly_what_the_owner_can_rebuild` |
+| K3 | No two games share a prepared value. | `VERIFIED` | `two_games_never_share_payouts`, `committing_takes_the_five_cards_and_advances_the_nonce` |
+| K4 | The open-cards proof binds the three revealed cards to the committed hand's first three slots. | `VERIFIED` | `prove_hand` tests (off-chain only) |
 
 ### Supply and deployment
 
-| # | Property | Status | Artifact |
+| # | Property | Status | Evidence |
 |---|---|---|---|
-| P1 | Every settlement path conserves card supply. | `PARTIAL` | By construction: 10 committed → winner 6 + loser 4, draw 5 + 5, recovery 5 per player behind a per-player flag. Counted, not tested. |
-| P2 | A card note created by settlement is real and in the tree. | `PARTIAL` | `create_and_push_note` derives the macro-compatible hash and calls `push_note_hash`. Read, not tested. |
-| P3 | Card notes cannot be double-spent across games. | `PARTIAL` | Constrained `pop_notes` emits nullifiers; duplicate nullifiers are dropped by the sequencer. Relies on protocol behaviour. |
-| P4 | The deployed VK hashes are the real circuits', not the dummy's. | `VERIFIED` | Empirical: a genuine `game_move` proof only verifies against the real hash, and real settlements succeed on the live instance. |
-| P5 | A deployment cannot register the dummy VK for real proofs. | `VERIFIED` | F10 closed. `assert_vk_configuration` runs in the constructor: VKs non-zero, hand != move, and neither equal to the dummy unless `permissive_vks` was passed explicitly. 8 tests. A permissive deployment is readable on-chain via `has_permissive_vks()`, so an unsound one is no longer indistinguishable from a sound one. |
+| Q1 | Every resolution conserves supply: win 6 + 4, draw 5 + 5, unwind 5 + 5, cancel 5. | `VERIFIED` | Settlement, abandonment and cancel tests assert both collections |
+| Q2 | Released notes are real and importable by their owner. | `VERIFIED` | TXE imports from the release tx's effects; the real-proof E2E |
+| Q3 | Card notes cannot be double-spent across games. | `PARTIAL` | Constrained `pop_notes` nullifies; relies on the protocol rejecting duplicate nullifiers |
+| Q4 | A sound deployment cannot register the dummy VK for moves. | `VERIFIED` | `assert_vk_configuration` validator tests |
+
+### Privacy — what the redesign is for
+
+| # | Property | Status | Evidence |
+|---|---|---|---|
+| V1 | No game function makes a public call or writes public state. | `VERIFIED` | The game's reviewed entry points are all private bar the constructor and one immutable view (`contractEntryPoints.test.ts`); its storage holds only immutables |
+| V2 | No game nullifier can be computed without the game key. | `UNVERIFIED` | By construction: every one hashes `game_id = H(game_key, record_1)` |
+| V3 | Settlement needs no player address, randomness, blinding factor or unplayed card. | `VERIFIED` | Every TXE settlement passes only records and transcript, including from a stranger |
+| V4 | A relay that swaps keys in the exchange leaves the players on different game keys. | `VERIFIED` | `gameKeys.test.ts` |
+| V5 | Each tx still shows its fee payer, gas, effect counts and time. | `ACCEPTED` | Fee payer is protocol-public; see PRIVATE_GAMES.md §3.7 |
 
 ### Card packs — F6 is CLOSED as irrelevant, do not reopen
 
@@ -249,8 +266,8 @@ ownership, minting and locking rules that this list omitted entirely.
 | N4 | A token id cannot be minted twice. | "Token already exists" |
 | N5 | Committing a hand must find every card named. | "Could not find all 5 cards" (`pop_cards_by_id`). Its old assertions were in test-only helpers, now removed |
 | N6 | Only the minter may set the game and token contracts. | "Only minter can set game contract", "...token contract" |
-| N7 | A settlement's stored commitments must exist before use. | "Game card_commit_1 not set", "...card_commit_2..." |
-| N8 | A non-draw settlement must name a real transferred card and a valid winner. | "card_to_transfer must be nonzero for non-draw", "Invalid winner ID for non-draw" |
+| N7 | Removed with public game state (private games): there are no stored commitments; records are authenticated by nullifier existence (R1). | — |
+| N8 | Superseded by R2: the prize is read from the loser's move proof. | "Prize card must be a real card", "Prize slot out of range" |
 
 Eighteen distinct unmapped assertions produced these eight rows. That the list
 grew by a quarter under mechanical review is the strongest available argument
@@ -260,7 +277,7 @@ for reviewing it for COMPLETENESS rather than for correctness.
 
 | # | Property | Status | Note |
 |---|---|---|---|
-| G1 | NFT note lifecycle beyond P2/P3 — discovery, tagging, `import_note`. | `UNVERIFIED` | `import_note` is `unconstrained utility`, so it cannot forge chain state; the rest is unexamined |
+| G1 | NFT note lifecycle beyond Q2/Q3 — offchain delivery of minted cards, `import_note` beyond the release paths. | `UNVERIFIED` | `import_note` is `unconstrained utility`, so it cannot forge chain state |
 | G2 | `arena_token` authorization. | `VERIFIED` | All mints gated (admin/NFT/game), `burn_from` NFT-only with the call site passing `msg_sender()`, all trusted addresses `PublicImmutable` |
 | G3 | The recursive verification primitive is sound. | `UNVERIFIED` | Trusted. P4's empirical argument depends on it enforcing the VK hash |
 | G4 | The board-state hash is collision-resistant for this preimage shape. | `UNVERIFIED` | Assumed from pedersen. "Positions cannot recur" is a game-logic argument, not a cryptographic one |
