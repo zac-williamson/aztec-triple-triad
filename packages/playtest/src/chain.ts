@@ -158,6 +158,31 @@ export class ChainClient {
     return found.map((hit: { l2BlockNumber: number | bigint } | undefined) => (hit ? Number(hit.l2BlockNumber) : null));
   }
 
+  /**
+   * What claim `claimNo` by `claimSide` took, read off the chain: the Game
+   * contract's `forfeit_nullifiers` gives the four terms it could have pushed
+   * (each of `openCards`, the other player's slots 0..2, then nothing), and
+   * exactly one exists once the claim stands. Null if none does.
+   */
+  async forfeitTerms(
+    ref: GameRef,
+    claimNo: ClaimNo,
+    claimSide: Side,
+    openCards: number[],
+  ): Promise<{ slot: number; cardId: number } | null> {
+    const { result } = await this.gameContract.methods
+      .forfeit_nullifiers(
+        this.fr(ref.gameKey), this.record(ref.record1), new this.Fr(BigInt(claimNo)), new this.Fr(BigInt(claimSide)),
+        openCards.map(id => new this.Fr(BigInt(id))),
+      )
+      .simulate({ from: this.fromAddr });
+    const terms = Array.from(result as ArrayLike<unknown>).map(canonicalField);
+    const blocks = await this.lookup(terms);
+    const found = blocks.findIndex(b => b !== null);
+    if (found < 0) return null;
+    return found === 3 ? { slot: 3, cardId: 0 } : { slot: found, cardId: openCards[found] };
+  }
+
   /** The game's state, as the node sees it now. */
   async gameState(ref: GameRef): Promise<GameChainState> {
     const nullifiers = await this.gameNullifiers(ref);

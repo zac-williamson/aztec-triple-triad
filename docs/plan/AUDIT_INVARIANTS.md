@@ -193,9 +193,21 @@ yet, so nothing here is `MUTATION-COVERED`.
 | D3 | A contest is only inside the window, only by the other side, once per side. | `VERIFIED` | `a_contest_after_the_window_is_refused`, `a_claimant_cannot_contest_their_own_claim`, `each_side_contests_once` |
 | D4 | Finalize only after the window; contest and finalize of one claim exclude each other. | `VERIFIED` | `a_claim_cannot_be_finalized_inside_its_window`, `a_contested_claim_cannot_be_finalized` |
 | D5 | A full transcript outranks a standing claim; an unwound game cannot be settled, nor a settled one unwound. | `VERIFIED` | `a_full_transcript_outranks_a_standing_claim`, `a_settled_game_cannot_be_unwound` |
-| D6 | Unwinding returns each player exactly their own hand, with no reward. | `VERIFIED` | `an_uncontested_claim_unwinds_the_game_for_both_players` |
+| D6 | A finalized claim that took nothing returns each player exactly their own hand, with no reward. | `VERIFIED` | `a_claim_that_takes_nothing_returns_both_hands` |
 | D7 | Claim numbers are used once, and there are at most three. | `VERIFIED` | `a_claim_number_is_used_once`, `a_fourth_claim_is_refused` |
-| D8 | A claim no longer proves whose turn it is. | `ACCEPTED` | The old parity rule was defeated by truncating the transcript anyway; the defences are D3 (contest) and D5 (a full transcript wins). A staller who claims twice can unwind a game they were losing once both contests are spent — as before |
+| D8 | A claim no longer proves whose turn it is. | `ACCEPTED` | The old parity rule was defeated by truncating the transcript anyway; the defences are D3 (contest), D5 (a full transcript wins) and F6 (a present client contests). A staller who claims again after the other side's one contest can take a card from a game they were stalling — as the old design allowed by truncation |
+
+### The forfeit — walking away costs a card (Zac, 25 Nov 2026)
+
+| # | Property | Status | Evidence |
+|---|---|---|---|
+| F1 | A finalized forfeit gives the claimant their five plus the named card and the other player their other four: no card is made or lost, and no reward is paid. | `VERIFIED` | `an_uncontested_claim_takes_one_of_the_leavers_open_cards`, `player_one_can_claim_a_card_from_player_two`, `a_claim_after_a_contest_carries_its_own_forfeit` (six and four, both sides); UI `abandonment.spec.ts` on a real chain |
+| F2 | A claim can take only one of the OTHER player's three open cards, as their committed hand holds it; taking nothing proves the claimant's own hand. | `VERIFIED` | `a_claim_cannot_take_from_the_claimants_own_hand`, `a_claim_that_takes_nothing_proves_the_claimants_own_cards`, `open_cards_from_another_game_are_refused`, `a_claim_cannot_take_a_hidden_card`, validator tests; the open-cards proof is verified against `hand_vk_hash` (real proofs: UI spec) |
+| F3 | Finalizing must name the claim's own terms: nobody — the leaver included — can finalize as if nothing was taken, or swap in another card. | `VERIFIED` | `the_leaver_cannot_finalize_as_if_nothing_was_taken`, `finalizing_cannot_swap_in_a_better_card` |
+| F4 | Anyone may finalize without redirecting anything: every released note was prepared for its owner at commit. | `VERIFIED` | `the_leaver_can_finalize_but_still_pays_the_card` |
+| F5 | A contest clears the claim and its forfeit. | `VERIFIED` | `a_contest_clears_the_forfeit` |
+| F6 | A client in a live game contests a claim against it as it lands, and a creator who leaves before a join loses nothing (automatic cancel). | `VERIFIED` | `useGameSettlement.test.ts` "a claim against a player who is here", `useGame.facade.test.ts` automatic cancel/finalize; UI `abandonment.spec.ts` (P1's open game contests claim 1) |
+| F7 | The hand VK is always real, even on a permissive deployment, and differs from the move VK. | `VERIFIED` | `the_dummy_vk_cannot_verify_open_cards_even_when_permissive`, `the_move_vk_cannot_verify_open_cards`, `an_unset_hand_vk_is_refused` |
 
 ### Authorization
 

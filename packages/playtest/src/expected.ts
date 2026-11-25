@@ -27,6 +27,25 @@ function logic(): GameLogic {
   return _logic;
 }
 
+/**
+ * The open card an abandonment claim takes from a hand: the strongest of its
+ * three open cards (slots 0..2) by edge-rank total, the lowest slot on a tie
+ * (docs/plan/PRIVATE_GAMES.md §5.5). Written out here, from the rules data,
+ * not imported from the app.
+ */
+export function expectedForfeit(committedHand: readonly number[]): { slot: number; cardId: number } {
+  const strength = (id: number) => {
+    const card = logic().getCardById(id);
+    if (!card) throw new Error(`expectedForfeit: unknown card ${id}`);
+    return card.ranks.top + card.ranks.right + card.ranks.bottom + card.ranks.left;
+  };
+  let best = 0;
+  for (let slot = 1; slot < OPEN_SLOTS; slot++) {
+    if (strength(committedHand[slot]) > strength(committedHand[best])) best = slot;
+  }
+  return { slot: best, cardId: committedHand[best] };
+}
+
 export interface BoardCellExpectation {
   cardId: number | null;
   owner: Player | null;
