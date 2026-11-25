@@ -16,7 +16,7 @@ const stubBot = (over: Partial<ReturnType<ArenaBot['getStats']>> = {}) => ({
   getStats: () => ({
     state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
     joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0,
-    settleFailures: 0, settlements: 0,
+    settleFailures: 0, settlements: 0, opponentFaults: 0,
     abandonedGames: 0, cardsStranded: 0, lastError: null, ...over,
   }),
 }) as unknown as ArenaBot;
@@ -55,6 +55,14 @@ describe('bot health endpoint', () => {
     expect(body.abandonedGames).toBe(3);
     expect(body.cardsStranded).toBe(15);
     expect(body.lastError).toBe('prove-hand: boom');
+  });
+
+  it('counts a refused opponent as a failure: a run of them means our checks and the players\' clients disagree', async () => {
+    const get = await serve(stubBot({ opponentFaults: 1, abandonedGames: 1, lastError: 'opponent: refused their move 2: its proof does not verify' }));
+    const { body } = await get('/health');
+    expect(body.healthy).toBe(false);
+    expect(body.totalFailures).toBe(1);
+    expect(body.opponentFaults).toBe(1);
   });
 
   it('serves the same payload on /health and /metrics', async () => {
@@ -97,7 +105,7 @@ describe('health surfaces the number that predicts going idle', () => {
       getStats: () => ({
         state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
         joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0,
-        settleFailures: 0, settlements: 0,
+        settleFailures: 0, settlements: 0, opponentFaults: 0,
         abandonedGames: 0, cardsStranded: 0, spendableCards: 7, lastError: null,
       }),
     } as unknown as import('../src/ArenaBot.js').ArenaBot;
@@ -126,9 +134,9 @@ describe('consumables at startup', () => {
     const bot = new ArenaBot(
       {
         wsUrl: 'ws://t', httpUrl: 'http://t', token: 't', joinThresholdMs: 1_000,
-        pollIntervalMs: 10_000, queueTimeoutMs: 60_000, handCardIds: [1, 2, 3, 4, 5],
+        pollIntervalMs: 10_000, queueTimeoutMs: 60_000,
         difficulty: 'greedy', skillMin: 1, skillMax: 1, moveDelayMs: 0,
-        maxConcurrentGames: 1, chainTxTimeoutMs: 1, settleWaitMs: 0,
+        maxConcurrentGames: 1, chainTxTimeoutMs: 1,
         sweepIntervalMs: 900_000, drawFallbackMs: 0, gameTimeoutMs: 1, healthPort: 0,
       } as never,
       {

@@ -7,6 +7,8 @@ import type { GameState } from '@axolotl-arena/game-logic';
 import type { PxeOps } from '../../frontend/src/aztec/pxe.js';
 import type { FoundTx } from '../../frontend/src/aztec/gameChain.js';
 import type { GameRecord, NullifierHit } from '../../frontend/src/aztec/privateGame.js';
+import type { OpenCardsPayload } from '../../frontend/src/aztec/localGame.js';
+import type { ProofChecks } from '../../frontend/src/aztec/moveChecks.js';
 import type { MoveProofData } from '../../frontend/src/types.js';
 
 /**
@@ -83,4 +85,17 @@ export interface BotProofsLike {
   /** The game_move verification key, as settle_game takes it. */
   moveVerificationKey(): Promise<Uint8Array>;
   proveMove(args: MoveProofArgs): Promise<MoveProofData>;
+  /**
+   * The open-cards proof: the hand's first three committed slots, against our
+   * record's hand commitment (docs/plan/PRIVATE_GAMES.md section 6). The
+   * opponent checks it; nothing on-chain does.
+   */
+  proveOpenCards(hand: number[], blindingFactor: string, handCommit: string): Promise<OpenCardsPayload>;
+  /**
+   * Run one check of what the opponent sent (moveChecks.ts) with the state
+   * hasher and the two verifiers — one at a time, behind any proof in flight.
+   */
+  check<T>(run: (checks: ProofChecks) => Promise<T>): Promise<T>;
+  /** Optional: get the checks ready (the verification keys) while nothing waits on them. */
+  prepareChecks?(): Promise<void>;
 }

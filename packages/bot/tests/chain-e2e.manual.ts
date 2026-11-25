@@ -17,8 +17,9 @@
  * The opponent is a SEPARATE driver rather than a second ArenaBot: testing the
  * bot against a copy of itself would hide any assumption both sides share. It
  * plays the creator's side of the protocol, as a browser does: key exchange,
- * create_game, its RECORD, then play; it settles when it wins and, by
- * convention, a draw.
+ * create_game, its RECORD, its open cards, then sealed, proven moves through a
+ * relay that only counts them — checking every move the bot sends; it settles
+ * when it wins and, by convention, a draw.
  *
  * TWO PROCESSES, not one. pxe.ts binds the wallet in a module-level global, so
  * two identities in one process would silently share the last-connected wallet.
@@ -30,7 +31,6 @@ import { readdirSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { createServer } from '@axolotl-arena/backend/src/server.js';
 import { chooseBotMove } from '@axolotl-arena/game-logic';
-import type { GameState, Player } from '@axolotl-arena/game-logic';
 import { ArenaBot } from '../src/ArenaBot.js';
 import { BotChain } from '../src/BotChain.js';
 import { BotProofs } from '../src/BotProofs.js';
@@ -39,8 +39,16 @@ import { checkTranscript, normalizeMoveProof, parsePeerPayload } from '../src/pr
 import { choosePrizeMove } from '../src/settlement.js';
 import type { JournalRecord } from '../src/GameJournal.js';
 import { NULLIFIER_INDEX, RECORD_HAND, type GameRecord, type GameSecrets } from '../../frontend/src/aztec/privateGame.js';
+import {
+  parseMovePayload,
+  planOwnMove,
+  replay,
+  winnerIdOf,
+  type LocalGameFacts,
+  type TranscriptMove,
+} from '../../frontend/src/aztec/localGame.js';
+import { checkOpenCards, checkOpponentMove } from '../../frontend/src/aztec/moveChecks.js';
 import type { GameChannel, GameKeyPair } from '../../frontend/src/aztec/gameKeys.js';
-import type { MoveProofData } from '../../frontend/src/types.js';
 
 const PORT = 5399;
 /**
@@ -74,11 +82,18 @@ const OPPONENT_SEED = process.env.E2E_OPPONENT_SEED ? Number(process.env.E2E_OPP
 const FORCED_OPP_HAND = process.env.E2E_OPPONENT_HAND ? JSON.parse(process.env.E2E_OPPONENT_HAND) as number[] : null;
 const FORCED_BOT_HAND = process.env.E2E_BOT_HAND ? JSON.parse(process.env.E2E_BOT_HAND) as number[] : null;
 
-/** A chain-real opponent: queues first, creates, plays greedily, proves, settles what it wins. */
+/**
+ * A chain-real opponent playing the creator's side as a browser does since the
+ * relay stopped running the game (docs/plan/PRIVATE_GAMES.md section 6):
+ * create_game and its RECORD; its open cards, proven, once the bot's record
+ * is in; its own moves chosen on its own board, proven and sent sealed; and
+ * every move and the open cards the bot sends checked — bounds, state hashes,
+ * public inputs, the proof — before they count. It settles when it wins and,
+ * by convention, a draw.
+ */
 class ScriptedOpponent {
   private ws!: WebSocket;
   private gameId: string | null = null;
-  private me: Player | null = null;
   private hand: number[] = [];
   private keyPair: GameKeyPair | null = null;
   private theirKey: string | null = null;
@@ -88,20 +103,21 @@ class ScriptedOpponent {
   private record1: GameRecord | null = null;
   private record2: GameRecord | null = null;
   private committed = false;
-  private lastState: GameState | null = null;
-  private readonly moveProofs = new Map<string, MoveProofData>();
-  private pending: { moveNumber: number; cardId: number; row: number; col: number;
-    boardBefore: GameState['board']; scoresBefore: [number, number] } | null = null;
+  /** The transcript: our moves as sent, the bot's as checked, in order. */
+  private readonly moves: TranscriptMove[] = [];
+  /** The bot's open cards, once their proof checked out. */
+  private botOpen: number[] | null = null;
+  private openSent = false;
+  /** Our move is being chosen and proven. */
+  private moveInFlight = false;
+  private myMoves = 0;
+  /** What arrives is handled one frame at a time, in order — as a browser does. */
+  private work: Promise<void> = Promise.resolve();
   over: string | null = null;
   settled = false;
-  /** Move proofs still generating. The last move's proof is produced AFTER
-   *  GAME_OVER, so exiting on `over` alone drops it — and the winner then waits
-   *  forever for a 9th link that nobody will ever send. */
-  private proving = 0;
-  private myMoveProofs = 0;
   abandoned = false;
-  /** True once every move we made has been proved and relayed. */
-  get transcriptFlushed(): boolean { return this.proving === 0 && this.pending === null; }
+  /** True once every move we made has been proved and sent. */
+  get transcriptFlushed(): boolean { return !this.moveInFlight; }
 
   constructor(private chain: BotChain, private proofs: BotProofs) {}
 
@@ -117,8 +133,10 @@ class ScriptedOpponent {
     log('opponent', `hand ${this.hand.join(',')}`);
     this.ws = new WebSocket(relayUrl ?? `ws://localhost:${PORT}`);
     await new Promise<void>(r => this.ws.once('open', () => r()));
-    this.ws.on('message', raw => void this.handle(JSON.parse(raw.toString())).catch(e =>
-      log('opponent', `ERROR ${e?.message ?? e}`)));
+    this.ws.on('message', raw => {
+      const msg = JSON.parse(raw.toString());
+      this.work = this.work.then(() => this.handle(msg)).catch(e => log('opponent', `ERROR ${e?.message ?? e}`));
+    });
   }
 
   private send(m: unknown) { this.ws.send(JSON.stringify(m)); }
@@ -132,21 +150,27 @@ class ScriptedOpponent {
     this.send({ type: 'PEER', gameId: this.gameId, ...sealed });
   }
 
+  private facts(): LocalGameFacts {
+    return { role: 1, ownHand: this.hand, opponentOpen: this.botOpen, moves: this.moves };
+  }
+
+  private commits(): { commit1: string; commit2: string } {
+    return { commit1: this.record1![RECORD_HAND], commit2: this.record2![RECORD_HAND] };
+  }
+
   private async handle(msg: any): Promise<void> {
     switch (msg.type) {
       case 'SESSION_ESTABLISHED':
         log('opponent', 'queueing');
-        this.send({ type: 'QUEUE_MATCHMAKING', cardIds: this.hand });
+        this.send({ type: 'QUEUE_MATCHMAKING' });
         break;
       case 'MATCH_FOUND':
         this.gameId = msg.gameId;
-        this.me = msg.playerNumber === 1 ? 'player1' : 'player2';
-        log('opponent', `matched as ${this.me}`);
-        if (this.me !== 'player1') throw new Error('the bot only joins, so the scripted player must be the creator');
+        log('opponent', `matched as player ${msg.playerNumber}`);
+        if (msg.playerNumber !== 1) throw new Error('the bot only joins, so the scripted player must be the creator');
         this.keyPair = await (await this.keys()).generateGameKeyPair();
         this.send({ type: 'KEY_EXCHANGE', gameId: this.gameId, publicKey: this.keyPair.publicKey });
         await this.maybeCreate();
-        this.move(msg.gameState);
         break;
       case 'OPPONENT_KEY':
         this.theirKey = String(msg.publicKey);
@@ -159,32 +183,30 @@ class ScriptedOpponent {
         if (payload?.kind === 'RECORD' && !this.record2) {
           this.record2 = payload.record;
           log('opponent', 'the bot\'s record arrived — both hands are bound');
-          this.move(this.lastState ?? undefined);
+          await this.sendOpenCards();
+          await this.maybeMove();
+        } else if (payload?.kind === 'OPEN_CARDS' && this.record2) {
+          const claim = { cards: payload.cards, proof: payload.proof, publicInputs: payload.publicInputs };
+          const result = await this.proofs.check(c => checkOpenCards(this.facts(), this.commits().commit2, claim, c));
+          if (!result.ok) throw new Error(`the bot's open cards were refused: ${result.reason}`);
+          this.botOpen = result.value;
+          log('opponent', 'the bot\'s open cards check out');
         } else if (payload) {
           log('opponent', `PEER ${payload.kind}`);
         }
         break;
       }
-      case 'GAME_START':
-      case 'GAME_STATE':
-        await this.maybeProveMove(msg.gameState);
-        this.move(msg.gameState);
-        break;
-      case 'MOVE_PROVEN': {
-        const p = normalizeMoveProof(msg.moveProof);
-        if (p) this.moveProofs.set(p.startStateHash, p);
-        break;
-      }
-      case 'GAME_OVER': {
-        log('opponent', `game over: ${msg.winner}`);
-        // Mirror the protocol: the winner settles; a draw by convention P1.
-        // E2E_OPPONENT_SKIP_DRAW_SETTLE simulates the human closing the tab on
-        // a draw, which the bot must then settle itself.
-        const skipDraw = process.env.E2E_OPPONENT_SKIP_DRAW_SETTLE === '1' && msg.winner === 'draw';
-        if (skipDraw) log('opponent', 'walking away from a DRAW without settling');
-        const iSettle = !skipDraw && (msg.winner === 'draw' || msg.winner === this.me);
-        if (iSettle) { try { await this.settle(); } catch (e) { log('opponent', `settle ERROR ${(e as Error).message}`); } }
-        this.over = msg.winner;
+      case 'MOVE': {
+        if (!this.channel || !this.record2) break;
+        const n = Number(msg.moveNumber);
+        if (n < this.moves.length) break; // delivered again
+        const payload = parseMovePayload(await (await this.keys()).openPeerPayload(
+          this.channel.channelKey, this.gameId!, { iv: msg.iv, ciphertext: msg.ciphertext }));
+        const result = await this.proofs.check(c => checkOpponentMove(this.facts(), this.commits(), n, payload, c));
+        if (!result.ok) throw new Error(`the bot's move ${n} was refused: ${result.reason}`);
+        this.moves.push(result.value);
+        log('opponent', `the bot's move ${n} checks out`);
+        await this.afterMove();
         break;
       }
     }
@@ -204,91 +226,109 @@ class ScriptedOpponent {
     log('opponent', 'create_game mined — sending our record');
     this.committed = true;
     await this.sendPeer({ kind: 'RECORD', record: this.record1 });
-    this.move(this.lastState ?? undefined);
   }
 
-  /** Prove OUR move once the relay echoes it back — the bot does the same. */
-  private async maybeProveMove(after: GameState | undefined): Promise<void> {
-    const p = this.pending;
-    if (!p || !after || !this.me || !this.record1 || !this.record2 || !this.secrets) return;
-    // Exactly the state our move produced — see the bot's note: a later state
-    // may show our card captured, failing "Owner not set correctly".
-    if (after.board.flat().filter(c => c.card !== null).length !== p.moveNumber + 1) return;
-    this.pending = null;
-    this.proving += 1;
-    try {
-      const ended = after.status === 'finished';
-      const winnerId = !ended ? 0 : after.winner === 'player1' ? 1 : after.winner === 'player2' ? 2 : 3;
-      const raw = await this.proofs.proveMove({
-        cardId: p.cardId, row: p.row, col: p.col, currentPlayer: 1,
-        boardBefore: p.boardBefore, boardAfter: after.board,
-        scoresBefore: p.scoresBefore, scoresAfter: [after.player1Score, after.player2Score],
-        cardCommit1: this.record1[RECORD_HAND], cardCommit2: this.record2[RECORD_HAND],
-        gameEnded: ended, winnerId,
-        hand: { cardIds: this.hand, blindingFactor: this.secrets.blinding },
-      });
-      const kept = normalizeMoveProof(raw);
-      if (kept) this.moveProofs.set(kept.startStateHash, kept);
-      this.send({ type: 'SUBMIT_MOVE_PROOF', gameId: this.gameId, handIndex: 0, row: p.row, col: p.col, moveNumber: p.moveNumber, moveProof: raw });
-      log('opponent', `move proof ${p.moveNumber} submitted`);
-      this.myMoveProofs += 1;
-      if (ABANDON_AFTER > 0 && this.myMoveProofs >= ABANDON_AFTER) {
-        log('opponent', `ABANDONING after ${this.myMoveProofs} move(s) — closing the socket`);
-        this.abandoned = true;
-        this.close();
-      }
-    } finally {
-      this.proving -= 1;
+  /** Our three open cards, proven against our record, once both records are known. */
+  private async sendOpenCards(): Promise<void> {
+    if (this.openSent || !this.record1 || !this.secrets) return;
+    this.openSent = true;
+    const open = await this.proofs.proveOpenCards(this.hand, this.secrets.blinding, this.record1[RECORD_HAND]);
+    await this.sendPeer({ kind: 'OPEN_CARDS', ...open });
+    log('opponent', 'our open cards proved and sent');
+  }
+
+  /** A move is in: the game is over, or it may be our turn. */
+  private async afterMove(): Promise<void> {
+    const { state } = replay(this.facts());
+    if (state.status === 'finished') {
+      await this.gameOver(state.winner ?? 'draw');
+      return;
     }
+    await this.maybeMove();
   }
 
-  /** Same one-move-per-turn guard as the bot; move() has several callers too. */
-  private scheduledFor: number | null = null;
-
-  private move(state: GameState | undefined): void {
-    if (state) this.lastState = state;
-    // Same gates as the bot: do not outrun our own commit, and do not play a
-    // card we could not prove — a move proof binds BOTH records' hands.
-    if (!this.committed || !this.record2) return;
-    if (ABANDON_BEFORE_MOVE && !this.abandoned) {
+  /** Our move, if it is our turn: chosen on our board, proven, sealed, sent. */
+  private async maybeMove(): Promise<void> {
+    // Same gates as the bot: not before our own commit, and not a card we
+    // could not prove — a move proof binds BOTH records' hands.
+    if (!this.committed || !this.record2 || !this.secrets || this.moveInFlight || this.abandoned) return;
+    if (ABANDON_BEFORE_MOVE) {
       log('opponent', 'ABANDONING before playing a single card — closing the socket');
       this.abandoned = true;
       this.close();
       return;
     }
-    if (!state || state.status !== 'playing' || state.currentTurn !== this.me) return;
-    const moveNumber = state.board.flat().filter(c => c.card !== null).length;
-    if (this.scheduledFor !== null && this.scheduledFor >= moveNumber) return;
-    const m = chooseBotMove(state, {
-      difficulty: OPPONENT_DIFFICULTY,
-      ...(OPPONENT_SEED !== undefined ? { seed: OPPONENT_SEED } : {}),
-    });
-    this.scheduledFor = moveNumber;
-    const card = state.player1Hand[m.handIndex];
-    // Paced like the bot, so proving can keep up with the relay.
-    setTimeout(() => {
-      this.pending = {
-        moveNumber, cardId: card?.id ?? 0, row: m.row, col: m.col,
-        boardBefore: state.board, scoresBefore: [state.player1Score, state.player2Score],
-      };
-      this.send({ type: 'PLACE_CARD', gameId: this.gameId, handIndex: m.handIndex, row: m.row, col: m.col, moveNumber });
-    }, 2_000);
+    const facts = this.facts();
+    const before = replay(facts);
+    if (before.state.status !== 'playing' || before.state.currentTurn !== 'player1') return;
+    this.moveInFlight = true;
+    try {
+      // Paced like a player.
+      await new Promise(r => setTimeout(r, 2_000));
+      const m = chooseBotMove(before.state, {
+        difficulty: OPPONENT_DIFFICULTY,
+        ...(OPPONENT_SEED !== undefined ? { seed: OPPONENT_SEED } : {}),
+      });
+      const move = planOwnMove(facts, before, m.handIndex, m.row, m.col);
+      const after = replay({ ...facts, moves: [...facts.moves, move] }).state;
+      const ended = after.status === 'finished';
+      const raw = await this.proofs.proveMove({
+        cardId: move.cardId, row: move.row, col: move.col, currentPlayer: 1,
+        boardBefore: before.state.board, boardAfter: after.board,
+        scoresBefore: [before.state.player1Score, before.state.player2Score],
+        scoresAfter: [after.player1Score, after.player2Score],
+        cardCommit1: this.record1![RECORD_HAND], cardCommit2: this.record2[RECORD_HAND],
+        gameEnded: ended, winnerId: winnerIdOf(ended ? after.winner : null),
+        hand: { cardIds: this.hand, blindingFactor: this.secrets.blinding },
+      });
+      const proof = normalizeMoveProof(raw);
+      if (!proof) throw new Error(`move ${move.moveNumber} produced no usable proof`);
+      this.moves.push({ ...move, proof });
+      const sealed = await (await this.keys()).sealPeerPayload(this.channel!.channelKey, this.gameId!, {
+        cardId: move.cardId, slot: move.slot, row: move.row, col: move.col,
+        proof: proof.proof, publicInputs: proof.publicInputs,
+      });
+      this.send({ type: 'MOVE', gameId: this.gameId, moveNumber: move.moveNumber, ...sealed });
+      log('opponent', `move ${move.moveNumber} proved and sent`);
+      this.myMoves += 1;
+      if (ABANDON_AFTER > 0 && this.myMoves >= ABANDON_AFTER) {
+        log('opponent', `ABANDONING after ${this.myMoves} move(s) — closing the socket`);
+        this.abandoned = true;
+        this.close();
+        return;
+      }
+    } finally {
+      this.moveInFlight = false;
+    }
+    // The ninth move is always ours: it may have ended the game.
+    await this.afterMove();
+  }
+
+  private async gameOver(winner: 'player1' | 'player2' | 'draw'): Promise<void> {
+    if (this.over) return;
+    log('opponent', `game over: ${winner}`);
+    // Mirror the protocol: the winner settles; a draw by convention P1.
+    // E2E_OPPONENT_SKIP_DRAW_SETTLE simulates the human closing the tab on
+    // a draw, which the bot must then settle itself.
+    const skipDraw = process.env.E2E_OPPONENT_SKIP_DRAW_SETTLE === '1' && winner === 'draw';
+    if (skipDraw) log('opponent', 'walking away from a DRAW without settling');
+    const iSettle = !skipDraw && (winner === 'draw' || winner === 'player1');
+    if (iSettle) { try { await this.settle(); } catch (e) { log('opponent', `settle ERROR ${(e as Error).message}`); } }
+    this.over = winner;
   }
 
   private async settle(): Promise<void> {
-    // Wait for the transcript, as the bot does — proving trails the relay.
-    const deadline = Date.now() + 120_000;
-    while (Date.now() < deadline && this.moveProofs.size < 9) await new Promise(r => setTimeout(r, 500));
-    const { ordered, winner } = checkTranscript([...this.moveProofs.values()], this.record1!, this.record2!);
+    const proofs = this.moves.map(m => m.proof);
+    const { ordered, winner } = checkTranscript(proofs, this.record1!, this.record2!);
     const prizeMove = choosePrizeMove(ordered, winner);
     const { Fr } = await import('@aztec-labs/aztec.js/fields');
     const { buildSettleGameArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
     const args = await buildSettleGameArgs({
       Fr, gameKey: this.channel!.gameKey, record1: this.record1!, record2: this.record2!,
       moveVk: await this.proofs.moveVerificationKey(),
-      moveProofs: [...this.moveProofs.values()], prizeMove,
+      moveProofs: proofs, prizeMove,
     });
-    await this.sendPeer({ kind: 'SETTLING', prizeMove });
+    await this.sendPeer({ kind: 'SETTLING', prizeMove: winner === 'draw' ? null : prizeMove });
     log('opponent', `settling (prize move ${prizeMove})…`);
     const txHash = await this.chain.pxe.sendSettleGame(this.chain.address, args, this.sendOpts());
     this.settled = true;
@@ -399,9 +439,8 @@ async function main(): Promise<void> {
       process.exit(0);
     }
 
-    // GAME_OVER is not the end of our work. The final move's proof is generated
-    // AFTER the relay declares the game over, so exiting here drops it — and if
-    // the BOT won, it is settling and needs that ninth link.
+    // The game is over once our ninth move is sent; let nothing still in
+    // flight be cut off — if the BOT won, it is settling on that ninth link.
     const flushBy = Date.now() + 120_000;
     while (Date.now() < flushBy && !opponent.transcriptFlushed) await new Promise(r => setTimeout(r, 500));
     if (!opponent.transcriptFlushed) log('opponent', 'WARNING: exiting with proofs still in flight');
@@ -429,7 +468,6 @@ async function main(): Promise<void> {
       // fly through in milliseconds while each proof takes ~0.1-0.4s, so the
       // game ends before any move proof lands and there is nothing to settle.
       moveDelayMs: 2_000,
-      settleWaitMs: 120_000,
       token: process.env.ARENA_BOT_TOKEN! },
     { chain: botChain, proofs: botProofs, journal, log: m => log('bot', m) },
   );
@@ -504,9 +542,10 @@ async function main(): Promise<void> {
     process.exit(ok ? 0 : 1);
   }
 
-  // The bot settles a win (and a draw the opponent leaves) after GAME_OVER, and
-  // imports from the opponent's settlement otherwise: wait for its journal
-  // entry to be marked resolved — which only happens once our cards are back.
+  // The bot settles a win (and a draw the opponent leaves) once the ninth move
+  // checks out, and imports from the opponent's settlement otherwise: wait for
+  // its journal entry to be marked resolved — which only happens once its cards
+  // are back.
   const resolveBy = Date.now() + 10 * 60_000;
   while (Date.now() < resolveBy && !journalled()[0]?.resolution) {
     await new Promise(r => setTimeout(r, 2_000));

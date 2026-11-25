@@ -2,10 +2,12 @@
 
 A backend opponent that plays like any other player: it watches the matchmaking
 queue and, when somebody has waited **more than 30 seconds**, queues itself and
-lets the server's ordinary `tryMatch` pair them. In chain mode it commits real
-cards, generates real proofs, and settles on-chain — as a private game
-(`docs/plan/PRIVATE_GAMES.md`): nothing about the human but what the game itself
-reveals ever reaches it, and nothing it does names the game to the relay.
+lets the server's ordinary `tryMatch` pair them. It commits real cards, runs the
+game itself, proves its own moves, checks the human's, and settles on-chain — as
+a private game (`docs/plan/PRIVATE_GAMES.md`): the relay is a pipe that pairs
+players and counts sealed moves, nothing about the human but what the game
+itself reveals ever reaches the bot, and nothing it does names the game to the
+relay.
 
 **The bot only ever JOINS games. It never creates one.** That is enforced in two
 places, because one is not enough: `tryMatch` orders every pair so a bot takes
@@ -19,17 +21,12 @@ Design rationale, the comparison with how other games handle this, and what the
 original ask was missing: **`docs/plan/BACKEND_OPPONENT.md`**. Read that first —
 several decisions here look arbitrary without it.
 
-## Two modes
+## Running it
 
-**Off-chain** (relay only — plays, wagers nothing). Useful for exercising
-matchmaking and the game loop:
-
-```bash
-ARENA_BOT_TOKEN=<same as the backend's> npm run dev -w packages/bot
-```
-
-**Chain mode** (commits real cards, proves, settles). Provision an identity
-first:
+The bot always plays for real: every move carries a proof over both players'
+committed hands, checked by the opponent's client, so a bot that cannot commit
+cards cannot play a game at all. There is no off-chain mode; it refuses to start
+without `ARENA_BOT_CHAIN=1`. Provision an identity first:
 
 ```bash
 npx tsx scripts/provision-arena-bot.ts --index 0 --cards 1000
@@ -43,44 +40,68 @@ AZTEC_PXE_URL=http://localhost:8080 \
 It refuses to start half-configured: a bot that matches players and then cannot
 commit or recover its cards is worse than one that never starts.
 
-## A chain game, from the bot's seat
+## A game, from the bot's seat
 
-The bot is always the joiner, player 2. Everything player-to-player travels as a
-sealed `PEER` payload the relay forwards without reading.
+The bot is always the joiner, player 2. The relay holds no board, hand or
+result (`docs/plan/PRIVATE_GAMES.md` §6): it pairs the players, forwards sealed
+payloads and accepts move numbers in order, one turn each. Everything
+player-to-player is sealed with the game's channel key.
 
-1. **`MATCH_FOUND`** — a fresh ECDH key pair for this game; `KEY_EXCHANGE` sends
-   the public half. On `OPPONENT_KEY` both sides derive the game key (every
-   on-chain nullifier of the game hangs off it) and the channel key
-   (`frontend/src/aztec/gameKeys.ts`).
-2. **`PEER RECORD`** from the creator — wait for their `created` nullifier, read
+1. **`QUEUE_MATCHMAKING`** names no card. The hand is chosen from what the bot
+   holds when it queues, and only the chain ever sees it, at the join.
+2. **`MATCH_FOUND`** — a room and a seat, no game state. A fresh ECDH key pair
+   for this game; `KEY_EXCHANGE` sends the public half. On `OPPONENT_KEY` both
+   sides derive the game key (every on-chain nullifier of the game hangs off it)
+   and the channel key (`frontend/src/aztec/gameKeys.ts`). The game starts
+   locally: our five cards against five face-down ones.
+3. **`PEER RECORD`** from the creator — wait for their `created` nullifier, read
    our note nonce (BEFORE committing: the commit advances it), derive our
    secrets, preview our record, journal the game, `join_game`, then
    `TX_CONFIRMED` (no tx hash) and our own `PEER RECORD`.
-3. **Play** — every move proof binds both records' hand commitments and
-   publishes the placed card and its slot in our committed hand.
-4. **`GAME_OVER`** — a win: `PEER SETTLING {prizeMove}` (the human's placed card
-   the bot values most: rarest, then strongest), `settle_game`, `PEER SETTLED`.
-   A draw: player 1 settles by convention; the bot does it after
-   `ARENA_BOT_DRAW_FALLBACK_MS` if they have not. A loss: the winner settles.
-5. **Taking its cards back** — whoever settled, the bot finds the resolving tx
+4. **Open cards** — once both records are known the bot proves its three open
+   cards (its committed hand's slots 0..2) and sends `PEER OPEN_CARDS`, before
+   its first move. The creator's are checked against their record's hand
+   commitment (`frontend/src/aztec/moveChecks.ts`) before they count.
+5. **Moves** — the game is replayed locally through `packages/game-logic`
+   (`frontend/src/aztec/localGame.ts`). Each of the human's `MOVE`s is opened
+   and checked — bounds, the state hashes before and after, all eight public
+   inputs, the proof itself — before it is applied. The bot's own move is
+   chosen on its board, proven, journalled, sealed and sent with its move
+   number, the only thing the relay reads. **Anything that fails a check halts
+   the game**: such a game can never settle, so the bot leaves it and its
+   cards to the abandonment sweep, and logs why without any card detail. A move
+   of its own that cannot be proved ends the game the same way — it is not
+   retried, and the opponent would otherwise wait for it until the watchdog.
+6. **The ninth move** (always the human's) ends the game; its result is the
+   transcript's, and the bot counts it itself — the relay cannot. A win:
+   `PEER SETTLING {prizeMove}` (the human's placed card the bot values most:
+   rarest, then strongest), `settle_game`, `PEER SETTLED`. A draw: player 1
+   settles by convention; the bot does it after `ARENA_BOT_DRAW_FALLBACK_MS` if
+   they have not. A loss: the winner settles.
+7. **Taking its cards back** — whoever settled, the bot finds the resolving tx
    from the game's own `done` nullifier (a `SETTLED` message is only a hint),
    reads off the tx which of its prepared notes were released, and imports
    exactly those: five returns (four on a loss — the missing one is the card the
    winner took), the prize on a win, and its 20-token reward.
+
+**A dropped socket is not a lost game.** The bot RESUMEs its relay session —
+the room knows it by that session — and the relay replays what it buffered,
+then says how many moves it holds (`ROOM_STATE`). The bot checks the replayed
+moves and sends again whatever of its own never arrived: its moves from that
+number on, its record and its open cards (the other side takes each only once).
 
 ## Configuration
 
 | Env | Default | Notes |
 |---|---|---|
 | `ARENA_BOT_TOKEN` | — | **required**; must match the backend's |
-| `ARENA_BOT_CHAIN` | off | `1` enables chain mode |
+| `ARENA_BOT_CHAIN` | — | **required**, `1`: the bot only plays on-chain |
 | `ARENA_BOT_INDEX` | `0` | which provisioned identity to run |
 | `ARENA_BOT_JOIN_THRESHOLD_MS` | `30000` | a player must have waited LONGER than this before the bot offers |
 | `ARENA_BOT_DIFFICULTY` | `greedy` | `random` \| `greedy` \| `lookahead` |
 | `ARENA_BOT_MOVE_DELAY_MS` | `1200` | pacing, so it does not feel inhumanly instant |
 | `ARENA_BOT_QUEUE_TIMEOUT_MS` | `60000` | leave the queue if no match forms |
 | `ARENA_BOT_GAME_TIMEOUT_MS` | `1800000` | abandon a stuck game and recover its cards |
-| `ARENA_BOT_SETTLE_WAIT_MS` | `300000` | wait for the nine-proof transcript |
 | `ARENA_BOT_DRAW_FALLBACK_MS` | `120000` | give player 1 this long to settle a draw before the bot does |
 | `ARENA_BOT_RECORD_WAIT_MS` | `600000` | leave a match whose creator never sends their record (nothing committed) |
 | `ARENA_BOT_CREATED_WAIT_MS` | `300000` | wait this long for the creator's game to show on our node before declining to join |
@@ -89,7 +110,8 @@ sealed `PEER` payload the relay forwards without reading.
 | `ARENA_BOT_SWEEP_INTERVAL_MS` | `900000` | how often to reclaim cards from wedged games |
 
 `ARENA_BOT_DIFFICULTY=lookahead` is a poor choice here: it wants the opponent's
-hand, and the server hides it. `greedy` is beatable but not random.
+hand, and two of its five cards stay face down until they are played.
+`greedy` is beatable but not random.
 
 ## Running a pool
 
@@ -127,9 +149,12 @@ decision:
 Two endpoints, and they answer different questions:
 
 - **backend `/metrics`** — what the relay can see: matches formed, how many
-  involved the bot, outcomes, match-wait max/mean.
-- **bot `/health`** (this package) — what only the bot process knows: proof and
-  commit failures, card shortage, games the watchdog abandoned, cards recovered.
+  involved the bot, how many games got all nine moves through, match-wait
+  max/mean. Not who won: it never sees a card.
+- **bot `/health`** (this package) — what only the bot process knows: its own
+  wins, losses and draws, proof and commit failures, opponents it refused
+  (`opponentFaults` — a run of them means its checks and the players' clients
+  disagree), card shortage, games the watchdog abandoned, cards recovered.
   `healthy` is the single field to page on. **An idle bot is not unhealthy** —
   idle with nobody queuing is normal, and alerting on it trains people to ignore
   the alert.
@@ -177,9 +202,11 @@ Two pieces handle it, and both run automatically in chain mode:
   in flight is exactly when cards may be committed with nothing else recording
   where. It keeps what recovery needs and nothing more about the human: the room
   id, our key pair and their public key, the game key, our note nonce (our
-  secrets re-derive from it), our hand, both records, the move transcript and
-  the outcome. Records from the previous (public-state) contracts are left on
-  disk untouched.
+  secrets re-derive from it), our hand, both records, the transcript (both
+  sides' moves with their proofs, in order), the open cards, why the opponent
+  was refused if they were, and the outcome. Of the human that is only what the
+  game showed: never a card they did not play or open. Records from the
+  previous (public-state) contracts are left on disk untouched.
 - **`AbandonmentSweep`** runs at startup and every `ARENA_BOT_SWEEP_INTERVAL_MS`.
   The CHAIN decides: each pass reads the game's nullifiers and takes the next
   step it is ready for — import from the resolving tx if the game is done;
@@ -200,9 +227,10 @@ To exercise the whole path against a sandbox:
 E2E_ABANDON_AFTER_MOVES=2 ARENA_BOT_GAME_TIMEOUT_MS=120000 \
   npx tsx packages/bot/tests/chain-e2e.manual.ts
 ```
-- **The bot is DISCLOSED**, via `opponentIsBot` on `MATCH_FOUND` and a badge in
-  the HUD. `REGISTER_BOT` is token-gated precisely so a normal client cannot
-  claim to be the bot and suppress that.
+- **The bot is NOT disclosed.** `MATCH_FOUND` is a room and a seat, nothing
+  more: a player meeting the bot should not be able to tell, not even from the
+  frame. `REGISTER_BOT` is token-gated so a normal client cannot claim to be
+  the bot and so be treated as one by matchmaking.
 
 ## Tests
 
@@ -212,10 +240,17 @@ npm test -w packages/bot          # unit + real backend/bot/human games
 
 Proof tests generate REAL proofs against the compiled circuits — a mocked proof
 asserts nothing about the thing that matters, which is that the bot's witness
-encoding is accepted by the same circuits players use. The protocol's pure
-decisions (prize choice, which notes to import, the sweep's next step) are in
-`protocol.test.ts` and `settlement.test.ts`; the game flow against a fake chain,
-including the real WebCrypto key exchange, in the two `ArenaBot` test files.
+encoding is accepted by the same circuits players use, and that its checks
+accept a player's honest proofs and nothing else. The protocol's pure decisions
+(prize choice, which notes to import, the sweep's next step) are in
+`protocol.test.ts` and `settlement.test.ts`. The game flow runs against a fake
+chain and a scripted human (`tests/fakes.ts`) built from the frontend's own
+game model and checks: every move the bot sends is checked as a browser checks
+it. `ArenaBot.test.ts` covers moves, refusals, open cards and resumes;
+`ArenaBot.settlement.test.ts` whole games to a win, a loss and a draw (with the
+real state hash and settle-args builder) and the real WebCrypto key exchange;
+`integration.test.ts` whole games through the real relay, a dropped socket
+included.
 
 Two manual harnesses are excluded from `npm test` (each needs a sandbox,
 deployed contracts and provisioned identities); their headers carry the recipes:

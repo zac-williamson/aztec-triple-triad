@@ -1,12 +1,13 @@
 /**
  * The bot's own health/metrics endpoint.
  *
- * The backend's /metrics covers what the RELAY can see — matches formed, game
- * outcomes. It cannot see anything inside the bot process: whether proving is
- * failing, whether commits are reverting, whether the bot has run out of cards,
- * or whether the watchdog is quietly abandoning games. Those are exactly the
- * "has anything broken?" signals the feature was asked for, so the bot serves
- * them itself.
+ * The backend's /metrics covers what the RELAY can see — matches formed, how
+ * many games got all nine moves through. It cannot see a result (it never sees
+ * a card) or anything inside the bot process: the bot's wins and losses,
+ * whether proving is failing, whether commits are reverting, whether the bot
+ * has run out of cards, or whether the watchdog is quietly abandoning games.
+ * Those are exactly the "has anything broken?" signals the feature was asked
+ * for, so the bot serves them itself.
  *
  * Read-only and unauthenticated by design — it exposes counters, a state name
  * and relay room ids, and nothing that identifies a game on-chain: no game
@@ -46,8 +47,11 @@ export function startHealthServer(bot: ArenaBot, port: number, log: (m: string) 
       return;
     }
     const stats = bot.getStats();
+    // A refused opponent counts too. One is a cheat (rare: it takes a modified
+    // client); a run of them is our checks disagreeing with the players'
+    // clients, which ends every game the bot plays — the arena is down.
     const failures = stats.joinFailures + stats.moveFailures + stats.commitFailures
-      + stats.proofFailures + stats.settleFailures;
+      + stats.proofFailures + stats.settleFailures + stats.opponentFaults;
     // spendableCards rides along in ...stats below; deploy/check-arena-health.sh
     // alerts on it, because a bot running out of cards goes quietly idle.
     res.writeHead(200, { 'Content-Type': 'application/json' });

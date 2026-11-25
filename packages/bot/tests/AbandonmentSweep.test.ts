@@ -168,6 +168,15 @@ describe('AbandonmentSweep: a game abandoned mid-play', () => {
     expect(h.journal.read('room-1')!.claimedAt).toBe(T(30));
   });
 
+  it('claims a game the bot halted because the opponent\'s move did not check out — it can never settle', async () => {
+    // Refused moves never enter the transcript, so it stays short of nine:
+    // the claim path, both hands back.
+    const h = harness();
+    h.journal.write(record({ moveProofs: transcript({ winnerId: 2, moves: 5 }), protocolError: 'their move 5: its proof does not verify' }));
+    await h.sweep.run();
+    expect(h.steps()).toEqual(['claim']);
+  });
+
   it('waits when the chain is not yet past the bar — a claim then would revert', async () => {
     const h = harness();
     h.f.state.now = T(5) + MIN_ABANDON_SECONDS - 10;

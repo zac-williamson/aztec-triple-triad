@@ -50,7 +50,7 @@ export interface BotGame {
   record2: GameRecord;
   /** The move proofs we hold, in any order. */
   moveProofs: MoveProofData[];
-  /** The relay's verdict from our seat, if it gave one. */
+  /** The game's result from our seat, once all nine moves were in. */
   outcome: Outcome | null;
   /** The prize move, if known: ours when we settled, the winner's word otherwise. */
   prizeMove: number | null;

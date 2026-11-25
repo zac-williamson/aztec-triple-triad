@@ -1,10 +1,14 @@
 /**
- * End-to-end: a real backend, the real ArenaBot over a real WebSocket, and a
- * simulated human. Proves the whole phase-1/2 loop — the bot notices a waiting
- * player, offers itself, is matched by the server's ordinary matchmaking, and
- * plays a complete 9-move game to GAME_OVER.
+ * End-to-end over the wire: a real relay, the real ArenaBot on a real
+ * WebSocket, and a scripted human playing a game the way a browser does now
+ * the relay is a pipe (docs/plan/PRIVATE_GAMES.md section 6) — the real
+ * WebCrypto key exchange, sealed records and open cards, sealed moves the
+ * relay can only count, and the frontend's own checks of every move the bot
+ * sends.
  *
- * Off-chain only: no PXE, no proofs. Chain integration is phase 3.
+ * The chain and the proofs are stood in for (fakes.ts): this is about the bot
+ * and the relay agreeing on the protocol. The bot's chain path is covered in
+ * the ArenaBot tests, and for real in chain-e2e.manual.ts.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import WebSocket from 'ws';
@@ -12,9 +16,9 @@ import { createServer, type CardGameServer } from '@axolotl-arena/backend/src/se
 import * as metrics from '@axolotl-arena/backend/src/metrics.js';
 import { ArenaBot } from '../src/ArenaBot.js';
 import type { ArenaBotConfig } from '../src/config.js';
+import { FakeHuman, N, OUTCOMES, RECORD1, fakeChain, fakeProofs, type HumanStrategy } from './fakes.js';
+import type { GameChannel, GameKeyPair } from '../../frontend/src/aztec/gameKeys.js';
 
-const HUMAN_CARDS = [6, 7, 8, 9, 10];
-const BOT_CARDS = [1, 2, 3, 4, 5];
 const TOKEN = 'test-bot-token';
 
 let server: CardGameServer;
@@ -30,16 +34,15 @@ function cfg(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
     joinThresholdMs: 50,      // keep the test fast; policy itself is unit-tested
     pollIntervalMs: 25,
     queueTimeoutMs: 30_000,
-    handCardIds: BOT_CARDS,
     difficulty: 'greedy',
-    // Deterministic strength: blundering at random would make move assertions
-    // flaky for reasons unrelated to what is under test.
+    // Deterministic strength and choices: the game's outcome is part of what
+    // is asserted.
     skillMin: 1,
     skillMax: 1,
+    moveSeed: 1,
     moveDelayMs: 0,
     maxConcurrentGames: 1,
     chainTxTimeoutMs: 600_000,
-    settleWaitMs: 1_000,
     sweepIntervalMs: 900_000,
     drawFallbackMs: 0,
     gameTimeoutMs: 1_800_000,
@@ -49,18 +52,56 @@ function cfg(over: Partial<ArenaBotConfig> = {}): ArenaBotConfig {
   };
 }
 
-/** A scripted human: plays the first legal cell, hand slot 0, on its turn. */
+/** A bot on a fake chain and prover, talking to the real relay. Its sockets are kept, so a test can cut one. */
+function startBot(over: Partial<ArenaBotConfig> = {}) {
+  const f = fakeChain();
+  // The creator's game is on-chain before they send their record.
+  f.state.hits.set(N.created, 4);
+  const sockets: WebSocket[] = [];
+  const b = new ArenaBot(cfg(over), {
+    chain: f.chain as never,
+    proofs: fakeProofs().proofs,
+    connect: url => { const ws = new WebSocket(url); sockets.push(ws); openSockets.push(ws); return ws; },
+    log: () => {},
+  });
+  b.start();
+  return { bot: b, f, sockets };
+}
+
+/**
+ * A human at the relay. Queues; and, when `play` is set, plays the creator's
+ * side as a browser does: key pair at MATCH_FOUND, its record once "created",
+ * its open cards once the joiner's record arrives, then a sealed move on each
+ * of its turns — each of the bot's moves checked first, exactly as the
+ * browser checks it.
+ */
 class HumanClient {
   ws: WebSocket;
   gameId: string | null = null;
-  me: 'player1' | 'player2' | null = null;
-  over: { winner: string } | null = null;
-  opponentIsBot: boolean | null = null;
+  me: 1 | 2 | null = null;
+  /** MATCH_FOUND as it arrived. */
+  match: Record<string, unknown> | null = null;
+  /** Every frame the relay sent us, as it arrived. */
+  readonly received: any[] = [];
+  game: FakeHuman | null = null;
+  error: Error | null = null;
 
+  private keys: typeof import('../../frontend/src/aztec/gameKeys.js') | null = null;
+  private keyPair: GameKeyPair | null = null;
+  private channel: GameChannel | null = null;
+  /** The joiner's record arrived. A resend (after its reconnect) changes nothing — as in the browser. */
+  private joinerRecord = false;
   private established = false;
   private onEstablished: (() => void) | null = null;
+  /** Our handling, one frame at a time, in order — as the browser's is. */
+  private work: Promise<void> = Promise.resolve();
 
-  constructor(url: string) {
+  constructor(url: string, private readonly opts: {
+    play?: boolean;
+    strategy?: HumanStrategy;
+    /** Runs before each of our own moves goes out. */
+    beforeOwnMove?: (moveNumber: number) => Promise<void>;
+  } = {}) {
     this.ws = new WebSocket(url);
     openSockets.push(this.ws);
     // Listen from CONSTRUCTION, not from ready(). Attaching later loses any
@@ -71,11 +112,12 @@ class HumanClient {
     // a real ~1-in-6 hang in these tests, and it looked like a server fault.
     this.ws.on('message', raw => {
       const msg = JSON.parse(raw.toString());
+      this.received.push(msg);
       if (msg.type === 'SESSION_ESTABLISHED') {
         this.established = true;
         this.onEstablished?.();
       }
-      this.handle(msg);
+      this.work = this.work.then(() => this.handle(msg)).catch(err => { this.error ??= err as Error; });
     });
   }
 
@@ -85,35 +127,74 @@ class HumanClient {
     await new Promise<void>(res => { this.onEstablished = res; });
   }
 
-  private handle(msg: any) {
-    if (msg.type === 'MATCH_FOUND') {
-      this.gameId = msg.gameId;
-      this.me = msg.playerNumber === 1 ? 'player1' : 'player2';
-      this.opponentIsBot = msg.opponentIsBot ?? null;
-      this.move(msg.gameState);
-    }
-    if ((msg.type === 'GAME_STATE' || msg.type === 'GAME_START') && msg.gameId === this.gameId) {
-      this.move(msg.gameState);
-    }
-    if (msg.type === 'GAME_OVER' && msg.gameId === this.gameId) this.over = { winner: msg.winner };
+  private send(msg: unknown) { this.ws.send(JSON.stringify(msg)); }
+
+  private async sendPeer(payload: unknown) {
+    const sealed = await this.keys!.sealPeerPayload(this.channel!.channelKey, this.gameId!, payload);
+    this.send({ type: 'PEER', gameId: this.gameId, ...sealed });
   }
 
-  private move(state: any) {
-    if (!state || state.status !== 'playing' || state.currentTurn !== this.me) return;
-    const moveNumber = state.board.flat().filter((c: any) => c.card !== null).length;
-    for (let row = 0; row < 3; row++) {
-      for (let col = 0; col < 3; col++) {
-        if (!state.board[row][col].card) {
-          this.ws.send(JSON.stringify({
-            type: 'PLACE_CARD', gameId: this.gameId, handIndex: 0, row, col, moveNumber,
-          }));
-          return;
+  private async playOwn() {
+    const game = this.game!;
+    await this.opts.beforeOwnMove?.(game.moves.length);
+    this.send(await game.move());
+  }
+
+  private async handle(msg: any) {
+    if (msg.type === 'MATCH_FOUND') {
+      this.gameId = msg.gameId;
+      this.me = msg.playerNumber;
+      this.match = msg;
+    }
+    if (!this.opts.play) return;
+    switch (msg.type) {
+      case 'MATCH_FOUND': {
+        this.keys = await import('../../frontend/src/aztec/gameKeys.js');
+        this.keyPair = await this.keys.generateGameKeyPair();
+        this.send({ type: 'KEY_EXCHANGE', gameId: this.gameId, publicKey: this.keyPair.publicKey });
+        return;
+      }
+      case 'OPPONENT_KEY': {
+        const keys = this.keys!;
+        const room = this.gameId!;
+        const channel = await keys.deriveGameChannel(this.keyPair!, msg.publicKey, room);
+        this.channel = channel;
+        this.game = new FakeHuman({
+          room,
+          seal: payload => keys.sealPeerPayload(channel.channelKey, room, payload),
+          open: sealed => keys.openPeerPayload(channel.channelKey, room, sealed),
+          strategy: this.opts.strategy,
+        });
+        // Our create_game is "mined": say so, then send our record.
+        this.send({ type: 'TX_CONFIRMED', gameId: room, txType: 'create_game' });
+        await this.sendPeer({ kind: 'RECORD', record: RECORD1 });
+        return;
+      }
+      case 'PEER': {
+        const payload: any = await this.keys!.openPeerPayload(this.channel!.channelKey, this.gameId!, msg);
+        if (payload.kind === 'RECORD') {
+          if (this.joinerRecord) return;
+          this.joinerRecord = true;
+          // The bot joined: our open cards, then the first move.
+          await this.sendPeer(this.game!.openCards());
+          await this.playOwn();
+        } else if (payload.kind === 'OPEN_CARDS') {
+          await this.game!.receiveOpenCards(payload);
         }
+        return;
+      }
+      case 'MOVE': {
+        await this.game!.receive(msg);
+        if (this.game!.moves.length < 9) await this.playOwn();
+        return;
       }
     }
   }
 
-  queue() { this.ws.send(JSON.stringify({ type: 'QUEUE_MATCHMAKING', cardIds: HUMAN_CARDS })); }
+  /** All nine moves are in our transcript. */
+  get finished(): boolean { return (this.game?.moves.length ?? 0) >= 9; }
+
+  queue() { this.send({ type: 'QUEUE_MATCHMAKING' }); }
   close() { this.ws.close(); }
 }
 
@@ -174,8 +255,7 @@ describe('arena bot end-to-end', () => {
   });
 
   it('does not offer a game before the threshold elapses', async () => {
-    bot = new ArenaBot(cfg({ joinThresholdMs: 10_000 }), { log: () => {} });
-    bot.start();
+    bot = startBot({ joinThresholdMs: 10_000 }).bot;
     const human = new HumanClient(`ws://localhost:${port}`);
     await human.ready();
     human.queue();
@@ -185,42 +265,71 @@ describe('arena bot end-to-end', () => {
     human.close();
   });
 
-  it('rescues a waiting player and plays a full game to completion', async () => {
-    bot = new ArenaBot(cfg(), { log: () => {} });
-    bot.start();
+  it('rescues a waiting player and plays a whole game through the pipe — every move checked by both sides', async () => {
+    const started = startBot();
+    bot = started.bot;
 
-    const human = new HumanClient(`ws://localhost:${port}`);
+    const human = new HumanClient(`ws://localhost:${port}`, { play: true, strategy: OUTCOMES.loss });
     await human.ready();
     human.queue();
 
     await waitFor(() => human.gameId !== null, 15_000, 'match to form');
-    // The human must be TOLD the opponent is a bot.
-    // The bot is a fallback for when nobody else is queuing; a player must not
-    // be able to tell they got one — not from the UI, and not from this frame.
-    expect(human.opponentIsBot, 'the human is NOT told the opponent is a bot').toBeNull();
+    // A room and a seat — no game state, and nothing that says the opponent is
+    // a bot: a player must not be able to tell, not even from this frame.
+    expect(Object.keys(human.match!).sort()).toEqual(['gameId', 'playerNumber', 'type']);
+    expect(human.me).toBe(1);
 
-    await waitFor(() => human.over !== null, 30_000, 'game to finish');
-    expect(['player1', 'player2', 'draw']).toContain(human.over!.winner);
+    await waitFor(() => human.finished || human.error !== null, 30_000, 'the ninth move');
+    expect(human.error).toBeNull();
+    await waitFor(() => bot!.getStats().gamesPlayed === 1, 10_000, 'the bot to see the result');
 
+    // Every move the bot received through the relay was a number and ciphertext.
+    for (const m of human.received.filter(x => x.type === 'MOVE')) {
+      expect(Object.keys(m).sort()).toEqual(['ciphertext', 'gameId', 'iv', 'moveNumber', 'type']);
+    }
+    // The bot reports its own result: the relay cannot know it.
     const stats = bot.getStats();
-    expect(stats.gamesPlayed).toBe(1);
-    expect(stats.wins + stats.losses + stats.draws).toBe(1);
-    expect(stats.moveFailures).toBe(0);
-    expect(stats.state).toBe('idle');
+    expect(stats).toMatchObject({ gamesPlayed: 1, losses: 1, wins: 0, draws: 0, opponentFaults: 0, moveFailures: 0, proofFailures: 0 });
+    expect(['idle', 'queued'], 'the bot must free itself for the next player').toContain(stats.state);
+    expect(started.f.called('join')).toHaveLength(1);
 
-    // The bot must free itself for the next player.
     const m = await (await fetch(`http://localhost:${port}/metrics`)).json() as any;
     expect(m.matchesFormed).toBe(1);
     expect(m.botMatchesFormed).toBe(1);
-    expect(m.gamesCompleted).toBe(1);
-    // The bot outcome counters must actually MOVE — a monitoring counter stuck
-    // at zero reads as "healthy" when it means "not measured".
-    expect(m.botWins + m.botLosses + m.botDraws).toBe(1);
-    // ...and agree with the bot's own view of the same game.
-    expect(m.botWins).toBe(stats.wins);
-    expect(m.botLosses).toBe(stats.losses);
-    expect(m.botDraws).toBe(stats.draws);
+    expect(m.gamesCompleted, 'all nine moves went through the relay').toBe(1);
     expect(m.meanMatchWaitMs).toBeGreaterThanOrEqual(0);
+    // Win/loss counters are gone from the relay: it never sees a result.
+    expect(m).not.toHaveProperty('botWins');
+    expect(m).not.toHaveProperty('botLosses');
+    human.close();
+  }, 60_000);
+
+  it('resumes its seat when its socket drops mid-game, and the game still completes', async () => {
+    // A slower reconnect, so the human's next move lands while the bot is away
+    // and has to come from the relay's buffer.
+    const started = startBot({ pollIntervalMs: 300 });
+    bot = started.bot;
+
+    const human: HumanClient = new HumanClient(`ws://localhost:${port}`, {
+      play: true,
+      strategy: OUTCOMES.loss,
+      beforeOwnMove: async n => {
+        if (n !== 4) return;
+        // Cut the bot off between its move 3 and our move 4, and wait until
+        // the relay has seen it go — so move 4 is buffered, not lost.
+        started.sockets[started.sockets.length - 1].terminate();
+        await waitFor(() => human.received.some(x => x.type === 'OPPONENT_DISCONNECTED'), 5_000, 'the relay to see the bot go');
+      },
+    });
+    await human.ready();
+    human.queue();
+
+    await waitFor(() => human.finished || human.error !== null, 30_000, 'the ninth move');
+    expect(human.error).toBeNull();
+    await waitFor(() => bot!.getStats().gamesPlayed === 1, 10_000, 'the bot to see the result');
+    expect(started.sockets.length, 'it reconnected').toBeGreaterThanOrEqual(2);
+    expect(human.received.some(x => x.type === 'OPPONENT_RECONNECTED'), 'by resuming its session').toBe(true);
+    expect(bot.getStats()).toMatchObject({ gamesPlayed: 1, losses: 1, abandonedGames: 0, opponentFaults: 0 });
     human.close();
   }, 60_000);
 
@@ -247,11 +356,7 @@ describe('a pool of arena bots', () => {
   });
 
   function startPool(n: number, over: Partial<ArenaBotConfig> = {}): ArenaBot[] {
-    for (let i = 0; i < n; i++) {
-      const b = new ArenaBot(cfg({ handCardIds: [1 + i * 5, 2 + i * 5, 3 + i * 5, 4 + i * 5, 5 + i * 5], ...over }));
-      pool.push(b);
-      b.start();
-    }
+    for (let i = 0; i < n; i++) pool.push(startBot(over).bot);
     return pool;
   }
 
@@ -262,7 +367,7 @@ describe('a pool of arena bots', () => {
     // opponent, and two of them playing each other burns ten committed cards.
     await new Promise(r => setTimeout(r, 2_000));
 
-    expect(pool.every(b => b.getStats().gamesPlayed === 0)).toBe(true);
+    expect(pool.every(b => b.getStats().state === 'idle' && b.getStats().gamesPlayed === 0)).toBe(true);
     expect(await server.gameManager.getGameCount()).toBe(0);
   }, 20_000);
 
@@ -285,20 +390,10 @@ describe('a pool of arena bots', () => {
     // that it did not.
     await new Promise(r => setTimeout(r, 1_000));
 
-    expect(human.opponentIsBot, 'still not disclosed').toBeNull();
-    // The extras must not be parked in the queue holding five committed cards
-    // each, waiting to time out.
-    // "Engaged" rather than "playing": with moveDelayMs 0 the nine relay moves
-    // fly through in milliseconds, so the bot may already be back to idle with
-    // the game recorded.
-    const engaged = pool.filter(b => {
-      const st = b.getStats();
-      return st.state === 'playing' || st.gamesPlayed > 0;
-    }).length;
-    const queued = pool.filter(b => b.getStats().state === 'queued').length;
-    expect(engaged).toBe(1);
+    // This human never plays, so the bot that took them is still in the game.
+    expect(pool.filter(b => b.getStats().state === 'playing')).toHaveLength(1);
     // The extras must not be parked in the queue holding five committed cards.
-    expect(queued).toBe(0);
+    expect(pool.filter(b => b.getStats().state === 'queued')).toHaveLength(0);
     expect(await server.gameManager.getGameCount()).toBe(1);
 
     human.close();
@@ -314,7 +409,7 @@ describe('a pool of arena bots', () => {
 
     await waitFor(() => human.me !== null, 15_000, 'a match');
     // Creating wagers five cards on a game nobody may join — never the bot.
-    expect(human.me).toBe('player1');
+    expect(human.me).toBe(1);
 
     human.close();
   }, 30_000);
@@ -333,9 +428,7 @@ describe('a pool of arena bots', () => {
 
     // The bot is a fallback for an empty queue, not a competitor for players.
     expect(h1.gameId).toBe(h2.gameId);
-    expect(h1.opponentIsBot).toBeNull();
-    expect(h2.opponentIsBot).toBeNull();
-    expect(pool.every(b => b.getStats().gamesPlayed === 0)).toBe(true);
+    expect(pool.every(b => b.getStats().state !== 'playing' && b.getStats().gamesPlayed === 0)).toBe(true);
 
     h1.close(); h2.close();
   }, 30_000);

@@ -18,7 +18,7 @@ import {
 import { choosePrizeMove } from '../src/settlement.js';
 import { cardStrength } from '../../frontend/src/aztec/gameActions.js';
 import type { AbandonmentPosition } from '../../frontend/src/aztec/privateGame.js';
-import { F, RECORD1, RECORD2, transcript } from './fakes.js';
+import { F, RECORD1, RECORD2, fakeProofB64, transcript } from './fakes.js';
 
 describe('the prize the bot takes', () => {
   it('values a rarer card above a stronger common one', () => {
@@ -63,8 +63,10 @@ describe('the prize the bot takes', () => {
 });
 
 describe('what the bot accepts from the opponent', () => {
-  it('reads the four PEER payload kinds', () => {
+  it('reads the five PEER payload kinds', () => {
     expect(parsePeerPayload({ kind: 'RECORD', record: RECORD1 })).toEqual({ kind: 'RECORD', record: RECORD1 });
+    const open = { cards: [1, 180, 247], proof: fakeProofB64(), publicInputs: [RECORD1[1], F(1), F(180), F(247)] };
+    expect(parsePeerPayload({ kind: 'OPEN_CARDS', ...open })).toEqual({ kind: 'OPEN_CARDS', ...open });
     expect(parsePeerPayload({ kind: 'SETTLING', prizeMove: 4 })).toEqual({ kind: 'SETTLING', prizeMove: 4 });
     // A draw names no prize; the browser announces it as null.
     expect(parsePeerPayload({ kind: 'SETTLING', prizeMove: null })).toEqual({ kind: 'SETTLING', prizeMove: null });
@@ -85,6 +87,12 @@ describe('what the bot accepts from the opponent', () => {
     expect(parsePeerPayload({ kind: 'SETTLING', prizeMove: 1.5 })).toBeNull();
     expect(parsePeerPayload({ kind: 'SETTLED', txHash: '0x1234' })).toBeNull();
     expect(parsePeerPayload({ kind: 'NOTE_DATA', notes: [] })).toBeNull();
+    // Open cards: three real card ids, a proof, and the four public inputs.
+    const open = { cards: [1, 180, 247], proof: fakeProofB64(), publicInputs: [RECORD1[1], F(1), F(180), F(247)] };
+    expect(parsePeerPayload({ kind: 'OPEN_CARDS', ...open, cards: [1, 180] })).toBeNull();
+    expect(parsePeerPayload({ kind: 'OPEN_CARDS', ...open, cards: [1, 180, 999] })).toBeNull();
+    expect(parsePeerPayload({ kind: 'OPEN_CARDS', ...open, publicInputs: open.publicInputs.slice(0, 3) })).toBeNull();
+    expect(parsePeerPayload({ kind: 'OPEN_CARDS', ...open, proof: 'not base64!' })).toBeNull();
     expect(parsePeerPayload('RECORD')).toBeNull();
     expect(parsePeerPayload(null)).toBeNull();
   });
@@ -108,7 +116,7 @@ describe('what the bot accepts from the opponent', () => {
     expect(normalizeMoveProof({ publicInputs: new Array(8).fill(F(1)) })).toBeNull();
   });
 
-  it('reads the relay\'s verdict from the bot\'s seat', () => {
+  it('reads a result from the bot\'s seat', () => {
     expect(outcomeFor('player2', 'player2')).toBe('win');
     expect(outcomeFor('player1', 'player2')).toBe('loss');
     expect(outcomeFor('draw', 'player2')).toBe('draw');

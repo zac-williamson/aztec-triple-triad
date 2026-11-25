@@ -1,13 +1,14 @@
 /**
  * The bot's own decisions in the private-game protocol
  * (docs/plan/PRIVATE_GAMES.md): which card it wants as a prize, which PEER
- * payloads and relayed proofs it accepts, and what the recovery sweep does next
+ * payloads and move proofs it accepts, and what the recovery sweep does next
  * with a game it can no longer play.
  *
  * Pure: no chain, relay or prover. The protocol's shared core — records, the
- * nullifier layout, reading a transcript, which notes are a player's own — is
- * the frontend's privateGame.ts, imported rather than copied, so the bot and a
- * browser cannot disagree about it.
+ * nullifier layout, reading a transcript, which notes are a player's own, the
+ * game model and the checks of the opponent's moves — is the frontend's
+ * (privateGame.ts, localGame.ts, moveChecks.ts), imported rather than copied,
+ * so the bot and a browser cannot disagree about it.
  */
 import { getCardById } from '@axolotl-arena/game-logic';
 import type { Rarity } from '@axolotl-arena/game-logic';
@@ -36,7 +37,7 @@ export const BOT_SIDE: Side = 2;
 /** A finished game from the bot's seat. */
 export type Outcome = 'win' | 'loss' | 'draw';
 
-/** The relay's verdict (`player1` / `player2` / `draw`) from the bot's seat. */
+/** A game's result (`player1` / `player2` / `draw`, as the board gives it) from the bot's seat. */
 export function outcomeFor(winner: unknown, me: 'player1' | 'player2'): Outcome {
   if (winner === 'draw') return 'draw';
   return winner === me ? 'win' : 'loss';
@@ -76,8 +77,8 @@ export function cardValue(cardId: number): number {
 /**
  * Accept a decrypted PEER payload only if it is well formed — the browser's
  * own validation (peerChannel.ts), so both ends agree on what a payload is. It
- * came from the opponent: a malformed record or prize index is dropped here
- * rather than reaching a transaction.
+ * came from the opponent: a malformed record, prize index or set of open cards
+ * is dropped here rather than reaching a transaction or a check.
  */
 export function parsePeerPayload(raw: unknown): PeerPayload | null {
   try { return parseOrThrow(raw); } catch { return null; }
@@ -88,9 +89,9 @@ export const MOVE_PUBLIC_INPUTS = 8;
 
 /**
  * A move proof as the bot keeps it: every derived field read from the eight
- * public inputs, never from what the sender claimed about them, so a proof's
- * chain links and placed card are exactly what settlement will verify. Null
- * for anything that cannot be a game_move proof.
+ * public inputs, never from what anyone claimed about them, so a proof's chain
+ * links and placed card are exactly what settlement will verify. Null for
+ * anything that cannot be a game_move proof.
  */
 export function normalizeMoveProof(raw: unknown): MoveProofData | null {
   if (!raw || typeof raw !== 'object') return null;

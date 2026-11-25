@@ -24,8 +24,6 @@ export interface ArenaBotConfig {
    * queue, where it would match the NEXT human instantly and defeat the point.
    */
   queueTimeoutMs: number;
-  /** Which cards the bot commits to a game. */
-  handCardIds: number[];
   /** Bot strength. 'greedy' is a reasonable default: beatable but not random. */
   difficulty: BotDifficulty;
   /**
@@ -65,8 +63,6 @@ export interface ArenaBotConfig {
   maxConcurrentGames: number;
   /** Timeout for an on-chain tx (join, settle, claim, finalize). Proving dominates. */
   chainTxTimeoutMs: number;
-  /** How long to wait after GAME_OVER for the nine-proof transcript to complete. */
-  settleWaitMs: number;
   /**
    * How long to wait for the creator's game record after the match. They send
    * it once their create_game is mined; past this, nothing of ours is at stake
@@ -140,14 +136,6 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ArenaBotCon
   const token = env.ARENA_BOT_TOKEN ?? '';
   if (!token) throw new Error('ARENA_BOT_TOKEN is required (must match the backend)');
 
-  const handCardIds = (env.ARENA_BOT_CARDS ?? '1,2,3,4,5')
-    .split(',')
-    .map(s => Number(s.trim()))
-    .filter(n => Number.isInteger(n) && n >= 1 && n <= 256);
-  if (handCardIds.length !== 5) {
-    throw new Error(`ARENA_BOT_CARDS must list exactly 5 card ids in 1..256, got ${handCardIds.length}`);
-  }
-
   return {
     wsUrl: env.ARENA_BOT_WS_URL ?? 'ws://localhost:5174',
     httpUrl: env.ARENA_BOT_HTTP_URL ?? 'http://localhost:5174',
@@ -155,14 +143,12 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ArenaBotCon
     joinThresholdMs: int(env.ARENA_BOT_JOIN_THRESHOLD_MS, 30_000),
     pollIntervalMs: int(env.ARENA_BOT_POLL_INTERVAL_MS, 2_000),
     queueTimeoutMs: int(env.ARENA_BOT_QUEUE_TIMEOUT_MS, 60_000),
-    handCardIds,
     difficulty,
     skillMin,
     skillMax,
     moveDelayMs: int(env.ARENA_BOT_MOVE_DELAY_MS, 1_200),
     maxConcurrentGames: int(env.ARENA_BOT_MAX_CONCURRENT_GAMES, 1),
     chainTxTimeoutMs: int(env.ARENA_BOT_CHAIN_TX_TIMEOUT_MS, 600_000),
-    settleWaitMs: int(env.ARENA_BOT_SETTLE_WAIT_MS, 300_000),
     gameTimeoutMs: int(env.ARENA_BOT_GAME_TIMEOUT_MS, 1_800_000),
     opponentGraceMs: int(env.ARENA_BOT_OPPONENT_GRACE_MS, 90_000),
     recordWaitMs: int(env.ARENA_BOT_RECORD_WAIT_MS, 600_000),

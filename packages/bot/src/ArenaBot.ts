@@ -2,33 +2,48 @@
  * The arena bot: a WebSocket client that plays like any other player.
  *
  * It deliberately uses the SAME protocol a browser uses — REGISTER_BOT only
- * marks it for disclosure and metrics, it grants no privileged moves. So the
- * relay, the rules engine and the chain all treat it as an ordinary opponent,
- * which is what "completely mimic a player" has to mean if the demo is to be
- * honest.
+ * marks it for matchmaking and metrics, it grants no privileged moves. So the
+ * relay, the opponent's client and the chain all treat it as an ordinary
+ * opponent, which is what "completely mimic a player" has to mean if the demo
+ * is to be honest.
  *
  * State machine: idle → queued → playing → idle.
  *
- *   idle    poll /queue; if a human has waited past joinThresholdMs and we have
- *           a free slot, queue ourselves and let the server's normal tryMatch
- *           pair us. We never reach into matchmaking directly.
+ *   idle    poll /queue; if a human has waited past joinThresholdMs, queue
+ *           ourselves (QUEUE_MATCHMAKING names no card) and let the server's
+ *           normal tryMatch pair us. We never reach into matchmaking directly.
  *   queued  waiting for MATCH_FOUND. Bounded by queueTimeoutMs: if the human
  *           cancels just as we queue, an un-timed-out bot would sit in the queue
  *           and instantly grab the NEXT human, which is exactly the behaviour
  *           this feature is supposed to avoid.
- *   playing drive our own turns from GAME_STATE; ignore the opponent's.
+ *   playing the game, run HERE. The relay is a pipe (docs/plan/PRIVATE_GAMES.md
+ *           section 6): it pairs us, forwards sealed payloads and counts moves.
+ *           It holds no board, hand or result, so each client runs the game
+ *           itself and referees the other's proofs.
  *
- * In chain mode a game is private (docs/plan/PRIVATE_GAMES.md). The bot is
- * always the JOINER, player 2:
+ * A game is private and the bot is always the JOINER, player 2:
  *
- *   MATCH_FOUND      make a key pair for this game, send KEY_EXCHANGE
- *   OPPONENT_KEY     derive the game key and the channel that seals PEER payloads
- *   PEER RECORD      the creator's record: wait for its `created` nullifier, read
- *                    our nonce, preview our record, join_game, PEER RECORD back
- *   play             move proofs bind the two records' hand commitments
- *   GAME_OVER        win: SETTLING → settle_game → SETTLED → import our notes.
- *                    draw: let player 1 settle, then do it if they do not.
- *                    loss: wait for the winner's settlement and import from it.
+ *   MATCH_FOUND   a key pair for this game → KEY_EXCHANGE; a local game, our
+ *                 five cards against five face-down ones
+ *   OPPONENT_KEY  derive the game key and the channel that seals PEER and MOVE
+ *   PEER RECORD   the creator's record: wait for its `created` nullifier, read
+ *                 our nonce, preview our record, join_game, PEER RECORD back
+ *   OPEN_CARDS    ours: proven and sent once both records are known, before our
+ *                 first move. Theirs: checked against their record's hand
+ *                 commitment before they count
+ *   MOVE          theirs: opened and checked — bounds, state hashes, the eight
+ *                 public inputs, the proof (moveChecks.ts) — before it is
+ *                 applied. Ours: chosen on the local board, proven, sealed and
+ *                 sent with its move number, the only thing the relay reads
+ *   ninth move    the transcript's result is the game's: a win settles
+ *                 (SETTLING → settle_game → SETTLED → import our notes); a draw
+ *                 gives player 1 first go at settling; a loss waits for the
+ *                 winner's settlement and imports from it
+ *
+ * Anything of theirs that fails a check halts the game for the bot: such a game
+ * can never settle, so the bot leaves it and its cards to the abandonment sweep.
+ * A dropped socket resumes the same relay session (RESUME → ROOM_STATE), and any
+ * of our moves the relay never got goes again.
  *
  * Every import is from the tx that resolved the game, found by the game's own
  * `done` nullifier — a SETTLED message is only a hint. Nothing about the human
@@ -36,7 +51,6 @@
  */
 import WebSocket from 'ws';
 import { chooseBotMove } from '@axolotl-arena/game-logic';
-import type { GameState, Player } from '@axolotl-arena/game-logic';
 import type { ArenaBotConfig } from './config.js';
 import {
   BOT_SIDE,
@@ -61,6 +75,7 @@ import {
 import type { BotChainLike, BotProofsLike } from './chainTypes.js';
 import type { JournalRecord, JournalResolution } from './GameJournal.js';
 import {
+  moverOf,
   normalizeField,
   NULLIFIER_INDEX,
   placedOf,
@@ -69,6 +84,19 @@ import {
   type GameRecord,
   type GameSecrets,
 } from '../../frontend/src/aztec/privateGame.js';
+import {
+  parseMovePayload,
+  planOwnMove,
+  replay,
+  winnerIdOf,
+  type GameMove,
+  type LocalGameFacts,
+  type MovePayload,
+  type OpenCardsPayload,
+  type TranscriptMove,
+} from '../../frontend/src/aztec/localGame.js';
+import { checkOpenCards, checkOpponentMove } from '../../frontend/src/aztec/moveChecks.js';
+import { TOTAL_MOVES } from '../../frontend/src/aztec/gameConstants.js';
 import type { FoundTx } from '../../frontend/src/aztec/gameChain.js';
 import type { GameChannel, GameKeyPair, SealedPayload } from '../../frontend/src/aztec/gameKeys.js';
 import type { MoveProofData } from '../../frontend/src/types.js';
@@ -82,18 +110,6 @@ export type { BotChainLike, BotProofsLike };
  * on-chain by itself, so this bounds memory, not correctness.
  */
 const RETURN_WAIT_MS = 60 * 60_000;
-
-/**
- * How long we keep absorbing move proofs for a game that has already ended.
- *
- * The final move of a nine-move game is always player 1's — moves are
- * 0-indexed, so P1 plays 0,2,4,6,8 — and the bot only ever joins, so it is
- * always player 2. The ninth proof is the opponent's and arrives AFTER
- * GAME_OVER, while their browser is still proving it. Without it the journal
- * freezes at 8 of 9, and a game whose winner then walks away could never be
- * settled on its merits by anyone.
- */
-const LATE_PROOF_WINDOW_MS = 15 * 60_000;
 
 /** How long to wait for the creator's record after the match before giving up. */
 const DEFAULT_RECORD_WAIT_MS = 10 * 60_000;
@@ -112,6 +128,21 @@ const RESOLUTION_WAIT_MS = 2 * 60_000;
 /** PEER payloads held while the channel is still being derived. */
 const MAX_PENDING_PEER = 16;
 
+/**
+ * Opponent MOVEs held unchecked: nine numbers, each possibly delivered twice
+ * (once live, once replayed after a resume). Bounded, so a confused peer
+ * cannot grow it.
+ */
+const MAX_INBOX = 2 * TOTAL_MOVES;
+
+/**
+ * When a check could not RUN (the verifier itself threw), how long before the
+ * payload is checked again. Such a failure says nothing about the payload, so
+ * it is never held against the opponent; the game's own timeout bounds how
+ * long this goes on.
+ */
+const RECHECK_MS = 30_000;
+
 /** Ids in logs: enough to correlate, never a whole on-chain value. */
 const short = (id: unknown): string =>
   typeof id === 'string' ? `${id.slice(0, 10)}…` : String(id);
@@ -124,7 +155,23 @@ export function redactForHealth(message: string): string {
   return message.replace(/0x[0-9a-fA-F]{16,}/g, m => `${m.slice(0, 6)}…`);
 }
 
+/**
+ * Why the opponent's payload was refused, fit for a log: every number and
+ * field value replaced by `#`. A check's reason can name the card a move
+ * played, the slot it came from or the open cards it contradicts, and the
+ * human's hand is theirs — even when they cheat.
+ */
+export function withoutCardDetails(reason: string): string {
+  return reason.replace(/0x[0-9a-fA-F]+|\d+/g, '#');
+}
+
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+const sameCards = (a: number[], b: number[]): boolean =>
+  a.length === b.length && a.every((c, i) => c === b[i]);
+
+const sameMove = (a: GameMove, b: GameMove): boolean =>
+  a.cardId === b.cardId && a.slot === b.slot && a.row === b.row && a.col === b.col;
 
 /** The per-game key exchange (frontend/src/aztec/gameKeys.ts). Injectable for tests. */
 export interface GameKeysLike {
@@ -164,7 +211,7 @@ export interface LiveGame {
   opponentRecord: boolean;
   /** Cards are at stake from here on. */
   committed: boolean;
-  /** Move proofs held for THIS game — the transcript a settlement is built from. */
+  /** Moves in the transcript, each with its proof — what a settlement is built from. */
   moveProofs: number;
   /** True when the board is waiting on us. */
   oweAMove: boolean;
@@ -192,24 +239,31 @@ export interface BotStats {
   game: LiveGame | null;
   /** Games still holding our cards. The sweep's whole worklist. */
   journal: JournalEntry[];
+  /** Games played to the ninth move, and how they ended — the bot's own count; the relay cannot know. */
   gamesPlayed: number;
   wins: number;
   losses: number;
   draws: number;
   joinFailures: number;
   moveFailures: number;
-  /** join_game failures. Chain mode only. */
+  /** join_game failures. */
   commitFailures: number;
-  /** Proof-generation failures. Chain mode only. */
+  /** Failures to prove (or to run a check of the opponent's proof). */
   proofFailures: number;
-  /** Settlement failures, and successful settlements. Chain mode only. */
+  /** Settlement failures, and successful settlements. */
   settleFailures: number;
   settlements: number;
+  /**
+   * Games halted because the opponent sent a move or open cards that did not
+   * check out. Rare from a real player; a run of them means our checks and the
+   * players' clients disagree — which ends every game the bot plays.
+   */
+  opponentFaults: number;
   /** Games abandoned by the watchdog, and cards left locked in them. */
   abandonedGames: number;
   cardsStranded: number;
   /**
-   * Cards the bot could field at its last hand selection, or -1 off-chain.
+   * Cards the bot could field at its last hand selection, or -1 if never read.
    * The number to alert on: it is what predicts the bot going idle, and an
    * idle bot looks exactly like a quiet night.
    */
@@ -242,9 +296,10 @@ type Logger = (msg: string) => void;
 
 export interface ArenaBotDeps {
   /**
-   * Chain adapter. OPTIONAL: without it the bot plays the off-chain relay game
-   * only (what the unit and integration tests exercise). With it, the bot also
-   * commits its cards on-chain like any player.
+   * Chain adapter. Without it, and a prover, the bot never queues: every move
+   * carries a proof over both players' committed hands, so a bot that cannot
+   * commit cannot play. (Optional only so tests of the parts that do not play
+   * stay cheap.)
    */
   chain?: BotChainLike;
   /**
@@ -253,7 +308,7 @@ export interface ArenaBotDeps {
    * mid-way keeps its five cards until someone else resolves it.
    */
   journal?: BotJournal;
-  /** Proof generator. Required alongside `chain`; ignored without it. */
+  /** Proofs, and the checks of the opponent's. Required alongside `chain`. */
   proofs?: BotProofsLike;
   /** The key exchange; defaults to the frontend's gameKeys (WebCrypto). */
   keys?: GameKeysLike;
@@ -265,7 +320,12 @@ export interface ArenaBotDeps {
   now?: () => number;
 }
 
-/** One committed-or-committing game, chain mode. Lives on past GAME_OVER until it is resolved. */
+/** An opponent MOVE as the relay delivered it: still sealed, not yet checked. */
+interface InboundMove extends SealedPayload {
+  moveNumber: number;
+}
+
+/** One game, from MATCH_FOUND until it is resolved. Lives on past the ninth move until then. */
 interface ChainGame {
   relayGameId: string;
   /** Our hand, in committed order. */
@@ -283,7 +343,30 @@ interface ChainGame {
   joinStarted: boolean;
   committed: boolean;
   committedAt: number;
-  moveProofs: Map<string, MoveProofData>;
+
+  // ── The game itself (section 6.2) ──
+  /** The transcript: our moves as sent, theirs as checked, in move order. */
+  moves: TranscriptMove[];
+  /** The opponent's three open cards, once their proof checked out. */
+  opponentOpen: number[] | null;
+  /** Their OPEN_CARDS as delivered, until it is checked. */
+  openCardsClaim: OpenCardsPayload | null;
+  /** Their MOVEs as delivered, until each is checked. */
+  inbox: InboundMove[];
+  /** The checks of what they sent, one at a time, in order. */
+  inbound: Promise<void>;
+  /** A check that could not run, waiting to go again. */
+  recheck: NodeJS.Timeout | null;
+  /** Our open cards, proven: sent once both records are known, and again after a resume. */
+  ownOpen: OpenCardsPayload | null;
+  ownOpenTask: Promise<void> | null;
+  /** The number of our move being chosen and proven: one move per turn. */
+  moveInFlight: number | null;
+  /** The connection each of our moves last went out on: a resume resends only what it has not. */
+  sentOn: Map<number, WebSocket>;
+  /** Why the opponent's play was refused. Set, the game cannot settle and is the sweep's. */
+  protocolError: string | null;
+
   outcome: Outcome | null;
   prizeMove: number | null;
   /** We are settling it ourselves; the opponent's SETTLED is then only news. */
@@ -295,17 +378,31 @@ interface ChainGame {
   imported: boolean;
 }
 
+function newGame(relayGameId: string, cardIds: number[]): ChainGame {
+  return {
+    relayGameId, cardIds: [...cardIds],
+    keyPair: null, opponentPublicKey: null, channel: null, deriving: false, pendingPeer: [],
+    record1: null, record2: null, nonce: null, secrets: null,
+    joinStarted: false, committed: false, committedAt: 0,
+    moves: [], opponentOpen: null, openCardsClaim: null, inbox: [], inbound: Promise.resolve(), recheck: null,
+    ownOpen: null, ownOpenTask: null, moveInFlight: null, sentOn: new Map(), protocolError: null,
+    outcome: null, prizeMove: null, settlingSelf: false, settledHint: null,
+    importing: null, imported: false,
+  };
+}
+
 export class ArenaBot {
   private ws: WebSocket | null = null;
   private state: BotState = 'idle';
   private gameId: string | null = null;
-  private myPlayer: Player | null = null;
   private queuedAt = 0;
   private hand: number[] = [];
-  /** The current game's chain context (chain mode only). */
+  /** The current game. */
   private game: ChainGame | null = null;
   /** Suppresses repeat logging of a persistent card shortage. */
   private handShortageLogged = false;
+  /** Suppresses repeat logging of a bot that cannot play at all. */
+  private unplayableLogged = false;
   /** When the current game started, for the stuck-game watchdog. */
   private gameStartedAt = 0;
   /**
@@ -317,21 +414,6 @@ export class ArenaBot {
    * for anybody.
    */
   private opponentGoneSince: number | null = null;
-  /** True once OUR cards are committed on-chain. Gates play in chain mode. */
-  private committed = false;
-  /**
-   * Latest state seen for the current game. The commit gate drops states that
-   * arrive before we are committed, and the relay sends a new one only when
-   * somebody MOVES — so without replaying the last state after committing, a
-   * bot whose turn arrived during its commit waits forever for a message that
-   * will never come. That deadlock cost a 30-minute sandbox run.
-   */
-  private lastState: GameState | null = null;
-  /** Our in-flight move, kept so the proof can bind the before/after transition. */
-  private pendingMove: {
-    moveNumber: number; cardId: number; row: number; col: number;
-    boardBefore: GameState['board']; scoresBefore: [number, number];
-  } | null = null;
   /** Move proofs still generating — shutdown waits for them. */
   private proving = 0;
   private settling = false;
@@ -339,15 +421,21 @@ export class ArenaBot {
   private stopped = false;
   private registered = false;
   /**
-   * Games that ended but are not resolved yet, by relay room id: the winner's
-   * SETTLING/SETTLED and the opponent's last move proof land after we reset.
+   * The relay session. Kept so a dropped socket RESUMEs it: the room knows us
+   * by the session's player id, so a fresh session mid-game is a stranger to
+   * our own game, and whatever the relay buffered for us is lost with it.
    */
-  private readonly recentGames = new Map<string, { ctx: ChainGame; proofsUntil: number; until: number }>();
+  private sessionToken: string | null = null;
+  /**
+   * Games that ended but are not resolved yet, by relay room id: the winner's
+   * SETTLING/SETTLED land after we reset.
+   */
+  private readonly recentGames = new Map<string, { ctx: ChainGame; until: number }>();
 
   private readonly stats: Omit<BotStats, 'state' | 'game' | 'journal'> = {
     gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
     joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0, settleFailures: 0, settlements: 0,
-    abandonedGames: 0, cardsStranded: 0, spendableCards: -1,
+    opponentFaults: 0, abandonedGames: 0, cardsStranded: 0, spendableCards: -1,
     cardsUnimported: 0, feeJuice: '-1', lastError: null,
   };
 
@@ -392,14 +480,15 @@ export class ArenaBot {
   private liveGame(): LiveGame | null {
     if (this.state !== 'playing' || !this.gameId) return null;
     const secs = (since: number) => Math.max(0, Math.round((this.now() - since) / 1000));
+    const ctx = this.game;
     return {
       relayGameId: this.gameId,
-      playerNumber: this.myPlayer === 'player1' ? 1 : this.myPlayer === 'player2' ? 2 : null,
-      keyed: this.game?.channel != null,
-      opponentRecord: this.game?.record1 != null,
-      committed: this.committed,
-      moveProofs: this.game?.moveProofs.size ?? 0,
-      oweAMove: this.oweAMove(),
+      playerNumber: BOT_SIDE,
+      keyed: ctx?.channel != null,
+      opponentRecord: ctx?.record1 != null,
+      committed: ctx?.committed ?? false,
+      moveProofs: ctx?.moves.length ?? 0,
+      oweAMove: ctx ? this.oweAMove(ctx) : false,
       opponentGoneFor: this.opponentGoneSince === null ? null : secs(this.opponentGoneSince),
       ageSeconds: this.gameStartedAt > 0 ? secs(this.gameStartedAt) : 0,
       settling: this.settling,
@@ -465,19 +554,19 @@ export class ArenaBot {
   /**
    * Leave without dropping a move proof that is still being generated.
    *
-   * A proof in flight at shutdown is part of the transcript a settlement
-   * needs — the winner's, if we just lost — and it exists nowhere else until
-   * it is sent and journalled. Everything else is recoverable without us: an
-   * unfinished game is claimed and unwound from the journal by the next
-   * process. Bounded well inside systemd's 90s stop timeout, because being
-   * killed halfway is worse than leaving promptly.
+   * A proof in flight at shutdown is a move the opponent is waiting for. It is
+   * finished, journalled and sent rather than thrown away, so the transcript
+   * both sides hold is as long as the game actually got. Everything else is
+   * recoverable without us: an unfinished game is claimed and unwound from the
+   * journal by the next process. Bounded well inside systemd's 90s stop
+   * timeout, because being killed halfway is worse than leaving promptly.
    */
   async shutdown(maxMs = 60_000): Promise<void> {
     if (this.proving > 0) {
       this.log('shutting down with a move proof in flight — letting it finish so the transcript stays whole');
       const deadline = this.now() + maxMs;
       while (this.now() < deadline && this.proving > 0) await sleep(250);
-      if (this.proving > 0) this.log('WARNING: a move proof was still generating at exit; that move is missing from the transcript');
+      if (this.proving > 0) this.log('WARNING: a move proof was still generating at exit; that move was never sent');
     }
     this.stop();
   }
@@ -486,6 +575,7 @@ export class ArenaBot {
     this.stopped = true;
     if (this.pollTimer) clearInterval(this.pollTimer);
     this.pollTimer = null;
+    if (this.game?.recheck) clearTimeout(this.game.recheck);
     this.ws?.close();
     this.ws = null;
   }
@@ -493,11 +583,19 @@ export class ArenaBot {
   private openSocket(): void {
     const ws = this.connect(this.cfg.wsUrl);
     this.ws = ws;
-    // NOTE: do NOT register on 'open'. The server assigns the playerId and
-    // establishes the session asynchronously, so a frame sent immediately after
-    // the socket opens can arrive before this connection has an identity and be
-    // dropped. Wait for SESSION_ESTABLISHED, exactly as the browser client does.
-    ws.on('open', () => this.log('connected; awaiting session'));
+    ws.on('open', () => {
+      // RESUME, if we have a session, must be the FIRST frame: the relay only
+      // reads one as a resume before it hands out a fresh session. Anything
+      // else — REGISTER_BOT included — waits for SESSION_ESTABLISHED, exactly
+      // as the browser client does: a frame sent before this connection has an
+      // identity is dropped.
+      if (this.sessionToken) {
+        this.log('connected; resuming our session');
+        ws.send(JSON.stringify({ type: 'RESUME', sessionToken: this.sessionToken }));
+      } else {
+        this.log('connected; awaiting session');
+      }
+    });
     ws.on('message', (raw: WebSocket.RawData) => {
       let msg: any;
       try { msg = JSON.parse(raw.toString()); }
@@ -506,45 +604,54 @@ export class ArenaBot {
     });
     ws.on('close', () => {
       this.registered = false;
-      // A dropped socket mid-game loses the game; reset so we do not wedge in
-      // 'playing' forever waiting for a GAME_OVER that can no longer arrive.
-      if (this.state !== 'idle') this.log(`socket closed while ${this.state}; resetting to idle`);
-      this.resetToIdle();
+      if (this.state === 'queued') {
+        // The relay drops a closed socket from the queue.
+        this.log('socket closed while queued; back to idle');
+        this.resetToIdle();
+      } else if (this.state === 'playing') {
+        // The room knows us by our session: resuming it keeps our seat, and
+        // the relay buffers what the opponent sends meanwhile.
+        this.log('socket closed mid-game; resuming the session on reconnect');
+      }
       if (!this.stopped) setTimeout(() => this.openSocket(), this.cfg.pollIntervalMs);
     });
     ws.on('error', err => this.recordError('socket', err as Error));
   }
 
-  /** One poll: decide whether to offer ourselves as an opponent. */
+  /** One poll: the stuck-game watchdogs, then whether to offer ourselves as an opponent. */
   private async tick(): Promise<void> {
-    if (this.stopped || !this.registered) return;
+    if (this.stopped) return;
 
-    // Stuck-game watchdog. An opponent who never commits, or vanishes mid-game,
-    // would otherwise park us in `playing` forever — taking no further players
-    // and leaving our five committed cards waiting.
-    // Not while settling: that is a finished game, bounded by its own waits.
-    if (this.state === 'playing' && !this.settling && this.gameStartedAt > 0
-        && this.now() - this.gameStartedAt > this.cfg.gameTimeoutMs) {
-      this.abandonGame(`game exceeded ${Math.round(this.cfg.gameTimeoutMs / 60_000)}min`);
+    // Whether or not the relay is reachable: a game these end is unwound by the
+    // sweep, and the sweep never runs while we are 'playing'.
+    if (this.state === 'playing') {
+      // An opponent who never commits, or vanishes mid-game, would otherwise
+      // park us here forever — taking no further players and leaving our five
+      // committed cards waiting. Not while settling: that is a finished game,
+      // bounded by its own waits.
+      if (!this.settling && this.gameStartedAt > 0
+          && this.now() - this.gameStartedAt > this.cfg.gameTimeoutMs) {
+        this.abandonGame(`game exceeded ${Math.round(this.cfg.gameTimeoutMs / 60_000)}min`);
+        return;
+      }
+      // A creator who never sends their record never committed anything we
+      // could join. Nothing of ours is at stake, so there is no reason to hold
+      // the arena's only opponent for the full game timeout.
+      if (this.game && !this.game.record1 && this.gameStartedAt > 0
+          && this.now() - this.gameStartedAt > (this.cfg.recordWaitMs ?? DEFAULT_RECORD_WAIT_MS)) {
+        this.abandonGame('the creator never sent their game record');
+        return;
+      }
+      // A departure the relay already witnessed. Same ending as the watchdog's,
+      // reached in a minute and a half instead of thirty.
+      if (!this.settling && this.opponentGoneSince !== null
+          && this.now() - this.opponentGoneSince > this.cfg.opponentGraceMs) {
+        this.abandonGame('opponent disconnected and did not come back');
+      }
       return;
     }
 
-    // A creator who never sends their record never committed anything we
-    // could join. Nothing of ours is at stake, so there is no reason to hold
-    // the arena's only opponent for the full game timeout.
-    if (this.state === 'playing' && this.game && !this.game.record1 && this.gameStartedAt > 0
-        && this.now() - this.gameStartedAt > (this.cfg.recordWaitMs ?? DEFAULT_RECORD_WAIT_MS)) {
-      this.abandonGame('the creator never sent their game record');
-      return;
-    }
-
-    // A departure the relay already witnessed. Same ending as the watchdog's,
-    // reached in a minute and a half instead of thirty.
-    if (this.state === 'playing' && !this.settling && this.opponentGoneSince !== null
-        && this.now() - this.opponentGoneSince > this.cfg.opponentGraceMs) {
-      this.abandonGame('opponent disconnected and did not come back');
-      return;
-    }
+    if (!this.registered) return;
 
     if (this.state === 'queued' && this.now() - this.queuedAt > this.cfg.queueTimeoutMs) {
       this.log('queue timeout; leaving the queue');
@@ -553,6 +660,18 @@ export class ArenaBot {
       return;
     }
     if (this.state !== 'idle') return;
+
+    // Every move carries a proof over both players' committed hands, so a bot
+    // that cannot commit or prove cannot play a game at all. Matching a human
+    // it can never move against is worse than not offering.
+    const chain = this.chain;
+    if (!chain || !this.proofs) {
+      if (!this.unplayableLogged) {
+        this.unplayableLogged = true;
+        this.log('not offering games: playing one needs a chain and a prover');
+      }
+      return;
+    }
 
     const snap = await this.fetchQueue(this.cfg.httpUrl);
     // Re-check: a MATCH_FOUND can land WHILE the /queue fetch is in flight, and
@@ -573,33 +692,31 @@ export class ArenaBot {
       if (snap.botsQueued >= snap.humansWaiting) return;
     }
 
-    // In chain mode the hand must come from what the bot ACTUALLY holds — its
-    // collection shrinks every time a player beats it, so a configured static
-    // hand would eventually name cards it no longer owns and fail at commit.
-    let hand = this.cfg.handCardIds;
-    if (this.chain) {
-      try {
-        hand = await this.chain.selectHand(5);
-        this.stats.spendableCards = (this.chain as { lastKnownCardCount?: number }).lastKnownCardCount ?? -1;
-        // Same cadence as the card count: both are things that end the arena
-        // quietly when they hit zero, and both are cheap to read here.
-        await this.chain.readFeeJuice?.()
-          .then(v => { this.stats.feeJuice = v.toString(); })
-          .catch(() => { /* a failed read must not stop the bot queueing */ });
-        this.handShortageLogged = false;
-      } catch (err) {
-        // This condition persists until someone re-provisions, and tick() runs
-        // every pollIntervalMs — so log it ONCE per episode rather than several
-        // times a second. The stat still counts every occurrence.
-        this.stats.joinFailures += 1;
-        if (!this.handShortageLogged) {
-          this.handShortageLogged = true;
-          this.recordError('select-hand', err as Error);
-        } else {
-          this.stats.lastError = redactForHealth(`select-hand: ${(err as Error).message}`);
-        }
-        return;
+    // The hand must come from what the bot ACTUALLY holds — its collection
+    // shrinks every time a player beats it. Chosen now, committed at the join,
+    // and named to nobody: the queue message carries no card.
+    let hand: number[];
+    try {
+      hand = await chain.selectHand(5);
+      this.stats.spendableCards = (chain as { lastKnownCardCount?: number }).lastKnownCardCount ?? -1;
+      // Same cadence as the card count: both are things that end the arena
+      // quietly when they hit zero, and both are cheap to read here.
+      await chain.readFeeJuice?.()
+        .then(v => { this.stats.feeJuice = v.toString(); })
+        .catch(() => { /* a failed read must not stop the bot queueing */ });
+      this.handShortageLogged = false;
+    } catch (err) {
+      // This condition persists until someone re-provisions, and tick() runs
+      // every pollIntervalMs — so log it ONCE per episode rather than several
+      // times a second. The stat still counts every occurrence.
+      this.stats.joinFailures += 1;
+      if (!this.handShortageLogged) {
+        this.handShortageLogged = true;
+        this.recordError('select-hand', err as Error);
+      } else {
+        this.stats.lastError = redactForHealth(`select-hand: ${(err as Error).message}`);
       }
+      return;
     }
 
     // selectHand() is async too — same hazard.
@@ -609,14 +726,13 @@ export class ArenaBot {
     this.state = 'queued';
     this.queuedAt = this.now();
     this.hand = hand;
-    this.send({ type: 'QUEUE_MATCHMAKING', cardIds: hand });
+    this.send({ type: 'QUEUE_MATCHMAKING' });
   }
 
   private handle(msg: any): void {
     switch (msg?.type) {
       case 'SESSION_ESTABLISHED':
-        this.log('session established; registering as bot');
-        this.send({ type: 'REGISTER_BOT', token: this.cfg.token });
+        this.onSession(msg);
         break;
 
       case 'BOT_REGISTERED':
@@ -625,28 +741,7 @@ export class ArenaBot {
         break;
 
       case 'MATCH_FOUND':
-        // The bot JOINS games; it never creates them. The server orders the
-        // pair so a bot is never the creator, but if that ever failed we must
-        // not silently start creating games and wagering cards as player 1 —
-        // leave immediately and let a human take the slot.
-        if (msg.playerNumber === 1) {
-          this.stats.joinFailures += 1;
-          this.recordError('match', new Error('assigned as game CREATOR — the bot only joins; leaving'));
-          this.send({ type: 'CANCEL_GAME', gameId: msg.gameId });
-          this.resetToIdle();
-          break;
-        }
-        this.gameId = msg.gameId;
-        this.myPlayer = 'player2';
-        this.state = 'playing';
-        this.gameStartedAt = this.now();
-        // One skill for the whole game. Re-rolling per move would make the bot
-        // alternate between brilliant and careless within a single game, which
-        // reads as broken rather than as a weaker opponent.
-        this.gameSkill = this.rollSkill();
-        this.log(`matched into ${msg.gameId} as ${this.myPlayer} (skill ${this.gameSkill.toFixed(2)})`);
-        if (this.chain) this.beginKeyExchange(String(msg.gameId));
-        this.maybeMove(msg.gameState);
+        this.onMatch(msg);
         break;
 
       case 'OPPONENT_KEY':
@@ -657,23 +752,19 @@ export class ArenaBot {
         this.onPeer(msg);
         break;
 
-      case 'GAME_START':
-      case 'GAME_STATE':
-        if (msg.gameId === this.gameId) {
-          // Prove OUR move first: the state that just arrived is its `after`.
-          void this.maybeProveMove(msg.gameState).catch(err => {
-            this.stats.proofFailures += 1;
-            this.recordError('prove-move', err as Error);
-          });
-          this.maybeMove(msg.gameState);
-        }
+      case 'MOVE':
+        this.onMove(msg);
+        break;
+
+      case 'ROOM_STATE':
+        this.onRoomState(msg);
         break;
 
       // The relay holds a 60s window for a dropped player to resume their
       // session, so a blip is not a departure; we wait that out plus a margin
       // before giving up. Reconnecting cancels it outright.
       case 'OPPONENT_DISCONNECTED':
-        if (this.state === 'playing' && !this.settling && this.opponentGoneSince === null) {
+        if (this.state === 'playing' && msg.gameId === this.gameId && !this.settling && this.opponentGoneSince === null) {
           this.opponentGoneSince = this.now();
           this.log(`opponent disconnected — giving them ` +
             `${Math.round(this.cfg.opponentGraceMs / 1000)}s to come back`);
@@ -681,61 +772,12 @@ export class ArenaBot {
         break;
 
       case 'OPPONENT_RECONNECTED':
-        if (this.opponentGoneSince !== null) {
+        if (msg.gameId === this.gameId && this.opponentGoneSince !== null) {
           this.log(`opponent reconnected after ` +
             `${Math.round((this.now() - this.opponentGoneSince) / 1000)}s — carrying on`);
           this.opponentGoneSince = null;
         }
         break;
-
-      case 'GAME_OVER': {
-        if (msg.gameId !== this.gameId || !this.myPlayer) break;
-        const outcome = outcomeFor(msg.winner, this.myPlayer);
-        this.stats.gamesPlayed += 1;
-        if (outcome === 'draw') this.stats.draws += 1;
-        else if (outcome === 'win') this.stats.wins += 1;
-        else this.stats.losses += 1;
-        this.log(`game over: ${msg.winner} (bot was ${this.myPlayer})`);
-
-        const ctx = this.game;
-        if (ctx?.committed) {
-          ctx.outcome = outcome;
-          this.journalGame(ctx);
-          // Keep the door open for what lands after we reset: the opponent's
-          // final move proof, and the winner's SETTLING / SETTLED.
-          this.rememberGame(ctx);
-        }
-        if (ctx?.committed && this.chain && this.proofs && outcome !== 'loss') {
-          // Settle BEFORE resetting: the transcript lives in this game's state.
-          // Reset only if we are still on this game — never out of a later one.
-          const relayGameId = ctx.relayGameId;
-          void this.settle(ctx, outcome).catch(err => {
-            this.stats.settleFailures += 1;
-            this.recordError('settle', err as Error);
-          }).finally(() => { if (this.gameId === relayGameId) this.resetToIdle(); });
-        } else {
-          // A loss: the winner settles, and their SETTLED (or, failing that,
-          // the sweep finding the settlement on-chain) brings our cards back.
-          this.resetToIdle();
-        }
-        break;
-      }
-
-      case 'MOVE_PROVEN': {
-        const proof = normalizeMoveProof(msg.moveProof);
-        if (!proof) break;
-        if (msg.gameId === this.gameId && this.game) {
-          this.addMoveProof(this.game, proof);
-        } else {
-          // The ninth proof arrives after the game we just played has ended —
-          // see LATE_PROOF_WINDOW_MS. By now this.gameId is null (or another
-          // game), so gating on it would drop exactly the proof that completes
-          // the transcript. Straight into that game's journal.
-          const recent = this.recentGame(String(msg.gameId));
-          if (recent && this.now() < recent.proofsUntil) this.addMoveProof(recent.ctx, proof, true);
-        }
-        break;
-      }
 
       case 'QUEUE_DECLINED':
         // The relay says other bots already cover everyone waiting. This is a
@@ -763,7 +805,119 @@ export class ArenaBot {
     }
   }
 
-  // ─── Key exchange and the PEER channel ────────────────────────────────────
+  // ─── The relay session ─────────────────────────────────────────────────────
+
+  private onSession(msg: any): void {
+    const resumed = msg.resumed === true;
+    if (typeof msg.sessionToken === 'string' && msg.sessionToken) this.sessionToken = msg.sessionToken;
+    this.log(resumed ? 'session resumed; registering as bot' : 'session established; registering as bot');
+    // Per connection: the relay forgets a bot's registration when its socket drops.
+    this.send({ type: 'REGISTER_BOT', token: this.cfg.token });
+
+    const ctx = this.game;
+    if (this.state === 'playing' && ctx && !this.settling && ctx.moves.length < TOTAL_MOVES) {
+      // Mid-game, the room knows us only by the session we just lost or kept.
+      // Without our seat nothing we send reaches the opponent, so there is no
+      // game left to play: it is the sweep's.
+      if (!resumed) this.abandonGame('the relay did not resume our session — our seat in the game is gone');
+      else if (msg.gameId !== ctx.relayGameId) this.abandonGame('the relay no longer has us in the game');
+      // Otherwise ROOM_STATE follows, after the relay replays what it buffered.
+    }
+    // Resumed into a game we are not playing — we left it while the socket was
+    // down, so the relay never heard. Leave it now, or every queue attempt is
+    // refused "You are already in an active game".
+    if (resumed && typeof msg.gameId === 'string' && msg.gameId && msg.gameId !== this.gameId) {
+      this.send({ type: 'LEAVE_GAME', gameId: msg.gameId });
+    }
+  }
+
+  /**
+   * After a RESUME the relay replays what it buffered, then says where the room
+   * stands. Whatever we sent while the socket was down never left: it goes
+   * again, and each piece is one the other side takes only once.
+   */
+  private onRoomState(msg: any): void {
+    const ctx = this.game;
+    if (!ctx || msg.gameId !== ctx.relayGameId) return;
+    const movesMade = Number(msg.movesMade);
+    if (!Number.isInteger(movesMade) || movesMade < 0) return;
+    this.log(`back in the game: the relay holds ${movesMade} move(s), we hold ${ctx.moves.length}`);
+
+    if (msg.opponentConnected === false) {
+      if (this.opponentGoneSince === null && !this.settling) this.opponentGoneSince = this.now();
+    } else if (msg.opponentConnected === true) {
+      this.opponentGoneSince = null;
+    }
+
+    // No record from them yet: they may not have our key either.
+    if (ctx.keyPair && !ctx.record1) {
+      this.send({ type: 'KEY_EXCHANGE', gameId: ctx.relayGameId, publicKey: ctx.keyPair.publicKey });
+    }
+    void (async () => {
+      if (ctx.committed && ctx.record2) {
+        this.send({ type: 'TX_CONFIRMED', gameId: ctx.relayGameId, txType: 'join_game' });
+        await this.sendPeer(ctx, { kind: 'RECORD', record: ctx.record2 });
+      }
+      if (ctx.ownOpen) await this.sendPeer(ctx, { kind: 'OPEN_CARDS', ...ctx.ownOpen });
+      // The relay takes moves strictly in order, so it holds every move before
+      // `movesMade` and none after: ours from there on never reached it —
+      // unless it went out on this connection, after the relay counted.
+      for (const m of ctx.moves) {
+        if (m.moveNumber < movesMade || moverOf(m.moveNumber) !== BOT_SIDE) continue;
+        if (this.ws && ctx.sentOn.get(m.moveNumber) === this.ws) continue;
+        await this.sendOwnMove(ctx, m);
+      }
+    })().catch(err => this.log(`WARNING: could not resend after the resume (${(err as Error).message})`));
+    if (movesMade > ctx.moves.length + (ctx.moveInFlight !== null ? 1 : 0)) {
+      this.log(`the relay holds ${movesMade} moves, we have ${ctx.moves.length} — waiting for the rest`);
+    }
+    this.kickInbound(ctx);
+  }
+
+  // ─── Matching, the key exchange and the PEER channel ──────────────────────
+
+  private onMatch(msg: any): void {
+    const gameId = typeof msg.gameId === 'string' && msg.gameId ? msg.gameId : null;
+    if (!gameId) return;
+    // The bot JOINS games; it never creates them. The server orders the pair
+    // so a bot is never the creator, but if that ever failed we must not
+    // silently start creating games and wagering cards as player 1 — leave
+    // immediately and let a human take the slot.
+    if (msg.playerNumber !== BOT_SIDE) {
+      this.stats.joinFailures += 1;
+      this.recordError('match', new Error('assigned as game CREATOR — the bot only joins; leaving'));
+      this.send({ type: 'LEAVE_GAME', gameId });
+      this.resetToIdle();
+      return;
+    }
+    if (this.state === 'playing') {
+      this.log('ignoring a second match while a game is in progress');
+      return;
+    }
+    if (!this.chain || !this.proofs) {
+      // tick() never queues without them; leave rather than hold a human to a
+      // game we cannot move in.
+      this.send({ type: 'LEAVE_GAME', gameId });
+      this.resetToIdle();
+      return;
+    }
+    this.gameId = gameId;
+    this.state = 'playing';
+    this.gameStartedAt = this.now();
+    // One skill for the whole game. Re-rolling per move would make the bot
+    // alternate between brilliant and careless within a single game, which
+    // reads as broken rather than as a weaker opponent.
+    this.gameSkill = this.rollSkill();
+    this.log(`matched into ${gameId} as player ${BOT_SIDE} (skill ${this.gameSkill.toFixed(2)})`);
+    // The game starts here, as ours to run: our five cards against five face down.
+    const ctx = newGame(gameId, this.hand);
+    this.game = ctx;
+    this.beginKeyExchange(ctx);
+    // The verification keys take seconds: computed while the join runs, not
+    // when the creator's first move is waiting on them.
+    void this.proofs.prepareChecks?.().catch(err =>
+      this.log(`WARNING: could not prepare the proof checks (${(err as Error).message})`));
+  }
 
   private keys(): Promise<GameKeysLike> {
     if (!this.keysModule) {
@@ -774,22 +928,13 @@ export class ArenaBot {
     return this.keysModule;
   }
 
-  /** MATCH_FOUND, chain mode: a fresh key pair for this game, its public half to the opponent. */
-  private beginKeyExchange(relayGameId: string): void {
-    const ctx: ChainGame = {
-      relayGameId, cardIds: [...this.hand],
-      keyPair: null, opponentPublicKey: null, channel: null, deriving: false, pendingPeer: [],
-      record1: null, record2: null, nonce: null, secrets: null,
-      joinStarted: false, committed: false, committedAt: 0, moveProofs: new Map(),
-      outcome: null, prizeMove: null, settlingSelf: false, settledHint: null,
-      importing: null, imported: false,
-    };
-    this.game = ctx;
+  /** A fresh key pair for this game, its public half to the opponent. */
+  private beginKeyExchange(ctx: ChainGame): void {
     void (async () => {
       const keys = await this.keys();
       ctx.keyPair = await keys.generateGameKeyPair();
       if (this.game !== ctx) return;
-      this.send({ type: 'KEY_EXCHANGE', gameId: relayGameId, publicKey: ctx.keyPair.publicKey });
+      this.send({ type: 'KEY_EXCHANGE', gameId: ctx.relayGameId, publicKey: ctx.keyPair.publicKey });
       await this.deriveChannel(ctx);
     })().catch(err => this.recordError('key-exchange', err as Error));
   }
@@ -807,7 +952,7 @@ export class ArenaBot {
     void this.deriveChannel(ctx).catch(err => this.recordError('key-exchange', err as Error));
   }
 
-  /** Once both public keys are known: the game key and the channel. Then any payloads that were waiting. */
+  /** Once both public keys are known: the game key and the channel. Then anything that was waiting on it. */
   private async deriveChannel(ctx: ChainGame): Promise<void> {
     if (ctx.channel || ctx.deriving || !ctx.keyPair || !ctx.opponentPublicKey) return;
     ctx.deriving = true;
@@ -819,6 +964,7 @@ export class ArenaBot {
       ctx.deriving = false;
     }
     for (const sealed of ctx.pendingPeer.splice(0)) await this.openPeer(ctx, sealed);
+    this.kickInbound(ctx);
   }
 
   private onPeer(msg: any): void {
@@ -865,6 +1011,23 @@ export class ArenaBot {
         this.log('creator record received');
         void this.join(ctx);
         return;
+
+      case 'OPEN_CARDS': {
+        if (ctx !== this.game || ctx.protocolError) return;
+        const claim: OpenCardsPayload = { cards: p.cards, proof: p.proof, publicInputs: p.publicInputs };
+        if (ctx.opponentOpen) {
+          // A repeat — they send theirs again after a reconnect — changes
+          // nothing. A different set is a hand that changed mid-game.
+          if (!sameCards(ctx.opponentOpen, claim.cards)) {
+            this.refuse(ctx, 'their open cards', 'a second, different set of open cards');
+          }
+          return;
+        }
+        // Checked in order with their moves, once both records are known.
+        ctx.openCardsClaim = claim;
+        this.kickInbound(ctx);
+        return;
+      }
 
       case 'SETTLING':
         // The winner names the card they are taking. Only a hint for us: the
@@ -981,12 +1144,13 @@ export class ArenaBot {
         this.log('joined after the game was abandoned — the journal and the sweep have it');
         return;
       }
-      this.committed = true;
       this.send({ type: 'TX_CONFIRMED', gameId: ctx.relayGameId, txType: 'join_game' });
       await this.sendPeer(ctx, { kind: 'RECORD', record: record2 });
       this.log('our record sent to the creator');
-      // Our turn may have arrived while we were committing.
-      this.maybeMove(this.lastState ?? undefined);
+      // Both records are known: our open cards, then whatever they have sent.
+      void this.ensureOwnOpenCards(ctx);
+      this.kickInbound(ctx);
+      this.maybeMove(ctx);
     } catch (err) {
       this.stats.commitFailures += 1;
       this.recordError('commit-join', err as Error);
@@ -1008,104 +1172,368 @@ export class ArenaBot {
     }
   }
 
-  // ─── Play and move proofs ─────────────────────────────────────────────────
+  // ─── The game ─────────────────────────────────────────────────────────────
 
-  /** Both hand commitments and our blinding: everything a move proof needs. */
-  private canProve(ctx: ChainGame | null): ctx is ChainGame & { record1: GameRecord; record2: GameRecord; secrets: GameSecrets } {
-    return !!ctx && !!ctx.record1 && !!ctx.record2 && !!ctx.secrets;
+  /** Everything the board is rebuilt from: our hand, their proven open cards, the transcript. */
+  private facts(ctx: ChainGame): LocalGameFacts {
+    return { role: BOT_SIDE, ownHand: ctx.cardIds, opponentOpen: ctx.opponentOpen, moves: ctx.moves };
+  }
+
+  /** True when the game is waiting on US to move. */
+  private oweAMove(ctx: ChainGame): boolean {
+    try {
+      const { state } = replay(this.facts(ctx));
+      return state.status === 'playing' && state.currentTurn === 'player2';
+    } catch {
+      return false;
+    }
   }
 
   /**
-   * Prove the move we just made, using the snapshot taken before we sent it and
-   * the state the relay echoed back.
-   *
-   * Only runs for OUR move: the opponent proves their own. The proof binds both
-   * records' hand commitments and publishes the card we placed and its slot in
-   * our committed hand — which is what lets a settlement hold back the right
-   * return note if we lose.
+   * Prove and send our three open cards, once both records are known and
+   * before our first move — so the opponent sees our hand before our first
+   * card lands. Proven once: a failure is reported, not retried, and play goes
+   * on; the opponent's client then shows our whole hand face down, and nothing
+   * else needs it.
    */
-  private async maybeProveMove(after: GameState | undefined): Promise<void> {
-    const pending = this.pendingMove;
-    const ctx = this.game;
-    if (!this.chain || !this.proofs || !pending || !after || !this.myPlayer) return;
-    // The echoed state must be EXACTLY the one produced by our move. A later
-    // state is not merely redundant — the circuit asserts
-    // board_after[cell].owner == current_player, and by a later move our card
-    // may already have been captured, so the owner reads as the opponent and
-    // the proof fails "Owner not set correctly".
-    const occupied = after.board.flat().filter(c => c.card !== null).length;
-    if (occupied !== pending.moveNumber + 1) return;
-    if (!this.canProve(ctx)) {
-      // Unreachable now that maybeMove holds the turn until both records are
-      // known. If it ever happens the game is already unsettleable, so say so
-      // loudly rather than dropping the move proof in silence.
-      this.pendingMove = null;
-      this.stats.proofFailures += 1;
-      this.recordError('move-proof', new Error(
-        `move ${pending.moveNumber} cannot be proved: a record is missing — ` +
-        'the transcript is now permanently incomplete',
-      ));
-      return;
-    }
-
-    this.pendingMove = null;
-    const gameId = this.gameId;
-    const currentPlayer: 1 | 2 = this.myPlayer === 'player1' ? 1 : 2;
-    const ended = after.status === 'finished';
-    const winnerId = !ended ? 0 : after.winner === 'player1' ? 1 : after.winner === 'player2' ? 2 : 3;
-
-    this.proving += 1;
-    let raw: MoveProofData;
-    try {
-      raw = await this.proofs.proveMove({
-        cardId: pending.cardId, row: pending.row, col: pending.col, currentPlayer,
-        boardBefore: pending.boardBefore, boardAfter: after.board,
-        scoresBefore: pending.scoresBefore,
-        scoresAfter: [after.player1Score, after.player2Score],
-        cardCommit1: ctx.record1[RECORD_HAND],
-        cardCommit2: ctx.record2[RECORD_HAND],
-        gameEnded: ended, winnerId,
-        hand: { cardIds: [...ctx.cardIds], blindingFactor: ctx.secrets.blinding },
-      });
-    } finally {
-      this.proving -= 1;
-    }
-    if (!gameId) return;
-    // A proof that finishes AFTER the game ended still has to be sent.
-    //
-    // The move that ends the game is proved after the relay has already
-    // announced GAME_OVER, and on a loss `resetToIdle()` has by then nulled
-    // `this.gameId`. Dropping the proof on that basis cost real games: it is
-    // the WINNER's, and without it nobody can settle. Only a DIFFERENT game is
-    // grounds to drop it. The relay routes by the gameId in the message and
-    // keeps rooms after they finish.
-    const stillOurs = this.game === ctx;
-    if (this.gameId !== null && !stillOurs) return;
-    const proof = normalizeMoveProof(raw);
-    if (!proof) {
-      this.stats.proofFailures += 1;
-      this.recordError('move-proof', new Error(`move ${pending.moveNumber} produced a proof without 8 public inputs`));
-      return;
-    }
-    // Kept as well as sent: the journal is what a settlement is built from.
-    this.addMoveProof(ctx, proof, !stillOurs);
-    this.send({
-      type: 'SUBMIT_MOVE_PROOF', gameId,
-      handIndex: 0, row: pending.row, col: pending.col,
-      moveNumber: pending.moveNumber, moveProof: raw,
-    });
-    this.log(`move proof ${pending.moveNumber} submitted${stillOurs ? '' : ' (after game over)'}`);
+  private ensureOwnOpenCards(ctx: ChainGame): Promise<void> {
+    if (ctx.ownOpenTask) return ctx.ownOpenTask;
+    const proofs = this.proofs;
+    const { record2, secrets } = ctx;
+    if (!proofs || !record2 || !secrets || !ctx.committed) return Promise.resolve();
+    ctx.ownOpenTask = (async () => {
+      try {
+        const payload = await proofs.proveOpenCards(ctx.cardIds, secrets.blinding, record2[RECORD_HAND]);
+        ctx.ownOpen = payload;
+        this.journalGame(ctx);
+        if (this.game !== ctx) return;
+        await this.sendPeer(ctx, { kind: 'OPEN_CARDS', ...payload });
+        this.log('our open cards proved and sent');
+      } catch (err) {
+        this.stats.proofFailures += 1;
+        this.recordError('open-cards', new Error(
+          `our open cards could not be proved or sent (${(err as Error).message}) — the opponent sees our hand face down`));
+      }
+    })();
+    return ctx.ownOpenTask;
   }
 
-  /** Key by the chain link, not the move number: duplicates from a relay replay collapse. */
-  private addMoveProof(ctx: ChainGame, proof: MoveProofData, late = false): void {
-    if (ctx.moveProofs.has(proof.startStateHash)) return;
-    ctx.moveProofs.set(proof.startStateHash, proof);
-    this.journalGame(ctx);
-    if (late) {
-      this.log(`late move proof kept — the journal now holds ${ctx.moveProofs.size}/9` +
-        (ctx.moveProofs.size >= 9 ? ' (transcript complete)' : ''));
+  /** An opponent MOVE from the relay: kept as delivered, then checked in order. */
+  private onMove(msg: any): void {
+    const ctx = this.game;
+    if (!ctx || msg.gameId !== ctx.relayGameId) return;
+    const n = msg.moveNumber;
+    if (!Number.isInteger(n) || n < 0 || n >= TOTAL_MOVES) return;
+    if (typeof msg.iv !== 'string' || typeof msg.ciphertext !== 'string') return;
+    // The same frame twice (a replay of something still unchecked) is one move.
+    if (ctx.inbox.some(e => e.moveNumber === n && e.ciphertext === msg.ciphertext)) return;
+    if (ctx.inbox.length >= MAX_INBOX) {
+      this.log('dropped a MOVE: too many unchecked moves held for this game');
+      return;
     }
+    ctx.inbox.push({ moveNumber: n, iv: msg.iv, ciphertext: msg.ciphertext });
+    this.kickInbound(ctx);
+  }
+
+  /** Check whatever the opponent has sent, one item at a time, in order. */
+  private kickInbound(ctx: ChainGame): void {
+    ctx.inbound = ctx.inbound
+      .then(() => this.processInbound(ctx))
+      .catch(err => this.recordError('check', new Error(withoutCardDetails((err as Error).message))));
+  }
+
+  /**
+   * The referee (section 6.3). Their open cards first — they decide how their
+   * hand is read — then their moves, strictly in order: each opened, checked
+   * against our board (bounds, the state hashes before and after, all eight
+   * public inputs, the proof) and only then applied. Nothing is checked before
+   * both records — both hand commitments — are known and our cards are in.
+   */
+  private async processInbound(ctx: ChainGame): Promise<void> {
+    const proofs = this.proofs;
+    for (;;) {
+      if (!proofs || this.game !== ctx || ctx.protocolError) return;
+      const { record1, record2, channel } = ctx;
+      if (!record1 || !record2 || !channel || !ctx.committed) return;
+      const commits = { commit1: record1[RECORD_HAND], commit2: record2[RECORD_HAND] };
+      const facts = this.facts(ctx);
+
+      const claim = ctx.openCardsClaim;
+      if (claim) {
+        ctx.openCardsClaim = null;
+        if (ctx.opponentOpen) {
+          if (!sameCards(ctx.opponentOpen, claim.cards)) {
+            return this.refuse(ctx, 'their open cards', 'a second, different set of open cards');
+          }
+          continue;
+        }
+        const result = await proofs.check(c => checkOpenCards(facts, commits.commit1, claim, c));
+        if (this.game !== ctx || ctx.protocolError) return;
+        if (!result.ok) {
+          if (result.retryable) {
+            ctx.openCardsClaim ??= claim;
+            return this.recheckLater(ctx, 'their open cards', result.reason);
+          }
+          return this.refuse(ctx, 'their open cards', result.reason);
+        }
+        ctx.opponentOpen = result.value;
+        this.journalGame(ctx);
+        this.log('their open cards check out');
+        continue;
+      }
+
+      // The next move to check, or a stale copy of one already in. Anything
+      // beyond a gap waits for the moves before it.
+      const entry = ctx.inbox
+        .filter(e => e.moveNumber <= ctx.moves.length)
+        .sort((a, b) => a.moveNumber - b.moveNumber)[0];
+      if (!entry) return;
+      const drop = () => { ctx.inbox = ctx.inbox.filter(e => e !== entry); };
+      const n = entry.moveNumber;
+
+      let payload: MovePayload;
+      try {
+        payload = await this.openMove(ctx.relayGameId, channel, entry);
+      } catch {
+        if (this.game !== ctx || ctx.protocolError) return;
+        // A stale copy that does not open loses nothing: that move is in already.
+        if (n < ctx.moves.length) { drop(); continue; }
+        return this.refuse(ctx, `their move ${n}`, 'it does not open: tampered with, or sealed for another game');
+      }
+      if (this.game !== ctx || ctx.protocolError) return;
+
+      if (n < ctx.moves.length) {
+        // Delivered again — the relay replays its buffer after a resume. The
+        // same move is fine; a different one under the same number is not.
+        drop();
+        if (sameMove(ctx.moves[n], { ...payload, moveNumber: n })) continue;
+        return this.refuse(ctx, `their move ${n}`, 'a second, different move with the same number');
+      }
+
+      const result = await proofs.check(c => checkOpponentMove(facts, commits, n, payload, c));
+      if (this.game !== ctx || ctx.protocolError) return;
+      // The game moved on while this was checked: look again from the top.
+      if (ctx.moves.length !== n) continue;
+      if (!result.ok) {
+        if (result.retryable) return this.recheckLater(ctx, `their move ${n}`, result.reason);
+        return this.refuse(ctx, `their move ${n}`, result.reason);
+      }
+      drop();
+      ctx.moves.push(result.value);
+      this.journalGame(ctx);
+      this.afterMove(ctx);
+    }
+  }
+
+  private async openMove(room: string, channel: GameChannel, sealed: SealedPayload): Promise<MovePayload> {
+    const keys = await this.keys();
+    return parseMovePayload(await keys.openPeerPayload(channel.channelKey, room, sealed));
+  }
+
+  /**
+   * The opponent sent something that does not check out. The game can never
+   * settle — settlement verifies every move, and this one would not pass — so
+   * the bot stops playing it and leaves it, with its cards, to the abandonment
+   * sweep: claim, dispute window, both hands back. The reason is logged and
+   * journalled without card details.
+   */
+  private refuse(ctx: ChainGame, what: string, reason: string): void {
+    const why = `${what}: ${withoutCardDetails(reason)}`;
+    ctx.protocolError = why;
+    ctx.openCardsClaim = null;
+    ctx.inbox = [];
+    this.stats.opponentFaults += 1;
+    this.recordError('opponent', new Error(`refused ${why}`));
+    this.journalGame(ctx);
+    if (this.game === ctx) {
+      this.abandonGame('the opponent broke the protocol, so the game can never settle — the abandonment sweep has it');
+    }
+  }
+
+  /** A check that could not run says nothing about the payload: it stays, and is checked again later. */
+  private recheckLater(ctx: ChainGame, what: string, reason: string): void {
+    this.stats.proofFailures += 1;
+    this.recordError('check', new Error(`${what} could not be checked (${withoutCardDetails(reason)}) — trying again`));
+    if (ctx.recheck) return;
+    ctx.recheck = setTimeout(() => {
+      ctx.recheck = null;
+      this.kickInbound(ctx);
+    }, RECHECK_MS);
+    ctx.recheck.unref?.();
+  }
+
+  /** A move is in the transcript: the game is over, or it may be our turn. */
+  private afterMove(ctx: ChainGame): void {
+    let state;
+    try {
+      state = replay(this.facts(ctx)).state;
+    } catch (err) {
+      // Every move was checked against this board before it went in.
+      this.recordError('replay', err as Error);
+      return;
+    }
+    if (state.status === 'finished') {
+      this.gameOver(ctx, state.winner ?? 'draw');
+      return;
+    }
+    this.maybeMove(ctx);
+  }
+
+  /** Play if, and only if, it is our turn in a live game whose moves we can prove. */
+  private maybeMove(ctx: ChainGame): void {
+    if (this.game !== ctx || this.state !== 'playing' || ctx.protocolError) return;
+    // Not before OUR cards are committed and both records and our blinding are
+    // known: every move proof binds both hand commitments, and a move we
+    // cannot prove is one we must not make.
+    if (!ctx.committed || !ctx.record1 || !ctx.record2 || !ctx.secrets || !ctx.channel) return;
+    // One move per turn, however many callers reach here: our move is chosen
+    // and proven once, and a second attempt would put a different card down.
+    if (ctx.moveInFlight !== null) return;
+    if (!this.oweAMove(ctx)) return;
+    const moveNumber = ctx.moves.length;
+    ctx.moveInFlight = moveNumber;
+    setTimeout(() => { void this.playOwnMove(ctx, moveNumber); }, this.cfg.moveDelayMs);
+  }
+
+  /**
+   * Our move `moveNumber`: chosen on our own board, proven from the boards
+   * before and after it — the same boards, scores and hashes the opponent
+   * rebuilds to check it — journalled, then sealed and sent. The relay reads
+   * its number and nothing else.
+   */
+  private async playOwnMove(ctx: ChainGame, moveNumber: number): Promise<void> {
+    const proofs = this.proofs;
+    const live = () => !this.stopped && this.game === ctx && this.state === 'playing'
+      && !ctx.protocolError && ctx.moves.length === moveNumber;
+    try {
+      if (!proofs || !live()) return;
+      await this.ensureOwnOpenCards(ctx);
+      if (!live()) return;
+
+      const facts = this.facts(ctx);
+      const before = replay(facts);
+      let move: GameMove;
+      try {
+        // No seed in production: play should not be predictable from the board.
+        // The harness sets one when it needs a reproducible OUTCOME.
+        const choice = chooseBotMove(before.state, {
+          difficulty: this.cfg.difficulty,
+          skill: this.gameSkill,
+          ...(this.cfg.moveSeed !== undefined ? { seed: this.cfg.moveSeed } : {}),
+        });
+        move = planOwnMove(facts, before, choice.handIndex, choice.row, choice.col);
+      } catch (err) {
+        this.stats.moveFailures += 1;
+        this.recordError('choose-move', err as Error);
+        return this.giveUp(ctx, 'we could not choose a move');
+      }
+      const after = replay({ ...facts, moves: [...facts.moves, move] }).state;
+      const ended = after.status === 'finished';
+
+      this.proving += 1;
+      let raw: MoveProofData;
+      try {
+        raw = await proofs.proveMove({
+          cardId: move.cardId, row: move.row, col: move.col, currentPlayer: BOT_SIDE,
+          boardBefore: before.state.board, boardAfter: after.board,
+          scoresBefore: [before.state.player1Score, before.state.player2Score],
+          scoresAfter: [after.player1Score, after.player2Score],
+          cardCommit1: ctx.record1![RECORD_HAND],
+          cardCommit2: ctx.record2![RECORD_HAND],
+          gameEnded: ended,
+          winnerId: winnerIdOf(ended ? after.winner : null),
+          hand: { cardIds: [...ctx.cardIds], blindingFactor: ctx.secrets!.blinding },
+        });
+      } catch (err) {
+        this.stats.proofFailures += 1;
+        this.recordError('move-proof', new Error(`move ${moveNumber} could not be proved: ${(err as Error).message}`));
+        return this.giveUp(ctx, `our move ${moveNumber} could not be proved`);
+      } finally {
+        this.proving -= 1;
+      }
+      const proof = normalizeMoveProof(raw);
+      if (!proof || placedOf(proof).cardId !== move.cardId || placedOf(proof).slot !== move.slot) {
+        this.stats.proofFailures += 1;
+        this.recordError('move-proof', new Error(`move ${moveNumber} produced a proof that is not of this move`));
+        return this.giveUp(ctx, `our move ${moveNumber} could not be proved`);
+      }
+      // The game ended under us while we proved (abandoned): the move was never
+      // sent, and a transcript only ever holds what both sides have.
+      if (!live()) return;
+      const link: TranscriptMove = { ...move, proof };
+      ctx.moves.push(link);
+      // Written down BEFORE it is sent: after a resume we must know every move
+      // the relay may have.
+      this.journalGame(ctx);
+      await this.sendOwnMove(ctx, link);
+      this.log(`move ${moveNumber} proved and sent`);
+    } finally {
+      if (ctx.moveInFlight === moveNumber) ctx.moveInFlight = null;
+    }
+    if (ctx.moves.length > moveNumber) {
+      this.afterMove(ctx);
+      // Anything held for after this move can be checked now.
+      this.kickInbound(ctx);
+    }
+  }
+
+  /**
+   * Our own move failed, and it is not retried. Nothing was sent, so both
+   * transcripts still agree — but the opponent waits on a move that will not
+   * come, so the game is over for us: leave it now, its cards to the sweep,
+   * rather than hold the arena's opponent until the watchdog.
+   */
+  private giveUp(ctx: ChainGame, why: string): void {
+    if (this.game === ctx) this.abandonGame(`${why} — the game cannot go on`);
+  }
+
+  private async sendOwnMove(ctx: ChainGame, link: TranscriptMove): Promise<void> {
+    try {
+      const channel = ctx.channel;
+      if (!channel) throw new Error('no channel to the opponent');
+      const keys = await this.keys();
+      const body: MovePayload = {
+        cardId: link.cardId, slot: link.slot, row: link.row, col: link.col,
+        proof: link.proof.proof, publicInputs: link.proof.publicInputs,
+      };
+      const sealed = await keys.sealPeerPayload(channel.channelKey, ctx.relayGameId, body);
+      const ws = this.ws;
+      if (this.send({ type: 'MOVE', gameId: ctx.relayGameId, moveNumber: link.moveNumber, iv: sealed.iv, ciphertext: sealed.ciphertext }) && ws) {
+        ctx.sentOn.set(link.moveNumber, ws);
+      }
+    } catch (err) {
+      // It is in the transcript: ROOM_STATE after a resume sends it again.
+      this.log(`WARNING: could not send move ${link.moveNumber} (${(err as Error).message})`);
+    }
+  }
+
+  /**
+   * All nine moves are in, each checked: the result is the transcript's. The
+   * bot counts its own results — the relay cannot know them.
+   */
+  private gameOver(ctx: ChainGame, winner: 'player1' | 'player2' | 'draw'): void {
+    if (ctx.outcome !== null) return;
+    const outcome = outcomeFor(winner, 'player2');
+    ctx.outcome = outcome;
+    this.stats.gamesPlayed += 1;
+    if (outcome === 'draw') this.stats.draws += 1;
+    else if (outcome === 'win') this.stats.wins += 1;
+    else this.stats.losses += 1;
+    this.log(`game over: ${outcome === 'draw' ? 'a draw' : outcome === 'win' ? 'we won' : 'we lost'}`);
+    this.journalGame(ctx);
+    // Keep the door open for what lands after we reset: the SETTLING / SETTLED.
+    this.rememberGame(ctx);
+    if (outcome === 'loss') {
+      // The winner settles, and their SETTLED (or, failing that, the sweep
+      // finding the settlement on-chain) brings our cards back.
+      this.resetToIdle();
+      return;
+    }
+    // Reset only if we are still on this game — never out of a later one.
+    void this.settle(ctx, outcome).catch(err => {
+      this.stats.settleFailures += 1;
+      this.recordError('settle', err as Error);
+    }).finally(() => { if (this.game === ctx) this.resetToIdle(); });
   }
 
   // ─── Settling and taking our cards back ───────────────────────────────────
@@ -1130,23 +1558,10 @@ export class ArenaBot {
       await sleep(this.cfg.drawFallbackMs);
       if (await this.resolvedElsewhere(ctx, 'player 1 settled the draw')) return;
       this.log('player 1 did not settle the draw — settling it ourselves');
-    }
-
-    // Wait for the transcript to complete before judging it. Moves are relayed
-    // on PLACE_CARD, but proving each one is slow, so GAME_OVER routinely
-    // arrives with move proofs still generating — the ninth always does. If
-    // the other side says it settled meanwhile, look: a second settlement can
-    // only revert, after a full recursive proof.
-    const deadline = this.now() + this.cfg.settleWaitMs;
-    let checkedHint: string | null = null;
-    for (;;) {
-      if (ctx.imported) return;
-      if (ctx.settledHint !== null && ctx.settledHint !== checkedHint) {
-        checkedHint = ctx.settledHint;
-        if (await this.resolvedElsewhere(ctx, 'the game was settled while we waited for the transcript')) return;
-      }
-      if (ctx.moveProofs.size >= 9 || this.now() >= deadline) break;
-      await sleep(500);
+    } else if (ctx.settledHint !== null || ctx.importing) {
+      // Anyone may settle, and they say they have: look before proving a
+      // second settlement, which can only revert.
+      if (await this.resolvedElsewhere(ctx, 'the game was settled by the other side')) return;
     }
 
     const game = this.botGame(ctx);
@@ -1155,7 +1570,7 @@ export class ArenaBot {
     const { ordered, winner } = checkTranscript(game.moveProofs, game.record1, game.record2);
     const expected = outcome === 'draw' ? 'draw' : BOT_SIDE;
     if (winner !== expected) {
-      this.log(`WARNING: the relay called a ${outcome} but the transcript says ${winner === 'draw' ? 'a draw' : `player ${winner} won`} — settling what the transcript proves`);
+      this.log(`WARNING: our board says ${outcome} but the proofs say ${winner === 'draw' ? 'a draw' : `player ${winner} won`} — settling what the proofs prove`);
     }
     const prizeMove = choosePrizeMove(ordered, winner);
     ctx.prizeMove = prizeMove;
@@ -1278,7 +1693,7 @@ export class ArenaBot {
       cardIds: [...ctx.cardIds],
       record1: ctx.record1!,
       record2: ctx.record2!,
-      moveProofs: [...ctx.moveProofs.values()],
+      moveProofs: ctx.moves.map(m => m.proof),
       outcome: ctx.outcome,
       prizeMove: ctx.prizeMove,
     };
@@ -1286,11 +1701,10 @@ export class ArenaBot {
 
   private rememberGame(ctx: ChainGame): void {
     this.pruneRecentGames();
-    const now = this.now();
-    this.recentGames.set(ctx.relayGameId, { ctx, proofsUntil: now + LATE_PROOF_WINDOW_MS, until: now + RETURN_WAIT_MS });
+    this.recentGames.set(ctx.relayGameId, { ctx, until: this.now() + RETURN_WAIT_MS });
   }
 
-  private recentGame(relayGameId: string): { ctx: ChainGame; proofsUntil: number; until: number } | null {
+  private recentGame(relayGameId: string): { ctx: ChainGame; until: number } | null {
     this.pruneRecentGames();
     return this.recentGames.get(relayGameId) ?? null;
   }
@@ -1311,6 +1725,9 @@ export class ArenaBot {
    * this protects against — a crash, a kill, a machine reboot — happen MID-game
    * by definition. Only from the join onward: before it, nothing of ours is
    * at stake and there is nothing to recover.
+   *
+   * Of the human it keeps only what the game revealed: their record and public
+   * key, the moves they made (with their proofs) and their three open cards.
    */
   private journalGame(ctx: ChainGame, phase?: 'joining' | 'joined'): void {
     const j = this.journal;
@@ -1330,7 +1747,13 @@ export class ArenaBot {
         cardIds: [...ctx.cardIds],
         record1: [...ctx.record1],
         record2: [...ctx.record2],
-        moveProofs: [...ctx.moveProofs.values()].map(p => ({ ...p })),
+        moveProofs: ctx.moves.map(m => ({ ...m.proof, publicInputs: [...m.proof.publicInputs] })),
+        moves: ctx.moves.map(({ moveNumber, cardId, slot, row, col }) => ({ moveNumber, cardId, slot, row, col })),
+        opponentOpenCards: ctx.opponentOpen ? [...ctx.opponentOpen] : null,
+        ownOpenCards: ctx.ownOpen
+          ? { cards: [...ctx.ownOpen.cards], proof: ctx.ownOpen.proof, publicInputs: [...ctx.ownOpen.publicInputs] }
+          : null,
+        protocolError: ctx.protocolError,
         outcome: ctx.outcome,
         prizeMove: ctx.prizeMove,
         phase: phase ?? existing?.phase ?? 'joining',
@@ -1377,80 +1800,6 @@ export class ArenaBot {
     return skillMin + Math.random() * (skillMax - skillMin);
   }
 
-  /** Play if, and only if, it is our turn in a live game. */
-  private maybeMove(state: GameState | undefined): void {
-    if (state) this.lastState = state;
-    if (!state || this.state !== 'playing' || !this.myPlayer) return;
-    if (state.status !== 'playing') return;
-    if (state.currentTurn !== this.myPlayer) return;
-    // In chain mode, do not play until OUR cards are committed. A move proof
-    // binds the card commitment, so moving first would prove against a
-    // commitment that does not exist yet — and lets the relay game finish
-    // before the chain has caught up, leaving nothing to settle.
-    if (this.chain && !this.committed) return;
-    // Nor until we can PROVE the move: both records' hand commitments and our
-    // blinding. Because the proof needs the EXACT post-move board, a card
-    // played before then can never be proved afterwards — by the next state it
-    // may already be captured — and ONE unprovable move makes the whole game
-    // unsettleable. Gated on `proofs`: a bot with no prover has nothing to
-    // invalidate by moving.
-    if (this.chain && this.proofs && !this.canProve(this.game)) return;
-
-    // One move per turn, however many callers reach here (see moveScheduledFor).
-    // Checked BEFORE choosing: chooseBotMove is not deterministic under
-    // difficulty 'random', so a duplicate call would pick a DIFFERENT cell and
-    // the divergence is what actually breaks the transcript.
-    const moveNumber = state.board.flat().filter(c => c.card !== null).length;
-    if (this.moveScheduledFor !== null && this.moveScheduledFor >= moveNumber) return;
-
-    let move;
-    try {
-      // No seed in production: play should not be predictable from the board.
-      // The harness sets one when it needs a reproducible OUTCOME.
-      move = chooseBotMove(state, {
-        difficulty: this.cfg.difficulty,
-        skill: this.gameSkill,
-        ...(this.cfg.moveSeed !== undefined ? { seed: this.cfg.moveSeed } : {}),
-      });
-    } catch (err) {
-      this.stats.moveFailures += 1;
-      return this.recordError('choose-move', err as Error);
-    }
-    this.moveScheduledFor = moveNumber;
-    const gameId = this.gameId!;
-    const card = (this.myPlayer === 'player1' ? state.player1Hand : state.player2Hand)[move.handIndex];
-    setTimeout(() => {
-      // Re-check: the game may have ended or moved on during the pacing delay.
-      if (this.state !== 'playing' || this.gameId !== gameId) return;
-      // Snapshot the pre-move board NOW: the move proof needs the transition,
-      // and once GAME_STATE arrives the `before` side is gone.
-      this.pendingMove = {
-        moveNumber, cardId: card?.id ?? 0, row: move.row, col: move.col,
-        boardBefore: state.board,
-        scoresBefore: [state.player1Score, state.player2Score],
-      };
-      this.send({ type: 'PLACE_CARD', gameId, handIndex: move.handIndex, row: move.row, col: move.col, moveNumber });
-    }, this.cfg.moveDelayMs);
-  }
-
-  /**
-   * The move number we have already committed to playing. maybeMove is called
-   * from several places — a relayed state, our join completing, the creator's
-   * record arriving — and any of them can be the one that unblocks a held
-   * turn. Without this, two of them schedule two PLACE_CARDs for the SAME turn:
-   * the relay applies the first, the second overwrites `pendingMove` with a
-   * move that never happened, and no echoed board ever matches it again — the
-   * bot stops proving and stops playing. Monotonic, so it needs no clearing
-   * between turns and cannot wedge us if a proof is lost.
-   */
-  private moveScheduledFor: number | null = null;
-
-  /** True when the game is waiting on US to move. */
-  private oweAMove(): boolean {
-    const s = this.lastState;
-    return !!s && s.status === 'playing' && s.currentTurn === this.myPlayer;
-  }
-
   /**
    * End the current game without a settlement, for whatever reason found it.
    *
@@ -1469,7 +1818,7 @@ export class ArenaBot {
     // rejected attempts in exactly that state, with no opponent available to
     // anybody. The game itself stays: its transcript may still settle it.
     if (this.gameId) this.send({ type: 'LEAVE_GAME', gameId: this.gameId });
-    if (this.committed) {
+    if (this.game?.committed) {
       this.log('WARNING: 5 cards remain committed to the abandoned game — ' +
                'they come back when the sweep claims and unwinds it');
       this.stats.cardsStranded += 5;
@@ -1480,23 +1829,26 @@ export class ArenaBot {
   private resetToIdle(): void {
     this.state = 'idle';
     this.gameId = null;
-    this.myPlayer = null;
     this.queuedAt = 0;
     this.gameStartedAt = 0;
     this.opponentGoneSince = null;
     // Per-game state MUST NOT leak into the next game: a stale record or
     // blinding factor would produce proofs bound to the wrong game. The context
     // itself lives on in recentGames while its follow-up is still due.
+    const ctx = this.game;
+    if (ctx?.recheck) {
+      clearTimeout(ctx.recheck);
+      ctx.recheck = null;
+    }
     this.game = null;
-    this.committed = false;
-    this.lastState = null;
-    this.pendingMove = null;
-    this.moveScheduledFor = null;
     this.settling = false;
   }
 
-  private send(msg: unknown): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
+  /** Send if the socket is open; false if the frame did not go (a resume sends what matters again). */
+  private send(msg: unknown): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify(msg));
+    return true;
   }
 
   private recordError(where: string, err: Error): void {

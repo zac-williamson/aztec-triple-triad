@@ -9,12 +9,12 @@
  *   ./start-sandbox.sh && npx tsx scripts/deploy-contracts.ts
  *   set -a; . packages/frontend/.env; set +a
  *   npx tsx scripts/provision-arena-bot.ts --index 0 --cards 14 --offset 0
- *   npx tsx scripts/provision-arena-bot.ts --index 1 --cards 14 --offset 14   # the human
  *   npx tsx scripts/provision-arena-bot.ts --index 2 --cards 14 --offset 28
  *   ARENA_BOT_TOKEN=t npx tsx packages/bot/tests/pool-e2e.manual.ts
  *
  * ONE PROCESS PER IDENTITY (pxe.ts binds its wallet in a module global), so the
- * parent runs the relay and bot 0, and spawns itself for bot 2 and the human.
+ * parent runs the relay and bot 0, and spawns itself for bot 2 and the human
+ * (who needs no identity: it only queues).
  */
 import WebSocket from 'ws';
 import { createServer } from '@axolotl-arena/backend/src/server.js';
@@ -44,36 +44,35 @@ function startBot(index: number): ArenaBot {
   const bot = new ArenaBot(
     { ...configFromEnv(), wsUrl: `ws://localhost:${PORT}`, httpUrl: `http://localhost:${PORT}`,
       joinThresholdMs: 2_000, pollIntervalMs: 500, moveDelayMs: 1_500,
-      settleWaitMs: 120_000, healthPort: 0, token: process.env.ARENA_BOT_TOKEN! },
+      healthPort: 0, token: process.env.ARENA_BOT_TOKEN! },
     { chain, proofs: new BotProofs(m => log(`bot${index}:proofs`, m)), log: m => log(`bot${index}`, m) },
   );
   void chain.connect().then(() => bot.start());
   return bot;
 }
 
-/** A chain-backed human: commits, but plays through the relay only. */
+/**
+ * A human who only queues: matching is what this harness is about. The queue
+ * names no hand, and MATCH_FOUND does not say whether the opponent is a bot —
+ * a player must not be able to tell — so a match as player 1 is the pass.
+ */
 async function runHuman(): Promise<void> {
-  const chain = mkChain(1);
-  await chain.connect();
-  const hand = await chain.selectHand(5);
   const ws = new WebSocket(`ws://localhost:${PORT}`);
   let gameId: string | null = null;
-  let opponentIsBot: boolean | null = null;
 
   await new Promise<void>(r => ws.once('open', () => r()));
   ws.on('message', raw => {
     const msg = JSON.parse(raw.toString());
     if (msg.type === 'SESSION_ESTABLISHED') {
-      log('human', `queueing with ${hand.join(',')}`);
-      ws.send(JSON.stringify({ type: 'QUEUE_MATCHMAKING', cardIds: hand }));
+      log('human', 'queueing');
+      ws.send(JSON.stringify({ type: 'QUEUE_MATCHMAKING' }));
     }
     if (msg.type === 'MATCH_FOUND') {
       gameId = msg.gameId;
-      opponentIsBot = msg.opponentIsBot;
-      log('human', `matched as player${msg.playerNumber}, opponentIsBot=${msg.opponentIsBot}`);
-      console.log(`HUMAN_RESULT ${JSON.stringify({ playerNumber: msg.playerNumber, opponentIsBot })}`);
+      log('human', `matched as player${msg.playerNumber}`);
+      console.log(`HUMAN_RESULT ${JSON.stringify({ playerNumber: msg.playerNumber })}`);
       ws.close();
-      process.exit(msg.playerNumber === 1 && msg.opponentIsBot === true ? 0 : 1);
+      process.exit(msg.playerNumber === 1 ? 0 : 1);
     }
   });
   setTimeout(() => {

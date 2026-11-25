@@ -38,6 +38,34 @@ describe('GameJournal', () => {
     expect(j.read('room-1')).toMatchObject({ relayGameId: 'room-1', cardIds: [1, 2, 3, 4, 5], gameKey: F(0x6a) });
   });
 
+  it('keeps the transcript: both sides\' moves with their proofs, the open cards, and a refusal', () => {
+    const j = new GameJournal(dir);
+    const moves = [
+      { moveNumber: 0, cardId: 180, slot: 1, row: 0, col: 0 },
+      { moveNumber: 1, cardId: 3, slot: 2, row: 1, col: 1 },
+    ];
+    const proof = (i: number) => ({
+      proof: 'cHJvb2Y=', publicInputs: Array.from({ length: 8 }, (_, k) => F(10 * i + k)),
+      cardCommit1: F(1), cardCommit2: F(2), startStateHash: F(10 * i + 2), endStateHash: F(10 * i + 3),
+      gameEnded: false, winnerId: 0, placedCardId: moves[i].cardId, placedSlot: moves[i].slot,
+    });
+    j.write(record({
+      moveProofs: [proof(0), proof(1)],
+      moves,
+      opponentOpenCards: [12, 180, 7],
+      ownOpenCards: { cards: [1, 2, 3], proof: 'b3Blbg==', publicInputs: [F(2), F(1), F(2), F(3)] },
+      protocolError: 'their move 2: its proof does not verify',
+    }));
+    const back = j.read('room-1')!;
+    expect(back.moves).toEqual(moves);
+    expect(back.moveProofs.map(p => p.placedCardId)).toEqual([180, 3]);
+    expect(back.opponentOpenCards).toEqual([12, 180, 7]);
+    expect(back.ownOpenCards!.cards).toEqual([1, 2, 3]);
+    expect(back.protocolError).toMatch(/does not verify/);
+    // Still the sweep's until it is resolved.
+    expect(j.outstanding()).toHaveLength(1);
+  });
+
   it('keeps committedAt as written — age is what every recovery decision starts from', () => {
     const j = new GameJournal(dir);
     j.write(record({ committedAt: 1000 }));

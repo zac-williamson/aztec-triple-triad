@@ -17,8 +17,11 @@
  * What it keeps is what recovery needs and nothing more about the opponent:
  * the relay room id, our key pair and their PUBLIC key (to re-derive the
  * channel), the game key, our note nonce (our secrets re-derive from it), our
- * own hand, both records, the move transcript and the outcome. No address, no
- * hand, no secret of theirs — they never reach the bot in the first place.
+ * own hand, both records, the transcript — both sides' moves with their proofs
+ * (docs/plan/PRIVATE_GAMES.md section 6.4) — the open cards and the outcome. Of
+ * the opponent that is only what the game itself showed: their opaque record,
+ * the cards they placed and their three open cards. No address, no unplayed
+ * card, no secret of theirs — they never reach the bot in the first place.
  */
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, existsSync, renameSync } from 'fs';
 import { join } from 'path';
@@ -40,6 +43,22 @@ export interface JournalProof {
   placedSlot?: number;
 }
 
+/** One move of the transcript: the card, its slot in the mover's committed hand, the cell. */
+export interface JournalMove {
+  moveNumber: number;
+  cardId: number;
+  slot: number;
+  row: number;
+  col: number;
+}
+
+/** Open cards and the proof that they are a hand's committed slots 0..2. */
+export interface JournalOpenCards {
+  cards: number[];
+  proof: string;
+  publicInputs: string[];
+}
+
 /** How a game was resolved on-chain, as far as our own notes go. */
 export type JournalResolution = 'settled' | 'unwound';
 
@@ -47,7 +66,7 @@ export interface JournalRecord {
   version: typeof JOURNAL_VERSION;
   /**
    * The relay room id: the journal's key, and the associated data of every
-   * PEER payload, so a restarted bot can still open the game's channel.
+   * PEER and MOVE payload, so a restarted bot can still open the game's channel.
    */
   relayGameId: string;
   /** Our ephemeral key pair for this game (private key as JWK). */
@@ -63,9 +82,24 @@ export interface JournalRecord {
   /** The creator's record and ours: nine opaque hashes each. */
   record1: string[];
   record2: string[];
-  /** The move proofs we hold — the transcript a settlement needs. */
+  /**
+   * The move proofs we hold — the transcript a settlement needs. In move
+   * order (records from before the relay stopped running the game hold them
+   * in any order; settlement chains them either way).
+   */
   moveProofs: JournalProof[];
-  /** The relay's verdict from our seat, once known. */
+  /** The moves those proofs prove, in the same order: enough to rebuild the board. */
+  moves?: JournalMove[];
+  /** The opponent's open cards, once their proof checked out. */
+  opponentOpenCards?: number[] | null;
+  /** Our own open cards as sent. */
+  ownOpenCards?: JournalOpenCards | null;
+  /**
+   * Why the opponent's play was refused, if it was — without card details.
+   * Such a game can never settle: the sweep claims it.
+   */
+  protocolError?: string | null;
+  /** The game's result from our seat, once all nine moves are in. */
   outcome: Outcome | null;
   /** The prize move once known: ours if we settled, the winner's word otherwise. */
   prizeMove: number | null;
