@@ -47,13 +47,13 @@ export class TripleTriadGameContract extends ContractBase {
    * @param instantiation - Optional address-affecting parameters (salt, deployer / universalDeploy, publicKeys).
    *                       Salt defaults to a random value; the deployer is locked lazily from the first send-time `from`.
    */
-  public static deploy(wallet: Wallet, admin: AztecAddressLike, nft_address: AztecAddressLike, move_vk_hash: FieldLike, token_address: AztecAddressLike, dummy_vk_hash: FieldLike, permissive_vks: boolean, instantiation?: DeployInstantiationOptions) {
+  public static deploy(wallet: Wallet, admin: AztecAddressLike, nft_address: AztecAddressLike, move_vk_hash: FieldLike, hand_vk_hash: FieldLike, token_address: AztecAddressLike, dummy_vk_hash: FieldLike, permissive_vks: boolean, instantiation?: DeployInstantiationOptions) {
     return DeployMethod.create<TripleTriadGameContract>(
       wallet,
       {
         artifact: TripleTriadGameContractArtifact,
         postDeployCtor: (instance, wallet) => TripleTriadGameContract.at(instance.address, wallet),
-        args: [admin, nft_address, move_vk_hash, token_address, dummy_vk_hash, permissive_vks],
+        args: [admin, nft_address, move_vk_hash, hand_vk_hash, token_address, dummy_vk_hash, permissive_vks],
       },
       instantiation,
     );
@@ -95,7 +95,7 @@ export class TripleTriadGameContract extends ContractBase {
   }
   
 
-  public static get storage(): ContractStorageLayout<'admin' | 'nft_contract' | 'token_contract' | 'move_vk_hash' | 'dummy_vk_hash' | 'permissive_vks'> {
+  public static get storage(): ContractStorageLayout<'admin' | 'nft_contract' | 'token_contract' | 'move_vk_hash' | 'hand_vk_hash' | 'dummy_vk_hash' | 'permissive_vks'> {
       return {
         admin: {
       slot: new Fr(1n),
@@ -109,13 +109,16 @@ token_contract: {
 move_vk_hash: {
       slot: new Fr(7n),
     },
-dummy_vk_hash: {
+hand_vk_hash: {
       slot: new Fr(9n),
     },
-permissive_vks: {
+dummy_vk_hash: {
       slot: new Fr(11n),
+    },
+permissive_vks: {
+      slot: new Fr(13n),
     }
-      } as ContractStorageLayout<'admin' | 'nft_contract' | 'token_contract' | 'move_vk_hash' | 'dummy_vk_hash' | 'permissive_vks'>;
+      } as ContractStorageLayout<'admin' | 'nft_contract' | 'token_contract' | 'move_vk_hash' | 'hand_vk_hash' | 'dummy_vk_hash' | 'permissive_vks'>;
     }
     
 
@@ -125,11 +128,11 @@ permissive_vks: {
     /** cancel_game(game_key: field, record_1: array) */
     cancel_game: ((game_key: FieldLike, record_1: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** claim_abandoned_game(game_key: field, record_1: array, record_2: array, side: field, claim_no: field, clock_block: integer) */
-    claim_abandoned_game: ((game_key: FieldLike, record_1: FieldLike[], record_2: FieldLike[], side: FieldLike, claim_no: FieldLike, clock_block: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** claim_abandoned_game(game_key: field, record_1: array, record_2: array, side: field, claim_no: field, clock_block: integer, hand_vk: array, open_proof: array, open_inputs: array, forfeit_slot: field) */
+    claim_abandoned_game: ((game_key: FieldLike, record_1: FieldLike[], record_2: FieldLike[], side: FieldLike, claim_no: FieldLike, clock_block: (bigint | number), hand_vk: FieldLike[], open_proof: FieldLike[], open_inputs: FieldLike[], forfeit_slot: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** constructor(admin: struct, nft_address: struct, move_vk_hash: field, token_address: struct, dummy_vk_hash: field, permissive_vks: boolean) */
-    constructor: ((admin: AztecAddressLike, nft_address: AztecAddressLike, move_vk_hash: FieldLike, token_address: AztecAddressLike, dummy_vk_hash: FieldLike, permissive_vks: boolean) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** constructor(admin: struct, nft_address: struct, move_vk_hash: field, hand_vk_hash: field, token_address: struct, dummy_vk_hash: field, permissive_vks: boolean) */
+    constructor: ((admin: AztecAddressLike, nft_address: AztecAddressLike, move_vk_hash: FieldLike, hand_vk_hash: FieldLike, token_address: AztecAddressLike, dummy_vk_hash: FieldLike, permissive_vks: boolean) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** contest_abandonment(game_key: field, record_1: array, record_2: array, side: field, claim_no: field, claim_side: field, before_claim_block: integer) */
     contest_abandonment: ((game_key: FieldLike, record_1: FieldLike[], record_2: FieldLike[], side: FieldLike, claim_no: FieldLike, claim_side: FieldLike, before_claim_block: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
@@ -137,8 +140,11 @@ permissive_vks: {
     /** create_game(game_key: field, card_ids: array) */
     create_game: ((game_key: FieldLike, card_ids: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
-    /** finalize_abandoned_game(game_key: field, record_1: array, record_2: array, claim_no: field, claim_side: field, claim_block: integer) */
-    finalize_abandoned_game: ((game_key: FieldLike, record_1: FieldLike[], record_2: FieldLike[], claim_no: FieldLike, claim_side: FieldLike, claim_block: (bigint | number)) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+    /** finalize_abandoned_game(game_key: field, record_1: array, record_2: array, claim_no: field, claim_side: field, claim_block: integer, forfeit_slot: field, forfeit_card: field) */
+    finalize_abandoned_game: ((game_key: FieldLike, record_1: FieldLike[], record_2: FieldLike[], claim_no: FieldLike, claim_side: FieldLike, claim_block: (bigint | number), forfeit_slot: FieldLike, forfeit_card: FieldLike) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
+
+    /** forfeit_nullifiers(game_key: field, record_1: array, claim_no: field, claim_side: field, open_cards: array) */
+    forfeit_nullifiers: ((game_key: FieldLike, record_1: FieldLike[], claim_no: FieldLike, claim_side: FieldLike, open_cards: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;
 
     /** game_nullifiers(game_key: field, record_1: array, record_2: array) */
     game_nullifiers: ((game_key: FieldLike, record_1: FieldLike[], record_2: FieldLike[]) => ContractFunctionInteraction) & Pick<ContractMethod, 'selector'>;

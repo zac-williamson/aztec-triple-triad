@@ -49,6 +49,21 @@ pub global MOVE_INPUTS: u32 = 8;
 /// contests a third claim stands.
 pub global MAX_CLAIMS: u32 = 3;
 
+/// Each hand's first three slots are its OPEN cards: shown to the opponent from
+/// the start, and proven against the hand commitment by an open-cards proof
+/// (circuits/prove_hand).
+pub global OPEN_CARDS: u32 = 3;
+
+/// An open-cards proof's public inputs: `[hand_commit, open_0, open_1, open_2]`.
+pub global OPEN_INPUTS: u32 = 4;
+
+/// The forfeit slot of a claim that takes no card. Slots 0-2 name one of the
+/// other player's open cards.
+pub global NO_FORFEIT: Field = 3;
+
+/// The terms a claim can have: one per open card, plus taking nothing.
+pub global FORFEIT_TERMS: u32 = 4;
+
 /// Number of siloed nullifiers `game_nullifiers` reports.
 pub global GAME_NULLIFIER_COUNT: u32 = 21;
 
@@ -66,6 +81,7 @@ global DOM_SEP__N_CLAIM: Field = 0x41415f4e5f434c41494d; // "AA_N_CLAIM"
 global DOM_SEP__N_CONTESTED_BY: Field = 0x41415f4e5f434f4e5445535445445f4259; // "AA_N_CONTESTED_BY"
 global DOM_SEP__N_CONTEST: Field = 0x41415f4e5f434f4e54455354; // "AA_N_CONTEST"
 global DOM_SEP__N_RESOLVED: Field = 0x41415f4e5f5245534f4c564544; // "AA_N_RESOLVED"
+global DOM_SEP__N_FORFEIT: Field = 0x41415f4e5f464f5246454954; // "AA_N_FORFEIT"
 
 /*
  * ============================ VALIDATORS ============================
@@ -79,10 +95,14 @@ global DOM_SEP__N_RESOLVED: Field = 0x41415f4e5f5245534f4c564544; // "AA_N_RESOL
 /// What a deployment may register as its verification keys. `permissive`
 /// deployments register the dummy circuit's VK as the move VK so a playtest
 /// can skip real proving -- an unsound configuration that is at least explicit
-/// and recorded on-chain (`has_permissive_vks`).
-pub fn assert_vk_configuration(move_vk_hash: Field, dummy_vk_hash: Field, permissive: bool) {
+/// and recorded on-chain (`has_permissive_vks`). The open-cards (hand) VK is
+/// always a real one: claims are rare and its proof is cheap.
+pub fn assert_vk_configuration(move_vk_hash: Field, hand_vk_hash: Field, dummy_vk_hash: Field, permissive: bool) {
     assert(move_vk_hash != 0, "move_vk_hash must be set");
+    assert(hand_vk_hash != 0, "hand_vk_hash must be set");
     assert(dummy_vk_hash != 0, "dummy_vk_hash must be set");
+    assert(hand_vk_hash != move_vk_hash, "hand_vk_hash and move_vk_hash must differ");
+    assert(hand_vk_hash != dummy_vk_hash, "hand_vk_hash must not be the dummy VK");
     if !permissive {
         assert(move_vk_hash != dummy_vk_hash, "move_vk_hash must not be the dummy VK");
     }
@@ -233,6 +253,46 @@ pub fn assert_dispute_window_elapsed(now: u64, claim_seen_at: u64) {
     assert(now >= claim_seen_at + DISPUTE_SECONDS, "Dispute window not elapsed");
 }
 
+/// A forfeit slot as an index into a hand: one of the open cards, 0 to 2.
+pub fn forfeit_slot_index(forfeit_slot: Field) -> u32 {
+    let slot = forfeit_slot as u32;
+    assert(
+        ((slot as Field) == forfeit_slot) & (slot < OPEN_CARDS),
+        "Forfeit slot must be an open card (0-2) or none (3)",
+    );
+    slot
+}
+
+/// The card a claim takes from the player who walked away: one of their three
+/// open cards, named by hand slot, or none (`NO_FORFEIT`). `open_inputs` are a
+/// verified open-cards proof's public inputs. Returns the card id, 0 for none.
+pub fn forfeit_card_of(open_inputs: [Field; OPEN_INPUTS], forfeit_slot: Field) -> Field {
+    if forfeit_slot == NO_FORFEIT {
+        0
+    } else {
+        let card = open_inputs[1 + forfeit_slot_index(forfeit_slot)];
+        assert(card != 0, "Forfeit card must be a real card");
+        card
+    }
+}
+
+/// Whose open cards a claim proves: the other player's when it takes one of
+/// them, the claimant's own when it takes nothing. A player can always prove
+/// their own, so a claim never needs anything from the player who left.
+pub fn open_cards_side(side: Field, forfeit_slot: Field) -> Field {
+    if forfeit_slot == NO_FORFEIT {
+        side
+    } else {
+        3 - side
+    }
+}
+
+/// An open-cards proof speaks for the hand its first public input commits to,
+/// which must be the hand that player committed to this game.
+pub fn assert_open_cards_of(open_inputs: [Field; OPEN_INPUTS], hand_commit: Field) {
+    assert(open_inputs[0] == hand_commit, "Open cards are not that player's committed hand");
+}
+
 #[aztec]
 pub contract TripleTriadGame {
     use aztec::{
@@ -251,13 +311,14 @@ pub contract TripleTriadGame {
     use arena_token::ArenaToken;
     use super::{
         all_returns, assert_abandon_bar_passed, assert_claim_number, assert_dispute_window_elapsed,
-        assert_dispute_window_open, assert_side, assert_transcript, assert_vk_configuration,
-        DOM_SEP__GAME_ID, DOM_SEP__N_CLAIM, DOM_SEP__N_CLAIM_SLOT, DOM_SEP__N_CONTEST,
-        DOM_SEP__N_CONTESTED_BY, DOM_SEP__N_CREATED, DOM_SEP__N_DONE, DOM_SEP__N_JOINED,
-        DOM_SEP__N_RESOLVED, DOM_SEP__N_SEAT2, DOM_SEP__PLAYER, DOM_SEP__RECORD, DOM_SEP__SEAT,
-        GAME_NULLIFIER_COUNT, MAX_CLAIMS, MOVE_INPUTS, prize_of, RECORD_HAND, RECORD_LEN,
-        RECORD_PRIZE, RECORD_REWARD, RECORD_SEAT, returns_of, REWARD_PER_GAME, seat_for,
-        win_returns,
+        assert_dispute_window_open, assert_open_cards_of, assert_side, assert_transcript,
+        assert_vk_configuration, DOM_SEP__GAME_ID, DOM_SEP__N_CLAIM, DOM_SEP__N_CLAIM_SLOT,
+        DOM_SEP__N_CONTEST, DOM_SEP__N_CONTESTED_BY, DOM_SEP__N_CREATED, DOM_SEP__N_DONE,
+        DOM_SEP__N_FORFEIT, DOM_SEP__N_JOINED, DOM_SEP__N_RESOLVED, DOM_SEP__N_SEAT2,
+        DOM_SEP__PLAYER, DOM_SEP__RECORD, DOM_SEP__SEAT, forfeit_card_of, forfeit_slot_index,
+        FORFEIT_TERMS, GAME_NULLIFIER_COUNT, MAX_CLAIMS, MOVE_INPUTS, NO_FORFEIT, OPEN_CARDS, OPEN_INPUTS,
+        open_cards_side, prize_of, RECORD_HAND, RECORD_LEN, RECORD_PRIZE, RECORD_REWARD,
+        RECORD_SEAT, returns_of, REWARD_PER_GAME, seat_for, win_returns,
     };
 
     #[storage]
@@ -266,6 +327,9 @@ pub contract TripleTriadGame {
         nft_contract: PublicImmutable<AztecAddress, Context>,
         token_contract: PublicImmutable<AztecAddress, Context>,
         move_vk_hash: PublicImmutable<Field, Context>,
+        /// The open-cards proof's VK (circuits/prove_hand): what an abandonment
+        /// claim proves the forfeited card with.
+        hand_vk_hash: PublicImmutable<Field, Context>,
         dummy_vk_hash: PublicImmutable<Field, Context>,
         /// True when this deployment registered the dummy VK for real move
         /// proofs. Such a deployment has NO gameplay soundness; the flag
@@ -279,15 +343,17 @@ pub contract TripleTriadGame {
         admin: AztecAddress,
         nft_address: AztecAddress,
         move_vk_hash: Field,
+        hand_vk_hash: Field,
         token_address: AztecAddress,
         dummy_vk_hash: Field,
         permissive_vks: bool,
     ) {
-        assert_vk_configuration(move_vk_hash, dummy_vk_hash, permissive_vks);
+        assert_vk_configuration(move_vk_hash, hand_vk_hash, dummy_vk_hash, permissive_vks);
         self.storage.admin.initialize(admin);
         self.storage.nft_contract.initialize(nft_address);
         self.storage.token_contract.initialize(token_address);
         self.storage.move_vk_hash.initialize(move_vk_hash);
+        self.storage.hand_vk_hash.initialize(hand_vk_hash);
         self.storage.dummy_vk_hash.initialize(dummy_vk_hash);
         self.storage.permissive_vks.initialize(permissive_vks);
     }
@@ -395,6 +461,18 @@ pub contract TripleTriadGame {
     #[contract_library_method]
     fn n_resolved(game_id: Field, claim_no: Field) -> Field {
         poseidon2_hash_with_separator([game_id, claim_no], DOM_SEP__N_RESOLVED)
+    }
+
+    /// The terms of claim `claim_no` by `side`: which of the other player's open
+    /// cards it takes (`forfeit_slot`, NO_FORFEIT for none) and that card (0 for
+    /// none). Every claim pushes exactly one, so finalizing must name its real
+    /// terms, whoever finalizes.
+    #[contract_library_method]
+    fn n_forfeit(game_id: Field, claim_no: Field, side: Field, forfeit_slot: Field, forfeit_card: Field) -> Field {
+        poseidon2_hash_with_separator(
+            [game_id, claim_no, side, forfeit_slot, forfeit_card],
+            DOM_SEP__N_FORFEIT,
+        )
     }
 
     /// Fail unless `nullifier` (of this contract) is in a settled block.
@@ -571,9 +649,17 @@ pub contract TripleTriadGame {
 
     // =========================== abandonment ===========================
 
-    /// Claim that the other player has abandoned the game. Needs no proofs:
-    /// a finished game can still be settled during the dispute window (a full
-    /// transcript outranks a claim) and an unfinished one can be contested.
+    /// Claim that the other player has abandoned the game. A finished game can
+    /// still be settled during the dispute window (a full transcript outranks
+    /// a claim) and an unfinished one can be contested.
+    ///
+    /// Walking away costs a card: the claim names one of the other player's
+    /// three open cards by its hand slot (`forfeit_slot` 0-2), proven by their
+    /// open-cards proof against the hand they committed. If finalized, the
+    /// claimant gets their five back plus that card, and the other player the
+    /// other four. A claimant without the other player's open cards (they left
+    /// before sending them) takes nothing: `forfeit_slot` NO_FORFEIT, with the
+    /// claimant's OWN open-cards proof, so every claim verifies one proof.
     ///
     /// `clock_block` is a block in which the claim clock's nullifier already
     /// existed -- the join for the first claim, the previous contest after
@@ -586,6 +672,10 @@ pub contract TripleTriadGame {
         side: Field,
         claim_no: Field,
         clock_block: u32,
+        hand_vk: UltraHonkVerificationKey,
+        open_proof: UltraHonkZKProof,
+        open_inputs: [Field; OPEN_INPUTS],
+        forfeit_slot: Field,
     ) {
         assert_side(side);
         assert_claim_number(claim_no);
@@ -604,8 +694,16 @@ pub contract TripleTriadGame {
         assert_abandon_bar_passed(anchor.global_variables.timestamp, clock.global_variables.timestamp);
         assert_nullifier_did_not_exist_by(anchor, compute_siloed_nullifier(self.address, n_done(game_id)));
 
+        // The forfeit: a card from the other player's open cards, or nothing.
+        let forfeit_card = forfeit_card_of(open_inputs, forfeit_slot);
+        let proven_side = open_cards_side(side, forfeit_slot);
+        let proven_record = if proven_side == 1 { record_1 } else { record_2 };
+        assert_open_cards_of(open_inputs, proven_record[RECORD_HAND]);
+        verify_honk_proof(hand_vk, open_proof, open_inputs, self.storage.hand_vk_hash.read());
+
         self.context.push_nullifier_unsafe(n_claim_slot(game_id, claim_no));
         self.context.push_nullifier_unsafe(n_claim(game_id, claim_no, side));
+        self.context.push_nullifier_unsafe(n_forfeit(game_id, claim_no, side, forfeit_slot, forfeit_card));
     }
 
     /// Contest a standing claim: "I am still here". The game goes on and the
@@ -643,9 +741,13 @@ pub contract TripleTriadGame {
         self.context.push_nullifier_unsafe(n_contest(game_id, claim_no));
     }
 
-    /// Finalize an uncontested claim once its window has passed: both players
-    /// get their own five cards back, and nobody wins anything. Anyone may
-    /// finalize. `claim_block` is a block in which the claim already existed.
+    /// Finalize an uncontested claim once its window has passed. The claimant
+    /// gets their five back plus the open card the claim took; the other player
+    /// gets their other four. A claim that took nothing returns both hands.
+    /// Nobody earns a reward. Anyone may finalize: every note released was
+    /// prepared for its owner when they committed, so the finalizer cannot
+    /// redirect anything. `claim_block` is a block in which the claim already
+    /// existed; `forfeit_slot` and `forfeit_card` must be the claim's terms.
     #[external("private")]
     fn finalize_abandoned_game(
         game_key: Field,
@@ -654,14 +756,21 @@ pub contract TripleTriadGame {
         claim_no: Field,
         claim_side: Field,
         claim_block: u32,
+        forfeit_slot: Field,
+        forfeit_card: Field,
     ) {
         assert_side(claim_side);
         assert_claim_number(claim_no);
         let game_id = joined_game(self.context, self.address, game_key, record_1, record_2);
 
-        let claim = compute_siloed_nullifier(self.address, n_claim(game_id, claim_no, claim_side));
+        // The claim's terms nullifier exists only if that claim was made, with
+        // exactly these terms (each claim pushes one, with its claim nullifier).
+        let terms = compute_siloed_nullifier(
+            self.address,
+            n_forfeit(game_id, claim_no, claim_side, forfeit_slot, forfeit_card),
+        );
         let seen = self.context.get_block_header_at(claim_block);
-        assert_nullifier_existed_by(seen, claim);
+        assert_nullifier_existed_by(seen, terms);
         let anchor = self.context.get_anchor_block_header();
         assert_dispute_window_elapsed(anchor.global_variables.timestamp, seen.global_variables.timestamp);
 
@@ -669,9 +778,27 @@ pub contract TripleTriadGame {
         self.context.push_nullifier_unsafe(n_done(game_id));
 
         let nft = self.storage.nft_contract.read();
-        TripleTriadNFT::at(nft)
-            .release_game_cards(all_returns(returns_of(record_1), returns_of(record_2)), 10, 0, 0)
-            .call(self.context);
+        if forfeit_slot == NO_FORFEIT {
+            TripleTriadNFT::at(nft)
+                .release_game_cards(all_returns(returns_of(record_1), returns_of(record_2)), 10, 0, 0)
+                .call(self.context);
+        } else {
+            let (claimant, other) = if claim_side == 1 {
+                (record_1, record_2)
+            } else {
+                (record_2, record_1)
+            };
+            // Ten notes either way, so the count does not tell an observer
+            // which kind of claim this was.
+            TripleTriadNFT::at(nft)
+                .release_game_cards(
+                    win_returns(returns_of(claimant), returns_of(other), forfeit_slot_index(forfeit_slot)),
+                    9,
+                    claimant[RECORD_PRIZE],
+                    forfeit_card,
+                )
+                .call(self.context);
+        }
     }
 
     // ======================== client utilities ========================
@@ -723,6 +850,32 @@ pub contract TripleTriadGame {
             siloed[i] = compute_siloed_nullifier(address, inner[i]);
         }
         siloed
+    }
+
+    /// The siloed terms nullifiers claim `claim_no` by `claim_side` could have
+    /// pushed: taking each of `open_cards` (slots 0-2 of the OTHER player's
+    /// hand), then taking nothing. Exactly one exists once the claim stands;
+    /// finalizing needs its terms, so a client looks all four up. The player
+    /// the claim was against passes their own first three cards.
+    #[external("utility")]
+    unconstrained fn forfeit_nullifiers(
+        game_key: Field,
+        record_1: [Field; RECORD_LEN],
+        claim_no: Field,
+        claim_side: Field,
+        open_cards: [Field; OPEN_CARDS],
+    ) -> [Field; FORFEIT_TERMS] {
+        let address = aztec::context::UtilityContext::new().this_address();
+        let game_id = game_id_of(game_key, record_1);
+        let mut out: [Field; FORFEIT_TERMS] = [0; FORFEIT_TERMS];
+        for slot in 0..OPEN_CARDS {
+            out[slot] = compute_siloed_nullifier(
+                address,
+                n_forfeit(game_id, claim_no, claim_side, slot as Field, open_cards[slot]),
+            );
+        }
+        out[OPEN_CARDS] = compute_siloed_nullifier(address, n_forfeit(game_id, claim_no, claim_side, NO_FORFEIT, 0));
+        out
     }
 }
 

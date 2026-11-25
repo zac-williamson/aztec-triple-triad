@@ -203,12 +203,17 @@ async function main() {
   console.log('Computing VK hashes...');
   const api = await Barretenberg.new({ threads: 1 });
 
-  // Settlement verifies move proofs only: the hand proof left the protocol when
-  // the commit itself started checking hands (docs/plan/PRIVATE_GAMES.md §4).
+  // Settlement verifies move proofs; an abandonment claim verifies one
+  // open-cards proof (prove_hand) to prove the card it takes
+  // (docs/plan/PRIVATE_GAMES.md §3.4, §4).
   const gameMoveCircuit = loadCircuitArtifact('game_move');
+  const proveHandCircuit = loadCircuitArtifact('prove_hand');
   const dummyMoveCircuit = loadCircuitArtifact('dummy_move');
 
   let moveVkHash = await computeVkHash(api, gameMoveCircuit.bytecode);
+  // Always the real open-cards VK, even when permissive: the contract refuses
+  // the dummy VK here, and a claim's proof is cheap to make for real.
+  const handVkHash = await computeVkHash(api, proveHandCircuit.bytecode);
   const dummyVkHash = await computeVkHash(api, dummyMoveCircuit.bytecode);
 
   if (PERMISSIVE_VKS) {
@@ -223,6 +228,7 @@ async function main() {
   }
 
   console.log(`  move_vk_hash: ${moveVkHash}${PERMISSIVE_VKS ? ' (PERMISSIVE: dummy_move)' : ''}`);
+  console.log(`  hand_vk_hash: ${handVkHash}`);
   console.log(`  dummy_vk_hash: ${dummyVkHash}`);
 
   await api.destroy();
@@ -273,8 +279,8 @@ async function main() {
 
   // 7. Deploy Game contract
   console.log('\nDeploying TripleTriadGame...');
-  // Constructor: (admin, nft_address, move_vk_hash, token_address,
-  //               dummy_vk_hash, permissive_vks)
+  // Constructor: (admin, nft_address, move_vk_hash, hand_vk_hash,
+  //               token_address, dummy_vk_hash, permissive_vks)
   //
   // The constructor REJECTS a deployment whose move VK is the dummy
   // VK unless permissive_vks says so explicitly. The URL guard above is still
@@ -285,6 +291,7 @@ async function main() {
     deployerAddress, // admin (for upgradeability)
     nftAddress,
     Fr.fromHexString(moveVkHash),
+    Fr.fromHexString(handVkHash),
     tokenAddress,
     Fr.fromHexString(dummyVkHash),
     PERMISSIVE_VKS,
@@ -383,6 +390,7 @@ DEPLOYER_SIGNING_KEY=${deployerSigningKey.toString()}
   console.log(`Deployer:       ${deployerAddress.toString()}`);
   console.log(`\nVK Hashes:`);
   console.log(`  move:  ${moveVkHash}`);
+  console.log(`  hand:  ${handVkHash}`);
   console.log(`  dummy: ${dummyVkHash}`);
   console.log(`\nCard minting happens in-app via get_cards_for_new_player()`);
 }

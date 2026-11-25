@@ -1,8 +1,9 @@
 //! The game's rules as pure functions (see the VALIDATORS block in main.nr).
 use crate::{
     all_returns, assert_abandon_bar_passed, assert_claim_number, assert_dispute_window_elapsed,
-    assert_dispute_window_open, assert_side, assert_transcript, assert_vk_configuration,
-    DISPUTE_SECONDS, MIN_ABANDON_SECONDS, prize_of, win_returns,
+    assert_dispute_window_open, assert_open_cards_of, assert_side, assert_transcript,
+    assert_vk_configuration, DISPUTE_SECONDS, forfeit_card_of, forfeit_slot_index,
+    MIN_ABANDON_SECONDS, NO_FORFEIT, open_cards_side, prize_of, win_returns,
 };
 use crate::test::utils::transcript;
 
@@ -148,21 +149,86 @@ unconstrained fn finalizing_one_second_early_is_refused() {
     assert_dispute_window_elapsed(1000 + DISPUTE_SECONDS - 1, 1000);
 }
 
+// --- the forfeit ---
+
+#[test]
+unconstrained fn a_forfeit_takes_the_open_card_at_its_slot() {
+    let open = [77, 11, 12, 13];
+    assert_eq(forfeit_card_of(open, 0), 11);
+    assert_eq(forfeit_card_of(open, 1), 12);
+    assert_eq(forfeit_card_of(open, 2), 13);
+    assert_eq(forfeit_card_of(open, NO_FORFEIT), 0);
+    assert_eq(forfeit_slot_index(2), 2);
+}
+
+#[test(should_fail_with = "Forfeit slot must be an open card (0-2) or none (3)")]
+unconstrained fn a_hidden_slot_cannot_be_forfeited() {
+    let _ = forfeit_card_of([77, 11, 12, 13], 4);
+}
+
+#[test(should_fail_with = "Forfeit slot must be an open card (0-2) or none (3)")]
+unconstrained fn a_slot_that_wraps_around_is_refused() {
+    let _ = forfeit_card_of([77, 11, 12, 13], -1);
+}
+
+#[test(should_fail_with = "Forfeit slot must be an open card (0-2) or none (3)")]
+unconstrained fn finalizing_without_a_forfeit_slot_is_not_an_index() {
+    let _ = forfeit_slot_index(NO_FORFEIT);
+}
+
+#[test(should_fail_with = "Forfeit card must be a real card")]
+unconstrained fn an_empty_open_slot_cannot_be_forfeited() {
+    let _ = forfeit_card_of([77, 11, 0, 13], 1);
+}
+
+#[test]
+unconstrained fn a_forfeit_proves_the_other_players_cards_and_none_proves_your_own() {
+    assert_eq(open_cards_side(1, 0), 2);
+    assert_eq(open_cards_side(2, 2), 1);
+    assert_eq(open_cards_side(1, NO_FORFEIT), 1);
+    assert_eq(open_cards_side(2, NO_FORFEIT), 2);
+}
+
+#[test]
+unconstrained fn open_cards_bound_to_the_hand_pass() {
+    assert_open_cards_of([77, 11, 12, 13], 77);
+}
+
+#[test(should_fail_with = "Open cards are not that player's committed hand")]
+unconstrained fn open_cards_of_another_hand_fail() {
+    assert_open_cards_of([78, 11, 12, 13], 77);
+}
+
 // --- deployment ---
 
 #[test]
 unconstrained fn distinct_vks_are_a_sound_configuration() {
-    assert_vk_configuration(2, 3, false);
+    assert_vk_configuration(2, 4, 3, false);
     // A permissive (playtest) deployment may register the dummy VK as moves.
-    assert_vk_configuration(3, 3, true);
+    assert_vk_configuration(3, 4, 3, true);
 }
 
 #[test(should_fail_with = "move_vk_hash must not be the dummy VK")]
 unconstrained fn the_dummy_vk_cannot_verify_moves_on_a_sound_deployment() {
-    assert_vk_configuration(3, 3, false);
+    assert_vk_configuration(3, 4, 3, false);
 }
 
 #[test(should_fail_with = "move_vk_hash must be set")]
 unconstrained fn an_unset_move_vk_is_refused() {
-    assert_vk_configuration(0, 3, false);
+    assert_vk_configuration(0, 4, 3, false);
+}
+
+#[test(should_fail_with = "hand_vk_hash must be set")]
+unconstrained fn an_unset_hand_vk_is_refused() {
+    assert_vk_configuration(2, 0, 3, false);
+}
+
+#[test(should_fail_with = "hand_vk_hash must not be the dummy VK")]
+unconstrained fn the_dummy_vk_cannot_verify_open_cards_even_when_permissive() {
+    assert_vk_configuration(2, 3, 3, true);
+}
+
+#[test(should_fail_with = "hand_vk_hash and move_vk_hash must differ")]
+unconstrained fn the_move_vk_cannot_verify_open_cards() {
+    assert_vk_configuration(2, 2, 3, false);
 }

@@ -38,9 +38,10 @@ pub unconstrained fn setup_game_with_admin() -> (TestEnvironment, AztecAddress, 
         admin,
         nft_addr,
         2,     // move_vk_hash (placeholder)
+        4,     // hand_vk_hash (placeholder)
         token_addr,
         3,     // dummy_vk_hash (placeholder)
-        false, // permissive_vks: the two differ, so the sound configuration
+        false, // permissive_vks: all three differ, so the sound configuration
     );
     let game_addr = env.deploy("TripleTriadGame").with_public_initializer(admin, game_init);
 

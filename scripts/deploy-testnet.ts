@@ -321,24 +321,30 @@ async function main() {
 
   await wallet.registerSender(deployerAddress, 'deployer');
 
-  // Compute VK hashes for circuits. Settlement verifies move proofs only (the
-  // hand proof left the protocol, docs/plan/PRIVATE_GAMES.md §4); dummy_move's
-  // VK is registered so the constructor can refuse it as a move VK.
+  // Compute VK hashes for circuits. Settlement verifies move proofs, and an
+  // abandonment claim verifies one open-cards proof (prove_hand) for the card
+  // it takes (docs/plan/PRIVATE_GAMES.md §3.4, §4); dummy_move's VK is
+  // registered so the constructor can refuse it as a move or hand VK.
   console.log('\nComputing VK hashes...');
   const api = await Barretenberg.new();
   const moveArtifact = loadCircuitArtifact('game_move');
+  const handArtifact = loadCircuitArtifact('prove_hand');
   const dummyMoveArtifact = loadCircuitArtifact('dummy_move');
 
   const moveBackend = new UltraHonkBackend(moveArtifact.bytecode, api);
+  const handBackend = new UltraHonkBackend(handArtifact.bytecode, api);
   const dummyMoveBackend = new UltraHonkBackend(dummyMoveArtifact.bytecode, api);
 
-  const [moveVkBuf, dummyVkBuf] = await Promise.all([
+  const [moveVkBuf, handVkBuf, dummyVkBuf] = await Promise.all([
     moveBackend.getVerificationKey(),
+    handBackend.getVerificationKey(),
     dummyMoveBackend.getVerificationKey(),
   ]);
   const moveVkHash = await computeVkHash(api, moveVkBuf);
+  const handVkHash = await computeVkHash(api, handVkBuf);
   const dummyVkHash = await computeVkHash(api, dummyVkBuf);
   console.log(`  move VK hash:  ${moveVkHash}`);
+  console.log(`  hand VK hash:  ${handVkHash}`);
   console.log(`  dummy VK hash: ${dummyVkHash}`);
 
   // Load artifacts
@@ -406,6 +412,7 @@ async function main() {
       deployerAddress, // admin (for upgradeability)
       nftContract.address,
       Fr.fromHexString(moveVkHash),
+      Fr.fromHexString(handVkHash),
       tokenContract.address,
       Fr.fromHexString(dummyVkHash),
       // permissive_vks: never. This script deploys to a real node, and the

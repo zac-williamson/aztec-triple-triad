@@ -222,10 +222,13 @@ describe('E2E Aztec Settlement', () => {
 
     console.log('Computing VK hashes...');
     const moveVk = await computeVkHash(api, gameMoveArtifact.bytecode);
-    // The constructor also takes the dummy circuit's VK hash, so it can refuse
-    // the dummy as a move VK on a sound deployment.
+    // An abandonment claim verifies one open-cards proof, so the constructor
+    // takes that VK too; and the dummy circuit's, so it can refuse the dummy
+    // as a move or hand VK on a sound deployment.
+    const handVk = await computeVkHash(api, loadCircuitArtifact('prove_hand').bytecode);
     const dummyVk = await computeVkHash(api, loadCircuitArtifact('dummy_move').bytecode);
     console.log(`  move_vk_hash: ${moveVk.hash}`);
+    console.log(`  hand_vk_hash: ${handVk.hash}`);
 
     realMoveVkFields = moveVk.fields.map((f: string) => Fr.fromHexString(f));
 
@@ -263,12 +266,14 @@ describe('E2E Aztec Settlement', () => {
     ]).send(sendAs(deployerAddr)));
     await wallet.registerSender(tokenContract.address, 'token-contract');
 
-    // Constructor: (admin, nft, move_vk_hash, token, dummy_vk_hash,
-    // permissive_vks) -- as scripts/deploy-contracts.ts deploys it, real VKs only.
+    // Constructor: (admin, nft, move_vk_hash, hand_vk_hash, token,
+    // dummy_vk_hash, permissive_vks) -- as scripts/deploy-contracts.ts deploys
+    // it, real VKs only.
     ({ contract: gameContract } = await Contract.deploy(wallet, gameArtifact, [
       deployerAddr,
       nftContract.address,
       Fr.fromHexString(moveVk.hash),
+      Fr.fromHexString(handVk.hash),
       tokenContract.address,
       Fr.fromHexString(dummyVk.hash),
       false,

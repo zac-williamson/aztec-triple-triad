@@ -136,6 +136,7 @@ game_id = poseidon2_sep([game_key, record_hash_1], DOM_SEP__GAME_ID)   // secret
 | `N_contested_by` | `game_id, side` | contest | each side contests at most once |
 | `N_contest` | `game_id, c` | contest of claim `c` | restarts the abandonment clock |
 | `N_resolved` | `game_id, c` | contest **and** finalize of claim `c` | contest and finalize exclude each other |
+| `N_forfeit` | `game_id, c, side, slot, card` | claim `c` | the claim's terms: which open card it takes (`slot` 3, `card` 0: none) |
 
 A client checks a game's state by asking the node whether these siloed
 nullifiers exist. `Game.game_nullifiers(...)` (utility) computes them so
@@ -144,8 +145,10 @@ TypeScript never reimplements the hashes.
 ### 3.4 Game contract
 
 **Storage:** immutables only (`admin`, `nft_contract`, `token_contract`,
-`move_vk_hash`, `dummy_vk_hash`, `permissive_vks`). **No public functions**
-except the constructor and the `has_permissive_vks` view. **No events.**
+`move_vk_hash`, `hand_vk_hash`, `dummy_vk_hash`, `permissive_vks`). **No
+public functions** except the constructor and the `has_permissive_vks` view.
+**No events.** `hand_vk_hash` is the open-cards proof's VK (§4); it is always
+a real one, even on a permissive deployment.
 
 **`create_game(game_key, card_ids) -> record`**
 1. `NFT.commit_hand(owner = caller, card_ids)` pops the nonce and the 5 cards,
@@ -194,10 +197,21 @@ cancel_game free-mint bug by construction.
 
 Anyone can call `settle_game`; nothing is checked against the caller.
 
-**Abandonment (no proofs, no transcript).** `MIN_ABANDON_SECONDS` (480) and
+**Abandonment (no transcript).** `MIN_ABANDON_SECONDS` (480) and
 `DISPUTE_SECONDS` (600) are unchanged.
 
-- **`claim_abandoned_game(game_key, r1, r2, side, c, clock_block)`**
+**Walking away costs a card** (Zac, 25 Nov 2026). A player who leaves a game
+the opponent has joined forfeits one of their three **open** cards to the
+player who stayed. The claim names the card; if it is not contested, the
+claimant gets their five back plus that card, and the leaver gets the other
+four. A contest ("I am still here") clears the claim and its forfeit. A
+finished game follows its result, because a settlement outranks any claim.
+The open cards are the ones the opponent already sees (§6.2), so the forfeit
+reveals nothing new. A creator who leaves *before* anyone joined loses
+nothing: `cancel_game` has no bar and no window, and the client sends it by
+itself (§5.5).
+
+- **`claim_abandoned_game(game_key, r1, r2, side, c, clock_block, hand_vk, open_proof, open_inputs[4], forfeit_slot)`**
   1. Prove `seat_side`.
   2. `c ∈ 1..3`.
   3. Get `h = get_block_header_at(clock_block)` and check the clock nullifier
@@ -205,7 +219,16 @@ Anyone can call `settle_game`; nothing is checked against the caller.
      `N_contest(c-1)`.
   4. Assert `h.timestamp + MIN_ABANDON_SECONDS <= anchor.timestamp`, and that
      `N_done` did not exist at the anchor.
-  5. Push `N_claim_slot(c)` and `N_claim(c, side)`.
+  5. **The forfeit.** `forfeit_slot ∈ 0..2` takes the OTHER player's open
+     card at that slot; `open_inputs` must be their open-cards proof
+     (`open_inputs[0]` = their record's `hand_commit`), and the card is
+     `open_inputs[1 + slot]`. `forfeit_slot = 3` takes nothing, for a
+     claimant who never got the other player's open cards (they left before
+     sending them); `open_inputs` is then the claimant's OWN open-cards proof,
+     which they can always make. So every claim verifies exactly one proof
+     against `hand_vk_hash`, and a claim never depends on the leaver.
+  6. Push `N_claim_slot(c)`, `N_claim(c, side)` and
+     `N_forfeit(c, side, forfeit_slot, card)`.
 - **`contest_abandonment(game_key, r1, r2, side, c, claim_side, before_block)`**
   1. Prove `seat_side` and assert `side != claim_side`.
   2. Assert `N_claim(c, claim_side)` exists at the anchor.
@@ -214,31 +237,57 @@ Anyone can call `settle_game`; nothing is checked against the caller.
   4. Assert `anchor.timestamp < h0.timestamp + DISPUTE_SECONDS`, so the
      contest is inside the window.
   5. Push `N_contested_by(side)`, `N_resolved(c)` and `N_contest(c)`.
-- **`finalize_abandoned_game(game_key, r1, r2, c, claim_side, claim_block)`**
-  1. Get `h1 = header_at(claim_block)` and assert `N_claim(c, claim_side)`
-     existed by `h1`.
+- **`finalize_abandoned_game(game_key, r1, r2, c, claim_side, claim_block, forfeit_slot, forfeit_card)`**
+  1. Get `h1 = header_at(claim_block)` and assert
+     `N_forfeit(c, claim_side, forfeit_slot, forfeit_card)` existed by `h1`.
+     Each claim pushes exactly one terms nullifier, so the finalizer must name
+     the claim's real terms: the leaver cannot finalize "as if nothing was
+     taken", and nobody can swap in a better card.
   2. Assert `h1.timestamp + DISPUTE_SECONDS <= anchor.timestamp`.
   3. Push `N_resolved(c)` and `N_done`.
-  4. Release all 10 returns, with no reward.
+  4. Release, with no reward:
+     - a forfeit: the claimant's 5 returns, the leaver's 4 (every slot but
+       `forfeit_slot`), and the card as
+       `compute_note_hash(slot, [claimant.prize_partial, forfeit_card])` --
+       the same shape as a won prize;
+     - no forfeit: all 10 returns.
 
-  Anyone can call it.
+     Ten note hashes either way.
+
+  Anyone can call it, the leaver included: every note it releases was
+  prepared for its owner at commit time, so the finalizer redirects nothing.
 
 **The same guarantees as today, with fewer moving parts:**
 - **Settle beats a claim.** A full transcript outranks a standing claim:
-  settlement only needs `N_done` to be free.
+  settlement only needs `N_done` to be free. This is also what keeps a
+  finished game from being "abandoned" into a forfeit: the winner settles
+  (their client does it at once), or contests and then settles.
 - **Contest and finalize exclude each other** through `N_resolved(c)`. No
   expiry timestamp is needed; one would be a public fingerprint.
 - **A contest restarts the clock.** Each side contests once, so there are at
   most 3 claims.
-- **Unwinding returns both hands together.** Today recovery is per player.
-  Here one transaction returns both hands, because nothing secret is needed to
-  release the other player's prepared notes.
+- **One transaction resolves both players.** Today recovery is per player.
+  Here one finalize releases both players' notes, because nothing secret is
+  needed to release the other player's prepared notes.
+
+**What the bar and the single contest cannot stop.** With no transcript in a
+claim, any player may claim once the bar has passed, including a player who is
+the one stalling. The defence is the contest: a client that is in the game
+contests a claim against it automatically (§5.5). A staller who claims again
+after that contest can win the card, because each side contests once. The
+previous design had the same limit: its turn rule was defeated by truncating
+the transcript.
 
 **Utilities (simulate only):**
 - `preview_record(game_key, card_ids, nonce) -> record` builds exactly what
   create/join will commit, with no side effects.
 - `game_nullifiers(game_key, record_hash_1, record_hash_2) -> [Field; N]`
   returns the siloed nullifiers of §3.3.
+- `forfeit_nullifiers(game_key, record_1, c, claim_side, open_cards[3]) -> [Field; 4]`
+  returns the four `N_forfeit` a claim could have pushed (each open card,
+  then none). Exactly one exists once the claim stands, and it tells a
+  finalizer the claim's terms. The player the claim is against passes their
+  own first three cards.
 
 ### 3.5 NFT contract
 
@@ -297,12 +346,13 @@ back.
   on-chain, and the move proofs bind both commitments, so it added nothing
   except the forced sharing of random values.
 - **Phase B:** reused as the *open cards* proof (§6). Its public inputs become
-  `[hand_commit, open_0, open_1, open_2]`; it is verified by the opponent and
-  never on-chain.
+  `[hand_commit, open_0, open_1, open_2]`. The opponent verifies it when the
+  game starts, and an abandonment claim verifies it on-chain to prove which
+  card it takes (§3.4).
 
 `dummy_hand` is removed.
 
-The Game constructor drops `hand_vk_hash`.
+The Game constructor keeps `hand_vk_hash`, for the claim.
 
 ## 5. Client protocol (Phase A)
 
@@ -374,6 +424,26 @@ joined, settled, claims, contests.
 Block numbers for the clock checks come from the node's nullifier lookups:
 - the block in which `N_joined` / `N_contest` / `N_claim` landed;
 - the block before it, for a contest.
+
+What a client does by itself, with no click (Zac, 25 Nov 2026):
+- **Leaving before anyone joined cancels.** Leave goes straight to the menu,
+  and the menu's check sends `cancel_game` for a game the player created that
+  nobody joined, then imports the five cards. The same check finishes the job
+  after a reload. If a join lands first, the game has started and the claim
+  route applies; the creator never sent open cards, so that claim takes
+  nothing.
+- **A claim takes the strongest open card.** The claimant names the
+  highest-ranked of the opponent's three verified open cards, with the
+  opponent's stored open-cards proof. Without one, it claims with its own
+  proof and takes nothing.
+- **A claim against a player who is present is contested.** While a game is
+  live, the client watches the game's claim nullifiers and contests the
+  opponent's claim as soon as it lands. On the menu, the contest is offered
+  instead: a player there has left the game.
+- **An elapsed claim is finalized.** The menu's check finalizes an
+  uncontested claim once its window has passed, whichever side the player is
+  on, reading the claim's terms with `forfeit_nullifiers`, and both clients
+  import their notes from that transaction.
 
 ## 6. Phase B: the relay stops running the game
 
@@ -483,7 +553,7 @@ its timing. It sees no cards, moves, results, records or keys.
   - `GAME_OVER` and the abandonment warning no longer carry card ids.
   - `TX_CONFIRMED` no longer carries a tx hash.
 - **Scripts and harness.**
-  - Deploy drops the hand VK.
+  - Deploy registers the open-cards (hand) VK.
   - `check-testnet-state` reads the immutables and the VK flag.
   - The playtest chain validator checks nullifiers instead of public status.
   - The provisioning and bot-stock scripts move to `CardNote`.
@@ -494,10 +564,10 @@ its timing. It sees no cards, moves, results, records or keys.
 |---|---|---|
 | Prize | any of the loser's 5 cards | one of the loser's **placed** cards. Player 1 places all 5; player 2's unplayed card stays secret |
 | Claim turn rule | a claim needed a transcript prefix whose parity showed the opponent owed the move | no transcript. The parity rule was defeated by truncating the prefix anyway; settlement and contests are the real defences |
-| Abandonment recovery | per player, one transaction each | both hands back in one transaction, by anyone |
+| Abandonment recovery | per player, one transaction each | one transaction, by anyone: the player who stayed gets their five plus one of the leaver's open cards, the leaver gets four (§3.4) |
 | Who can join | anyone who knew the public `game_id` | only whoever holds `game_key` and the creator's record |
 | Who can settle | the winner (draw: either), with the opponent's address and secrets | anyone with the records and transcript |
-| Cancel | re-minted caller-chosen ids (bug) | releases the creator's own prepared notes |
+| Cancel | re-minted caller-chosen ids (bug) | releases the creator's own prepared notes, sent automatically when the creator leaves before a join |
 
 ## 9. Migration
 
@@ -513,6 +583,12 @@ explicit OK.
 - settle (win and draw) and double settle, through a permissive (dummy-VK)
   deployment;
 - claim, contest and finalize, including timing via block headers;
+- the forfeit: either side takes one of the other's open cards (six and four,
+  nothing minted or lost); the leaver can finalize but still pays; finalize
+  cannot name other terms; a claim cannot take from the claimant's own hand,
+  a hidden slot, or another game's hand; taking nothing proves the
+  claimant's own cards; a contest clears the forfeit; a later claim carries
+  its own;
 - `release_*` callable only by the Game contract;
 - hand validation.
 
