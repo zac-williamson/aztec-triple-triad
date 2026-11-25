@@ -49,6 +49,9 @@ export interface BotChainConfig {
   contractsDir?: string;
 }
 
+/** The frontend's node reads for a private game (gameChain.ts), loaded lazily. */
+type NodeReads = typeof import('../../frontend/src/aztec/gameChain.js');
+
 type Logger = (msg: string) => void;
 
 export function loadBotIdentity(manifestPath: string): BotIdentity {
@@ -159,6 +162,53 @@ export class BotChain {
 
   get cards(): number[] {
     return this.identity?.cardIds ?? [];
+  }
+
+  // ─── Node reads for a private game (gameChain.ts) ─────────────────────────
+  //
+  // A game has no public state: where it stands is which of its siloed
+  // nullifiers exist, and when. These ask the NODE, not the PXE, so they need
+  // no place in the serial queue — but they do need the same 429 tolerance as
+  // everything else that talks to a rate-limited public RPC.
+
+  private async reads(): Promise<NodeReads> {
+    return import('../../frontend/src/aztec/gameChain.js');
+  }
+
+  /** Which of these siloed nullifiers exist, and the block each landed in. */
+  async lookupNullifiers(nullifiers: string[]) {
+    const { lookupNullifiers } = await this.reads();
+    return withRetry(() => lookupNullifiers(this.nodeClient, nullifiers), m => this.log(m));
+  }
+
+  /** A block's timestamp, in the chain seconds the contract's clocks compare. */
+  async blockTimestamp(blockNumber: number): Promise<number> {
+    const { blockTimestamp } = await this.reads();
+    return withRetry(() => blockTimestamp(this.nodeClient, blockNumber), m => this.log(m));
+  }
+
+  /** The chain's time now: the latest block's timestamp. */
+  async chainNow(): Promise<number> {
+    const { chainNowSeconds } = await import('../../frontend/src/aztec/settlementArgs.js');
+    return withRetry(() => chainNowSeconds(this.nodeClient), m => this.log(m));
+  }
+
+  /** The tx in `blockNumber` that pushed `nullifier` — how a resolution is found without being told. */
+  async findTxWithNullifier(blockNumber: number, nullifier: string) {
+    const { findTxWithNullifier } = await this.reads();
+    return withRetry(() => findTxWithNullifier(this.nodeClient, blockNumber, nullifier), m => this.log(m));
+  }
+
+  /**
+   * Which of our own prepared notes a tx released: the five returns (pushed by
+   * the NFT contract) and the reward (by the token contract).
+   */
+  async releasedPreparedNotes(
+    tx: Parameters<NodeReads['releasedPreparedNotes']>[0],
+    ownRecord: string[],
+  ): Promise<{ returns: boolean[]; reward: boolean }> {
+    const { releasedPreparedNotes } = await this.reads();
+    return releasedPreparedNotes(tx, ownRecord, { nft: this.cfg.nftAddress, token: this.cfg.tokenAddress });
   }
 
   /**
@@ -484,30 +534,24 @@ export class BotChain {
     }
     const picked = hand.slice(0, size);
 
-    // A DUPLICATED hand cannot be proved, and by then the cards are gone.
+    // A DUPLICATED hand cannot be committed at all.
     //
     // The round-robin above takes a second copy of a type once it runs out of
     // types, so a stock of fewer than `size` distinct types yields something
-    // like [A,B,A,B,A]. prove_hand asserts `card_ids[i] != card_ids[j]` and
-    // rejects exactly that — while join_game has ALREADY committed the cards,
-    // because the commit precedes our own hand proof. No hand proof means the
-    // sweep classifies the game "missing a hand proof — unrecoverable", which
-    // is permanent: five cards destroyed.
-    //
-    // Worse, it is a spiral. The fallback fires precisely when types are
-    // scarce, and each occurrence burns five more cards, narrowing the stock
-    // further. An earlier comment here reasoned that "a duplicated hand still
-    // plays"; it does not, and the circuit has always said so.
+    // like [A,B,A,B,A]. commit_hand asserts five DISTINCT ids, and the move
+    // circuit names each card by its one slot, so join_game reverts on such a
+    // hand — after the player has waited for us and we have spent a proof.
+    // (It used to be worse: the old hand proof failed AFTER the join had
+    // committed the cards, stranding them.)
     //
     // Refusing to play is strictly better. The bot idles and the arena has no
-    // opponent, which is visible and repairable; the alternative is silent,
-    // permanent loss.
+    // opponent, which is visible and repairable; the alternative is a bot that
+    // matches people and then fails every join.
     if (new Set(picked).size !== picked.length) {
       const types = new Set(held).size;
       throw new Error(
         `Arena bot holds ${held.length} card(s) but only ${types} distinct type(s), so a hand of ` +
-        `${size} would repeat one. prove_hand rejects duplicate card ids, and join_game commits ` +
-        `BEFORE that proof — playing this hand would strand five cards unrecoverably. ` +
+        `${size} would repeat one, and commit_hand accepts only five distinct cards. ` +
         `Re-provision with more card types.`,
       );
     }

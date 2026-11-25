@@ -39,13 +39,13 @@ describe('BotChain.selectHand with duplicates', () => {
    * "falls back to duplicates" — and the implementation comment called such a
    * hand playable. Both were wrong, and the test pinned the bug in place.
    *
-   * prove_hand asserts card_ids[i] != card_ids[j], so a duplicated hand cannot
-   * be proved; and join_game commits BEFORE the bot proves its own hand. The
-   * fallback therefore committed five cards and then could not prove them,
-   * which the sweep classifies "missing a hand proof — unrecoverable". It also
-   * fires exactly when types are scarce, burning five more each time.
+   * commit_hand asserts five distinct ids, so a duplicated hand cannot be
+   * committed: the join reverts after the player has waited for us. (Under
+   * the old hand proof it was worse — the join committed the cards first, and
+   * the proof then failed, stranding them.) It also fires exactly when types
+   * are scarce, so refusing up front is the only behaviour that helps.
    */
-  it('refuses to field a hand that repeats a card, rather than stranding it', async () => {
+  it('refuses to field a hand that repeats a card', async () => {
     const stock = [7, 7, 7, 8, 8, 8];
     await expect(chainHolding(stock).selectHand(5)).rejects.toThrow(/distinct type/i);
   });
@@ -96,18 +96,16 @@ describe('BotChain rate-limit retries', () => {
 });
 
 /**
- * A hand that repeats a card cannot be proved, and the cards are gone by then.
+ * A hand that repeats a card cannot be committed.
  *
  * The round-robin takes a second copy of a type once it runs out of types, so a
  * stock of fewer than five distinct types produces something like [A,B,A,B,A].
- * `prove_hand` asserts card_ids[i] != card_ids[j] and rejects it — while
- * join_game has already committed the cards, because the commit precedes the
- * bot's own hand proof (confirmed against a production log: "committing" at
- * 06:23:25, "Generating prove_hand proof" at 06:24:08). With no hand proof the
- * sweep calls the game "missing a hand proof — unrecoverable". Five cards, for
- * good, every time it happens.
+ * `commit_hand` asserts five distinct ids — the move circuit names each card by
+ * its one slot in the hand — so join_game reverts, after a player has waited
+ * for us and a proof has been spent. (It used to be worse: the old hand proof
+ * failed AFTER the join had committed the cards, stranding them for good.)
  */
-describe('selectHand refuses a hand it could not prove', () => {
+describe('selectHand refuses a hand it could not commit', () => {
   const chainWith = (held: number[]) => {
     const c = Object.create(BotChain.prototype) as any;
     c.readCards = async () => held;
@@ -122,7 +120,7 @@ describe('selectHand refuses a hand it could not prove', () => {
 
   it('names the real cause, so the operator knows to add TYPES not cards', async () => {
     const held = [...Array(40).fill(7)];
-    await expect(chainWith(held).selectHand(5)).rejects.toThrow(/prove_hand rejects duplicate/i);
+    await expect(chainWith(held).selectHand(5)).rejects.toThrow(/commit_hand accepts only five distinct/i);
   });
 
   it('still returns a hand whenever five distinct types exist', async () => {

@@ -1,62 +1,83 @@
 /**
  * On-disk record of every game the bot has cards committed to.
  *
- * Without this the sweep cannot exist. Recovering an abandoned game needs the
- * transcript — both hand proofs and the partial move chain — and that lives only
- * in the bot's memory during play. A process that crashes, is restarted, or is
- * simply stopped between games loses it, and with it the ONLY route back to five
- * committed cards: the bot cannot cancel (cancel is creator-only, and the bot
- * only ever joins).
+ * A private game leaves no public state (docs/plan/PRIVATE_GAMES.md): the chain
+ * holds only nullifiers derived from a key the two players share, and the
+ * bot's cards come back only as notes the bot itself rebuilds from secrets
+ * only it holds. Everything needed to find the game again, settle it, unwind
+ * it or import from it therefore lives here and nowhere else. A process that
+ * crashes, restarts or is stopped mid-game would otherwise lose the only route
+ * back to five committed cards — the bot cannot cancel (cancel is
+ * creator-only, and the bot only ever joins).
  *
- * So the journal is written as the game unfolds, not at the end — the crash we
- * are protecting against happens mid-game by definition. An entry is deleted
- * only once the game is observed settled on-chain, which makes an orphaned entry
- * the SIGNAL the sweep looks for rather than a leak.
+ * So the journal is written as the game unfolds, not at the end — starting
+ * just BEFORE the join is sent, because a crash while that tx is in flight is
+ * exactly when the cards may be committed without anything recording where.
+ *
+ * What it keeps is what recovery needs and nothing more about the opponent:
+ * the relay room id, our key pair and their PUBLIC key (to re-derive the
+ * channel), the game key, our note nonce (our secrets re-derive from it), our
+ * own hand, both records, the move transcript and the outcome. No address, no
+ * hand, no secret of theirs — they never reach the bot in the first place.
  */
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, existsSync, renameSync } from 'fs';
 import { join } from 'path';
+import type { Outcome } from './protocol.js';
+
+/** Records from the previous (public-state) contracts carry no version. */
+export const JOURNAL_VERSION = 2;
 
 export interface JournalProof {
   proof: string;
   publicInputs: string[];
-  startStateHash?: string;
-  endStateHash?: string;
-  cardCommit?: string;
+  cardCommit1: string;
+  cardCommit2: string;
+  startStateHash: string;
+  endStateHash: string;
+  gameEnded: boolean;
+  winnerId: number;
+  placedCardId?: number;
+  placedSlot?: number;
 }
 
-export interface GameRecord {
-  /** On-chain game id — the key the contract knows this game by. */
-  onChainGameId: string;
-  /** Relay game id, for correlating with logs. */
-  relayGameId: string | null;
-  botAddress: string;
-  opponentAddress: string | null;
-  botIsPlayer1: boolean;
-  cardIds: number[];
-  randomness: string[];
+/** How a game was resolved on-chain, as far as our own notes go. */
+export type JournalResolution = 'settled' | 'unwound';
+
+export interface JournalRecord {
+  version: typeof JOURNAL_VERSION;
   /**
-   * Our blinding factor for this game. Recovery has to prove the card ids it
-   * re-mints are the ones we committed, and this is the only value that binds
-   * them — without it the five cards cannot be recovered at all.
+   * The relay room id: the journal's key, and the associated data of every
+   * PEER payload, so a restarted bot can still open the game's channel.
    */
-  blindingFactor: string | null;
-  opponentCardIds: number[];
-  myHandProof: JournalProof | null;
-  opponentHandProof: JournalProof | null;
+  relayGameId: string;
+  /** Our ephemeral key pair for this game (private key as JWK). */
+  keyPair: { privateJwk: JsonWebKey; publicKey: string };
+  /** The opponent's ephemeral PUBLIC key — the other half of the derivation. */
+  opponentPublicKey: string;
+  /** The game's shared secret (field, hex): every on-chain nullifier hangs off it. */
+  gameKey: string;
+  /** Our note nonce before the commit: compute_game_secrets(nonce) re-derives our secrets. */
+  nonce: string;
+  /** Our hand, in committed order. */
+  cardIds: number[];
+  /** The creator's record and ours: nine opaque hashes each. */
+  record1: string[];
+  record2: string[];
+  /** The move proofs we hold — the transcript a settlement needs. */
   moveProofs: JournalProof[];
+  /** The relay's verdict from our seat, once known. */
+  outcome: Outcome | null;
+  /** The prize move once known: ours if we settled, the winner's word otherwise. */
+  prizeMove: number | null;
+  /** 'joining' from just before the join is sent until it is known to have landed. */
+  phase: 'joining' | 'joined';
+  /** When we sent the join (ms): the age every recovery decision starts from. */
   committedAt: number;
   updatedAt: number;
-  /** Set once we have seen it settled, so a stale file cannot resurrect it. */
-  settled?: boolean;
-  /**
-   * Chain time at which WE filed an abandonment claim on this game, if we have.
-   *
-   * Recorded so the worklist can say what is actually happening. Without it a
-   * claimed game sitting out its dispute window is indistinguishable from one
-   * nobody has touched — both report "nothing blocking it" — which is exactly
-   * the kind of confident-but-wrong status that made reading the bot's state
-   * unreliable in the first place.
-   */
+  /** Set once the game is resolved on-chain AND our notes are imported from it. */
+  resolution?: JournalResolution;
+  resolvedTxHash?: string;
+  /** Chain time (s) of the abandonment claim WE filed, for the worklist. */
   claimedAt?: number;
 }
 
@@ -65,42 +86,47 @@ export class GameJournal {
     mkdirSync(dir, { recursive: true });
   }
 
-  private path(onChainGameId: string): string {
-    // Game ids are hex fields; keep the filename filesystem-safe regardless.
-    return join(this.dir, `${onChainGameId.replace(/[^0-9a-zA-Zx]/g, '_')}.json`);
+  private path(relayGameId: string): string {
+    // Relay ids are UUIDs; keep the filename filesystem-safe regardless.
+    return join(this.dir, `${relayGameId.replace(/[^0-9a-zA-Z_-]/g, '_')}.json`);
   }
 
   /**
    * Written atomically. A half-written journal entry is worse than none: the
-   * sweep would parse it, act on a truncated proof chain, and burn a claim
-   * attempt on a game it cannot actually recover.
+   * sweep would parse it and act on a truncated transcript.
    */
-  write(rec: GameRecord): void {
-    const p = this.path(rec.onChainGameId);
+  write(rec: JournalRecord): void {
+    const p = this.path(rec.relayGameId);
     const tmp = `${p}.tmp`;
     writeFileSync(tmp, JSON.stringify({ ...rec, updatedAt: Date.now() }, null, 2));
     renameSync(tmp, p);
   }
 
-  read(onChainGameId: string): GameRecord | null {
-    const p = this.path(onChainGameId);
+  read(relayGameId: string): JournalRecord | null {
+    const p = this.path(relayGameId);
     if (!existsSync(p)) return null;
     try {
-      return JSON.parse(readFileSync(p, 'utf-8')) as GameRecord;
+      const rec = JSON.parse(readFileSync(p, 'utf-8')) as JournalRecord;
+      return rec.version === JOURNAL_VERSION ? rec : null;
     } catch {
       return null;
     }
   }
 
-  /** Every game we still believe holds our cards. */
-  outstanding(): GameRecord[] {
+  /**
+   * Every game we still believe holds our cards: not yet resolved and
+   * imported. Records written for the previous contracts are left on disk
+   * untouched — this code cannot act on them, and deleting them would discard
+   * the only note that cards were committed there.
+   */
+  outstanding(): JournalRecord[] {
     if (!existsSync(this.dir)) return [];
-    const out: GameRecord[] = [];
+    const out: JournalRecord[] = [];
     for (const f of readdirSync(this.dir)) {
       if (!f.endsWith('.json')) continue;
       try {
-        const rec = JSON.parse(readFileSync(join(this.dir, f), 'utf-8')) as GameRecord;
-        if (!rec.settled) out.push(rec);
+        const rec = JSON.parse(readFileSync(join(this.dir, f), 'utf-8')) as JournalRecord;
+        if (rec.version === JOURNAL_VERSION && !rec.resolution) out.push(rec);
       } catch {
         // A corrupt entry is not worth crashing the bot over, but it IS worth
         // leaving on disk: deleting it would silently discard the only record
@@ -111,35 +137,32 @@ export class GameJournal {
   }
 
   /**
-   * Mark a game settled, keeping the record.
+   * Mark a game resolved, keeping the record.
    *
-   * Deleting it was the obvious thing and it is what we used to do — the entry
-   * exists to mark cards as locked, and settled cards are not locked. But the
-   * record is also the only surviving copy of the per-game randomness, which is
-   * what an import of the returned cards needs. Once it is gone, a card that
-   * failed to import can never be recovered by anybody: the randomness is
-   * derivable only from the on-chain game id, and nothing else retains that.
-   * Forty cards were lost exactly this way.
+   * Deleting it would be the obvious thing — resolved cards are not locked —
+   * but the record is also the only surviving copy of what a failed import
+   * needs to be retried by hand: the nonce our secrets derive from and the
+   * records that name our notes. Forty cards were once lost exactly this way.
    */
-  markSettled(onChainGameId: string): void {
-    const rec = this.read(onChainGameId);
+  markResolved(relayGameId: string, resolution: JournalResolution, txHash: string): void {
+    const rec = this.read(relayGameId);
     if (!rec) return;
-    this.write({ ...rec, settled: true });
+    this.write({ ...rec, resolution, resolvedTxHash: txHash });
   }
 
   /**
-   * Delete settled records older than `maxAgeMs`, so the directory does not
+   * Delete resolved records older than `maxAgeMs`, so the directory does not
    * grow without bound. Long enough that a failed import is still recoverable
    * by hand; short enough that this stays a journal rather than an archive.
    */
-  pruneSettled(maxAgeMs: number, now = Date.now()): number {
+  pruneResolved(maxAgeMs: number, now = Date.now()): number {
     if (!existsSync(this.dir)) return 0;
     let removed = 0;
     for (const f of readdirSync(this.dir)) {
       if (!f.endsWith('.json')) continue;
       try {
-        const rec = JSON.parse(readFileSync(join(this.dir, f), 'utf-8')) as GameRecord;
-        if (rec.settled && now - rec.updatedAt > maxAgeMs) {
+        const rec = JSON.parse(readFileSync(join(this.dir, f), 'utf-8')) as JournalRecord;
+        if (rec.version === JOURNAL_VERSION && rec.resolution && now - rec.updatedAt > maxAgeMs) {
           unlinkSync(join(this.dir, f));
           removed += 1;
         }
@@ -148,8 +171,8 @@ export class GameJournal {
     return removed;
   }
 
-  forget(onChainGameId: string): void {
-    const p = this.path(onChainGameId);
+  forget(relayGameId: string): void {
+    const p = this.path(relayGameId);
     if (existsSync(p)) unlinkSync(p);
   }
 }

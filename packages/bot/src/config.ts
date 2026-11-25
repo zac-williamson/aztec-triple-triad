@@ -63,10 +63,21 @@ export interface ArenaBotConfig {
    * slot needs its own account/cards, so >1 lands with the identity pool.
    */
   maxConcurrentGames: number;
-  /** Timeout for an on-chain tx (create_game/join_game). Proving dominates. */
+  /** Timeout for an on-chain tx (join, settle, claim, finalize). Proving dominates. */
   chainTxTimeoutMs: number;
-  /** How long to wait after GAME_OVER for the 11-proof transcript to complete. */
+  /** How long to wait after GAME_OVER for the nine-proof transcript to complete. */
   settleWaitMs: number;
+  /**
+   * How long to wait for the creator's game record after the match. They send
+   * it once their create_game is mined; past this, nothing of ours is at stake
+   * and the arena's opponent should be free for somebody else. Default 10 min.
+   */
+  recordWaitMs?: number;
+  /**
+   * How long to wait for the creator's `created` nullifier to show on our node
+   * once their record arrives. Default 5 min.
+   */
+  createdWaitMs?: number;
   /**
    * Abandon a game that has not finished in this long. Without it, an opponent
    * who never joins (or vanishes mid-game) parks the bot in `playing` forever:
@@ -81,18 +92,12 @@ export interface ArenaBotConfig {
    * hour.
    */
   opponentGraceMs: number;
-  /**
-   * How long to keep trying to play a move we owe before abandoning anyway.
-   * An abandonment claim is only valid for the player who is NOT next to move,
-   * so leaving mid-turn makes the game unclaimable by us.
-   */
-  moveCatchUpMs: number;
   /** How often to sweep the journal for games whose cards need reclaiming. */
   sweepIntervalMs: number;
   /**
    * How long to give player 1 to settle a DRAW before the bot does it itself.
    * See ArenaBot.settle — the bot is always player 2, so without this a draw
-   * only ever settles if the human sticks around.
+   * settles only if the human sticks around (or, much later, the sweep).
    */
   drawFallbackMs: number;
   /**
@@ -160,9 +165,11 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ArenaBotCon
     settleWaitMs: int(env.ARENA_BOT_SETTLE_WAIT_MS, 300_000),
     gameTimeoutMs: int(env.ARENA_BOT_GAME_TIMEOUT_MS, 1_800_000),
     opponentGraceMs: int(env.ARENA_BOT_OPPONENT_GRACE_MS, 90_000),
-    moveCatchUpMs: int(env.ARENA_BOT_MOVE_CATCHUP_MS, 120_000),
-    // Recovery is not urgent — the cards are not going anywhere — and each pass
-    // may prove and wait out a dispute window, so a slow cadence is correct.
+    recordWaitMs: int(env.ARENA_BOT_RECORD_WAIT_MS, 600_000),
+    createdWaitMs: int(env.ARENA_BOT_CREATED_WAIT_MS, 300_000),
+    // Recovery is not urgent — the cards are not going anywhere — and a claim
+    // stands ten minutes before anyone may finalize it, so a slow cadence is
+    // correct: each pass takes the next step a game is ready for.
     sweepIntervalMs: int(env.ARENA_BOT_SWEEP_INTERVAL_MS, 900_000),
     drawFallbackMs: int(env.ARENA_BOT_DRAW_FALLBACK_MS, 120_000),
     ...(env.ARENA_BOT_MOVE_SEED ? { moveSeed: Number(env.ARENA_BOT_MOVE_SEED) } : {}),

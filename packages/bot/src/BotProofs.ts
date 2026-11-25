@@ -6,36 +6,26 @@
  * (useProofGeneration) are only a queue plus board encoding, both of which are
  * plain exported functions, so nothing here re-implements proving.
  *
+ * Only move proofs exist now (docs/plan/PRIVATE_GAMES.md section 4): hands are
+ * checked on-chain when they are committed, and abandonment needs no proofs at
+ * all, so there is no hand proof and no dummy padding proof any more.
+ *
  * Proofs are SERIALISED through one promise chain, exactly as
  * useProofGeneration does. Concurrent proving on one PXE/wallet is the documented
  * cause of IndexedDB TransactionInactiveError (CLAUDE.md ground rule 6); in Node
  * the store differs but the serial contract is the same, and parallel proving
  * would in any case thrash a machine that is already CPU-bound.
  */
-import type { GameState } from '@axolotl-arena/game-logic';
+import type { MoveProofData } from '../../frontend/src/types.js';
+import type { MoveProofArgs } from './chainTypes.js';
 
-/**
- * Mirrors SerializedProof (HandProofData / MoveProofData) without importing
- * React-side types: `proof` is base64, `publicInputs` are field hex strings.
- */
-export interface ProofBundle {
-  proof: string;
-  publicInputs: string[];
-  [key: string]: unknown;
-}
-
-export interface HandProofInputs {
-  cardIds: number[];
-  blindingFactor: string;
-  opponentRandomness: string[];
-}
+export type { MoveProofArgs };
 
 export class BotProofs {
   /** All proving runs through here, one at a time. */
   private queue: Promise<unknown> = Promise.resolve();
-  /** Cached: deriving a VK is expensive and they never change for a build. */
-  private vks: { handVk: Uint8Array; moveVk: Uint8Array } | null = null;
-  private dummyVkCache: Uint8Array | null = null;
+  /** Cached: deriving a VK is expensive and it never changes for a build. */
+  private moveVk: Uint8Array | null = null;
 
   constructor(private readonly log: (msg: string) => void = () => {}) {}
 
@@ -53,67 +43,20 @@ export class BotProofs {
   }
 
   /**
-   * Verification keys for the two circuits, as settlement's process_game
-   * expects them. Derived from the same artifacts used to prove, so the VKs
-   * always match the proofs — deriving them from a different source is how a
-   * transcript ends up rejected on-chain for no visible reason.
+   * The game_move verification key, as settle_game expects it. Derived from
+   * the same artifact used to prove, so the VK always matches the proofs —
+   * deriving it from a different source is how a transcript ends up rejected
+   * on-chain for no visible reason.
    */
-  async verificationKeys(): Promise<{ handVk: Uint8Array; moveVk: Uint8Array }> {
-    if (this.vks) return this.vks;
+  async moveVerificationKey(): Promise<Uint8Array> {
+    if (this.moveVk) return this.moveVk;
     const { UltraHonkBackend } = await import('@aztec-foundation/bb.js');
     const { getBarretenberg } = await import('../../frontend/src/aztec/proofBackend.js');
-    const { loadProveHandCircuit, loadGameMoveCircuit } =
-      await import('../../frontend/src/aztec/circuitLoader.js');
-
+    const { loadGameMoveCircuit } = await import('../../frontend/src/aztec/circuitLoader.js');
     const api = await getBarretenberg();
-    const [handArtifact, moveArtifact] = await Promise.all([loadProveHandCircuit(), loadGameMoveCircuit()]);
-    const handBackend = new UltraHonkBackend(handArtifact.bytecode, api);
-    const moveBackend = new UltraHonkBackend(moveArtifact.bytecode, api);
-    const [handVk, moveVk] = await Promise.all([
-      handBackend.getVerificationKey(),
-      moveBackend.getVerificationKey(),
-    ]);
-    this.vks = { handVk, moveVk };
-    return this.vks;
-  }
-
-  /**
-   * Dummy-circuit VK, needed only by the abandoned-game claim: that call pads a
-   * partial move chain up to nine slots, and the contract verifies the padding
-   * against this VK rather than the move VK.
-   */
-  async dummyVerificationKey(): Promise<Uint8Array> {
-    if (this.dummyVkCache) return this.dummyVkCache;
-    const { UltraHonkBackend } = await import('@aztec-foundation/bb.js');
-    const { getBarretenberg } = await import('../../frontend/src/aztec/proofBackend.js');
-    const { loadDummyMoveCircuit } = await import('../../frontend/src/aztec/circuitLoader.js');
-    const api = await getBarretenberg();
-    const artifact = await loadDummyMoveCircuit();
-    this.dummyVkCache = await new UltraHonkBackend(artifact.bytecode, api).getVerificationKey();
-    return this.dummyVkCache;
-  }
-
-  /**
-   * One padding proof for the abandoned-game claim, base64-encoded to match the
-   * transport the rest of the transcript uses. Serialised with every other
-   * proof: concurrent proving is what the whole queue exists to prevent.
-   */
-  proveDummy(): Promise<string> {
-    return this.serialise('dummy proof', async () => {
-      const { UltraHonkBackend } = await import('@aztec-foundation/bb.js');
-      const { Noir } = await import('@noir-lang/noir_js');
-      const { getBarretenberg } = await import('../../frontend/src/aztec/proofBackend.js');
-      const { loadDummyMoveCircuit } = await import('../../frontend/src/aztec/circuitLoader.js');
-      const api = await getBarretenberg();
-      const artifact = await loadDummyMoveCircuit();
-      const { witness } = await new Noir(artifact as any).execute({
-        card_commit_1: '0', card_commit_2: '0',
-        start_state_hash: '0', end_state_hash: '0',
-        game_ended: '0', winner_id: '0',
-      });
-      const { proof } = await new UltraHonkBackend(artifact.bytecode, api).generateProof(witness);
-      return Buffer.from(proof).toString('base64');
-    });
+    const artifact = await loadGameMoveCircuit();
+    this.moveVk = await new UltraHonkBackend(artifact.bytecode, api).getVerificationKey();
+    return this.moveVk;
   }
 
   /** poseidon2 commitment to the bot's five cards. */
@@ -122,53 +65,15 @@ export class BotProofs {
     return computeCardCommitPoseidon2(cardIds, blindingFactor);
   }
 
-  /** poseidon2 over the opponent's six randomness values. */
-  async playerStateHash(randomness: string[]): Promise<string> {
-    const { computePlayerStateHash } = await import('../../frontend/src/aztec/proofWorker.js');
-    return computePlayerStateHash(randomness);
-  }
-
-  /**
-   * prove_hand: the bot owns the five cards it committed. Needs the OPPONENT's
-   * randomness, so it can only run once they have shared their Aztec info.
-   */
-  async proveHand(inputs: HandProofInputs): Promise<ProofBundle> {
-    return this.serialise('hand proof', async () => {
-      const { generateProveHandProof } = await import('../../frontend/src/aztec/proofWorker.js');
-      const commit = await this.cardCommitHash(inputs.cardIds, inputs.blindingFactor);
-      const opponentStateHash = await this.playerStateHash(inputs.opponentRandomness);
-      return await generateProveHandProof(
-        inputs.cardIds,
-        inputs.blindingFactor,
-        commit,
-        inputs.opponentRandomness,
-        opponentStateHash,
-      ) as unknown as ProofBundle;
-    });
-  }
-
   /**
    * game_move: one move is legal and the board transition is correct.
    *
    * Board snapshots and original-owner arrays are encoded with the FRONTEND's
    * encoders. Re-deriving them here would be the exact drift that stays
-   * invisible until settlement rejects the transcript on-chain.
+   * invisible until settlement rejects the transcript on-chain. The placed
+   * slot is derived by the frontend too, from the hand in committed order.
    */
-  async proveMove(args: {
-    cardId: number;
-    row: number;
-    col: number;
-    currentPlayer: 1 | 2;
-    boardBefore: GameState['board'];
-    boardAfter: GameState['board'];
-    scoresBefore: [number, number];
-    scoresAfter: [number, number];
-    cardCommit1: string;
-    cardCommit2: string;
-    gameEnded: boolean;
-    winnerId: number;
-    playerHandData: unknown;
-  }): Promise<ProofBundle> {
+  async proveMove(args: MoveProofArgs): Promise<MoveProofData> {
     return this.serialise(`move proof (card ${args.cardId} → [${args.row},${args.col}])`, async () => {
       const { generateGameMoveProof } = await import('../../frontend/src/aztec/proofWorker.js');
       const { encodeBoardState, encodeOriginalOwners } =
@@ -180,9 +85,9 @@ export class BotProofs {
         args.scoresBefore, args.scoresAfter,
         args.cardCommit1, args.cardCommit2,
         args.gameEnded, args.winnerId,
-        args.playerHandData as never,
+        { cardIds: [...args.hand.cardIds], blindingFactor: args.hand.blindingFactor },
         encodeOriginalOwners(args.boardBefore), encodeOriginalOwners(args.boardAfter),
-      ) as unknown as ProofBundle;
+      );
     });
   }
 }

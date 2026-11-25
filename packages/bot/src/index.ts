@@ -8,6 +8,7 @@
  *   npx tsx scripts/provision-arena-bot.ts --cards 40
  *   ARENA_BOT_TOKEN=... ARENA_BOT_CHAIN=1 \
  *   AZTEC_PXE_URL=... VITE_NFT_CONTRACT_ADDRESS=... VITE_GAME_CONTRACT_ADDRESS=... \
+ *   VITE_TOKEN_CONTRACT_ADDRESS=... \
  *   npm run dev -w packages/bot
  */
 import { resolve } from 'path';
@@ -42,18 +43,22 @@ async function main(): Promise<void> {
     const pxeUrl = process.env.AZTEC_PXE_URL;
     const nftAddress = process.env.VITE_NFT_CONTRACT_ADDRESS;
     const gameAddress = process.env.VITE_GAME_CONTRACT_ADDRESS;
-    if (!pxeUrl || !nftAddress || !gameAddress) {
+    // The token too: every settlement releases a reward note to each player,
+    // and telling a win or a draw from an unwind reads ours off the tx.
+    const tokenAddress = process.env.VITE_TOKEN_CONTRACT_ADDRESS;
+    if (!pxeUrl || !nftAddress || !gameAddress || !tokenAddress) {
       throw new Error(
-        'ARENA_BOT_CHAIN=1 needs AZTEC_PXE_URL, VITE_NFT_CONTRACT_ADDRESS and ' +
-        'VITE_GAME_CONTRACT_ADDRESS. Refusing to start half-configured: a bot that ' +
-        'matches players and then cannot commit its cards is worse than one that never starts.',
+        'ARENA_BOT_CHAIN=1 needs AZTEC_PXE_URL, VITE_NFT_CONTRACT_ADDRESS, ' +
+        'VITE_GAME_CONTRACT_ADDRESS and VITE_TOKEN_CONTRACT_ADDRESS. Refusing to start ' +
+        'half-configured: a bot that matches players and then cannot commit or recover ' +
+        'its cards is worse than one that never starts.',
       );
     }
     chain = new BotChain({
       pxeUrl,
       nftAddress,
       gameAddress,
-      tokenAddress: process.env.VITE_TOKEN_CONTRACT_ADDRESS,
+      tokenAddress,
       // ARENA_BOT_MANIFEST names one file; ARENA_BOT_ARTIFACTS_DIR names the
       // directory and is what the provisioner, the harness and the deployed
       // unit all use — on a real box the manifests live outside the checkout
@@ -86,9 +91,9 @@ async function main(): Promise<void> {
   // card shortage, the watchdog abandoning games. Serve those here.
   const health = cfg.healthPort > 0 ? startHealthServer(bot, cfg.healthPort, m => console.log(`[arena-bot] ${m}`)) : null;
 
-  // Reclaim cards from games that will never settle. The bot only joins, and
-  // cancel is creator-only, so without this every wedged game costs five cards
-  // permanently — and it fails quietly, by going idle, once it runs out.
+  // Bring cards back from games that will not resolve the ordinary way. The bot
+  // only joins, and cancel is creator-only, so without this every wedged game
+  // keeps five cards — and it fails quietly, by going idle, once it runs out.
   //
   // Runs on a timer AND at startup: a crash mid-game is the common case, and the
   // restarted process is the only thing that will ever look at that journal
@@ -103,7 +108,10 @@ async function main(): Promise<void> {
       log: m => console.log(`[arena-bot:sweep] ${m}`),
       // Never compete with a live game for the PXE queue.
       isBusy: () => bot.getStats().state !== 'idle',
+      // Nor with the bot's own follow-up of a game it just finished.
+      isTracking: id => bot.isTracking(id),
       minAgeMs: cfg.gameTimeoutMs,
+      txTimeoutMs: cfg.chainTxTimeoutMs,
     });
     const pass = () => void sweep!.run().catch(err =>
       console.error(`[arena-bot:sweep] pass failed: ${err?.message ?? err}`));
@@ -112,8 +120,8 @@ async function main(): Promise<void> {
     sweepTimer.unref?.();
   }
 
-  // Shutting down mid-turn strands five cards: see ArenaBot.shutdown. Asked
-  // twice, we stop arguing and go.
+  // A move proof still generating at shutdown is part of a transcript: see
+  // ArenaBot.shutdown. Asked twice, we stop arguing and go.
   let leaving = false;
   for (const sig of ['SIGINT', 'SIGTERM'] as const) {
     process.on(sig, () => {

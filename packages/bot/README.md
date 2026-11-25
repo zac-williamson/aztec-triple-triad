@@ -3,7 +3,9 @@
 A backend opponent that plays like any other player: it watches the matchmaking
 queue and, when somebody has waited **more than 30 seconds**, queues itself and
 lets the server's ordinary `tryMatch` pair them. In chain mode it commits real
-cards, generates real proofs, and settles on-chain.
+cards, generates real proofs, and settles on-chain — as a private game
+(`docs/plan/PRIVATE_GAMES.md`): nothing about the human but what the game itself
+reveals ever reaches it, and nothing it does names the game to the relay.
 
 **The bot only ever JOINS games. It never creates one.** That is enforced in two
 places, because one is not enough: `tryMatch` orders every pair so a bot takes
@@ -32,14 +34,39 @@ first:
 ```bash
 npx tsx scripts/provision-arena-bot.ts --index 0 --cards 1000
 
-set -a; . packages/frontend/.env; set +a          # contract addresses
+set -a; . packages/frontend/.env; set +a          # NFT, game AND token addresses
 ARENA_BOT_TOKEN=... ARENA_BOT_CHAIN=1 \
 AZTEC_PXE_URL=http://localhost:8080 \
   npm run dev -w packages/bot
 ```
 
 It refuses to start half-configured: a bot that matches players and then cannot
-commit its cards is worse than one that never starts.
+commit or recover its cards is worse than one that never starts.
+
+## A chain game, from the bot's seat
+
+The bot is always the joiner, player 2. Everything player-to-player travels as a
+sealed `PEER` payload the relay forwards without reading.
+
+1. **`MATCH_FOUND`** — a fresh ECDH key pair for this game; `KEY_EXCHANGE` sends
+   the public half. On `OPPONENT_KEY` both sides derive the game key (every
+   on-chain nullifier of the game hangs off it) and the channel key
+   (`frontend/src/aztec/gameKeys.ts`).
+2. **`PEER RECORD`** from the creator — wait for their `created` nullifier, read
+   our note nonce (BEFORE committing: the commit advances it), derive our
+   secrets, preview our record, journal the game, `join_game`, then
+   `TX_CONFIRMED` (no tx hash) and our own `PEER RECORD`.
+3. **Play** — every move proof binds both records' hand commitments and
+   publishes the placed card and its slot in our committed hand.
+4. **`GAME_OVER`** — a win: `PEER SETTLING {prizeMove}` (the human's placed card
+   the bot values most: rarest, then strongest), `settle_game`, `PEER SETTLED`.
+   A draw: player 1 settles by convention; the bot does it after
+   `ARENA_BOT_DRAW_FALLBACK_MS` if they have not. A loss: the winner settles.
+5. **Taking its cards back** — whoever settled, the bot finds the resolving tx
+   from the game's own `done` nullifier (a `SETTLED` message is only a hint),
+   reads off the tx which of its prepared notes were released, and imports
+   exactly those: five returns (four on a loss — the missing one is the card the
+   winner took), the prize on a win, and its 20-token reward.
 
 ## Configuration
 
@@ -53,7 +80,10 @@ commit its cards is worse than one that never starts.
 | `ARENA_BOT_MOVE_DELAY_MS` | `1200` | pacing, so it does not feel inhumanly instant |
 | `ARENA_BOT_QUEUE_TIMEOUT_MS` | `60000` | leave the queue if no match forms |
 | `ARENA_BOT_GAME_TIMEOUT_MS` | `1800000` | abandon a stuck game and recover its cards |
-| `ARENA_BOT_SETTLE_WAIT_MS` | `300000` | wait for the 11-proof transcript |
+| `ARENA_BOT_SETTLE_WAIT_MS` | `300000` | wait for the nine-proof transcript |
+| `ARENA_BOT_DRAW_FALLBACK_MS` | `120000` | give player 1 this long to settle a draw before the bot does |
+| `ARENA_BOT_RECORD_WAIT_MS` | `600000` | leave a match whose creator never sends their record (nothing committed) |
+| `ARENA_BOT_CREATED_WAIT_MS` | `300000` | wait this long for the creator's game to show on our node before declining to join |
 | `ARENA_BOT_HEALTH_PORT` | `5175` | `0` disables |
 | `ARENA_BOT_MAX_CONCURRENT_GAMES` | `1` | see the pool note below |
 | `ARENA_BOT_SWEEP_INTERVAL_MS` | `900000` | how often to reclaim cards from wedged games |
@@ -125,37 +155,44 @@ Two endpoints, and they answer different questions:
   manifest. On a rate-limited public node that first import is the burstiest
   thing the bot ever does; it retries 429s with backoff and resumes where it
   left off.
-- **Committed cards vanish until the game settles.** So "spendable" is legitimately
-  lower than "owned" while a game is in flight. Because the bot is always the
-  joiner it cannot cancel a stuck game — cancel is creator-only — so its five
-  cards stay locked until the abandonment claim resolves it.
+- **Committed cards vanish until the game resolves — and come back only if the
+  bot imports them.** So "spendable" is legitimately lower than "owned" while a
+  game is in flight. Settlement delivers nothing to anybody: each player rebuilds
+  its own notes from its own secrets. Because the bot is always the joiner it
+  cannot cancel a stuck game — cancel is creator-only — so its five cards stay
+  locked until the game is settled or unwound.
 
 ## Recovering stranded cards
 
-A game can wedge: the opponent closes their tab mid-move, a proof never arrives,
-this process dies. The bot cannot cancel, so those five cards are locked until
-somebody claims the game as abandoned. Left alone the loss is monotonic and
+A game can wedge: the opponent closes their tab mid-move, a winner never
+settles, this process dies. The bot cannot cancel, so those five cards stay put
+until somebody resolves the game on-chain. Left alone the loss is monotonic and
 **silent** — the bot goes idle when it runs out, which is correct behaviour and
-therefore invisible. Measured on the sandbox: 25 cards per identity across five
-aborted runs.
+therefore invisible.
 
 Two pieces handle it, and both run automatically in chain mode:
 
-- **`GameJournal`** (`.artifacts/games-<index>/`) persists each committed game's
-  transcript **as it grows**. Recovery needs the hand proofs and partial move
-  chain, which otherwise exist only in memory — and the crashes this protects
-  against happen mid-game by definition, so writing once at the end would
-  protect nothing.
-- **`AbandonmentSweep`** runs at startup and every `ARENA_BOT_SWEEP_INTERVAL_MS`:
-  claim → dispute window (5 blocks) → settle → import the re-minted notes. The
-  chain decides, never the journal; games younger than `ARENA_BOT_GAME_TIMEOUT_MS`
-  are left alone, since claiming a live game reverts. It takes an opponent card
-  only if the opponent actually played — getting our stake back is the point.
+- **`GameJournal`** (`.artifacts/games-<index>/`, one file per relay room)
+  records each game from just BEFORE the join is sent — a crash while that tx is
+  in flight is exactly when cards may be committed with nothing else recording
+  where. It keeps what recovery needs and nothing more about the human: the room
+  id, our key pair and their public key, the game key, our note nonce (our
+  secrets re-derive from it), our hand, both records, the move transcript and
+  the outcome. Records from the previous (public-state) contracts are left on
+  disk untouched.
+- **`AbandonmentSweep`** runs at startup and every `ARENA_BOT_SWEEP_INTERVAL_MS`.
+  The CHAIN decides: each pass reads the game's nullifiers and takes the next
+  step it is ready for — import from the resolving tx if the game is done;
+  settle it on its merits if the bot holds the full transcript (contesting an
+  opponent's standing claim first); otherwise claim it as abandoned once the
+  chain is `MIN_ABANDON_SECONDS` past the join, and finalize the claim once it
+  has stood `DISPUTE_SECONDS` — both hands back, nobody wins anything. Games
+  younger than `ARENA_BOT_GAME_TIMEOUT_MS` are left alone: a finalize would take
+  a slow winner's win away. No proofs are needed for any of it.
 
-A record survives a failed pass on purpose: deleting it would discard the only
+A record survives a failed step on purpose: deleting it would discard the only
 evidence that five cards are locked. `sweep: … UNRECOVERABLE` means the journal
-never captured enough transcript (needs both hand proofs and 1–8 move proofs) —
-those cards are gone.
+entry is missing what recovery needs.
 
 To exercise the whole path against a sandbox:
 
@@ -170,18 +207,22 @@ E2E_ABANDON_AFTER_MOVES=2 ARENA_BOT_GAME_TIMEOUT_MS=120000 \
 ## Tests
 
 ```bash
-npm test -w packages/bot          # 107: unit + real backend/bot/human games
+npm test -w packages/bot          # unit + real backend/bot/human games
 ```
 
 Proof tests generate REAL proofs against the compiled circuits — a mocked proof
 asserts nothing about the thing that matters, which is that the bot's witness
-encoding is accepted by the same circuits players use.
+encoding is accepted by the same circuits players use. The protocol's pure
+decisions (prize choice, which notes to import, the sweep's next step) are in
+`protocol.test.ts` and `settlement.test.ts`; the game flow against a fake chain,
+including the real WebCrypto key exchange, in the two `ArenaBot` test files.
 
 Two manual harnesses are excluded from `npm test` (each needs a sandbox,
 deployed contracts and provisioned identities); their headers carry the recipes:
 
-- `tests/chain-e2e.manual.ts` — a full chain game, commit through settlement.
+- `tests/chain-e2e.manual.ts` — a full chain game, key exchange through
+  settlement and import, against a scripted creator.
   `E2E_ABANDON_AFTER_MOVES=2` makes the opponent walk out instead, exercising
-  the journal and the recovery sweep.
+  the journal and the recovery sweep (claim, dispute window, finalize).
 - `tests/pool-e2e.manual.ts` — two chain bots and one human: asserts no
   bot-vs-bot game forms, the human is the creator, and no bot is left queued.

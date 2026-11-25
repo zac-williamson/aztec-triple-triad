@@ -1,45 +1,79 @@
 /**
- * Reclaims cards stranded in games that will never settle normally.
+ * Brings the bot's cards back from games that will not resolve the ordinary
+ * way: the opponent closed their tab, never settled, or this process died.
  *
- * Why this is not optional. The bot only ever JOINS games, and `cancel_game` is
- * creator-only — so when a game wedges (the opponent closes their tab mid-move,
- * a proof never arrives, the bot process dies) the bot has no way to release its
- * five committed cards. The loss is monotonic and silent: the bot keeps playing
- * until it cannot field a hand, then goes idle, correctly and quietly, which is
- * exactly why nobody notices. Measured on the sandbox: 25 cards per identity
- * stranded across five aborted runs.
+ * Why this is not optional. The bot only ever JOINS games, and cancel_game is
+ * creator-only — so a game that wedges keeps the bot's five committed cards
+ * until somebody resolves it on-chain, and a private game's notes come back
+ * only to whoever imports them. Left alone the loss is monotonic and silent:
+ * the bot keeps playing until it cannot field a hand, then goes idle, which
+ * looks exactly like a quiet night.
  *
- * The recovery path is the contract's abandonment claim — a partial move chain
- * padded with dummy proofs, a dispute window, then settle. It needs the
- * transcript, which is why GameJournal persists it as the game unfolds.
+ * A private game has no public state (docs/plan/PRIVATE_GAMES.md), so the
+ * sweep reads where each game stands from its nullifiers, then takes the next
+ * step the contract allows:
+ *
+ *   resolved      import our own notes from the tx that pushed `done`
+ *   complete      settle it on its merits (a full transcript outranks any
+ *                 claim), contesting an opponent's standing claim first
+ *   incomplete    claim it as abandoned, and once the claim has stood its
+ *                 dispute window, finalize: both hands back, nobody wins
  *
  * Deliberately conservative:
- *  - The CHAIN decides, never the journal. A record is only acted on if the game
- *    is genuinely still `active` on-chain.
- *  - It claims nothing it is not owed: `claimedCardId` is 0 (return the
- *    opponent's five cards) unless the opponent actually played, mirroring the
- *    browser's rule. Recovering our own stake is the goal; taking someone's card
- *    because their tab crashed is not.
- *  - One game at a time, through the same serialised proving queue as play.
+ *  - The CHAIN decides, never the journal. Each pass re-reads the nullifiers.
+ *  - Nothing younger than `minAgeMs` is touched: a finalize would pre-empt a
+ *    slow winner's settlement, and that is their card, not ours.
+ *  - One step per game per pass, through the same serialised PXE queue as
+ *    play, and never while a game is live.
  */
-import type { GameJournal, GameRecord } from './GameJournal.js';
-import type { BotChain } from './BotChain.js';
-import type { BotProofs } from './BotProofs.js';
+import type { GameJournal, JournalRecord } from './GameJournal.js';
+import type { BotChainLike, BotProofsLike } from './chainTypes.js';
+import {
+  abandonmentPosition,
+  hasContested,
+  NULLIFIER_INDEX,
+  parseGameChainState,
+  type ClaimNo,
+  type Side,
+} from '../../frontend/src/aztec/privateGame.js';
+import {
+  BOT_SIDE,
+  blocksToTime,
+  checkTranscript,
+  decideSweepStep,
+  DISPUTE_SECONDS,
+  normalizeMoveProof,
+  transcriptSettles,
+} from './protocol.js';
+import {
+  choosePrizeMove,
+  describeResolution,
+  findResolvingTx,
+  importOwnNotes,
+  settleGame,
+  type BotGame,
+  type SettlementDeps,
+} from './settlement.js';
+import type { FoundTx } from '../../frontend/src/aztec/gameChain.js';
+import type { MoveProofData } from '../../frontend/src/types.js';
 
-/** Mirrors the contract: 0 none, 1 created, 2 active, 3 settled, 4 cancelled, 5 abandoned_claimed. */
-export const GAME_STATUS = {
-  none: 0, created: 1, active: 2, settled: 3, cancelled: 4, abandoned_claimed: 5,
-} as const;
+export { MIN_ABANDON_SECONDS } from './protocol.js';
 
 export interface SweepStats {
   scanned: number;
+  /** Games whose cards came back to the bot this process lifetime. */
   recovered: number;
   cardsRecovered: number;
+  /** Steps taken on-chain. */
+  settled: number;
+  claimed: number;
+  contested: number;
+  finalized: number;
   failed: number;
   skipped: number;
   /**
-   * Cards locked in games that can never be recovered — the journal is missing
-   * a hand proof the claim requires. A number rather than a repeated log line,
+   * Cards in journal entries the sweep cannot act on at all — the record is
+   * missing what recovery needs. A number rather than a repeated log line,
    * because it is a permanent fact, not an event.
    */
   unrecoverable: number;
@@ -47,47 +81,48 @@ export interface SweepStats {
 }
 
 export interface SweepDeps {
-  journal: GameJournal;
-  chain: BotChain;
-  proofs: BotProofs;
+  journal: Pick<GameJournal, 'outstanding' | 'read' | 'write' | 'forget' | 'markResolved'>
+    & Partial<Pick<GameJournal, 'pruneResolved'>>;
+  chain: BotChainLike;
+  proofs: Pick<BotProofsLike, 'moveVerificationKey'>;
   log?: (msg: string) => void;
   now?: () => number;
   /**
    * True while the bot is in a game.
    *
-   * The sweep and live gameplay share ONE serial PXE queue, and a recovery
-   * claim or settle holds it for minutes while it proves and mines. A player
-   * who gets matched during a pass therefore waits behind maintenance for an
-   * old game: their opponent never joins, and the match dies at move zero.
-   * Recovery can always wait — a person watching a loading spinner cannot.
+   * The sweep and live gameplay share ONE serial PXE queue, and a settlement
+   * holds it for minutes while it proves. A player who gets matched during a
+   * pass would wait behind maintenance for an old game: their opponent never
+   * joins, and the match dies at move zero. Recovery can always wait.
    */
   isBusy?: () => boolean;
+  /** True for a game the live bot is still following up itself (its SETTLED is due). */
+  isTracking?: (relayGameId: string) => boolean;
   /** Minimum age before a game is considered abandoned rather than merely slow. */
   minAgeMs?: number;
+  /** A tx's wait, in ms. */
   txTimeoutMs?: number;
 }
 
-/** How long a settled game's randomness is kept for manual recovery. */
+/** How long a resolved game's record is kept for manual recovery of a failed import. */
 export const SETTLED_RETENTION_MS = 7 * 24 * 60 * 60_000;
 
-/** Mirrors MIN_ABANDON_SECONDS in the game contract. */
-export const MIN_ABANDON_SECONDS = 480;
-
 /**
- * How long the sweep leaves a game alone before treating it as abandoned, when
- * the caller does not say (production passes its game timeout, also 30 min).
+ * How long the sweep leaves a game alone before acting on it, when the caller
+ * does not say (production passes its game timeout, also 30 min).
  *
- * Deliberately far past the contract's eight-minute bar. A game the bot LOST
- * stays outstanding in its journal until the human winner settles, and a
- * claim filed while they are still settling blocks their settlement until
- * they contest it. Thirty minutes outlasts a game plus a settlement at their
- * slowest (~25 min on testnet); a recovery that waits is cheaper than a player
- * robbed of a win.
+ * Far past the contract's own eight-minute bar on purpose. A game the bot LOST
+ * stays outstanding until the human winner settles; a claim does not block
+ * that, but a FINALIZE ten minutes later would, and would take their win away.
+ * Thirty minutes outlasts a game plus a settlement at their slowest.
  */
 export const DEFAULT_SWEEP_MIN_AGE_MS = 30 * 60_000;
 
+/** How long to wait for a resolution we just sent to show on the node. */
+const RESOLUTION_WAIT_MS = 2 * 60_000;
+
 export class AbandonmentSweep {
-  /** Games already reported as permanently unrecoverable; reported once each. */
+  /** Records already reported as unusable; reported once each. */
   private readonly reportedUnrecoverable = new Set<string>();
 
   private readonly log: (m: string) => void;
@@ -97,38 +132,31 @@ export class AbandonmentSweep {
   private running = false;
 
   readonly stats: SweepStats = {
-    scanned: 0, recovered: 0, cardsRecovered: 0, failed: 0, skipped: 0,
-    unrecoverable: 0, lastError: null,
+    scanned: 0, recovered: 0, cardsRecovered: 0, settled: 0, claimed: 0, contested: 0, finalized: 0,
+    failed: 0, skipped: 0, unrecoverable: 0, lastError: null,
   };
 
   constructor(private readonly deps: SweepDeps) {
     this.log = deps.log ?? (() => {});
     this.now = deps.now ?? (() => Date.now());
     // A game in progress looks exactly like an abandoned one from the journal's
-    // point of view. Only age separates them, and claiming a LIVE game would be
-    // both wrong and rejected ("It must be opponent's turn to claim").
-    // Never SHORTER than the contract's own bar (MIN_ABANDON_SECONDS), or every
-    // claim in the gap reverts "Too soon to call this game abandoned" — and the
-    // chain-age check below enforces that bar regardless. The default is far
-    // longer on purpose: see DEFAULT_SWEEP_MIN_AGE_MS.
+    // point of view; only age separates them.
     this.minAgeMs = deps.minAgeMs ?? DEFAULT_SWEEP_MIN_AGE_MS;
     this.txTimeoutMs = deps.txTimeoutMs ?? 600_000;
   }
 
   /**
    * One pass over the journal. Safe to call repeatedly; never runs concurrently
-   * with itself, because two claims on one game would waste an entire proving
-   * run and the second would revert.
+   * with itself, because two passes over one game would race each other's txs.
    */
   async run(): Promise<SweepStats> {
     if (this.running) return this.stats;
     this.running = true;
     try {
-      // Settled records are kept so a failed import stays recoverable, but not
-      // forever — a week is long enough to notice and act, short enough that
-      // this stays a journal.
-      const pruned = this.deps.journal.pruneSettled?.(SETTLED_RETENTION_MS) ?? 0;
-      if (pruned) this.log(`sweep: pruned ${pruned} settled record(s)`);
+      // Resolved records are kept so a failed import stays recoverable by hand,
+      // but not forever — a week is long enough to notice and act.
+      const pruned = this.deps.journal.pruneResolved?.(SETTLED_RETENTION_MS) ?? 0;
+      if (pruned) this.log(`sweep: pruned ${pruned} resolved record(s)`);
 
       // Recomputed each pass: it is a property of the journal right now, not a
       // tally of how many times we have looked.
@@ -147,14 +175,18 @@ export class AbandonmentSweep {
         // Re-check between games: a pass can span many minutes of chain work,
         // and a player may have been matched since it started.
         if (this.yieldToGame('a game started mid-pass — the rest waits')) break;
+        if (this.deps.isTracking?.(rec.relayGameId)) {
+          this.stats.skipped += 1;
+          continue;
+        }
         try {
           await this.recoverOne(rec);
         } catch (err) {
           this.stats.failed += 1;
           this.stats.lastError = (err as Error).message;
-          // Keep the record. A failed recovery is retried next pass; deleting it
+          // Keep the record. A failed step is retried next pass; deleting it
           // would discard the only evidence that five cards are locked up.
-          this.log(`sweep: ${short(rec.onChainGameId)} FAILED — ${(err as Error).message}`);
+          this.log(`sweep: ${short(rec.relayGameId)} FAILED — ${(err as Error).message}`);
         }
       }
       return this.stats;
@@ -173,302 +205,262 @@ export class AbandonmentSweep {
     return true;
   }
 
-  private async recoverOne(rec: GameRecord): Promise<void> {
-    const id = short(rec.onChainGameId);
-    const status = await this.deps.chain.pxe.readGameStatus(this.deps.chain.address, rec.onChainGameId);
+  private settlementDeps(): SettlementDeps {
+    return {
+      chain: this.deps.chain,
+      // pxe.ts hands `timeoutMs` to the SDK's wait, which counts SECONDS.
+      sendOpts: () => ({ node: this.deps.chain.nodeClient, timeoutMs: Math.ceil(this.txTimeoutMs / 1000) }),
+      log: this.log,
+    };
+  }
 
-    // Settled, cancelled or already claimed: the cards are not locked any more,
-    // whatever the journal thinks. Drop the record.
-    if (status === GAME_STATUS.settled || status === GAME_STATUS.cancelled) {
-      this.log(`sweep: ${id} already resolved on-chain (status ${status}) — forgetting`);
-      this.deps.journal.forget(rec.onChainGameId);
-      return;
-    }
-    if (status === GAME_STATUS.abandoned_claimed) {
-      // Claimed, but recovery is PER PLAYER now — the game only reaches
-      // `settled` once BOTH sides have taken their stake back, and the absent
-      // player may never return. So this status does not tell us whether WE
-      // have recovered; only trying does.
-      this.log(`sweep: ${id} already claimed; recovering our stake`);
-      try {
-        await this.settle(rec);
-      } catch (err) {
-        if (/Already recovered/i.test(String((err as Error).message))) {
-          // Our cards are already back. Without this the record is kept and
-          // retried on every pass, forever, against a game we are done with.
-          this.log(`sweep: ${id} already recovered — forgetting`);
-          this.deps.journal.forget(rec.onChainGameId);
-          return;
-        }
-        throw err;
+  private async recoverOne(rec: JournalRecord): Promise<void> {
+    const id = short(rec.relayGameId);
+    const game = toBotGame(rec);
+    if (!game) {
+      this.stats.skipped += 1;
+      this.stats.unrecoverable += rec.cardIds?.length ?? 5;
+      if (!this.reportedUnrecoverable.has(rec.relayGameId)) {
+        this.reportedUnrecoverable.add(rec.relayGameId);
+        this.log(`sweep: ${id} UNRECOVERABLE — the journal entry is missing what recovery needs ` +
+                 '(not reported again; the record stays on disk)');
       }
       return;
     }
-    if (status !== GAME_STATUS.active) {
+
+    const { chain } = this.deps;
+    const nullifiers = await chain.pxe.gameNullifiers(chain.address, game.gameKey, game.record1, game.record2);
+    const state = parseGameChainState(await chain.lookupNullifiers(nullifiers));
+    const position = abandonmentPosition(state);
+    const age = this.now() - rec.committedAt;
+
+    if (position.kind === 'not-joined') {
       this.stats.skipped += 1;
-      this.log(`sweep: ${id} status ${status} — nothing to recover`);
-      this.deps.journal.forget(rec.onChainGameId);
+      if (rec.phase === 'joining' && age >= this.minAgeMs) {
+        // We wrote the record just before sending the join, and the join never
+        // landed: nothing of ours was ever committed.
+        this.log(`sweep: ${id} our join never landed — nothing committed; forgetting`);
+        this.deps.journal.forget(rec.relayGameId);
+      } else if (rec.phase === 'joined') {
+        // We saw the join mine, yet the chain does not know it. Never forget
+        // this: it is either a node behind the chain or a record that does not
+        // match what we committed, and either way five cards may be at stake.
+        this.log(`sweep: ${id} journalled as joined, but the chain has no such join — keeping it`);
+      }
       return;
     }
+    if (rec.phase === 'joining') this.update(rec.relayGameId, { phase: 'joined' });
 
-    const age = this.now() - rec.committedAt;
     if (age < this.minAgeMs) {
       this.stats.skipped += 1;
       this.log(`sweep: ${id} only ${Math.round(age / 60_000)}min old — may still be live, leaving it`);
       return;
     }
 
-    if (!rec.blindingFactor) {
-      this.stats.skipped += 1;
-      // Journalled before blinding factors were recorded. Recovery must prove
-      // the ids it re-mints, and this is the only value that binds them.
-      this.log(`sweep: ${id} UNRECOVERABLE — no blinding factor in the journal`);
-      return;
+    const complete = transcriptSettles(game.moveProofs, game.record1, game.record2);
+    const times = new Map<number, number>();
+    let now = 0;
+    if (position.kind !== 'done') {
+      // The contract compares block TIMESTAMPS, against its anchor's — the
+      // chain's clock, not ours. Block rate is not a clock either.
+      now = await chain.chainNow();
+      for (const b of blocksToTime(position)) times.set(b, await chain.blockTimestamp(b));
     }
-    if (!rec.myHandProof || !rec.opponentHandProof) {
-      this.stats.skipped += 1;
-      this.stats.unrecoverable += rec.cardIds.length;
-      // Not recoverable by us: the claim verifies BOTH hand proofs. This is a
-      // PERMANENT condition, so say it once and then stop: re-deciding it every
-      // fifteen minutes emitted a recurring alarm for a state that will never
-      // change, which is how real signal gets tuned out. The record stays on
-      // disk — it is the only evidence those cards are locked.
-      if (!this.reportedUnrecoverable.has(id)) {
-        this.reportedUnrecoverable.add(id);
-        this.log(`sweep: ${id} UNRECOVERABLE — hand proofs missing from the journal ` +
-                 `(${rec.cardIds.length} cards locked for good; not reported again)`);
-      }
-      return;
-    }
-    // A COMPLETE game used to be refused here — "settled by its winner, not
-    // claimed" — and that was true of the old contract, which capped a claim at
-    // eight moves. It left the cards of anyone whose opponent won and then
-    // vanished locked with no route out for either side, because settle_game
-    // binds the caller to the winning side.
-    //
-    // The contract now accepts n == 9. A finished game owes nobody a move, so
-    // the turn-parity rule does not apply and either player may claim; each
-    // recovers only their own stake, so the winner who walked away forfeits
-    // nothing but the card they never came back for.
-    // ZERO move proofs is claimable: the opponent abandoned between our join and
-    // their first move. The bot is always player 2, which is exactly who the
-    // contract permits to make a zero-move claim.
-
-    // Whose turn is it? The claim is for an opponent who walked away, so the
-    // contract requires it to be THEIR turn: player 1 plays the even turns, so
-    // a player-2 claimant needs an even move count. With an odd count the next
-    // move is ours — nobody abandoned anything, we stalled — and the claim can
-    // only ever fail:
-    //
-    //   sweep: 0x141176f6… abandoned (242min, 7/9 moves) — claiming
-    //   sweep: 0x141176f6… FAILED — It must be opponent's turn to claim
-    //
-    // It retried that every fifteen minutes for hours, spending a proof and a
-    // transaction each time on an assertion that cannot pass. Say it once.
-    // An odd count is NOT a dead end, which is what this used to assume.
-    //
-    // The contract needs the first n move proofs to chain and n to have the
-    // right parity. It does not need n to be the whole game — nothing on-chain
-    // records how far the game actually got, because moves are off-chain. So
-    // when the count has the wrong parity, claim the largest PREFIX that has
-    // the right one.
-    //
-    // Nobody loses by the shorter n. `settle_abandoned_game` recovers only the
-    // caller's OWN stake, proved with their own blinding factor, and does so
-    // per player — each side gets its five cards back whenever it returns. The
-    // parity rule decides who may FILE the claim, not who gets what. Refusing
-    // to file left both sides locked out for nothing: six games, thirty cards.
-    // The contract measures staleness from when IT saw the game go active, and
-    // our journal's timestamp is not the same number. Trusting ours produced a
-    // claim the contract rejected as "Too soon" — a wasted proof and a wasted
-    // transaction. Ask the chain.
-    const chainInfo = await this.deps.chain.pxe.readAbandonmentInfo(
-      this.deps.chain.address, rec.onChainGameId,
-    );
-    const activeAt = chainInfo.activeAt;
-    const chainAge = Math.floor(Date.now() / 1000) - activeAt;
-    if (activeAt > 0 && chainAge < MIN_ABANDON_SECONDS) {
-      this.stats.skipped += 1;
-      this.log(`sweep: ${id} the chain calls it ${Math.round(chainAge / 60)}min old — ` +
-               `not claimable for another ${Math.ceil((MIN_ABANDON_SECONDS - chainAge) / 60)}min`);
-      return;
-    }
-
-    // Shared with the browser's claim path — one implementation of the
-    // contract's parity rule, because two drifted: the sweep trimmed and the
-    // browser did not, so the same game was claimable by the bot and reverted
-    // for a human.
-    const { claimableMoveCount } = await import('../../frontend/src/aztec/claimParity.js');
-    const complete = rec.moveProofs.length >= 9;
-    const n = claimableMoveCount(rec.moveProofs.length, rec.botIsPlayer1);
-    if (n < 0) {
-      // Only reachable as player 1 with no moves at all, which the contract
-      // reserves for player 2 — we are the one who owes the first move.
-      this.stats.skipped += 1;
-      this.stats.unrecoverable += rec.cardIds.length;
-      if (!this.reportedUnrecoverable.has(id)) {
-        this.reportedUnrecoverable.add(id);
-        this.log(`sweep: ${id} NOT CLAIMABLE BY US — no move has been made and we owe the ` +
-                 `first one (${rec.cardIds.length} cards await the opponent's claim)`);
-      }
-      return;
-    }
-
-    const trimmed = n === rec.moveProofs.length
-      ? rec
-      : { ...rec, moveProofs: rec.moveProofs.slice(0, n) };
-    this.log(`sweep: ${id} abandoned (${Math.round(age / 60_000)}min, ${rec.moveProofs.length}/9 moves)` +
-      (complete ? ' — complete but never settled by its winner' : '') +
-      (n === rec.moveProofs.length ? '' : ` — claiming at the first ${n}, for the turn parity`) +
-      ' — claiming');
-    await this.claim(trimmed);
-    // Between steps, not merely between games. A recovery is claim -> wait out
-    // the dispute window -> settle -> import, and each chain step holds the
-    // shared PXE queue for minutes. Checking only at the top of a pass left a
-    // matched player waiting behind the whole sequence: production measured
-    // sixteen minutes from "joining" to the join actually starting, while the
-    // join transaction itself took forty-four seconds. The claim is already
-    // on-chain, so stopping here is safe — the next pass resumes at settle.
-    if (this.yieldToGame(`${short(rec.onChainGameId)} claimed; settle deferred`)) return;
-    await this.settle(rec);
-  }
-
-  private async claim(rec: GameRecord): Promise<void> {
-    const { buildClaimAbandonedArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
-    const { Fr } = await import('@aztec-labs/aztec.js/fields');
-    const { handVk, moveVk } = await this.deps.proofs.verificationKeys();
-    const dummyVk = await this.deps.proofs.dummyVerificationKey();
-
-    const args = await buildClaimAbandonedArgs({
-      Fr,
-      onChainGameId: rec.onChainGameId,
-      callerIsPlayer1: rec.botIsPlayer1,
-      handVk, moveVk, dummyVk,
-      handProof1: (rec.botIsPlayer1 ? rec.myHandProof : rec.opponentHandProof)!,
-      handProof2: (rec.botIsPlayer1 ? rec.opponentHandProof : rec.myHandProof)!,
-      validMoveProofs: rec.moveProofs as any,
-      makeDummyProof: () => this.deps.proofs.proveDummy(),
+    const step = decideSweepStep({
+      position,
+      contestedByUs: hasContested(state, BOT_SIDE),
+      transcriptComplete: complete,
+      now,
+      blockTime: b => {
+        const t = times.get(b);
+        if (t === undefined) throw new Error(`no timestamp read for block ${b}`);
+        return t;
+      },
     });
 
-    const tx = await this.deps.chain.pxe.sendClaimAbandonedGame(this.deps.chain.address, args, {
-      node: this.deps.chain.nodeClient, timeoutMs: this.txTimeoutMs,
-    });
-    this.log(`sweep: ${short(rec.onChainGameId)} claimed ${String(tx).slice(0, 18)}…`);
-  }
-
-  private async receiveRecoveredCards(
-    rec: GameRecord,
-    sent: { txHash: string; offchainMessages: unknown[] },
-  ): Promise<void> {
-    // Our five, minted with caller_randomness[0..4]. There is no sixth card:
-    // recovery no longer takes anything from the opponent.
-    const expected = Math.min(rec.cardIds.length, 5);
-    try {
-      const received: number = await this.deps.chain.pxe.receiveCardMessages(
-        this.deps.chain.address, sent.txHash, sent.offchainMessages,
-      );
-      if (received !== expected) {
-        this.log(`sweep: WARNING expected ${expected} card message(s) for us, received ${received} — ` +
-                 'the missing cards are on-chain but invisible to the PXE');
+    switch (step.kind) {
+      case 'not-joined':
+        return;
+      case 'resolved': {
+        const tx = await findResolvingTx(this.settlementDeps(), game);
+        if (!tx) throw new Error('the game reads as resolved, but no tx carries its resolution');
+        await this.importFrom(rec, game, tx);
+        return;
       }
-    } catch (err) {
-      // Not fatal: the cards ARE ours on-chain. Loud, though — an unreceived
-      // note looks exactly like a failed recovery from the outside.
-      this.log(`sweep: WARNING receiving recovered cards failed: ${(err as Error).message}`);
+      case 'wait':
+        this.stats.skipped += 1;
+        this.log(`sweep: ${id} ${step.reason}`);
+        return;
+      case 'settle':
+        await this.settle(rec, game, step.contest);
+        return;
+      case 'claim':
+        await this.claim(rec, game, step.claimNo, step.clockBlock, nullifiers);
+        return;
+      case 'finalize':
+        await this.finalize(rec, game, step.claimNo, step.claimSide, step.claimBlock);
+        return;
     }
   }
 
-  private async settle(rec: GameRecord): Promise<void> {
-    const { buildSettleAbandonedArgs, waitForDisputeWindow, DISPUTE_SECONDS } =
-      await import('../../frontend/src/aztec/settlementArgs.js');
-    const { Fr } = await import('@aztec-labs/aztec.js/fields');
-
-    // Measured against the CHAIN's record of when the claim was filed, not our
-    // own clock and no longer a block count: the contract compares timestamps,
-    // and block rate on this testnet runs 27-72s, so "5 blocks" was between two
-    // and six minutes against a ten-minute window. Production failed on exactly
-    // that, after paying for the proving.
-    const { claimAt: claimedAt } = await this.deps.chain.pxe.readAbandonmentInfo(
-      this.deps.chain.address, rec.onChainGameId,
-    );
-    // Put it in the journal before the wait, not after: the wait is ten
-    // minutes long, and for those ten minutes the worklist would otherwise
-    // report this game as untouched and claimable.
-    try {
-      const fresh = this.deps.journal.read(rec.onChainGameId);
-      if (fresh) this.deps.journal.write({ ...fresh, claimedAt });
-    } catch { /* bookkeeping must never stop a recovery in progress */ }
-    this.log(`sweep: waiting out the ${DISPUTE_SECONDS}s dispute window`);
-    await waitForDisputeWindow(this.deps.chain.nodeClient, claimedAt);
-    // That wait is minutes long and touches only the node, so a game can start
-    // during it. Settling now would seize the PXE queue for several more
-    // minutes; the claim stands, so the next pass picks this up.
-    if (this.yieldToGame('settle deferred after the dispute window')) return;
-
-    // The other player may have CONTESTED during the window, which puts the
-    // game back to active and cancels our claim. That is them saying "I am
-    // still here", not a failure — so check before spending a proof and a
-    // transaction on a settle the contract will refuse, and leave the game in
-    // the journal so it can be claimed again if they go quiet a second time.
-    const status = await this.deps.chain.pxe.readGameStatus(
-      this.deps.chain.address, rec.onChainGameId,
-    );
-    if (status !== 5) {
-      this.log(`sweep: ${short(rec.onChainGameId)} claim was contested (status ${status}) — ` +
-               'the opponent is back, leaving the game to them');
-      return;
-    }
-
-    // Recovery returns OUR stake and nothing else. It used to also take one of
-    // the opponent's cards, from a list nothing verified — which meant naming
-    // any card and having it minted to us. Nobody wins a card because an
-    // opponent disconnected, and the absent player recovers their own five
-    // whenever they come back.
-    const args = await buildSettleAbandonedArgs({
-      Fr,
-      onChainGameId: rec.onChainGameId,
-      myCardIds: rec.cardIds,
-      myRandomness: rec.randomness,
-      myBlinding: rec.blindingFactor!,
-    });
-
-    const sent: { txHash: string; offchainMessages: unknown[] } =
-      await this.deps.chain.pxe.sendSettleAbandonedGame(this.deps.chain.address, args, {
-        node: this.deps.chain.nodeClient, timeoutMs: this.txTimeoutMs,
-      });
-    const tx = sent.txHash;
-
-    // The cards are ours on-chain but INVISIBLE until received: settle_abandoned_game
-    // re-mints them as untagged notes the PXE cannot discover (CLAUDE.md ground
-    // rule 9); their messages come back with the send. Without this the sweep
-    // reports success while the bot's spendable count does not move — which is
-    // exactly what the first chain run of this code did.
-    await this.receiveRecoveredCards(rec, sent);
-
+  /** Import our own notes from the tx that resolved the game, and close the record. */
+  private async importFrom(rec: JournalRecord, game: BotGame, tx: FoundTx): Promise<void> {
+    const result = await importOwnNotes(this.settlementDeps(), game, tx);
     this.stats.recovered += 1;
-    this.stats.cardsRecovered += rec.cardIds.length;
-    // The bot caches its card list, so without this the recovered cards do not
-    // appear in `spendableCards` until something else happens to invalidate it.
-    // That number is what an operator alerts on — a bot running out of cards
-    // goes quietly idle — so a stale one can hide both a real shortage and, as
-    // here, a successful recovery: ten cards came back and the count did not
-    // move.
-    (this.deps.chain as { invalidateCards?: () => void }).invalidateCards?.();
-    this.deps.journal.forget(rec.onChainGameId);
-    this.log(
-      `sweep: ${short(rec.onChainGameId)} RECOVERED ${rec.cardIds.length} card(s) ${String(tx).slice(0, 18)}…`,
+    this.stats.cardsRecovered += Math.max(0, result.gainedCards);
+    if (result.gainedCards < result.expectedCards) {
+      this.log(`sweep: ${short(rec.relayGameId)} WARNING expected ${result.expectedCards} card(s) back, ` +
+               `gained ${result.gainedCards} — the rest are ours on-chain but invisible`);
+    }
+    this.deps.journal.markResolved(rec.relayGameId, result.resolution.kind === 'unwound' ? 'unwound' : 'settled', result.txHash);
+    this.log(`sweep: ${short(rec.relayGameId)} ${describeResolution(result.resolution)} — ` +
+             `took back ${result.gainedCards} card(s) ${short(result.txHash)}`);
+  }
+
+  /**
+   * Settle a game whose whole transcript we hold. Its result stands whoever
+   * presses the button: if we won, the prize is the loser's card we value
+   * most; if we lost, the winner gets the card they would get by default —
+   * the bot does not keep its best card by being the one settling.
+   */
+  private async settle(
+    rec: JournalRecord,
+    game: BotGame,
+    contest: { claimNo: ClaimNo; claimSide: Side; beforeClaimBlock: number } | null,
+  ): Promise<void> {
+    const id = short(rec.relayGameId);
+    const { chain } = this.deps;
+    const deps = this.settlementDeps();
+    const ref = { gameKey: game.gameKey, record1: game.record1, record2: game.record2 };
+    if (contest) {
+      // An opponent's claim is standing and a settlement takes minutes to
+      // prove. Contesting is quick and restarts their clock, so their finalize
+      // cannot race our settlement.
+      await chain.pxe.sendContestAbandonment(chain.address, ref, { side: BOT_SIDE, ...contest }, deps.sendOpts());
+      this.stats.contested += 1;
+      this.log(`sweep: ${id} contested the opponent's claim ${contest.claimNo} — settling instead`);
+      if (this.yieldToGame(`${id} contested; settlement deferred`)) return;
+    }
+
+    const { ordered, winner } = checkTranscript(game.moveProofs, game.record1, game.record2);
+    const prizeMove = choosePrizeMove(ordered, winner);
+    this.update(rec.relayGameId, { prizeMove });
+    this.log(`sweep: ${id} settling a complete game (${winner === 'draw' ? 'draw' : `player ${winner} won`})`);
+    try {
+      await settleGame(deps, { ...game, prizeMove }, prizeMove, await this.deps.proofs.moveVerificationKey());
+    } catch (err) {
+      // A game resolves once. If something else got there first, our cards are
+      // in THAT tx; the next pass imports them.
+      const tx = await findResolvingTx(deps, game).catch(() => null);
+      if (tx) {
+        this.log(`sweep: ${id} resolved by another tx while we settled`);
+        await this.importFrom(rec, game, tx);
+        return;
+      }
+      throw err;
+    }
+    this.stats.settled += 1;
+    if (this.yieldToGame(`${id} settled; import deferred`)) return;
+    const tx = await findResolvingTx(deps, game, { waitMs: RESOLUTION_WAIT_MS });
+    if (!tx) throw new Error('settled, but the settlement is not visible on the node yet — the next pass imports it');
+    await this.importFrom(rec, { ...game, prizeMove }, tx);
+  }
+
+  /** Claim the game as abandoned. Finalized by a later pass, once the dispute window has passed. */
+  private async claim(
+    rec: JournalRecord,
+    game: BotGame,
+    claimNo: ClaimNo,
+    clockBlock: number,
+    nullifiers: string[],
+  ): Promise<void> {
+    const { chain } = this.deps;
+    const deps = this.settlementDeps();
+    const id = short(rec.relayGameId);
+    this.log(`sweep: ${id} abandoned (${rec.moveProofs.length}/9 moves) — filing claim ${claimNo}`);
+    await chain.pxe.sendClaimAbandonedGame(
+      chain.address,
+      { gameKey: game.gameKey, record1: game.record1, record2: game.record2 },
+      { side: BOT_SIDE, claimNo, clockBlock },
+      deps.sendOpts(),
     );
+    this.stats.claimed += 1;
+    // Put the claim's time in the journal, so the worklist can say the game is
+    // serving out its window rather than looking untouched for ten minutes.
+    let claimedAt = Math.floor(this.now() / 1000);
+    try {
+      const [hit] = await chain.lookupNullifiers([nullifiers[NULLIFIER_INDEX.claim(claimNo, BOT_SIDE)]]);
+      if (hit) claimedAt = await chain.blockTimestamp(hit.blockNumber);
+    } catch { /* bookkeeping must never fail a recovery in progress */ }
+    this.update(rec.relayGameId, { claimedAt });
+    this.log(`sweep: ${id} claim ${claimNo} filed — finalizable after the ${DISPUTE_SECONDS}s dispute window`);
+  }
+
+  /** Finalize a claim that stood its window — anyone may — and take our five back. */
+  private async finalize(
+    rec: JournalRecord,
+    game: BotGame,
+    claimNo: ClaimNo,
+    claimSide: Side,
+    claimBlock: number,
+  ): Promise<void> {
+    const { chain } = this.deps;
+    const deps = this.settlementDeps();
+    const id = short(rec.relayGameId);
+    this.log(`sweep: ${id} claim ${claimNo} stood its window — finalizing`);
+    try {
+      await chain.pxe.sendFinalizeAbandonedGame(
+        chain.address,
+        { gameKey: game.gameKey, record1: game.record1, record2: game.record2 },
+        { claimNo, claimSide, claimBlock },
+        deps.sendOpts(),
+      );
+    } catch (err) {
+      const tx = await findResolvingTx(deps, game).catch(() => null);
+      if (tx) {
+        this.log(`sweep: ${id} resolved by another tx while we finalized`);
+        await this.importFrom(rec, game, tx);
+        return;
+      }
+      throw err;
+    }
+    this.stats.finalized += 1;
+    if (this.yieldToGame(`${id} finalized; import deferred`)) return;
+    const tx = await findResolvingTx(deps, game, { waitMs: RESOLUTION_WAIT_MS });
+    if (!tx) throw new Error('finalized, but the unwind is not visible on the node yet — the next pass imports it');
+    await this.importFrom(rec, game, tx);
+  }
+
+  /** Re-read and merge, so a field the bot wrote meanwhile is not lost. */
+  private update(relayGameId: string, fields: Partial<JournalRecord>): void {
+    try {
+      const fresh = this.deps.journal.read(relayGameId);
+      if (fresh) this.deps.journal.write({ ...fresh, ...fields });
+    } catch { /* bookkeeping must never stop a recovery in progress */ }
   }
 }
 
-/**
- * Re-import the notes settle_abandoned_game minted back to us.
- *
- * The contract mints our five cards with caller_randomness[0..4], and — when we
- * claimed one — the opponent's card with caller_randomness[5]. Note import is
- * best-effort per note and idempotent, so a partial failure is recoverable by
- * running the sweep again rather than fatal.
- */
+/** The journal entry as settlement and import see it, or null if it is missing what they need. */
+export function toBotGame(rec: JournalRecord): BotGame | null {
+  const isFields = (v: unknown, n: number) => Array.isArray(v) && v.length === n && v.every(x => typeof x === 'string');
+  if (typeof rec.gameKey !== 'string' || typeof rec.nonce !== 'string') return null;
+  if (!isFields(rec.record1, 9) || !isFields(rec.record2, 9)) return null;
+  if (!Array.isArray(rec.cardIds) || rec.cardIds.length !== 5) return null;
+  const moveProofs = (rec.moveProofs ?? [])
+    .map(normalizeMoveProof)
+    .filter((p): p is MoveProofData => p !== null);
+  return {
+    gameKey: rec.gameKey,
+    nonce: rec.nonce,
+    cardIds: [...rec.cardIds],
+    record1: [...rec.record1],
+    record2: [...rec.record2],
+    moveProofs,
+    outcome: rec.outcome ?? null,
+    prizeMove: rec.prizeMove ?? null,
+  };
+}
+
 function short(id: string): string {
   return id.length > 12 ? `${id.slice(0, 10)}…` : id;
 }

@@ -8,9 +8,11 @@
  * "has anything broken?" signals the feature was asked for, so the bot serves
  * them itself.
  *
- * Read-only and unauthenticated by design — it exposes counters and a state
- * name, no keys, no card ids, no game contents. Bind it to localhost in
- * production if that is not acceptable in your deployment.
+ * Read-only and unauthenticated by design — it exposes counters, a state name
+ * and relay room ids, and nothing that identifies a game on-chain: no game
+ * key, record, nullifier or transaction hash, no card ids, no account keys
+ * (lastError is redacted of long hex for the same reason). Bind it to
+ * localhost in production if even that is not acceptable in your deployment.
  */
 import http from 'http';
 import type { AddressInfo } from 'net';

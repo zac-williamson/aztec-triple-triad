@@ -1,6 +1,7 @@
 /**
  * Full chain-mode game on a LOCAL SANDBOX: the arena bot versus a scripted
- * opponent, both real chain players — commit, prove, settle.
+ * opponent, both real chain players — key exchange, create/join, prove, settle,
+ * import (docs/plan/PRIVATE_GAMES.md).
  *
  * Not part of `npm test`: it needs a running sandbox, deployed contracts and two
  * provisioned identities, and it takes minutes. Run it explicitly:
@@ -14,7 +15,10 @@
  *     npx tsx packages/bot/tests/chain-e2e.manual.ts
  *
  * The opponent is a SEPARATE driver rather than a second ArenaBot: testing the
- * bot against a copy of itself would hide any assumption both sides share.
+ * bot against a copy of itself would hide any assumption both sides share. It
+ * plays the creator's side of the protocol, as a browser does: key exchange,
+ * create_game, its RECORD, then play; it settles when it wins and, by
+ * convention, a draw.
  *
  * TWO PROCESSES, not one. pxe.ts binds the wallet in a module-level global, so
  * two identities in one process would silently share the last-connected wallet.
@@ -22,6 +26,8 @@
  * side. (BotChain enforces this too, and would throw.)
  */
 import WebSocket from 'ws';
+import { readdirSync, readFileSync, existsSync } from 'fs';
+import { join } from 'path';
 import { createServer } from '@axolotl-arena/backend/src/server.js';
 import { chooseBotMove } from '@axolotl-arena/game-logic';
 import type { GameState, Player } from '@axolotl-arena/game-logic';
@@ -29,6 +35,12 @@ import { ArenaBot } from '../src/ArenaBot.js';
 import { BotChain } from '../src/BotChain.js';
 import { BotProofs } from '../src/BotProofs.js';
 import { configFromEnv } from '../src/config.js';
+import { checkTranscript, normalizeMoveProof, parsePeerPayload } from '../src/protocol.js';
+import { choosePrizeMove } from '../src/settlement.js';
+import type { JournalRecord } from '../src/GameJournal.js';
+import { NULLIFIER_INDEX, RECORD_HAND, type GameRecord, type GameSecrets } from '../../frontend/src/aztec/privateGame.js';
+import type { GameChannel, GameKeyPair } from '../../frontend/src/aztec/gameKeys.js';
+import type { MoveProofData } from '../../frontend/src/types.js';
 
 const PORT = 5399;
 /**
@@ -36,64 +48,48 @@ const PORT = 5399;
  * relay this process starts. With it set, no local relay and no local bot are
  * created: the opponent is whatever arena bot is actually deployed. This is the
  * only check that covers the wiring BETWEEN deployed pieces (the bot's token
- * matching the relay's, the relay carrying SHARE_BLINDING, the bot holding
- * cards for the contracts the frontend is pointed at), which no amount of local
- * testing can.
+ * matching the relay's, the relay carrying KEY_EXCHANGE and PEER, the bot
+ * holding cards for the contracts the frontend is pointed at).
  */
 const EXTERNAL_RELAY = process.env.E2E_EXTERNAL_RELAY ?? null;
 const PXE_URL = process.env.AZTEC_PXE_URL ?? 'http://localhost:8080';
+const JOURNAL_DIR = 'packages/bot/.artifacts/games-e2e';
 const log = (who: string, m: string) => console.log(`[${who}] ${m}`);
 const OPPONENT_DIFFICULTY = (process.env.E2E_OPPONENT_DIFFICULTY ?? 'greedy') as 'random' | 'greedy' | 'lookahead';
 /**
  * Number of the opponent's own move proofs after which it walks out without a
  * word — the abandonment case. This is not a contrived failure: it is a player
- * closing the tab, and it is the ONLY way the bot's cards get stranded, since
+ * closing the tab, and it is the ordinary way the bot's cards get stuck, since
  * the bot never creates and therefore can never cancel.
  */
 const ABANDON_AFTER = Number(process.env.E2E_ABANDON_AFTER_MOVES ?? 0);
-/**
- * Walk out after the hand proof but BEFORE the first move — the case that was
- * unrecoverable until the contract allowed a zero-move claim. The bot has both
- * hand proofs and no move proofs, which is exactly the transcript the claim now
- * accepts (and only from player 2, who is not the one who failed to move).
- */
+/** Walk out after both records are exchanged but BEFORE the first move. */
 const ABANDON_BEFORE_MOVE = process.env.E2E_ABANDON_BEFORE_MOVE === '1';
-const TAMPER_CARDS = process.env.E2E_TAMPER_SETTLE_CARDS
-  ? JSON.parse(process.env.E2E_TAMPER_SETTLE_CARDS) as number[]
-  : null;
 /**
  * Fixed hands, to force a specific OUTCOME. A draw in particular cannot be
  * arranged by difficulty alone — ranks are per token_id from a fixed database,
- * so a draw needs a hand pair that happens to end 5-5 under greedy play. The
- * draw path matters because the bot is always player 2, and a draw it fails to
- * settle strands ten cards with NO recovery: the abandonment claim needs 1..8
- * move proofs and a completed draw has all nine.
+ * so a draw needs a hand pair that happens to end 5-5 under greedy play.
  */
 const OPPONENT_SEED = process.env.E2E_OPPONENT_SEED ? Number(process.env.E2E_OPPONENT_SEED) : undefined;
 const FORCED_OPP_HAND = process.env.E2E_OPPONENT_HAND ? JSON.parse(process.env.E2E_OPPONENT_HAND) as number[] : null;
 const FORCED_BOT_HAND = process.env.E2E_BOT_HAND ? JSON.parse(process.env.E2E_BOT_HAND) as number[] : null;
 
-/** A chain-real opponent: queues first, plays greedily, commits/proves/settles. */
+/** A chain-real opponent: queues first, creates, plays greedily, proves, settles what it wins. */
 class ScriptedOpponent {
   private ws!: WebSocket;
   private gameId: string | null = null;
   private me: Player | null = null;
   private hand: number[] = [];
-  private onChainGameId: string | null = null;
-  private blinding: string | null = null;
-  private randomness: string[] | null = null;
-  private oppRandomness: string[] | null = null;
-  private oppBlinding: string | null = null;
-  private handProofSent = false;
+  private keyPair: GameKeyPair | null = null;
+  private theirKey: string | null = null;
+  private channel: GameChannel | null = null;
+  private secrets: GameSecrets | null = null;
+  /** Ours (the creator's), and the bot's. */
+  private record1: GameRecord | null = null;
+  private record2: GameRecord | null = null;
   private committed = false;
   private lastState: GameState | null = null;
-  private myHandProof: any = null;
-  private oppHandProof: any = null;
-  private readonly moveProofs = new Map<string, any>();
-  private oppAddress: string | null = null;
-  private myCommit: string | null = null;
-  private oppCommit: string | null = null;
-  private oppCardIds: number[] = [];
+  private readonly moveProofs = new Map<string, MoveProofData>();
   private pending: { moveNumber: number; cardId: number; row: number; col: number;
     boardBefore: GameState['board']; scoresBefore: [number, number] } | null = null;
   over: string | null = null;
@@ -109,10 +105,12 @@ class ScriptedOpponent {
 
   constructor(private chain: BotChain, private proofs: BotProofs) {}
 
-  /** Set once MATCH_FOUND lands, so a production run can assert it played the BOT. */
-  opponentWasBot: boolean | null = null;
-  /** The on-chain id, for reading the settled status afterwards. */
-  get onChainGameIdPublic(): string | null { return this.onChainGameId; }
+  /** The game's identity, for reading its resolution afterwards. Ours alone — never sent anywhere. */
+  get game(): { gameKey: string; record1: GameRecord; record2: GameRecord } | null {
+    return this.channel && this.record1 && this.record2
+      ? { gameKey: this.channel.gameKey, record1: this.record1, record2: this.record2 }
+      : null;
+  }
 
   async run(relayUrl?: string): Promise<void> {
     this.hand = FORCED_OPP_HAND ?? await this.chain.selectHand(5);
@@ -125,184 +123,133 @@ class ScriptedOpponent {
 
   private send(m: unknown) { this.ws.send(JSON.stringify(m)); }
 
+  private async keys() { return import('../../frontend/src/aztec/gameKeys.js'); }
+
+  private sendOpts() { return { node: this.chain.nodeClient, timeoutMs: 600 }; }
+
+  private async sendPeer(payload: unknown): Promise<void> {
+    const sealed = await (await this.keys()).sealPeerPayload(this.channel!.channelKey, this.gameId!, payload);
+    this.send({ type: 'PEER', gameId: this.gameId, ...sealed });
+  }
+
   private async handle(msg: any): Promise<void> {
     switch (msg.type) {
       case 'SESSION_ESTABLISHED':
         log('opponent', 'queueing');
         this.send({ type: 'QUEUE_MATCHMAKING', cardIds: this.hand });
         break;
-      case 'MATCH_FOUND': {
+      case 'MATCH_FOUND':
         this.gameId = msg.gameId;
         this.me = msg.playerNumber === 1 ? 'player1' : 'player2';
-        // opponentIsBot is no longer on the wire — players are not told who
-        // they are playing. Production mode confirms the bot took the game
-        // from the relay's own /queue view instead (see below).
-        this.opponentWasBot = null;
-        log('opponent', `matched as ${this.me} (opponentIsBot=${msg.opponentIsBot})`);
-        if (this.me === 'player1') await this.createOnChain();
+        log('opponent', `matched as ${this.me}`);
+        if (this.me !== 'player1') throw new Error('the bot only joins, so the scripted player must be the creator');
+        this.keyPair = await (await this.keys()).generateGameKeyPair();
+        this.send({ type: 'KEY_EXCHANGE', gameId: this.gameId, publicKey: this.keyPair.publicKey });
+        await this.maybeCreate();
         this.move(msg.gameState);
         break;
-      }
-      case 'OPPONENT_AZTEC_INFO':
-        if (msg.aztecAddress) this.oppAddress = String(msg.aztecAddress);
-        if (Array.isArray(msg.gameRandomness)) {
-          this.oppRandomness = msg.gameRandomness as string[];
-          await this.maybeProveHand();
-        }
-        if (this.me === 'player2' && msg.onChainGameId && !this.onChainGameId) {
-          this.onChainGameId = String(msg.onChainGameId);
-          await this.joinOnChain();
+      case 'OPPONENT_KEY':
+        this.theirKey = String(msg.publicKey);
+        await this.maybeCreate();
+        break;
+      case 'PEER': {
+        if (!this.channel) break;
+        const payload = parsePeerPayload(await (await this.keys()).openPeerPayload(
+          this.channel.channelKey, this.gameId!, { iv: msg.iv, ciphertext: msg.ciphertext }));
+        if (payload?.kind === 'RECORD' && !this.record2) {
+          this.record2 = payload.record;
+          log('opponent', 'the bot\'s record arrived — both hands are bound');
+          this.move(this.lastState ?? undefined);
+        } else if (payload) {
+          log('opponent', `PEER ${payload.kind}`);
         }
         break;
+      }
       case 'GAME_START':
       case 'GAME_STATE':
         await this.maybeProveMove(msg.gameState);
         this.move(msg.gameState);
         break;
-      case 'ON_CHAIN_STATUS':
+      case 'MOVE_PROVEN': {
+        const p = normalizeMoveProof(msg.moveProof);
+        if (p) this.moveProofs.set(p.startStateHash, p);
         break;
-      case 'HAND_PROOF':
-        if (msg.handProof?.cardCommit) {
-          this.oppHandProof = msg.handProof;
-          this.oppCommit = String(msg.handProof.cardCommit);
-          // We may have been holding our turn waiting for this; the relay will
-          // not push another GAME_STATE, because the missing move is ours.
-          this.move(this.lastState ?? undefined);
-        }
-        break;
-      case 'OPPONENT_BLINDING':
-        if (typeof msg.blindingFactor === 'string') this.oppBlinding = msg.blindingFactor;
-        break;
-      case 'MOVE_PROVEN':
-        if (msg.moveProof?.startStateHash) this.moveProofs.set(String(msg.moveProof.startStateHash), msg.moveProof);
-        break;
-      case 'GAME_OVER':
+      }
+      case 'GAME_OVER': {
         log('opponent', `game over: ${msg.winner}`);
-        // Whoever settles needs BOTH blinding factors to prove the card ids.
-        if (this.blinding && this.gameId) {
-          this.send({ type: 'SHARE_BLINDING', gameId: this.gameId, blindingFactor: this.blinding });
-        }
-        if (Array.isArray(msg.player1CardIds) && Array.isArray(msg.player2CardIds)) {
-          this.oppCardIds = this.me === 'player1' ? msg.player2CardIds : msg.player1CardIds;
-        }
-        // Mirror the bot's rule: the winner settles; a draw is single-settler P1.
-        // E2E_OPPONENT_SKIP_DRAW_SETTLE simulates the human closing the tab on a
-        // draw, which is the ONLY thing standing between the bot and ten
-        // permanently stranded cards — the abandonment claim cannot rescue a
-        // completed draw (it needs 1..8 move proofs; a draw has nine).
+        // Mirror the protocol: the winner settles; a draw by convention P1.
+        // E2E_OPPONENT_SKIP_DRAW_SETTLE simulates the human closing the tab on
+        // a draw, which the bot must then settle itself.
         const skipDraw = process.env.E2E_OPPONENT_SKIP_DRAW_SETTLE === '1' && msg.winner === 'draw';
         if (skipDraw) log('opponent', 'walking away from a DRAW without settling');
-        const iSettle = !skipDraw && (msg.winner === 'draw' ? this.me === 'player1' : msg.winner === this.me);
-        if (iSettle) { try { await this.settle(msg.winner); } catch (e) { log('opponent', `settle ERROR ${(e as Error).message}`); } }
+        const iSettle = !skipDraw && (msg.winner === 'draw' || msg.winner === this.me);
+        if (iSettle) { try { await this.settle(); } catch (e) { log('opponent', `settle ERROR ${(e as Error).message}`); } }
         this.over = msg.winner;
         break;
+      }
     }
   }
 
-  private async createOnChain(): Promise<void> {
-    const { gameId, randomness, blindingFactor, status } =
-      await this.chain.pxe.previewCreateGame(this.chain.address);
-    if (status !== 0) throw new Error(`stale nonce, status ${status}`);
-    this.onChainGameId = String(gameId);
-    this.blinding = blindingFactor;
-    this.randomness = randomness;
-    this.send({ type: 'SHARE_AZTEC_INFO', gameId: this.gameId, aztecAddress: this.chain.address, onChainGameId: gameId, gameRandomness: randomness });
+  /** Once both keys are known: commit our hand and send our record. */
+  private async maybeCreate(): Promise<void> {
+    if (this.channel || !this.keyPair || !this.theirKey || !this.gameId) return;
+    this.channel = await (await this.keys()).deriveGameChannel(this.keyPair, this.theirKey, this.gameId);
+    const pxe = this.chain.pxe;
+    const nonce = await pxe.readNoteNonce(this.chain.address);
+    this.secrets = await pxe.computeGameSecrets(this.chain.address, nonce);
+    this.record1 = await pxe.previewRecord(this.chain.address, this.channel.gameKey, this.hand, nonce);
     log('opponent', 'create_game…');
-    const tx = await this.chain.pxe.sendCreateGame(this.chain.address, this.hand, { node: this.chain.nodeClient, timeoutMs: 600_000 });
-    this.send({ type: 'TX_CONFIRMED', gameId: this.gameId, txType: 'create_game', txHash: tx });
-    log('opponent', `create_game mined ${String(tx).slice(0, 16)}…`);
+    await pxe.sendCreateGame(this.chain.address, this.channel.gameKey, this.hand, this.sendOpts());
+    this.send({ type: 'TX_CONFIRMED', gameId: this.gameId, txType: 'create_game' });
+    log('opponent', 'create_game mined — sending our record');
     this.committed = true;
-    await this.maybeProveHand();
-    this.move(this.lastState ?? undefined);
-  }
-
-  private async joinOnChain(): Promise<void> {
-    const { randomness, blindingFactor } =
-      await this.chain.pxe.previewJoinGame(this.chain.address, this.onChainGameId);
-    this.blinding = blindingFactor;
-    this.randomness = randomness;
-    this.send({ type: 'SHARE_AZTEC_INFO', gameId: this.gameId, aztecAddress: this.chain.address, onChainGameId: this.onChainGameId, gameRandomness: randomness });
-    log('opponent', 'join_game…');
-    const tx = await this.chain.pxe.sendJoinGame(this.chain.address, this.onChainGameId, this.hand, { node: this.chain.nodeClient, timeoutMs: 600_000 });
-    this.send({ type: 'TX_CONFIRMED', gameId: this.gameId, txType: 'join_game', txHash: tx });
-    log('opponent', `join_game mined ${String(tx).slice(0, 16)}…`);
-    this.committed = true;
-    await this.maybeProveHand();
-    this.move(this.lastState ?? undefined);
-  }
-
-  /** The bot's move proofs bind BOTH commitments, so we must publish ours. */
-  private async maybeProveHand(): Promise<void> {
-    if (this.handProofSent || !this.blinding || !this.oppRandomness || !this.gameId) return;
-    this.handProofSent = true;
-    const handProof = await this.proofs.proveHand({
-      cardIds: this.hand, blindingFactor: this.blinding, opponentRandomness: this.oppRandomness,
-    });
-    this.myHandProof = handProof;
-    this.myCommit = String(handProof.cardCommit);
-    this.send({ type: 'SUBMIT_HAND_PROOF', gameId: this.gameId, handProof });
-    log('opponent', 'hand proof submitted');
+    await this.sendPeer({ kind: 'RECORD', record: this.record1 });
     this.move(this.lastState ?? undefined);
   }
 
   /** Prove OUR move once the relay echoes it back — the bot does the same. */
   private async maybeProveMove(after: GameState | undefined): Promise<void> {
     const p = this.pending;
-    if (!p || !after || !this.me || !this.myCommit || !this.oppCommit) return;
+    if (!p || !after || !this.me || !this.record1 || !this.record2 || !this.secrets) return;
     // Exactly the state our move produced — see the bot's note: a later state
     // may show our card captured, failing "Owner not set correctly".
     if (after.board.flat().filter(c => c.card !== null).length !== p.moveNumber + 1) return;
     this.pending = null;
     this.proving += 1;
     try {
-      // Commits passed explicitly: the null checks above narrow them here, but
-      // that narrowing does not survive the call boundary.
-      await this.proveAndSend(p, after, this.myCommit, this.oppCommit);
+      const ended = after.status === 'finished';
+      const winnerId = !ended ? 0 : after.winner === 'player1' ? 1 : after.winner === 'player2' ? 2 : 3;
+      const raw = await this.proofs.proveMove({
+        cardId: p.cardId, row: p.row, col: p.col, currentPlayer: 1,
+        boardBefore: p.boardBefore, boardAfter: after.board,
+        scoresBefore: p.scoresBefore, scoresAfter: [after.player1Score, after.player2Score],
+        cardCommit1: this.record1[RECORD_HAND], cardCommit2: this.record2[RECORD_HAND],
+        gameEnded: ended, winnerId,
+        hand: { cardIds: this.hand, blindingFactor: this.secrets.blinding },
+      });
+      const kept = normalizeMoveProof(raw);
+      if (kept) this.moveProofs.set(kept.startStateHash, kept);
+      this.send({ type: 'SUBMIT_MOVE_PROOF', gameId: this.gameId, handIndex: 0, row: p.row, col: p.col, moveNumber: p.moveNumber, moveProof: raw });
+      log('opponent', `move proof ${p.moveNumber} submitted`);
+      this.myMoveProofs += 1;
+      if (ABANDON_AFTER > 0 && this.myMoveProofs >= ABANDON_AFTER) {
+        log('opponent', `ABANDONING after ${this.myMoveProofs} move(s) — closing the socket`);
+        this.abandoned = true;
+        this.close();
+      }
     } finally {
       this.proving -= 1;
     }
   }
 
-  /** Same one-move-per-turn guard as the bot; move() has three callers too. */
+  /** Same one-move-per-turn guard as the bot; move() has several callers too. */
   private scheduledFor: number | null = null;
-
-  private async proveAndSend(
-    p: NonNullable<ScriptedOpponent['pending']>, after: GameState,
-    myCommit: string, oppCommit: string,
-  ): Promise<void> {
-    const cur: 1 | 2 = this.me === 'player1' ? 1 : 2;
-    const ended = after.status === 'finished';
-    const winnerId = !ended ? 0 : after.winner === 'player1' ? 1 : after.winner === 'player2' ? 2 : 3;
-    const moveProof = await this.proofs.proveMove({
-      cardId: p.cardId, row: p.row, col: p.col, currentPlayer: cur,
-      boardBefore: p.boardBefore, boardAfter: after.board,
-      scoresBefore: p.scoresBefore, scoresAfter: [after.player1Score, after.player2Score],
-      cardCommit1: cur === 1 ? myCommit : oppCommit,
-      cardCommit2: cur === 1 ? oppCommit : myCommit,
-      gameEnded: ended, winnerId,
-      playerHandData: { cardIds: this.hand, blindingFactor: this.blinding, handIndex: 0 },
-    });
-    this.moveProofs.set(String(moveProof.startStateHash), moveProof);
-    this.send({ type: 'SUBMIT_MOVE_PROOF', gameId: this.gameId, handIndex: 0, row: p.row, col: p.col, moveNumber: p.moveNumber, moveProof });
-    log('opponent', `move proof ${p.moveNumber} submitted`);
-    this.myMoveProofs += 1;
-    if (ABANDON_AFTER > 0 && this.myMoveProofs >= ABANDON_AFTER) {
-      log('opponent', `ABANDONING after ${this.myMoveProofs} move(s) — closing the socket`);
-      this.abandoned = true;
-      this.close();
-    }
-  }
 
   private move(state: GameState | undefined): void {
     if (state) this.lastState = state;
     // Same gates as the bot: do not outrun our own commit, and do not play a
-    // card we could not prove. A move proof binds BOTH card commitments, and it
-    // needs the EXACT post-move board — so a card played before the opponent's
-    // hand proof arrives is unprovable forever, and one unprovable move makes
-    // the game unsettleable. As player 1 we move FIRST, so this is the normal
-    // case here, not an edge case: it cost a full chain run (moves 8/9).
-    if (!this.committed) return;
-    if (!this.myCommit || !this.oppCommit) return;
+    // card we could not prove — a move proof binds BOTH records' hands.
+    if (!this.committed || !this.record2) return;
     if (ABANDON_BEFORE_MOVE && !this.abandoned) {
       log('opponent', 'ABANDONING before playing a single card — closing the socket');
       this.abandoned = true;
@@ -310,9 +257,6 @@ class ScriptedOpponent {
       return;
     }
     if (!state || state.status !== 'playing' || state.currentTurn !== this.me) return;
-    // Overridable so a run can force a BOT win: the bot settling is a distinct
-    // on-chain path from the opponent settling (it is the side that takes a
-    // card), and greedy-vs-greedy does not reliably produce one.
     const moveNumber = state.board.flat().filter(c => c.card !== null).length;
     if (this.scheduledFor !== null && this.scheduledFor >= moveNumber) return;
     const m = chooseBotMove(state, {
@@ -320,7 +264,7 @@ class ScriptedOpponent {
       ...(OPPONENT_SEED !== undefined ? { seed: OPPONENT_SEED } : {}),
     });
     this.scheduledFor = moveNumber;
-    const card = (this.me === 'player1' ? state.player1Hand : state.player2Hand)[m.handIndex];
+    const card = state.player1Hand[m.handIndex];
     // Paced like the bot, so proving can keep up with the relay.
     setTimeout(() => {
       this.pending = {
@@ -331,51 +275,45 @@ class ScriptedOpponent {
     }, 2_000);
   }
 
-  private async settle(winner: string): Promise<void> {
+  private async settle(): Promise<void> {
     // Wait for the transcript, as the bot does — proving trails the relay.
     const deadline = Date.now() + 120_000;
-    while (Date.now() < deadline) {
-      if (this.myHandProof && this.oppHandProof && this.moveProofs.size >= 9 && this.oppBlinding) break;
-      await new Promise(r => setTimeout(r, 500));
-    }
-    if (!this.myHandProof || !this.oppHandProof || this.moveProofs.size < 9 || !this.oppBlinding) {
-      throw new Error(
-        `transcript incomplete (moves ${this.moveProofs.size}/9` +
-        `${this.oppBlinding ? '' : ', no opponent blinding'})`,
-      );
-    }
-    const { handVk, moveVk } = await this.proofs.verificationKeys();
+    while (Date.now() < deadline && this.moveProofs.size < 9) await new Promise(r => setTimeout(r, 500));
+    const { ordered, winner } = checkTranscript([...this.moveProofs.values()], this.record1!, this.record2!);
+    const prizeMove = choosePrizeMove(ordered, winner);
     const { Fr } = await import('@aztec-labs/aztec.js/fields');
-    const { AztecAddress } = await import('@aztec-labs/aztec.js/addresses');
-    const { buildProcessGameArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
-    const iAmP1 = this.me === 'player1';
-    const args = await buildProcessGameArgs({
-      Fr, AztecAddress,
-      onChainGameId: this.onChainGameId!,
-      handVk, moveVk,
-      handProof1: iAmP1 ? this.myHandProof : this.oppHandProof,
-      handProof2: iAmP1 ? this.oppHandProof : this.myHandProof,
-      moveProofs: [...this.moveProofs.values()],
-      opponentAddress: this.oppAddress!,
-      selectedCardId: winner === 'draw' ? 0 : (this.oppCardIds[0] ?? 0),
-      // SECURITY PROBE (E2E_TAMPER_SETTLE_CARDS): settle naming card ids we
-      // never committed. The contract binds the hand PROOF's card_commit to the
-      // stored commitment, but nothing ties these ids to that commitment — so
-      // if this mints, a winner can name any cards they like.
-      myCardIds: TAMPER_CARDS ?? this.hand,
-      opponentCardIds: this.oppCardIds,
-      myRandomness: this.randomness!,
-      opponentRandomness: this.oppRandomness!,
-      myBlinding: this.blinding!,
-      opponentBlinding: this.oppBlinding!,
+    const { buildSettleGameArgs } = await import('../../frontend/src/aztec/settlementArgs.js');
+    const args = await buildSettleGameArgs({
+      Fr, gameKey: this.channel!.gameKey, record1: this.record1!, record2: this.record2!,
+      moveVk: await this.proofs.moveVerificationKey(),
+      moveProofs: [...this.moveProofs.values()], prizeMove,
     });
-    log('opponent', 'settling…');
-    const { txHash } = await this.chain.pxe.sendProcessGame(this.chain.address, args, { node: this.chain.nodeClient, timeoutMs: 600_000 });
+    await this.sendPeer({ kind: 'SETTLING', prizeMove });
+    log('opponent', `settling (prize move ${prizeMove})…`);
+    const txHash = await this.chain.pxe.sendSettleGame(this.chain.address, args, this.sendOpts());
     this.settled = true;
+    await this.sendPeer({ kind: 'SETTLED', txHash });
     log('opponent', `settled on-chain ${String(txHash).slice(0, 16)}…`);
   }
 
   close() { this.ws?.close(); }
+}
+
+/** Whether the game's `done` nullifier is on-chain: settled, unwound — resolved either way. */
+async function resolvedOnChain(chain: BotChain, game: { gameKey: string; record1: GameRecord; record2: GameRecord }): Promise<boolean> {
+  const nullifiers = await chain.pxe.gameNullifiers(chain.address, game.gameKey, game.record1, game.record2);
+  const [done] = await chain.lookupNullifiers([nullifiers[NULLIFIER_INDEX.done]]);
+  return done !== null;
+}
+
+/** The bot's journal entries for this run (newest first). */
+function journalled(): JournalRecord[] {
+  if (!existsSync(JOURNAL_DIR)) return [];
+  return readdirSync(JOURNAL_DIR)
+    .filter(f => f.endsWith('.json'))
+    .map(f => { try { return JSON.parse(readFileSync(join(JOURNAL_DIR, f), 'utf-8')) as JournalRecord; } catch { return null; } })
+    .filter((r): r is JournalRecord => r !== null && r.version === 2)
+    .sort((a, b) => b.committedAt - a.committedAt);
 }
 
 /** A chain for the production run, independent of the local stack's mk(). */
@@ -398,7 +336,7 @@ async function main(): Promise<void> {
     game: process.env.VITE_GAME_CONTRACT_ADDRESS!,
     token: process.env.VITE_TOKEN_CONTRACT_ADDRESS,
   };
-  if (!addresses.nft || !addresses.game) throw new Error('source packages/frontend/.env first');
+  if (!addresses.nft || !addresses.game || !addresses.token) throw new Error('source packages/frontend/.env first');
 
   // Production mode: drive the LIVE relay and let the DEPLOYED bot be the
   // opponent. Everything else here builds a local stack, which is the wrong
@@ -416,23 +354,12 @@ async function main(): Promise<void> {
     // The bot settles when it wins; give that time to land.
     await new Promise(r => setTimeout(r, 120_000));
 
-    const status = player.onChainGameIdPublic
-      ? Number(await oppChain.pxe.readGameStatus(oppChain.address, player.onChainGameIdPublic))
-      : 0;
+    const game = player.game;
+    const resolved = game ? await resolvedOnChain(oppChain, game) : false;
     console.log('\n=== PRODUCTION GAME ===');
-    // The relay's /queue is an operator view, not something a player's client
-    // is told — which is the only place left that knows a bot was involved.
-    let botServed = false;
-    try {
-      const q = await (await fetch(`${EXTERNAL_RELAY.replace(/^ws/, 'http')}/queue`)).json() as { botsQueued?: number };
-      botServed = (q.botsQueued ?? 0) >= 0;
-    } catch { /* relay view unavailable; fall back to the settlement check */ }
-    console.log('  relay reachable      :', botServed ? 'yes' : 'no');
     console.log('  result               :', player.over ?? 'TIMED OUT');
-    console.log('  on-chain status      :', status, status === 3 ? '(SETTLED)' : '');
-    // A settled game against the only other participant in the arena is the
-    // real evidence; the disclosure flag it used to assert no longer exists.
-    const ok = player.over !== null && status === 3;
+    console.log('  resolved on-chain    :', resolved);
+    const ok = player.over !== null && resolved;
     console.log(ok
       ? '\n  ✓ A REAL PLAYER GOT A GAME FROM THE DEPLOYED BOT AND IT SETTLED'
       : '\n  ✗ production did not serve a complete game — see above');
@@ -474,9 +401,7 @@ async function main(): Promise<void> {
 
     // GAME_OVER is not the end of our work. The final move's proof is generated
     // AFTER the relay declares the game over, so exiting here drops it — and if
-    // the BOT won, the bot is the one settling, and it will wait out its whole
-    // settle window for a 9th link that nobody is ever going to send. Cost a
-    // full run: "transcript incomplete: 1 move proof(s)".
+    // the BOT won, it is settling and needs that ninth link.
     const flushBy = Date.now() + 120_000;
     while (Date.now() < flushBy && !opponent.transcriptFlushed) await new Promise(r => setTimeout(r, 500));
     if (!opponent.transcriptFlushed) log('opponent', 'WARNING: exiting with proofs still in flight');
@@ -496,7 +421,7 @@ async function main(): Promise<void> {
   const botProofs = new BotProofs(m => log('bot:proofs', m));
   const { GameJournal } = await import('../src/GameJournal.js');
   const { AbandonmentSweep } = await import('../src/AbandonmentSweep.js');
-  const journal = new GameJournal(`packages/bot/.artifacts/games-e2e`);
+  const journal = new GameJournal(JOURNAL_DIR);
   const bot = new ArenaBot(
     { ...configFromEnv(), wsUrl: `ws://localhost:${PORT}`, httpUrl: `http://localhost:${PORT}`,
       joinThresholdMs: 1_000, pollIntervalMs: 500,
@@ -520,15 +445,9 @@ async function main(): Promise<void> {
   const timeout = new Promise<number>(r => setTimeout(() => r(-1), 30 * 60_000));
   const code = await Promise.race([childExit, timeout]);
 
-  // The child exits at GAME_OVER, but the winner's settlement runs AFTER that —
-  // gathering the last relayed move proof, building the transcript, then a slow
-  // process_game. Killing the bot here would abort a settlement in flight, which
-  // is exactly what the harness is meant to observe.
   // Fail fast on a card shortage. The bot logs it and correctly stays idle, but
-  // the harness would then sit out its full 30-minute deadline waiting for a
-  // game that can never start — a seven-minute stare at an empty log before you
-  // find the one line that explains it. The bot's collection is a LOSS BUDGET
-  // and repeated runs drain it, so this is the ordinary way a run session ends.
+  // the harness would then sit out its full deadline waiting for a game that can
+  // never start. The bot's collection is a LOSS BUDGET and repeated runs drain it.
   const shortage = setInterval(() => {
     const e = bot.getStats().lastError;
     if (e && /holds only/.test(e)) {
@@ -540,28 +459,18 @@ async function main(): Promise<void> {
   }, 2_000);
   shortage.unref?.();
 
-  const settleDeadline = Date.now() + 10 * 60_000;
-  while (Date.now() < settleDeadline) {
-    const st = bot.getStats();
-    if (st.settlements > 0 || st.settleFailures > 0 || st.state === 'idle') break;
-    await new Promise(r => setTimeout(r, 2_000));
-  }
-
   // --- Abandonment mode: the opponent walked out, so nothing will ever settle
-  // this game normally. Prove the cards actually come BACK, which is the only
-  // thing that makes an unattended bot viable.
+  // this game normally. Prove the cards actually come BACK: claim, wait out the
+  // dispute window, finalize, import — one sweep step per pass.
   if (ABANDON_AFTER > 0 || ABANDON_BEFORE_MOVE) {
-    const before = await botChain.readCards();
-    const outstanding = journal.outstanding();
+    const before = await botChain.readCards({ force: true });
     console.log('\n=== ABANDONMENT RECOVERY ===');
-    console.log('  journalled games:', outstanding.length,
-                outstanding.map(r => `${r.onChainGameId.slice(0, 12)}… ${r.moveProofs.length}/9 moves`));
+    console.log('  journalled games:', journalled().length);
     console.log('  spendable before:', before.length);
 
     // The sandbox's automine sequencer only builds a block on TX ACTIVITY, so
-    // the dispute window — measured in BLOCKS — never opens on its own while the
-    // sweep sits waiting for it. Nudge it. Testnet needs none of this; blocks
-    // arrive there whether or not we are doing anything.
+    // the chain's clock — which every abandonment bar is measured on — stands
+    // still while the sweep waits. Nudge it.
     const nudge = setInterval(() => {
       void fetch(PXE_URL, {
         method: 'POST',
@@ -576,60 +485,54 @@ async function main(): Promise<void> {
       log: m => log('sweep', m),
       minAgeMs: 0,          // the game is known-dead here; no need to wait it out
     });
-    const swept = await sweep.run();
+    const until = Date.now() + 45 * 60_000;
+    while (Date.now() < until && journal.outstanding().length > 0) {
+      await sweep.run();
+      if (journal.outstanding().length > 0) await new Promise(r => setTimeout(r, 20_000));
+    }
     clearInterval(nudge);
-    // The PXE needs a beat to surface the re-minted notes.
-    await new Promise(r => setTimeout(r, 5_000));
-    const after = await botChain.readCards();
+    const after = await botChain.readCards({ force: true });
 
-    console.log('  sweep stats     :', JSON.stringify(swept));
+    console.log('  sweep stats     :', JSON.stringify(sweep.stats));
     console.log('  spendable after :', after.length, `(+${after.length - before.length})`);
     bot.stop();
 
-    const ok = swept.recovered === 1 && after.length > before.length;
+    const ok = sweep.stats.recovered >= 1 && after.length > before.length;
     console.log(ok
       ? '\n  ✓ ABANDONED GAME RECOVERED — committed cards are back'
       : '\n  ✗ recovery failed — cards are still stranded');
     process.exit(ok ? 0 : 1);
   }
 
+  // The bot settles a win (and a draw the opponent leaves) after GAME_OVER, and
+  // imports from the opponent's settlement otherwise: wait for its journal
+  // entry to be marked resolved — which only happens once our cards are back.
+  const resolveBy = Date.now() + 10 * 60_000;
+  while (Date.now() < resolveBy && !journalled()[0]?.resolution) {
+    await new Promise(r => setTimeout(r, 2_000));
+  }
+
   const stats = bot.getStats();
+  const rec = journalled()[0] ?? null;
   console.log('\n=== RESULT ===');
   console.log('  opponent exit  :', code === -1 ? 'TIMED OUT' : code);
   console.log('  bot stats      :', JSON.stringify(stats));
+  console.log('  journal        :', rec ? `${rec.outcome ?? '?'} — ${rec.resolution ?? 'UNRESOLVED'}` : 'none');
   // A game that merely FINISHED off-chain proves nothing about the chain path.
-  // Require the on-chain work to have actually happened, or this harness would
-  // pass while the relay game outran every commit — which is exactly what it
-  // did the first time it was run.
+  // Require the bot's own record to say the game resolved and its cards came back.
   const noFailures = stats.moveFailures === 0 && stats.commitFailures === 0
-    && stats.proofFailures === 0 && stats.settleFailures === 0;
-  // Either side may settle — the winner does. So assert the GAME reached the
-  // settled state on-chain, read independently, rather than that the BOT settled.
-  let onChainSettled = false;
-  try {
-    if (!stats.lastOnChainGameId) throw new Error('bot never learned an on-chain game id');
-    // Read through the ALREADY-CONNECTED bot chain, not a fresh ChainClient.
-    // A second client has to resolve the contracts from scratch, and on a
-    // rate-limited public node that fails — reporting "GAME NOT SETTLED" for a
-    // game that had in fact settled. A verifier that cries wolf is worse than
-    // no verifier.
-    const status = await botChain.pxe.readGameStatus(botChain.address, stats.lastOnChainGameId);
-    onChainSettled = Number(status) === 3;   // 3 = settled
-    console.log(`  on-chain status  : ${status}`);
-  } catch (e) {
-    console.log('  (could not read on-chain status:', (e as Error).message, ')');
-  }
-  console.log('  on-chain settled:', onChainSettled);
-  const ok = code === 0 && stats.gamesPlayed === 1 && noFailures && onChainSettled;
+    && stats.proofFailures === 0 && stats.settleFailures === 0 && stats.cardsUnimported === 0;
+  const resolved = rec?.resolution === 'settled';
+  const ok = code === 0 && stats.gamesPlayed === 1 && noFailures && resolved;
   if (!ok) {
     console.log('  MISSING:', [
       code !== 0 && 'opponent exited non-zero',
       stats.gamesPlayed !== 1 && 'no completed game',
       !noFailures && 'failures recorded',
-      !onChainSettled && 'GAME NOT SETTLED ON-CHAIN — the relay game likely outran the proofs',
+      !resolved && 'GAME NOT SETTLED (or the bot did not take its cards back)',
     ].filter(Boolean).join('; '));
   }
-  console.log(ok ? '\n  ✓ FULL CHAIN GAME COMPLETED (committed, proved, settled)'
+  console.log(ok ? '\n  ✓ FULL CHAIN GAME COMPLETED (committed, proved, settled, imported)'
                  : '\n  ✗ chain path incomplete — see MISSING above');
 
   bot.stop();

@@ -16,7 +16,7 @@ const stubBot = (over: Partial<ReturnType<ArenaBot['getStats']>> = {}) => ({
   getStats: () => ({
     state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
     joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0,
-    settleFailures: 0, settlements: 0, lastOnChainGameId: null,
+    settleFailures: 0, settlements: 0,
     abandonedGames: 0, cardsStranded: 0, lastError: null, ...over,
   }),
 }) as unknown as ArenaBot;
@@ -71,11 +71,23 @@ describe('bot health endpoint', () => {
     expect(status).toBe(404);
   });
 
-  it('never exposes keys or card contents', async () => {
-    const get = await serve(stubBot({ lastOnChainGameId: '0xabc' }));
+  it('never exposes keys, card contents, or anything naming a game on-chain', async () => {
+    const get = await serve(stubBot({
+      game: {
+        relayGameId: 'room-1', playerNumber: 2, keyed: true, opponentRecord: true, committed: true,
+        moveProofs: 3, oweAMove: false, opponentGoneFor: null, ageSeconds: 40, settling: false,
+      },
+      journal: [{ relayGameId: 'room-0', phase: 'joined', moveProofs: 9, outcome: 'loss', ageSeconds: 99, blockedBy: null }],
+    } as never));
     const { body } = await get('/health');
-    const keys = Object.keys(body).join(',');
-    expect(keys).not.toMatch(/secret|salt|signingKey|cardIds|hand/i);
+    // Every key at every depth: a game key, a record, a nullifier or a tx hash
+    // would let whoever reads this find the game on-chain.
+    const keys: string[] = [];
+    const walk = (v: unknown) => {
+      if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { keys.push(k); walk(x); }
+    };
+    walk(body);
+    expect(keys.join(',')).not.toMatch(/secret|salt|signingKey|cardIds|hand|gameKey|record\d|nullifier|txHash|onChain|nonce/i);
   });
 });
 
@@ -85,7 +97,7 @@ describe('health surfaces the number that predicts going idle', () => {
       getStats: () => ({
         state: 'idle', gamesPlayed: 0, wins: 0, losses: 0, draws: 0,
         joinFailures: 0, moveFailures: 0, commitFailures: 0, proofFailures: 0,
-        settleFailures: 0, settlements: 0, lastOnChainGameId: null,
+        settleFailures: 0, settlements: 0,
         abandonedGames: 0, cardsStranded: 0, spendableCards: 7, lastError: null,
       }),
     } as unknown as import('../src/ArenaBot.js').ArenaBot;
