@@ -1,5 +1,15 @@
 # Card notes on v6: `offchain_receive` instead of `import_note`
 
+> **Since the private-games redesign ([PRIVATE_GAMES.md](PRIVATE_GAMES.md),
+> Nov 2026):** starter cards and packs still deliver exactly as below. The
+> game mints are gone: `mint_for_game_winner`, `mint_for_game_loser`,
+> `mint_for_game_draw_offchain`, the abandoned-game recovery and the loser's
+> relayed plaintext. A game's payouts are now prepared when each player
+> commits and released by `settle_game`, `cancel_game` or
+> `finalize_abandoned_game` with no message; each owner rebuilds their own
+> notes from that transaction and imports them (§3.1, §5.4). Card notes are
+> a `CardNote` with a two-step hash.
+
 **Status:** shipped with the 22 November 2026 redeploy; see [Steps](#steps).
 Every player-facing card mint in production delivers its notes as offchain
 messages. Our contracts are not upgradeable, so this waited for a redeploy;

@@ -1,5 +1,17 @@
 # Abandoned-game handling — permissionless, with clean UX (June 2026)
 
+> **Superseded by [PRIVATE_GAMES.md](PRIVATE_GAMES.md) (Nov 2026).** The
+> contract flow below no longer exists: no `claim_abandoned_game` with hand
+> and dummy proofs, no `settle_abandoned_game`, no game statuses, no 5-block
+> window, and no card taken from the abandoner. Abandonment is now claim →
+> contest → finalize on nullifiers, timed by chain time
+> (`MIN_ABANDON_SECONDS` 480, `DISPUTE_SECONDS` 600); an uncontested claim
+> returns both hands in one transaction anyone may send (§3.4, §5.5, §8).
+> What still holds is the relay's idle warning in the Message contract
+> (`GAME_ABANDONMENT_WARNING`: warned from 30 s, "claimable" at 60 s), minus
+> the card ids it used to carry. The claim itself still waits for the
+> chain's 480 s bar.
+
 **Goal (Zac):** a player abandons (no move in 60s) → frontend warns BOTH players → the
 non-abandoning player triggers dispute resolution AND resolves it (a smart-contract delay
 allows disputes to be contested + resolved) → claims a card from the abandoner if any cards
