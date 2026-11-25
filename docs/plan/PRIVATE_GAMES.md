@@ -380,27 +380,85 @@ Block numbers for the clock checks come from the node's nullifier lookups:
 Phase A removes everything identifying, but the relay still sees hands and
 moves, because it enforces the rules. Phase B makes it a pure pipe.
 
-**Moves.**
-- `QUEUE_MATCHMAKING` no longer carries card ids.
-- `PLACE_CARD` and the relay's `GAME_STATE` go. Each client keeps the board
-  with `packages/game-logic`.
-- A move travels as `PEER {kind: 'move'}` with `{cardId, slot, row, col, moveNumber, proof}`
-  encrypted. The `kind` is visible so the relay can still time turns for
-  abandonment warnings.
-- The receiver:
-  - applies the move;
-  - checks that the proof's start and end hashes equal its own;
-  - checks `placed_card_id`;
-  - verifies the proof.
+The relay keeps:
+- matchmaking (`QUEUE_MATCHMAKING` with **no** card ids);
+- room membership;
+- an inbox for offline players;
+- turn timing for abandonment warnings.
 
-**The three open cards.** These are revealed peer to peer with an
-`open cards` proof (`prove_hand` reshaped) so they are binding.
+It no longer has a rules engine, a `GAME_STATE`, a `GAME_OVER` or any card id.
 
-**Reconnects.** The relay replays buffered PEER messages, and the client
-rebuilds the game from its stored transcript.
+### 6.1 Messages
 
-**Outcome.** The relay sees IPs, room pairing, message kinds and timing. It
-sees no cards, moves, results, records or keys.
+| Direction | Message | Relay sees |
+|---|---|---|
+| client → relay | `QUEUE_MATCHMAKING {}` | nothing about the hand |
+| relay → client | `MATCH_FOUND {gameId, playerNumber}` | — |
+| client → relay | `KEY_EXCHANGE` / `PEER` | as in Phase A |
+| client → relay | `MOVE {gameId, moveNumber, iv, ciphertext}` | the move NUMBER only |
+| relay → client | `MOVE {gameId, moveNumber, iv, ciphertext}` | forwarded and buffered |
+| relay → client | `ROOM_STATE {gameId, playerNumber, movesMade, opponentConnected}` | on RESUME |
+| relay → client | `GAME_ABANDONMENT_WARNING {gameId, idlePlayer, secondsIdle, secondsUntilClaimable}` | timing only |
+
+**Turn tracking.** The relay accepts a `MOVE` only from the player whose turn
+it is: player 1 at even move numbers, player 2 at odd. It accepts move numbers
+strictly in order, 0..8. That is all it needs to time turns and to know when
+all nine moves are in. It can't tell a winning move from a losing one.
+
+**Removed:** `PLACE_CARD`, `SUBMIT_MOVE_PROOF`/`MOVE_PROVEN`, `GAME_STATE`,
+`GAME_OVER`, `CREATE_GAME`/`JOIN_GAME`/`LIST_GAMES`/`GET_GAME` (the unused
+lobby), and the bot win/loss counters. The bot reports its own results.
+
+Sealed payloads, all with `sealPeerPayload`:
+
+- **`MOVE` ciphertext:** `{cardId, slot, row, col, proof, publicInputs}`.
+- **PEER `OPEN_CARDS`:** `{cards: [c0, c1, c2], proof, publicInputs}`, sent
+  once both records are on-chain.
+- **PEER kinds carried over from Phase A:** `RECORD`, `SETTLING`, `SETTLED`,
+  `CANCELLED`.
+
+### 6.2 Client state
+
+Each client runs the game itself with `packages/game-logic`:
+
+- **Hands.** Its own hand is the five committed cards, in committed order. The
+  opponent's hand is the three proven open cards plus two placeholders, which
+  become real when they are played. A move names its slot, so the client
+  replaces that slot's placeholder before applying the move.
+- **Scores.** A score is board cells owned plus cards left in hand. The hand
+  count is known even when the cards aren't.
+- **Board.** The board, turn and original owners are public to both players,
+  as today.
+
+### 6.3 Checking the opponent's moves
+
+On each `MOVE` the receiver:
+
+1. **Bounds-checks the move:** the card is the opponent's open card at that
+   slot (or a hidden slot not yet played), and the cell is empty.
+2. **Applies the move locally** and computes the state hashes before and after
+   (pedersen over the 30-field preimage, `computeBoardStateHash`).
+3. **Checks the proof's public inputs:** the commitments equal the two records'
+   `hand_commit`s; start and end equal its own hashes; `placed_card_id` and
+   `placed_slot` equal the move; `game_ended` and `winner_id` agree with its
+   own board.
+4. **Verifies the proof** with the `game_move` VK (bb.js).
+
+A move that fails any check is rejected. The UI reports it, and the honest
+player's remedy is the abandonment path, since such a game can never settle.
+The same checks apply to `OPEN_CARDS`, against the `prove_hand` (open-cards)
+VK.
+
+### 6.4 Reconnects
+
+The client persists the transcript (moves, proofs, open cards, both records,
+its key pair). On RESUME the relay replays the inbox and sends `ROOM_STATE`;
+the client rebuilds the board from its stored moves plus the replayed ones.
+
+### 6.5 Outcome
+
+The relay sees IPs, room pairing, message kinds and sizes, the move count and
+its timing. It sees no cards, moves, results, records or keys.
 
 ## 7. Bot, relay, tooling
 
