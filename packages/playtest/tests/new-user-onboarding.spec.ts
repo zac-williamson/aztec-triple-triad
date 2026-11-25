@@ -31,7 +31,7 @@
  */
 import { test, expect } from '@playwright/test';
 import { PlayerDriver } from '../src/player.js';
-import { ChainClient, GAME_STATUS } from '../src/chain.js';
+import { ChainClient } from '../src/chain.js';
 import { createFundedL1Account, refundTreasury, type InjectedWallet } from '../src/walletShim.js';
 import { readStackInfo, TESTNET } from '../src/env.js';
 
@@ -40,11 +40,11 @@ const STARTER_CARDS = [1, 2, 3, 4, 5];
  * Play badly on purpose, so the BOT wins.
  *
  * Settlement has two halves and they are not symmetric: the winner settles,
- * the loser waits to be handed back the notes for its returned cards. The
- * default strategy here beats the bot most of the time, which left the loser's
- * half unexercised — and that is exactly where a bug lived (the bot never sent
- * those notes, so losing to it cost a player four cards and hung their client).
- * Set E2E_PLAY_TO_LOSE=1 to cover that half deliberately.
+ * the loser finds that tx and imports its own returned cards from it. The
+ * default strategy here beats the bot most of the time, which leaves the
+ * loser's half unexercised — and that half is where a bug lived once (losing
+ * to the bot cost a player four cards and hung their client). Set
+ * E2E_PLAY_TO_LOSE=1 to cover it deliberately.
  */
 const PLAY_TO_LOSE = process.env.E2E_PLAY_TO_LOSE === '1';
 /** The bridge is the slow part: three L1 blocks plus L1->L2 inclusion. */
@@ -152,13 +152,15 @@ test('a new player with only an Ethereum account plays and settles a game', asyn
     }
 
     // ---- The chain is the judge ---------------------------------------------
+    // A game leaves no public status: it is settled when its `done` nullifier
+    // exists, computed from the key and records this player stored.
     const chain = await ChainClient.connect(stack.addresses!);
     const onChainGameId = (await player.phase()).chain.onChainGameId;
     expect(onChainGameId, 'the game reached the chain').toBeTruthy();
 
-    const status = await chain.gameStatus(onChainGameId!);
-    expect(status, `game ${onChainGameId} is settled on-chain`).toBe(GAME_STATUS.settled);
-    log(`on-chain status ${status} (SETTLED) for game ${onChainGameId}`);
+    const state = await chain.waitForState(await player.gameRef(inGame.ws.gameId!),
+      ['created', 'seat2', 'joined', 'done'], 5 * 60_000, `game ${onChainGameId} settled on-chain`);
+    log(`on-chain nullifiers [${state.present.join(', ')}] (SETTLED) for game ${onChainGameId}`);
 
     // What the player is left holding is the whole point of the wager, and it
     // is the slowest thing to settle: the notes land on-chain first, are

@@ -73,9 +73,10 @@ export default async function globalSetup(): Promise<void> {
     info.addresses = readContractAddresses();
     writeFileSync(STACK_INFO_PATH, JSON.stringify(info, null, 2));
     console.log('[stack] attached to running stack (reuse mode)');
-    // Anything measured in BLOCKS (the abandoned-game dispute window is five)
-    // never elapses on a local sandbox while a test waits: its automine
-    // sequencer only builds on tx activity. Testnet needs no help.
+    // The abandonment clocks are chain SECONDS, and a local sandbox's clock
+    // only moves when a block is built — its automine sequencer builds on tx
+    // activity alone. Keep it at one block per slot (src/blockNudge.ts).
+    // Testnet needs no help.
     if (!TESTNET) startBlockNudge(PXE_URL, (m: string) => console.log(`[stack] ${m}`));
     return;
   }

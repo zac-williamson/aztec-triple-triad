@@ -259,10 +259,12 @@ async function main() {
     // STOP_BEFORE_SETTLE walks away from a game we won, on purpose.
     //
     // It builds the one state nothing could be tested against: a COMPLETE
-    // game — all nine moves played, all eleven proofs exchanged — that nobody
-    // ever settles. That is the n == 9 branch of claim_abandoned_game, and it
-    // is unreachable in normal play because the winner always settles within
-    // about a minute and a draw is settled by convention.
+    // game — all nine moves played, all nine move proofs exchanged — that
+    // nobody settles. The bot's abandonment sweep must then settle it on its
+    // merits (a full transcript outranks any claim; anyone holding both records
+    // and the transcript may settle), and that path is unreachable in normal
+    // play because the winner always settles within about a minute and a draw
+    // is settled by convention.
     //
     // Three earlier attempts tried to RACE the settlement, polling the bot
     // every five seconds and killing this process when it saw nine proofs.
@@ -282,10 +284,10 @@ async function main() {
       // this whole feature exists to prevent, and an earlier version of this
       // block did exactly that while logging "settling normally instead".
       const health = process.env.ARENA_HEALTH_URL ?? 'https://ws.aztec-arena.com/arena-health';
-      // OUR game's id. Both players share it — player 1 derives it in-circuit
-      // and the bot joins that same id — so it is what identifies our entry in
-      // the bot's worklist.
-      const ourGameId = (await phase())?.chain?.onChainGameId ?? null;
+      // OUR game's relay room. The bot's worklist names games by room only: a
+      // private game has no public id, and the bot publishes nothing that would
+      // link a room to the chain (docs/plan/PRIVATE_GAMES.md).
+      const ourGameId = (await phase())?.ws?.gameId ?? null;
       let proofs = -1;
       for (let i = 0; winner === 'player1' && i < 60; i++) {
         proofs = await fetch(health, { cache: 'no-store' })
@@ -301,7 +303,7 @@ async function main() {
             // game — reading it reported 8 proofs for a game that had 9 and
             // would have thrown away a good run as a false negative.
             const mine = ourGameId
-              ? journal.find(j => j.onChainGameId === ourGameId)
+              ? journal.find(j => j.relayGameId === ourGameId)
               : journal.reduce((a, b) => (b.ageSeconds < a.ageSeconds ? b : a));
             return mine ? mine.moveProofs : -1;
           })
@@ -356,7 +358,7 @@ async function main() {
       const isDraw = winner === 'draw';
       log(isDraw
         ? 'a draw — whichever side settles it, one settlement ends the game'
-        : 'the bot won — waiting for it to settle and hand our cards back');
+        : 'the bot won — waiting for it to settle, then importing our own cards from its tx');
       const got = await page.waitForFunction(draw => {
         const p = window.__triadTest?.phase();
         if (!p) return false;

@@ -99,8 +99,9 @@ which is the point. This is what caught the `DepositToAztecPublic` ABI bug that
 every mocked unit test agreed was fine.
 
 Settlement has two halves and the default strategy usually wins, which leaves
-the losing half — where the winner has to hand back the loser's returned cards
-— unexercised. That is where the second bug lived. Cover it deliberately:
+the losing half — where the loser finds the winner's settle tx and imports its
+own returned cards from it — unexercised. That half is where the second bug
+lived. Cover it deliberately:
 
 ```bash
 E2E_PLAY_TO_LOSE=1 PLAYTEST_TESTNET=1 ...   # same vars, plays to lose
@@ -135,7 +136,7 @@ brand-new Nulo player. Ends with one `RESULT: pass|fail …` line.
 | Interaction layer | `packages/frontend/src/testkit/` | `window.__triadTest`: live-camera projection to canvas pixels, state snapshots, PXE reads on the app's serial queue |
 | Player driver | `src/player.ts` | DOM screens via testids, 3D board via real pointer events, state-predicate waits (no sleeps) |
 | Rules mirror | `src/expected.ts` | game-logic replay; board cross-checked on both browsers after every move |
-| Chain validator | `src/chain.ts` | Harness-owned node client; public game status/players, independent of both PXEs |
+| Chain validator | `src/chain.ts` | Harness-owned node client, independent of both PXEs. A private game has no public status or players, so it reads the game's nullifiers: `game_nullifiers` (the Game contract's utility, run in the harness's own wallet) over the key and records the players stored, then the node's nullifier lookups |
 | Campaign | `tests/full-game.spec.ts` | Phase 1: one full click-driven game + three-layer settlement assertions |
 
 On failure Playwright keeps trace/video/screenshots in `.artifacts/test-output`,

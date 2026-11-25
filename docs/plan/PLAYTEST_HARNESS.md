@@ -54,9 +54,13 @@ builds) exposes `window.__triadTest`:
 - **Private chain state** (cards, tokens): asserted INSIDE each browser context via
   `page.evaluate` → `__triadTest` read hooks. Winner asserts +1 card incl. the
   specific claimed card; loser asserts −1 and its absence.
-- **Public chain state** (game_status, settled flag, public owners, events): from the
-  harness's own Node client (reuse `packages/integration/src/`) — independent of both
-  browsers, catches "frontend thinks it settled but chain disagrees."
+- **Public chain state**: from the harness's own Node client (`src/chain.ts`) —
+  independent of both browsers, catches "frontend thinks it settled but chain
+  disagrees." Since private games (docs/plan/PRIVATE_GAMES.md) a game has no public
+  status, owners or events: its state is the set of its nullifiers that exist, which
+  the harness computes with the Game contract's `game_nullifiers` utility (in its own
+  wallet) from the key and records the players stored, then looks up on the node —
+  plus which tx pushed `done`, and how many notes it released.
 - **Backend**: existing `/health`, `/games/{id}` endpoints + Redis reads — game
   cleaned up, sessions sane.
 - **No sleeps.** Subscribe to the app's tx-progress events (`txProgress.ts`,

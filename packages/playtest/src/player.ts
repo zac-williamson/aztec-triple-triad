@@ -13,6 +13,26 @@ import { launchIsolatedBrowser } from './browser.js';
 import { registerBrowser, deregisterBrowser, playwrightChromiumLeaders } from './stack.js';
 import { claimNext } from './playtestPool.js';
 import { ensurePoolAccounts, readPool } from './poolTopUp.js';
+import type { GameRef } from './chain.js';
+
+/**
+ * One stored game as the harness reads it (a structural copy of the fields of
+ * useGameStorage's PersistedGameState it uses; the transcript as a count).
+ */
+export interface StoredGameSnapshot {
+  gameId: string;
+  playerNumber: 1 | 2 | null;
+  selectedCardIds: number[];
+  gameKey: string | null;
+  nonce: string | null;
+  record1: string[] | null;
+  record2: string[] | null;
+  moveProofCount: number;
+  prizeMove: number | null;
+  resolutionTxHash: string | null;
+  importedAt: number | null;
+  finishedAt: number | null;
+}
 
 declare global {
   interface Window {
@@ -93,8 +113,8 @@ export const TIMEOUTS = TESTNET ? {
   selection: 15_000,
   boardUpdate: 240_000,     // off-chain move proofs are real; machine under load
   interactionIdle: 240_000,
-  canSettle: 1_800_000,     // all 9 move + 2 hand proofs, real proving (30 min)
-  settleTx: 2_400_000,      // process_game: 11 recursive verifs + on-chain inclusion/finality (40 min)
+  canSettle: 1_800_000,     // both records committed + all 9 move proofs, real proving (30 min)
+  settleTx: 2_400_000,      // settle_game: 9 recursive verifs + on-chain inclusion/finality (40 min)
   packTx: 1_200_000,        // purchase tx + 10-note import + block inclusion (20 min)
   pxeRead: 300_000,         // testnet PXE reads sync across real blocks
   evaluate: 60_000,
@@ -109,8 +129,8 @@ export const TIMEOUTS = TESTNET ? {
   selection: 10_000,
   boardUpdate: 30_000,
   interactionIdle: 60_000,  // capture cascades run ~1s per flip
-  canSettle: 1_200_000,     // all 9 move proofs + 2 hand proofs (real proving)
-  settleTx: 1_800_000,      // process_game: 11 recursive verifications, client-proved
+  canSettle: 1_200_000,     // both records committed + all 9 move proofs (real proving)
+  settleTx: 1_800_000,      // settle_game: 9 recursive verifications, client-proved
   packTx: 600_000,          // purchase_card_pack: tx proving + 10-note import
   pxeRead: 180_000,         // hard backstop for a single PXE read; a true hang fails fatally, never masked
   evaluate: 30_000,         // a bare page.evaluate (phase snapshot) must not hang the run
@@ -769,12 +789,16 @@ export class PlayerDriver {
     );
   }
 
-  /** All 9 move proofs + both hand proofs collected — settlement unlocked. */
+  /** Both records committed and known + all 9 move proofs collected — settlement unlocked. */
   async waitCanSettle(): Promise<void> {
-    await this.waitPhase('canSettle (hand + 9 move proofs)', p => p.chain.canSettle, TIMEOUTS.canSettle);
+    await this.waitPhase('canSettle (both records + 9 move proofs)', p => p.chain.canSettle, TIMEOUTS.canSettle);
   }
 
-  /** Winner: pick the loser card in the settlement dialog. */
+  /**
+   * Winner: pick the prize in the settlement dialog. Only cards the LOSER
+   * placed have a button (the prize is a placed card: settlement reads it off
+   * that move's proof), so `cardId` must be one of those.
+   */
   async pickSettleCard(cardId: number): Promise<void> {
     await this.page.getByTestId(`settle-card-${cardId}`).click();
   }
@@ -829,11 +853,12 @@ export class PlayerDriver {
   }
 
   /**
-   * Trigger the abandoned-game claim (claim_abandoned_game → on-chain dispute
-   * window → settle_abandoned_game) — the testkit equivalent of clicking
-   * "Claim abandoned game". Fire-and-forget; observe progress via
-   * phase().abandonment.{isClaimingAbandoned,disputeCountdown} and the on-chain
-   * status (ChainClient.gameStatus → 5 abandoned_claimed → 3 settled).
+   * Trigger the abandoned-game claim (wait out the abandonment bar →
+   * claim_abandoned_game → the dispute window → finalize_abandoned_game) — the
+   * testkit equivalent of clicking "Claim abandoned game". Fire-and-forget;
+   * observe progress via phase().abandonment.{isClaimingAbandoned,
+   * barCountdown,disputeCountdown} and the game's nullifiers (ChainClient:
+   * claim_slot/claim, then resolved/done).
    */
   async claimAbandonedGame(): Promise<void> {
     await this.withTimeout(
@@ -924,6 +949,109 @@ export class PlayerDriver {
     const imported = lines.filter(l => /\[pxe\] .+: importing \d+ notes/.test(l));
     expect(received.length, `${this.name} ${label}: ${count} card messages received`).toBeGreaterThan(0);
     expect(imported, `${this.name} ${label}: import_note ran (it should be recovery-only)`).toEqual([]);
+  }
+
+  /**
+   * Assert that a game resolution's payout reached this PXE the private-games
+   * way (docs/plan/PRIVATE_GAMES.md section 5.4): since `mark`, this player
+   * rebuilt and imported exactly `count` of its OWN card notes (and, when
+   * `reward`, its reward note) with import_note — every import landing — and
+   * received no card message, because a game tx delivers nothing to anybody.
+   * Pair it with the card/balance assertions: together they say the player's
+   * own secrets are what brought the notes home.
+   */
+  expectOwnNotesImported(mark: number, count: number, label: string, opts: { reward: boolean }): void {
+    const lines = this.consoleSince(mark);
+    const imports = lines
+      .map(l => l.match(/\[pxe\] (.+): importing (\d+) notes/))
+      .filter((m): m is RegExpMatchArray => m !== null)
+      .map(m => ({ label: m[1], count: Number(m[2]) }));
+    const failed = lines.filter(l => /import_note failed/.test(l));
+    const received = lines.filter(l => /received \d+ card note message\(s\)/.test(l));
+    const rewards = lines.filter(l => /\[pxe\] token reward: imported \+\d+ note/.test(l));
+    expect(imports, `${this.name} ${label}: one import of its own ${count} card note(s)`)
+      .toEqual([expect.objectContaining({ count })]);
+    expect(failed, `${this.name} ${label}: an import_note failed`).toEqual([]);
+    expect(received, `${this.name} ${label}: a game tx delivered card messages (it should deliver nothing)`).toEqual([]);
+    expect(rewards.length, `${this.name} ${label}: reward note imported`).toBe(opts.reward ? 1 : 0);
+  }
+
+  // ── The stored game (useGameStorage's book in localStorage) ──────────────
+
+  /**
+   * This player's stored record of the game in relay room `roomId` — what the
+   * app keeps to settle, import, claim, contest or finalize it. Read straight
+   * from localStorage: the snapshot deliberately carries no keys or records.
+   */
+  async storedGame(roomId: string): Promise<StoredGameSnapshot | null> {
+    const key = `aztec_tt_game_${readContractAddresses().game}_games`;
+    return this.withTimeout(this.page.evaluate(({ key, roomId }) => {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const g = (JSON.parse(raw) as { games?: Record<string, Record<string, unknown>> }).games?.[roomId];
+      if (!g) return null;
+      const proofs = g.collectedMoveProofs;
+      return {
+        gameId: String(g.gameId),
+        playerNumber: (g.playerNumber ?? null) as 1 | 2 | null,
+        selectedCardIds: (g.selectedCardIds ?? []) as number[],
+        gameKey: (g.gameKey ?? null) as string | null,
+        nonce: (g.nonce ?? null) as string | null,
+        record1: (g.record1 ?? null) as string[] | null,
+        record2: (g.record2 ?? null) as string[] | null,
+        moveProofCount: Array.isArray(proofs) ? proofs.length : 0,
+        prizeMove: (g.prizeMove ?? null) as number | null,
+        resolutionTxHash: (g.resolutionTxHash ?? null) as string | null,
+        importedAt: (g.importedAt ?? null) as number | null,
+        finishedAt: (g.finishedAt ?? null) as number | null,
+      };
+    }, { key, roomId }), TIMEOUTS.evaluate, 'storedGame');
+  }
+
+  /** The key and records the chain client needs, from this player's stored game; fails loud if absent. */
+  async gameRef(roomId: string): Promise<GameRef> {
+    const g = await this.storedGame(roomId);
+    if (!g?.gameKey || !g.record1) {
+      throw new Error(`${this.name}: no game key / creator record stored for room ${roomId}: ${JSON.stringify(g)}`);
+    }
+    return { gameKey: g.gameKey, record1: g.record1, record2: g.record2 };
+  }
+
+  // ── Leaving and coming back ───────────────────────────────────────────────
+
+  /**
+   * Reload the tab — a player who closed the game and came back. Keeps the
+   * browser context, so the account, the PXE's IndexedDB and the stored games
+   * survive, exactly as they would for a returning player. Waits until the
+   * account is restored and connected again.
+   */
+  async reload(): Promise<PhaseSnapshot> {
+    await this.page.reload();
+    await this.page.waitForFunction(() => !!window.__triadTest, undefined, {
+      timeout: TIMEOUTS.install, polling: POLL_MS,
+    });
+    return this.waitPhase(
+      'reconnected after reload',
+      p => p.aztecStatus === 'connected' && p.ws.connected,
+      TIMEOUTS.onboarding,
+    );
+  }
+
+  /**
+   * Wait for the main menu to offer (or explain) a stuck game: `kind` is the
+   * stuck game's kind (aztec/stuckGame.ts). A kind with an action renders
+   * `stuck-game` with that data-kind; a wait renders `stuck-game-<kind>`; a
+   * standing claim the player may contest renders `stuck-game-contestable`.
+   */
+  async waitStuckGame(kind: string, timeout = TIMEOUTS.onboarding): Promise<void> {
+    const actionable = this.page.locator(`[data-testid="stuck-game"][data-kind="${kind}"]`);
+    const waiting = this.page.getByTestId(`stuck-game-${kind}`);
+    await actionable.or(waiting).first().waitFor({ state: 'visible', timeout });
+  }
+
+  /** Main menu: "I'm Still Here — Contest" on the opponent's standing claim. */
+  async contestClaim(): Promise<void> {
+    await this.clickTestId('contest-claim');
   }
 
   /** Current app screen ('main-menu' | 'card-packs' | 'pack-opening' | 'game' | ...). */

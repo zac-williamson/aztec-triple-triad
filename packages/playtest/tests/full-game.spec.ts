@@ -1,19 +1,21 @@
 /**
  * Phase 1 campaign: one full click-driven game between two real browser
- * contexts on the local sandbox, with three-layer settlement validation.
+ * contexts on the local sandbox, with three-layer settlement validation —
+ * under the private-games protocol (docs/plan/PRIVATE_GAMES.md).
  *
- * Layers asserted (the deliverable — first test, all hard):
- *   1. Private chain state — inside each browser's own PXE (winner +1 incl.
- *      the specific claimed card, loser -1 incl. its absence)
- *   2. Public chain state  — from the harness's independent node client
- *      (game_status settled, on-chain players == the two browser accounts)
- *   3. Backend             — room released / finished via REST
+ * Layers asserted (all hard):
+ *   1. Private chain state — inside each browser's own PXE: the winner holds
+ *      its own five plus the prize, the loser the four it kept, both +20
+ *      tokens; and each got there by importing its OWN prepared notes from
+ *      the settle tx (no card message, nothing relayed about anybody's notes).
+ *   2. Public chain state  — from the harness's independent node client. A
+ *      game leaves no public status or players any more, only nullifiers only
+ *      its two players can compute: created / seat2 / joined before
+ *      settlement, + done after, nothing else; the `done` tx is the one both
+ *      browsers recorded as the game's resolution, and it releases exactly
+ *      twelve note hashes (the count a draw releases too).
+ *   3. Backend             — room released / finished via REST.
  * plus a move-by-move board cross-check against @axolotl-arena/game-logic.
- *
- * The loser's +20 token reward is a SEPARATE, tracked known-failure (second
- * test, test.fail) — a real app bug owned by lanes 1/2, not the harness; see
- * docs/plan/PLAYTEST_HARNESS.md assumption 13. It stays green-as-expected
- * until the note-discovery bug is fixed, then Playwright flips it red to alert.
  *
  * Deterministic by construction: fresh per-run accounts mint starter cards
  * 1–5, scripted policy (hand slot 0 → first empty cell). Precomputed outcome:
@@ -25,12 +27,14 @@ import { test, expect } from '@playwright/test';
 import type { Player } from '@axolotl-arena/game-logic';
 import { PlayerDriver } from '../src/player.js';
 import { ExpectedGame } from '../src/expected.js';
-import { ChainClient, GAME_STATUS } from '../src/chain.js';
+import { ChainClient, canonicalField, nullifierOf } from '../src/chain.js';
 import { BACKEND_URL, readStackInfo } from '../src/env.js';
 
 const STARTER_CARDS = [1, 2, 3, 4, 5];
 const STARTER_TOKENS = 100;
 const GAME_REWARD = 20;
+/** A settlement releases 9 returns + the prize (win) or 10 returns (draw), plus both rewards. */
+const SETTLE_NOTE_HASHES = 12;
 
 /**
  * One ISOLATED Chromium per player (own GPU process), the proven model from the
@@ -42,20 +46,13 @@ async function newDriver(name: string, logsDir: string): Promise<PlayerDriver> {
   return PlayerDriver.launch(name, logsDir);
 }
 
-/** Carried from the settlement test to the token-reward test (serial). */
-interface SettledGame {
-  alice: PlayerDriver;
-  bob: PlayerDriver;
-  loserDriver: PlayerDriver;
-  expectedLoserTokens: number;
-}
-
 test.describe.serial('ladder campaign', () => {
-  let settled: SettledGame | null = null;
+  let alice: PlayerDriver | null = null;
+  let bob: PlayerDriver | null = null;
 
   test.afterAll(async () => {
-    await settled?.alice.dispose();
-    await settled?.bob.dispose();
+    await alice?.dispose();
+    await bob?.dispose();
   });
 
   test('full click-driven game settles correctly across three layers', async () => {
@@ -67,9 +64,9 @@ test.describe.serial('ladder campaign', () => {
     // account (fundDevnet.ts), so two concurrent onboardings race on the same
     // ERC20 allowance (approve/deposit interleave → ERC20InsufficientAllowance,
     // run 8). Finding reported to lane 2; the campaign onboards sequentially.
-    const alice = await newDriver('alice', stack.logsDir);
+    alice = await newDriver('alice', stack.logsDir);
     const alicePhase = await alice.waitConnected();
-    const bob = await newDriver('bob', stack.logsDir);
+    bob = await newDriver('bob', stack.logsDir);
     const bobPhase = await bob.waitConnected();
     expect(alicePhase.accountAddress).not.toBeNull();
     expect(bobPhase.accountAddress).not.toBeNull();
@@ -139,67 +136,79 @@ test.describe.serial('ladder campaign', () => {
     const loserDriver = winnerDriver === alice ? bob : alice;
     const loserPlayer: Player = winner === 'player1' ? 'player2' : 'player1';
 
-    const onChainGameId = (await winnerDriver.phase()).chain.onChainGameId
-      ?? (await loserDriver.phase()).chain.onChainGameId;
-    expect(onChainGameId, 'on-chain game id known to a client').not.toBeNull();
+    // ── Both records are committed and both players hold the whole game ──
+    await Promise.all([winnerDriver.waitCanSettle(), loserDriver.waitCanSettle()]);
+    const ref = await winnerDriver.gameRef(wsGameId);
+    expect(ref.record2, 'the joiner\'s record is known').not.toBeNull();
+    expect(await loserDriver.gameRef(wsGameId),
+      'both players hold the same game key and the same two records').toEqual(ref);
 
-    // ── Settlement: winner claims a loser card the mirror says is on board
-    const loserBoardCards = mirror.state.board.flat()
-      .filter(c => c.card && c.originalOwner === loserPlayer)
-      .map(c => c.card!.id)
-      .sort((a, b) => a - b);
-    expect(loserBoardCards.length).toBeGreaterThan(0);
-    const claimedCard = loserBoardCards[loserBoardCards.length - 1];
+    // ── Layer 2 (before settling): the game is exactly created + joined ──
+    const chain = await ChainClient.connect(stack.addresses);
+    const committed = await chain.gameState(ref);
+    expect(committed.present, 'on-chain: created and joined, nothing else').toEqual(['created', 'seat2', 'joined']);
+    for (const driver of [alice, bob]) {
+      const id = (await driver.phase()).chain.onChainGameId;
+      expect(id, `${driver.name} knows the game's created nullifier`).not.toBeNull();
+      expect(canonicalField(id!), `${driver.name}'s on-chain game id is the created nullifier`)
+        .toBe(nullifierOf(committed, 'created'));
+    }
 
-    await winnerDriver.waitCanSettle();
-
-    // Mid-campaign chain check: both hands were committed (nullified) on game
-    // creation — neither PXE should hold spendable cards before settlement.
+    // Both hands were committed (their notes nullified) by create and join —
+    // neither PXE should hold a spendable card before settlement.
     for (const driver of [winnerDriver, loserDriver]) {
       expect(await driver.privateCards(), `${driver.name} cards nullified during game`).toEqual([]);
     }
 
+    // ── Settlement: the winner takes a card the loser PLACED ─────────────
+    const loserPlaced = mirror.placedBy(loserPlayer).sort((a, b) => a - b);
+    expect(loserPlaced.length).toBeGreaterThan(0);
+    const claimedCard = loserPlaced[loserPlaced.length - 1];
+
     const winnerMark = winnerDriver.consoleMark();
+    const loserMark = loserDriver.consoleMark();
     await winnerDriver.pickSettleCard(claimedCard);
     await winnerDriver.waitSettleConfirmed();
     const loserSettled = await loserDriver.waitOpponentSettled();
     expect(loserSettled.chain.takenCardId).toBe(claimedCard);
 
-    // ── Layer 1: private card state in each PXE ──────────────────────────
+    // ── Layer 1: private card + token state in each PXE ──────────────────
     const expectedWinnerCards = [...STARTER_CARDS, claimedCard].sort((a, b) => a - b);
     const removeAt = STARTER_CARDS.indexOf(claimedCard);
     const expectedLoserCards = STARTER_CARDS.filter((_, i) => i !== removeAt);
 
     await winnerDriver.expectEventually(
-      'winner PXE holds starter cards + the specific claimed card',
+      'winner PXE holds its own five + the prize',
       () => winnerDriver.privateCards(), expectedWinnerCards);
     await loserDriver.expectEventually(
-      'loser PXE holds starter cards minus the claimed card',
+      'loser PXE holds the four it kept',
       () => loserDriver.privateCards(), expectedLoserCards);
-    // The winner's six came back through the settle tx's own messages, with no
-    // import_note. (The loser imports the relayed plaintext — step 3 of
-    // docs/plan/OFFCHAIN_DELIVERY.md.)
-    winnerDriver.expectCardsReceivedNotImported(winnerMark, STARTER_CARDS.length + 1, 'settlement');
-
-    // Winner's +20 reward is registered by their own settle tx — discovered
-    // immediately (the loser's is a separate tracked finding, see below).
     await winnerDriver.expectEventually(
       'winner token reward', () => winnerDriver.tokenBalance(), STARTER_TOKENS + GAME_REWARD);
+    await loserDriver.expectEventually(
+      'loser token reward', () => loserDriver.tokenBalance(), STARTER_TOKENS + GAME_REWARD);
+    // Each imported its own prepared notes from the settle tx — the winner its
+    // five returns + the prize, the loser its four — and nobody was sent any.
+    winnerDriver.expectOwnNotesImported(winnerMark, STARTER_CARDS.length + 1, 'settlement (winner)', { reward: true });
+    loserDriver.expectOwnNotesImported(loserMark, STARTER_CARDS.length - 1, 'settlement (loser)', { reward: true });
 
-    // ── Layer 2: public chain state via the harness's own node client ────
-    const chain = await ChainClient.connect(stack.addresses);
-    expect(await chain.gameStatus(onChainGameId!), 'game settled on-chain').toBe(GAME_STATUS.settled);
-
-    const onChainPlayers = await chain.gamePlayers(onChainGameId!);
-    const browserAddresses = [
-      alicePhase.accountAddress!.toLowerCase(),
-      bobPhase.accountAddress!.toLowerCase(),
-    ].sort();
-    const chainAddresses = [
-      onChainPlayers.player1.toLowerCase(),
-      onChainPlayers.player2.toLowerCase(),
-    ].sort();
-    expect(chainAddresses, 'on-chain players match the two browser accounts').toEqual(browserAddresses);
+    // ── Layer 2: the game's nullifiers, read by the harness's own client ──
+    const settled = await chain.gameState(ref);
+    expect(settled.present, 'on-chain: settled, no claim').toEqual(['created', 'seat2', 'joined', 'done']);
+    const settleTx = await chain.txOf(settled, 'done');
+    for (const driver of [winnerDriver, loserDriver]) {
+      const stored = await driver.storedGame(wsGameId);
+      expect(stored?.resolutionTxHash, `${driver.name} recorded the game's resolution`).toBeTruthy();
+      expect(canonicalField(stored!.resolutionTxHash!), `${driver.name} imported from the tx that pushed 'done'`)
+        .toBe(settleTx.txHash);
+    }
+    expect(settleTx.noteHashes.length, 'settle_game releases exactly the twelve prepared notes')
+      .toBe(SETTLE_NOTE_HASHES);
+    // Create, join and settle are three separate transactions.
+    const createTx = await chain.txOf(settled, 'created');
+    const joinTx = await chain.txOf(settled, 'joined');
+    expect(joinTx.nullifiers, 'join closes seat 2 in the same tx').toContain(nullifierOf(settled, 'seat2'));
+    expect(new Set([createTx.txHash, joinTx.txHash, settleTx.txHash]).size, 'create, join, settle: three txs').toBe(3);
 
     // ── Layer 3: backend session state ───────────────────────────────────
     const health = await (await fetch(`${BACKEND_URL}/health`)).json() as { status: string };
@@ -215,21 +224,5 @@ test.describe.serial('ladder campaign', () => {
     } else {
       expect(gameRes.status, 'room either finished or already cleaned up').toBe(404);
     }
-
-    // Hand off the still-open contexts to the token-reward finding test.
-    settled = { alice, bob, loserDriver, expectedLoserTokens: STARTER_TOKENS + GAME_REWARD };
-  });
-
-  // The loser's +20 reward is an ONCHAIN_CONSTRAINED note tagged inside the
-  // WINNER's settle tx; the loser's PXE discovers it by block scanning, so it
-  // arrives slightly after the winner's. Was a tracked test.fail sentinel
-  // while the loser couldn't discover it at all (read 100 not 120 across runs
-  // 7/9); flipped to a normal expect-pass after the ArenaToken discoverable-
-  // note fix + the frontend import landed.
-  test('loser +20 token reward is discovered in-session', async () => {
-    expect(settled, 'settlement test must run first (serial)').not.toBeNull();
-    await settled!.loserDriver.expectEventually(
-      'loser token reward', () => settled!.loserDriver.tokenBalance(),
-      settled!.expectedLoserTokens, 180_000);
   });
 });

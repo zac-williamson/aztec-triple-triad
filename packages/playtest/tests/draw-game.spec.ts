@@ -25,17 +25,19 @@
  * hardcoded: if the rules change so this ordering no longer draws, the test
  * fails loudly at the mirror assert rather than silently testing a win path.
  *
- * Draw settlement is SINGLE-SETTLER: player 1 auto-fires the one
- * process_game(winner_id=3), which re-mints BOTH hands and pays 20 tokens each;
- * player 2 sends no transaction and receives its cards over the relay. So the
- * card economy nets to zero and there is no "taken card" — which is why the
- * win-path's waitOpponentSettled (it keys on takenCardId) must not be used.
+ * Draw settlement is SINGLE-SETTLER: player 1 auto-fires the one settle_game,
+ * which releases all ten prepared return notes and both reward notes
+ * (docs/plan/PRIVATE_GAMES.md section 3.4: twelve note hashes, the same count
+ * as a win, so the result is not visible in it). Player 2 sends no
+ * transaction; it imports its OWN five returns and its reward from that tx,
+ * with its own secrets — the same import a loser makes. So the card economy
+ * nets to zero and nothing is taken.
  */
 import { test, expect } from '@playwright/test';
 import type { Player } from '@axolotl-arena/game-logic';
 import { PlayerDriver } from '../src/player.js';
 import { ExpectedGame } from '../src/expected.js';
-import { ChainClient, GAME_STATUS } from '../src/chain.js';
+import { ChainClient, canonicalField, nullifierOf } from '../src/chain.js';
 import { BACKEND_URL, readStackInfo } from '../src/env.js';
 
 /** Starter cards reordered so the deterministic policy ties. Same five cards. */
@@ -43,6 +45,8 @@ const DRAW_HAND = [4, 2, 3, 1, 5];
 const STARTER_CARDS = [1, 2, 3, 4, 5];
 const STARTER_TOKENS = 100;
 const GAME_REWARD = 20;
+/** Ten returns + both rewards — the same count a win releases. */
+const SETTLE_NOTE_HASHES = 12;
 
 test.describe.serial('draw settlement', () => {
   let alice: PlayerDriver | null = null;
@@ -70,8 +74,6 @@ test.describe.serial('draw settlement', () => {
       expect(await driver.privateCards(), `${driver.name} starter cards in PXE`).toEqual(STARTER_CARDS);
       expect(await driver.tokenBalance(), `${driver.name} starter tokens`).toBe(STARTER_TOKENS);
     }
-    const aliceBeforeCards = await alice.privateCards();
-    const bobBeforeCards = await bob.privateCards();
     const aliceBeforeTokens = await alice.tokenBalance();
     const bobBeforeTokens = await bob.tokenBalance();
 
@@ -88,6 +90,11 @@ test.describe.serial('draw settlement', () => {
     ]);
     expect(byNumber.size, 'server assigned distinct player numbers').toBe(2);
     const driverFor = (player: Player) => byNumber.get(player === 'player1' ? 1 : 2)!;
+
+    // Console marks BEFORE play: the draw's settle auto-fires the moment
+    // player 1 holds all nine proofs, so a mark taken after game over could
+    // already be past the settler's import.
+    const marks = new Map([[alice, alice.consoleMark()], [bob, bob.consoleMark()]]);
 
     // ── Play all 9 moves, cross-checking every board against the mirror ──
     const mirror = new ExpectedGame(DRAW_HAND, DRAW_HAND);
@@ -130,33 +137,33 @@ test.describe.serial('draw settlement', () => {
       expect(ph.ws.gameOver!.winner, `draw: ${d.name} winner=draw`).toBe('draw');
     }
 
-    const onChainGameId = (await alice.phase()).chain.onChainGameId
-      ?? (await bob.phase()).chain.onChainGameId;
-    expect(onChainGameId, 'on-chain game id known to a client').not.toBeNull();
-
-    // Both hands were committed (nullified) at game creation.
+    // ── Both players hold the same game: key and both records ────────────
+    const settler = driverFor('player1');
+    const other = driverFor('player2');
+    await Promise.all([settler.waitCanSettle(), other.waitCanSettle()]);
+    const ref = await settler.gameRef(wsGameId);
+    expect(ref.record2, 'the joiner\'s record is known').not.toBeNull();
+    expect(await other.gameRef(wsGameId),
+      'both players hold the same game key and the same two records').toEqual(ref);
+    const chain = await ChainClient.connect(stack.addresses);
+    const createdNullifier = nullifierOf(await chain.gameState(ref), 'created');
     for (const driver of [alice, bob]) {
-      expect(await driver.privateCards(), `${driver.name} cards nullified during game`).toEqual([]);
+      const id = (await driver.phase()).chain.onChainGameId;
+      expect(id, `${driver.name} knows the game's created nullifier`).not.toBeNull();
+      expect(canonicalField(id!), `${driver.name}'s on-chain game id is the created nullifier`).toBe(createdNullifier);
     }
 
-    // ── Settlement: player 1 alone fires process_game(winner_id=3) ───────
-    // Player 2 sends nothing and receives its hand over the relay, so there is
-    // no second doomed tx to revert. A draw has no taken card, so we wait on
-    // the settler's own confirmation rather than waitOpponentSettled.
-    await driverFor('player1').waitSettleConfirmed();
-
-    // ── Layer 2: public chain — the draw is SETTLED, not left active ─────
-    const chain = await ChainClient.connect(stack.addresses);
-    await alice.expectEventually('draw: on-chain settled',
-      async () => await chain.gameStatus(onChainGameId!), GAME_STATUS.settled);
+    // ── Settlement: player 1 alone fires settle_game ─────────────────────
+    // Player 2 sends nothing and imports its own notes from that tx, so there
+    // is no second doomed tx to revert. Nothing is taken on a draw: player 2's
+    // "taken card" reads 0 once its import is done.
+    await settler.waitSettleConfirmed();
+    const otherSettled = await other.waitOpponentSettled();
+    expect(otherSettled.chain.takenCardId, 'draw: nothing taken from player 2').toBe(0);
 
     // ── Layer 1: card economy nets to zero, both players paid ───────────
-    // winner_id=3 re-mints BOTH hands rather than transferring one, so each
-    // player ends with exactly the cards they started with.
-    await alice.expectEventually('draw: alice hand returned (net 0)',
-      async () => (await alice!.privateCards()).length, aliceBeforeCards.length);
-    await bob.expectEventually('draw: bob hand returned (net 0)',
-      async () => (await bob!.privateCards()).length, bobBeforeCards.length);
+    // settle_game releases BOTH hands' prepared returns, so each player ends
+    // with exactly the cards they started with.
     await alice.expectEventually('draw: alice holds the SAME cards back',
       async () => (await alice!.privateCards()).slice().sort((a, b) => a - b), STARTER_CARDS);
     await bob.expectEventually('draw: bob holds the SAME cards back',
@@ -165,14 +172,23 @@ test.describe.serial('draw settlement', () => {
       () => alice!.tokenBalance(), aliceBeforeTokens + GAME_REWARD);
     await bob.expectEventually(`draw: bob tokens +${GAME_REWARD}`,
       () => bob!.tokenBalance(), bobBeforeTokens + GAME_REWARD);
+    // Each imported its own five returns and its reward; nobody was sent any.
+    for (const driver of [alice, bob]) {
+      driver.expectOwnNotesImported(marks.get(driver)!, STARTER_CARDS.length, `draw (${driver.name})`, { reward: true });
+    }
 
-    // ── Layer 2b: on-chain players are the two browser accounts ─────────
-    const drawPlayers = await chain.gamePlayers(onChainGameId!);
-    expect([drawPlayers.player1.toLowerCase(), drawPlayers.player2.toLowerCase()].sort(),
-      'draw: on-chain players').toEqual([
-        alicePhase.accountAddress!.toLowerCase(),
-        bobPhase.accountAddress!.toLowerCase(),
-      ].sort());
+    // ── Layer 2: public chain — the draw is SETTLED, not left active ─────
+    const settled = await chain.gameState(ref);
+    expect(settled.present, 'draw: on-chain settled, no claim').toEqual(['created', 'seat2', 'joined', 'done']);
+    const settleTx = await chain.txOf(settled, 'done');
+    for (const driver of [alice, bob]) {
+      const stored = await driver.storedGame(wsGameId);
+      expect(stored?.resolutionTxHash, `draw: ${driver.name} recorded the game's resolution`).toBeTruthy();
+      expect(canonicalField(stored!.resolutionTxHash!), `draw: ${driver.name} imported from the tx that pushed 'done'`)
+        .toBe(settleTx.txHash);
+    }
+    expect(settleTx.noteHashes.length, 'draw: settle_game releases ten returns and two rewards')
+      .toBe(SETTLE_NOTE_HASHES);
 
     // ── Layer 3: backend released the room ──────────────────────────────
     const health = await (await fetch(`${BACKEND_URL}/health`)).json() as { status: string };

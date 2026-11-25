@@ -18,7 +18,7 @@ import { test, expect } from '@playwright/test';
 import type { Player } from '@axolotl-arena/game-logic';
 import { PlayerDriver } from '../src/player.js';
 import { ExpectedGame } from '../src/expected.js';
-import { ChainClient, GAME_STATUS } from '../src/chain.js';
+import { ChainClient, canonicalField, nullifierOf, type GameRef } from '../src/chain.js';
 import { BACKEND_URL, readStackInfo, type ContractAddresses } from '../src/env.js';
 
 const STARTER_CARDS = [1, 2, 3, 4, 5];
@@ -27,6 +27,8 @@ const PACK_COST = 100;
 const PACK_SIZE = 10;
 const GAME_REWARD = 20;
 const HAND = 5;
+/** A settlement releases 9 returns + the prize (win) or 10 returns (draw), plus both rewards. */
+const SETTLE_NOTE_HASHES = 12;
 // Default 5 per the campaign; lower via MULTIGAME_GAMES while iterating the
 // harness in real-proof mode (each game is minutes — fast mode isn't wired).
 const GAMES = Number(process.env.MULTIGAME_GAMES ?? 5);
@@ -302,8 +304,8 @@ async function playOneGame(
   for (const [d, ph] of [[first, firstGame], [second, secondGame]] as const) {
     const c = ph.chain;
     if (c.canSettle) throw where('no-carryover',
-      `${d.name} canSettle=true at game start — leftover hand/move proofs from game ${gameNum - 1} ` +
-      `(lane-2 useGamePlay reset: collectedMoveProofs/myHandProof)`);
+      `${d.name} canSettle=true at game start — leftover records/move proofs from game ${gameNum - 1} ` +
+      `(useGamePlay / useGameSession reset: collectedMoveProofs, the records)`);
     if (c.settleTxStatus !== 'idle') throw where('no-carryover',
       `${d.name} settleTxStatus='${c.settleTxStatus}' at game start (expected idle) — ` +
       `lane-2 useGameSettlement.resetForMenu`);
@@ -363,23 +365,40 @@ async function playOneGame(
   }
 
   // A fresh game must mint a NEW on-chain id — decisive OR draw (Gap 6, matrix):
-  // game_id + randomness are derived IN-CIRCUIT, so a repeat == per-session state
-  // reuse. Assert uniqueness BEFORE trusting any on-chain status below.
+  // the id is the game's `created` nullifier, derived from a fresh game key and
+  // record, so a repeat == per-session state reuse. Assert uniqueness BEFORE
+  // trusting any on-chain state below.
   const onChainGameId = (await first.phase()).chain.onChainGameId
     ?? (await second.phase()).chain.onChainGameId;
   if (!onChainGameId) throw where('chain', 'no on-chain game id known to either client');
   if (seen.onChainGameIds.has(onChainGameId)) throw where('chain',
-    `on-chain game_id ${onChainGameId} reused from an earlier game — in-circuit ` +
-    `game_id/randomness derivation is not fresh per game (contract / lane-1)`);
+    `on-chain game id ${onChainGameId} reused from an earlier game — the key exchange or the ` +
+    `in-circuit record derivation is not fresh per game (useGameChannel / commit_hand)`);
   seen.onChainGameIds.add(onChainGameId);
+
+  // Both players must hold the SAME game — key and both records — and the
+  // created nullifier the harness computes from them must be the id both UIs
+  // show. (A key exchange that diverged would show up here, not as a revert.)
+  await Promise.all([first.waitCanSettle(), second.waitCanSettle()]);
+  const ref: GameRef = await first.gameRef(wsGameId);
+  if (!ref.record2) throw where('chain', `${first.name} never learned the joiner's record`);
+  expect(await second.gameRef(wsGameId),
+    `game ${gameNum}: both players hold the same game key and records`).toEqual(ref);
+  const committed = await chain.gameState(ref);
+  for (const d of [first, second]) {
+    const id = (await d.phase()).chain.onChainGameId;
+    expect(id ? canonicalField(id) : null, `game ${gameNum}: ${d.name}'s on-chain id is the created nullifier`)
+      .toBe(nullifierOf(committed, 'created'));
+  }
 
   // ════════════════════════════ DRAW outcome ════════════════════════════
   // A draw is a legitimate result: the board is 9 cells, but score = owned cells
   // PLUS the one card each player still holds, so a 5-board split + that leftover
   // hand card = 5-5. The draw-settle is wired SINGLE-SETTLER: player 1 auto-fires
-  // the one handleSettle(0) (contract winner_id=3 returns BOTH hands, +20 each);
-  // player 2 waits for the relay. We fully assert that settled outcome below
-  // (net-0 cards, +20 each, status settled) — with no failing transaction.
+  // the one handleSettle(0) — settle_game releases all ten prepared returns and
+  // both rewards; player 2 imports its own from that tx. We fully assert that
+  // settled outcome below (net-0 cards, +20 each, settled on-chain) — with no
+  // failing transaction.
   if (outcome === 'draw') {
     // Genuine draw, agreed by both browsers: board full, scores tied, no winner.
     for (const [d, ph] of [[first, firstOver], [second, secondOver]] as const) {
@@ -388,40 +407,30 @@ async function playOneGame(
       expect(ph.game!.myScore, `game ${gameNum} draw: ${d.name} scores tied`).toBe(ph.game!.opponentScore);
       expect(ph.ws.gameOver!.winner, `game ${gameNum} draw: ${d.name} winner=draw`).toBe('draw');
     }
-    // SINGLE SETTLER: player 1 (the creator) sends the ONE process_game(winner_id=3)
-    // — re-mints BOTH hands, pays 20 tokens each, relays player 2's returned cards.
-    // Player 2 sends NO tx; it waits for that relay (the same path the win-loser
-    // uses). No second, doomed process_game → no revert.
-    // Wait on the SETTLER's (player 1's) confirmation. Player 2's cards arrive via
-    // the relay; the net-0 card + token asserts below poll until that import lands.
-    // (A draw has no "taken card", so the win-loser's waitOpponentSettled — which
-    // keys on takenCardId !== null — never resolves and must not be used here.)
+    // SINGLE SETTLER: player 1 (the creator) sends the ONE settle_game. Player 2
+    // sends NO tx and imports its own five + reward from it (the same import a
+    // loser makes); nothing is taken, so its taken card reads 0.
     const settlerD = driverFor('player1');
+    const otherD = driverFor('player2');
     await settlerD.waitSettleConfirmed();
-    // Public chain: the draw is SETTLED (process_game ran), not left active.
-    await alice.expectEventually(`game ${gameNum} draw: on-chain settled`,
-      async () => await chain.gameStatus(onChainGameId), GAME_STATUS.settled);
-    // Card economy: each wagered 5-card hand is RETURNED (winner_id=3 re-mints
-    // both, no transfer) → private card count nets to 0 across the game; and both
-    // players are paid the 20-token reward.
+    const os = await otherD.waitOpponentSettled();
+    expect(os.chain.takenCardId, `game ${gameNum} draw: nothing taken`).toBe(0);
+    // Card economy: each wagered 5-card hand is RETURNED → private card count
+    // nets to 0 across the game; and both players are paid the 20-token reward.
     await alice.expectEventually(`game ${gameNum} draw: alice hand returned (net 0)`,
-      async () => (await alice.privateCards()).length, aliceBeforeCards.length);
+      async () => [...countMap(await alice.privateCards())].sort(), [...countMap(aliceBeforeCards)].sort());
     await bob.expectEventually(`game ${gameNum} draw: bob hand returned (net 0)`,
-      async () => (await bob.privateCards()).length, bobBeforeCards.length);
-    // The settler's own five came back through the settle tx's messages. (The
-    // other player imports the relayed plaintext — step 3 of the plan.)
-    settlerD.expectCardsReceivedNotImported(gameStartMark.get(settlerD)!, HAND, `game ${gameNum} draw settler`);
+      async () => [...countMap(await bob.privateCards())].sort(), [...countMap(bobBeforeCards)].sort());
     await alice.expectEventually(`game ${gameNum} draw: alice tokens +${GAME_REWARD}`,
       () => alice.tokenBalance(), aliceBeforeTokens + GAME_REWARD);
     await bob.expectEventually(`game ${gameNum} draw: bob tokens +${GAME_REWARD}`,
       () => bob.tokenBalance(), bobBeforeTokens + GAME_REWARD);
-    // Public chain: on-chain players == the two browser accounts.
-    const drawPlayers = await chain.gamePlayers(onChainGameId);
-    expect([drawPlayers.player1.toLowerCase(), drawPlayers.player2.toLowerCase()].sort(),
-      `game ${gameNum} draw: on-chain players`).toEqual([
-        (await alice.phase()).accountAddress!.toLowerCase(),
-        (await bob.phase()).accountAddress!.toLowerCase(),
-      ].sort());
+    // Each imported its own five returns and its reward; nobody was sent any.
+    for (const d of [alice, bob]) {
+      d.expectOwnNotesImported(gameStartMark.get(d)!, HAND, `game ${gameNum} draw (${d.name})`, { reward: true });
+    }
+    // Public chain: the draw is SETTLED, and both players imported from that tx.
+    await assertSettledOnChain(gameNum, chain, ref, [alice, bob], wsGameId, where);
     // Backend room finished (GAME_OVER released both players for the next game).
     const drawRes = await fetch(`${BACKEND_URL}/games/${wsGameId}`);
     if (drawRes.ok) {
@@ -451,12 +460,17 @@ async function playOneGame(
   const loserD = winnerD === alice ? bob : alice;
   const loserPlayer: Player = winner === 'player1' ? 'player2' : 'player1';
 
-  // Claim the loser's highest-id board card.
-  const loserBoardIds = mirror.state.board.flat()
-    .filter(c => c.card && c.originalOwner === loserPlayer).map(c => c.card!.id).sort((a, b) => a - b);
-  const claimed = loserBoardIds[loserBoardIds.length - 1];
+  // Nobody settles a win until the winner picks: the chain shows exactly the
+  // two commits.
+  if (JSON.stringify(committed.present) !== JSON.stringify(['created', 'seat2', 'joined'])) {
+    throw where('chain', `before settlement the game's nullifiers are ${JSON.stringify(committed.present)}, ` +
+      `expected created + seat2 + joined only`);
+  }
 
-  await winnerD.waitCanSettle();
+  // Claim the loser's highest-id PLACED card (the prize must be one).
+  const loserPlaced = mirror.placedBy(loserPlayer).sort((a, b) => a - b);
+  const claimed = loserPlaced[loserPlaced.length - 1];
+
   // Mid-game nullification: the 5 committed hand cards are spent → count − 5.
   const winnerPre = winnerD === alice ? aliceBeforeCards : bobBeforeCards;
   const loserPre = loserD === alice ? aliceBeforeCards : bobBeforeCards;
@@ -478,8 +492,8 @@ async function playOneGame(
   } catch (err) {
     rows.push(buildRow(gameNum, winnerD.name, aliceBeforeCards, bobBeforeCards, null, null,
       aliceBeforeTokens, bobBeforeTokens, null, null, claimed, false));
-    throw where('chain/settlement', `process_game settlement failed: ${(err as Error).message}\n` +
-      `suspect proof-chain reuse / session state across games (lane-2 useGameSettlement)`);
+    throw where('chain/settlement', `settle_game settlement failed: ${(err as Error).message}\n` +
+      `suspect proof-chain reuse / session state across games (useGameSettlement)`);
   }
 
   // ── Layer 1 (chain, private): card counts + the specific claimed id ────
@@ -505,25 +519,19 @@ async function playOneGame(
     async () => [...countMap(await winnerD.privateCards())].sort(), [...winnerExpect].sort());
   await loserD.expectEventually(`${loserD.name} multiset lost #${claimed}`,
     async () => [...countMap(await loserD.privateCards())].sort(), [...loserExpect].sort());
-  // The winner's six (its five + the claimed card) came back through the settle
-  // tx's own messages. (The loser imports the relayed plaintext — step 3.)
-  winnerD.expectCardsReceivedNotImported(gameStartMark.get(winnerD)!, HAND + 1, `game ${gameNum} winner`);
 
   // ── Layer 2 (token economy): both +20 this game ───────────────────────
   await winnerD.expectEventually(`${winnerD.name} tokens +20`,
     () => winnerD.tokenBalance(), (winnerD === alice ? aliceBeforeTokens : bobBeforeTokens) + GAME_REWARD);
   await loserD.expectEventually(`${loserD.name} tokens +20`,
     () => loserD.tokenBalance(), (loserD === alice ? aliceBeforeTokens : bobBeforeTokens) + GAME_REWARD);
+  // Each imported its own prepared notes from the settle tx — the winner its
+  // five returns + the prize, the loser the four it kept — and nobody was sent any.
+  winnerD.expectOwnNotesImported(gameStartMark.get(winnerD)!, HAND + 1, `game ${gameNum} winner`, { reward: true });
+  loserD.expectOwnNotesImported(gameStartMark.get(loserD)!, HAND - 1, `game ${gameNum} loser`, { reward: true });
 
-  // ── Public chain: settled + on-chain players == the two accounts ───────
-  expect(await chain.gameStatus(onChainGameId), `game ${gameNum} settled on-chain`).toBe(GAME_STATUS.settled);
-  const players = await chain.gamePlayers(onChainGameId);
-  const onChain = [players.player1.toLowerCase(), players.player2.toLowerCase()].sort();
-  const browsers = [
-    (await alice.phase()).accountAddress!.toLowerCase(),
-    (await bob.phase()).accountAddress!.toLowerCase(),
-  ].sort();
-  expect(onChain, `game ${gameNum} on-chain players`).toEqual(browsers);
+  // ── Public chain: settled, and both players imported from that tx ──────
+  await assertSettledOnChain(gameNum, chain, ref, [alice, bob], wsGameId, where);
 
   // ── Backend: room finished/released; both can start the next game ──────
   const res = await fetch(`${BACKEND_URL}/games/${wsGameId}`);
@@ -534,8 +542,6 @@ async function playOneGame(
 
   // ── Frontend: both return to a clean menu showing post-game counts ─────
   await Promise.all([winnerD.returnToMenu(), loserD.returnToMenu()]);
-  const aliceAfter = (await alice.phase()).ownedCardIds.length;
-  const bobAfter = (await bob.phase()).ownedCardIds.length;
   expect((await alice.phase()).screen, 'alice on menu').toBe('main-menu');
   expect((await bob.phase()).screen, 'bob on menu').toBe('main-menu');
 
@@ -546,7 +552,36 @@ async function playOneGame(
   rows.push(buildRow(gameNum, winnerD.name, aliceBeforeCards, bobBeforeCards,
     aliceAfterCards, bobAfterCards, aliceBeforeTokens, bobBeforeTokens,
     aliceAfterTokens, bobAfterTokens, claimed, true));
-  void aliceAfter; void bobAfter;
+}
+
+/**
+ * The chain layer of a settled game, from the harness's own node client: the
+ * game's nullifiers are exactly created + seat2 + joined + done (no claim),
+ * the `done` tx is the one BOTH players recorded as the game's resolution
+ * (and imported from), and it released the twelve prepared notes.
+ */
+async function assertSettledOnChain(
+  gameNum: number,
+  chain: ChainClient,
+  ref: GameRef,
+  drivers: PlayerDriver[],
+  wsGameId: string,
+  where: (layer: string, msg: string) => Error,
+): Promise<void> {
+  const settled = await chain.gameState(ref);
+  if (JSON.stringify(settled.present) !== JSON.stringify(['created', 'seat2', 'joined', 'done'])) {
+    throw where('chain', `after settlement the game's nullifiers are ${JSON.stringify(settled.present)}, ` +
+      `expected created + seat2 + joined + done`);
+  }
+  const settleTx = await chain.txOf(settled, 'done');
+  for (const d of drivers) {
+    const stored = await d.storedGame(wsGameId);
+    if (!stored?.resolutionTxHash) throw where('frontend', `${d.name} recorded no resolution for game ${gameNum}`);
+    expect(canonicalField(stored.resolutionTxHash), `game ${gameNum}: ${d.name} imported from the 'done' tx`)
+      .toBe(settleTx.txHash);
+  }
+  expect(settleTx.noteHashes.length, `game ${gameNum}: settle_game releases twelve prepared notes`)
+    .toBe(SETTLE_NOTE_HASHES);
 }
 
 function buildRow(

@@ -59,6 +59,18 @@ export class ExpectedGame {
     return this.state.board.flat().filter(c => c.card !== null).length;
   }
 
+  /**
+   * The card ids `player` placed (the cells they originally own), whoever
+   * holds those cells now. A settlement's prize must be one the LOSER placed:
+   * it is read off that move's proof (docs/plan/PRIVATE_GAMES.md section 8),
+   * and the settlement dialog offers nothing else.
+   */
+  placedBy(player: Player): number[] {
+    return this.state.board.flat()
+      .filter(c => c.card !== null && c.originalOwner === player)
+      .map(c => c.card!.id);
+  }
+
   /** Deterministic Phase-1 policy: hand slot 0 into the first empty cell, row-major. */
   nextMove(): { handIndex: number; row: number; col: number } {
     for (let row = 0; row < 3; row++) {

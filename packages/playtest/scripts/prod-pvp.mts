@@ -342,9 +342,11 @@ async function main() {
     const winner = ends[0]!.ws.gameOver!.winner;
     console.log(`   game over: ${winner}`);
 
-    // Settlement. The winner claims a card and their process_game mints the
-    // loser's reward and hands the rest back; the loser has to be TOLD, by the
-    // winner's browser, which notes to import. That relay is the point.
+    // Settlement. The winner claims a card the loser placed, and settle_game
+    // releases the notes each player prepared when they committed; the loser
+    // finds that tx (SETTLED, or the game's `done` nullifier) and imports its
+    // own four cards and its reward with its own secrets. Nothing about either
+    // player's notes crosses the relay (docs/plan/PRIVATE_GAMES.md).
     const winnerSeat = winner === 'draw' ? null
       : seats[ends.findIndex(p => (p!.ws.playerNumber === 1 ? 'player1' : 'player2') === winner)];
     const loserSeat = winnerSeat ? seats[1 - seats.indexOf(winnerSeat)] : null;
@@ -361,7 +363,7 @@ async function main() {
       if (!confirmed) { await winnerSeat.shot('settle-stuck'); throw new Error('the winner never confirmed settlement'); }
       winnerSeat.log('settlement CONFIRMED on-chain');
 
-      // The loser learns about it only through the winner's relay.
+      // The loser imports its own notes from the winner's settle tx.
       const told = await loserSeat.waitFor('the settlement relay',
         `(() => { const p = window.__triadTest?.phase();
           return p?.chain.opponentSettled === true && p.chain.takenCardId !== null; })()`, 15 * 60_000);
@@ -391,8 +393,8 @@ async function main() {
       } else {
         console.log(`   card ${lost[0]} moved from ${loserSeat.name} to ${winnerSeat.name}`);
       }
-      // Both sides earn the reward; the loser's is minted by the winner's tx
-      // and imported off the same relay, so it fails separately from the cards.
+      // Both sides earn the reward: the settle tx releases both prepared reward
+      // notes and each player imports its own, separately from the cards.
       for (const [s, p] of [[winnerSeat, wEnd] as const, [loserSeat, lEnd] as const]) {
         const want = STARTER_TOKENS + GAME_REWARD;
         if ((p!.tokenBalance ?? 0) < want) {
