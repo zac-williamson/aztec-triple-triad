@@ -18,12 +18,20 @@ import {
   importResolution,
   OpponentResumedError,
   planSettlement,
+  readGameState,
   settleGame,
   type ActionContext,
   type ImportResult,
   type PrivateGame,
 } from '../aztec/gameActions';
-import { orderTranscript, prizeOfMove, winnerOf, type Resolution, type Winner } from '../aztec/privateGame';
+import { hasContested, orderTranscript, prizeOfMove, winnerOf, type Resolution, type Winner } from '../aztec/privateGame';
+
+/**
+ * How often a client in a live game checks for a claim against it. The
+ * dispute window is DISPUTE_SECONDS (600 s), so this leaves ample time to
+ * land a contest.
+ */
+export const CLAIM_WATCH_MS = 30_000;
 import type { PeerPayload } from '../aztec/peerChannel';
 import type { MoveProofData, Player } from '../types';
 
@@ -442,6 +450,42 @@ export function useGameSettlement({ ws, session, play, channel, storage }: UseGa
     autoClaimFiredRef.current = true;
     void handleAbandonedGame();
   }, [ws.opponentDisconnected, gameOver, handleAbandonedGame, session.getPhase]);
+
+  // --- A claim against a player who is here is false: contest it ---
+  //
+  // Any player may claim once the abandonment bar has passed, even the one who
+  // is stalling, and walking away costs a card (docs/plan/PRIVATE_GAMES.md
+  // §3.4, §5.5). So a client in a live game watches the game's claims and
+  // contests the opponent's as soon as it lands: this player is demonstrably
+  // here. Our own claim flow contests a claim it finds, so the watch stands
+  // aside while that runs; and each side contests once, so a spent contest
+  // ends it.
+  const claimWatchBusyRef = useRef(false);
+  useEffect(() => {
+    if (!ws.gameId) return;
+    const timer = setInterval(() => {
+      if (claimWatchBusyRef.current || abandonedClaimStartedRef.current) return;
+      if (session.getPhase() !== 'active') return;
+      const game = session.getGame();
+      if (!game?.record2) return;
+      claimWatchBusyRef.current = true;
+      void (async () => {
+        try {
+          const context = ctx();
+          const { state, position } = await readGameState(game, context);
+          if (position.kind !== 'open-claim' || position.claimSide === game.role) return;
+          if (hasContested(state, game.role)) return;
+          console.warn(`[useGameSettlement] the other player filed claim ${position.claimNo} while we are here — contesting it`);
+          await contestClaim(game, context, position);
+        } catch (err) {
+          console.warn('[useGameSettlement] watching for a claim against us failed (retrying):', err);
+        } finally {
+          claimWatchBusyRef.current = false;
+        }
+      })();
+    }, CLAIM_WATCH_MS);
+    return () => clearInterval(timer);
+  }, [ws.gameId, ctx, session.getPhase, session.getGame]);
 
   // --- Facade integration ---
 

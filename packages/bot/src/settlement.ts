@@ -26,6 +26,7 @@ import {
   type Winner,
 } from '../../frontend/src/aztec/privateGame.js';
 import type { FoundTx } from '../../frontend/src/aztec/gameChain.js';
+import type { OpenCardsPayload } from '../../frontend/src/aztec/localGame.js';
 import { cardStrength } from '../../frontend/src/aztec/gameActions.js';
 import type { MoveProofData } from '../../frontend/src/types.js';
 import { BOT_SIDE, cardValue, checkTranscript, winnerFromOutcome, type Outcome } from './protocol.js';
@@ -54,6 +55,10 @@ export interface BotGame {
   outcome: Outcome | null;
   /** The prize move, if known: ours when we settled, the winner's word otherwise. */
   prizeMove: number | null;
+  /** The opponent's open cards with the proof that checked out: what a claim takes one of. */
+  opponentOpen?: OpenCardsPayload | null;
+  /** Our own open cards as sent: what a claim that takes nothing carries. */
+  ownOpen?: OpenCardsPayload | null;
 }
 
 export interface SettlementDeps {
@@ -165,9 +170,24 @@ export function planOwnImport(opts: {
   game: BotGame;
   secrets: GameSecrets;
   released: { returns: boolean[]; reward: boolean };
+  /**
+   * What the tx was, when the chain already said: a finalized abandonment's
+   * terms. A claimant's forfeited card is not one of its prepared notes, so
+   * the tx alone cannot tell that apart from both hands coming back.
+   */
+  resolution?: Resolution;
   log?: (msg: string) => void;
 }): { resolution: Resolution; cards: NoteToImport[]; expectedCards: number; reward: { amount: number; randomness: string } | null } {
   const { game, secrets, released } = opts;
+  if (opts.resolution) {
+    const own = selectOwnNotes({ role: BOT_SIDE, hand: game.cardIds, secrets, resolution: opts.resolution });
+    return {
+      resolution: opts.resolution,
+      cards: own.cards.map(n => ({ tokenId: n.tokenId, randomness: n.randomness })),
+      expectedCards: own.cards.length,
+      reward: own.reward,
+    };
+  }
   const transcript = readTranscript(game);
   const winner: Winner | null = transcript?.winner ?? (game.outcome ? winnerFromOutcome(game.outcome) : null);
 
@@ -236,11 +256,16 @@ function prizeCandidates(game: BotGame, transcript: { ordered: MoveProofData[] }
  * they arrived. import_note swallows per-note failures, so the only honest
  * check is whether the wallet can see more cards afterwards.
  */
-export async function importOwnNotes(deps: SettlementDeps, game: BotGame, tx: FoundTx): Promise<ImportResult> {
+export async function importOwnNotes(
+  deps: SettlementDeps,
+  game: BotGame,
+  tx: FoundTx,
+  resolution?: Resolution,
+): Promise<ImportResult> {
   const { chain, log } = deps;
   const secrets = await chain.pxe.computeGameSecrets(chain.address, game.nonce);
   const released = await chain.releasedPreparedNotes(tx, game.record2);
-  const plan = planOwnImport({ game, secrets, released, log });
+  const plan = planOwnImport({ game, secrets, released, resolution, log });
 
   const before = await chain.readCards();
   if (plan.cards.length > 0) {
@@ -268,6 +293,11 @@ export async function importOwnNotes(deps: SettlementDeps, game: BotGame, tx: Fo
 export function describeResolution(r: Resolution): string {
   if (r.kind === 'unwound') return 'unwound (both hands returned)';
   if (r.kind === 'cancelled') return 'cancelled';
+  if (r.kind === 'forfeited') {
+    return r.claimSide === BOT_SIDE
+      ? `abandoned by the opponent — we took their open card ${r.card.cardId}`
+      : `we were claimed as having walked away — forfeited card ${r.card.cardId}`;
+  }
   if (r.winner === 'draw') return 'settled as a draw';
   if (r.winner === BOT_SIDE) return r.prize ? `settled — we won card ${r.prize.cardId}` : 'settled — we won';
   return r.prize ? `settled — we lost card ${r.prize.cardId}` : 'settled — we lost';

@@ -19,14 +19,18 @@ import { fetchTxEffectData, type TxEffectData } from './noteImporter';
 import {
   blockTimestamp,
   findTxWithNullifier,
+  lookupNullifiers,
   readGameChainState,
   releasedPreparedNotes,
   waitForNullifier,
   type FoundTx,
 } from './gameChain';
+import type { OpenCardsPayload } from './localGame';
 import {
   abandonmentPosition,
+  CLAIM_NUMBERS,
   defaultPrizeMove,
+  handCommitOf,
   loserMoveIndices,
   NULLIFIER_INDEX,
   orderTranscript,
@@ -46,7 +50,19 @@ import {
   type Side,
   type Winner,
 } from './privateGame';
-import { buildSettleGameArgs, waitForAbandonBar, waitForDisputeWindow, type ChainClock } from './settlementArgs';
+import {
+  buildClaimForfeitArgs,
+  buildSettleGameArgs,
+  chooseForfeit,
+  NO_FORFEIT,
+  NO_FORFEIT_TERMS,
+  OPEN_CARD_SLOTS,
+  waitForAbandonBar,
+  waitForDisputeWindow,
+  type ChainClock,
+  type ClaimForfeit,
+  type ForfeitTerms,
+} from './settlementArgs';
 import { getCardById } from '../cards';
 import type { MoveProofData } from '../types';
 
@@ -63,6 +79,14 @@ export interface PrivateGame {
   record1: GameRecord;
   /** Null until the joiner's record is known (for the creator: received). */
   record2: GameRecord | null;
+  /**
+   * The opponent's open cards with their proof, once it checked out: what an
+   * abandonment claim takes one of their cards with. Absent if they never
+   * sent them.
+   */
+  opponentOpen?: OpenCardsPayload | null;
+  /** Our own open cards as sent: what a claim that takes nothing carries. */
+  ownOpen?: OpenCardsPayload | null;
 }
 
 /** Who is acting, and the node they read from. */
@@ -144,15 +168,30 @@ export interface CommitResult extends PreparedCommit {
   txHash: string;
 }
 
+/** The player left before the commit was sent: nothing was committed. */
+export class CommitAbandonedError extends Error {
+  constructor() {
+    super('left before the commit was sent — nothing was committed');
+  }
+}
+
 /**
  * Create a game: read the nonce, derive the secrets, preview the record, and
  * send `create_game` — one queue item, so nothing advances the nonce between
  * the preview and the commit. `onPrepared` runs before the send: a tab that
- * dies mid-send still knows what it committed.
+ * dies mid-send still knows what it committed. `shouldSend` is asked just
+ * before that: false (the player left) sends nothing and throws
+ * CommitAbandonedError.
  */
 export function createGameOnChain(
   ctx: ActionContext,
-  opts: { roomId: string; gameKey: string; hand: number[]; onPrepared?: (p: PreparedCommit) => void },
+  opts: {
+    roomId: string;
+    gameKey: string;
+    hand: number[];
+    onPrepared?: (p: PreparedCommit) => void;
+    shouldSend?: () => boolean;
+  },
 ): Promise<CommitResult> {
   return runPxeTx({
     type: 'create_game',
@@ -165,6 +204,7 @@ export function createGameOnChain(
       const record = await ops.previewRecord(ctx.owner, opts.gameKey, opts.hand, nonce);
       const nullifiers = await ops.gameNullifiers(ctx.owner, opts.gameKey, record, null);
       secretsCache.set(`${ctx.owner}|${nonce}`, secrets);
+      if (opts.shouldSend && !opts.shouldSend()) throw new CommitAbandonedError();
       opts.onPrepared?.({ nonce, record });
       setPhase('sending');
       const txHash = await ops.sendCreateGame(ctx.owner, opts.gameKey, opts.hand, sendOpts(ctx));
@@ -488,8 +528,19 @@ export async function importDiscoveredResolution(
   const found = await discoverResolution(game, ctx);
   if (!found) return null;
   const label = opts.label ?? 'Game resolution';
+  // An abandonment's terms are on-chain: read them rather than infer them from
+  // the tx, where the card a claimant took is not one of its prepared notes.
+  let fromClaim: Resolution | undefined;
   try {
-    return await importResolution(game, ctx, { txHash: found.txHash, txEffect: found, moveProofs: opts.moveProofs, label });
+    const finalized = await finalizedClaimOf(game, ctx);
+    if (finalized) fromClaim = resolutionOfClaim(finalized.claim.claimSide, finalized.terms);
+  } catch (err) {
+    console.warn(`[gameActions] ${label}: could not read the abandonment claim's terms (${err}); reading the tx instead`);
+  }
+  try {
+    return await importResolution(game, ctx, {
+      txHash: found.txHash, txEffect: found, resolution: fromClaim, moveProofs: opts.moveProofs, label,
+    });
   } catch (err) {
     if (!opts.fallback) throw err;
     console.warn(`[gameActions] ${label}: could not read the resolution off the tx (${err}); using the announcement`);
@@ -531,6 +582,11 @@ export interface OpenClaim {
   claimNo: ClaimNo;
   claimSide: Side;
   claimBlock: number;
+  /**
+   * What the claim takes, when known: the claimant knows; anyone else looks
+   * it up (`claimTermsOf`).
+   */
+  terms?: ForfeitTerms;
 }
 
 /** The opponent moved while a claim waited for the abandonment bar. */
@@ -547,11 +603,42 @@ export class ClaimContestedError extends Error {
   }
 }
 
+/** The open-cards circuit's VK: what a claim's proof is verified against. */
+async function loadHandVk(): Promise<Uint8Array> {
+  const { circuitVerificationKey } = await import('./proofWorker');
+  return circuitVerificationKey('prove_hand');
+}
+
+/**
+ * The proof this player's claim carries (docs/plan/PRIVATE_GAMES.md §3.4).
+ * Walking away costs the leaver one of their open cards: with the opponent's
+ * checked open-cards proof, the claim takes the strongest of their three. A
+ * claimant who never got it (they left before sending it) takes nothing and
+ * carries its own open-cards proof instead.
+ */
+export async function claimForfeitFor(game: PrivateGame, ctx: ActionContext, facade: PxeOps = pxe): Promise<ClaimForfeit> {
+  const theirs = game.opponentOpen;
+  if (theirs && theirs.cards.length === OPEN_CARD_SLOTS) {
+    return { terms: chooseForfeit(theirs.cards, cardStrength), proof: theirs.proof, publicInputs: theirs.publicInputs };
+  }
+  const own = game.ownOpen ?? await proveOwnOpenCards(game, ctx, facade);
+  return { terms: NO_FORFEIT_TERMS, proof: own.proof, publicInputs: own.publicInputs };
+}
+
+/** Our open-cards proof, made afresh when none was kept (it takes well under a second). */
+async function proveOwnOpenCards(game: PrivateGame, ctx: ActionContext, facade: PxeOps): Promise<OpenCardsPayload> {
+  const own = ownRecordOf(game);
+  if (!own) throw new Error('this player never committed to the game');
+  const secrets = await secretsOf(game, ctx, facade);
+  const { generateOpenCardsProof } = await import('./proofWorker');
+  return generateOpenCardsProof(game.hand, secrets.blinding, handCommitOf(own));
+}
+
 /**
  * File the next abandonment claim for this player, once the contract will
  * take it: MIN_ABANDON_SECONDS of chain time after the claim's clock block.
  * `shouldStop` is checked while waiting — return true (the opponent moved)
- * and the claim is not filed. Returns the standing claim.
+ * and the claim is not filed. Returns the standing claim, with its terms.
  *
  * If a claim already stands, nothing is filed and that claim is returned:
  * the caller decides whether to contest it (theirs) or wait it out (ours).
@@ -566,6 +653,9 @@ export async function claimAbandonment(
   if (position.kind === 'open-claim') return position;
   if (position.kind !== 'can-claim') throw new Error(`no claim can be filed: the game is ${position.kind}`);
 
+  // Ready before the wait, so the claim goes out the moment the bar passes.
+  const forfeit = await claimForfeitFor(game, ctx);
+
   const clockSeconds = await blockTimestamp(ctx.node, position.clockBlock);
   await waitForAbandonBar(ctx.node as ChainClock, clockSeconds, {
     onProgress: secondsLeft => {
@@ -577,14 +667,16 @@ export async function claimAbandonment(
 
   await runPxeTx({
     type: 'claim_abandoned_game',
-    label: 'Claiming abandoned game...',
+    label: forfeit.terms.slot === NO_FORFEIT ? 'Claiming abandoned game...' : 'Claiming abandoned game and a forfeited card...',
     gameId: game.roomId,
-    execute: (ops, setPhase) => {
+    execute: async (ops, setPhase) => {
       setPhase('sending');
+      const [handVk, { Fr }] = await Promise.all([loadHandVk(), import('@aztec-labs/aztec.js/fields')]);
       return ops.sendClaimAbandonedGame(
         ctx.owner,
         ref,
         { side: game.role, claimNo: position.claimNo, clockBlock: position.clockBlock },
+        await buildClaimForfeitArgs(Fr, handVk, forfeit),
         sendOpts(ctx),
       );
     },
@@ -592,15 +684,60 @@ export async function claimAbandonment(
   const hit = await waitForNullifier(ctx.node, nullifiers[NULLIFIER_INDEX.claim(position.claimNo, game.role)], 'the claim', {
     maxMs: 3 * 60_000,
   });
-  return { claimNo: position.claimNo, claimSide: game.role, claimBlock: hit.blockNumber };
+  return { claimNo: position.claimNo, claimSide: game.role, claimBlock: hit.blockNumber, terms: forfeit.terms };
 }
 
 /**
- * Wait out a claim's dispute window, then finalize it: both hands go back,
- * nobody wins anything. Anyone may finalize. Stops (ClaimContestedError) if
- * the claim was contested meanwhile; returns null if the game resolved some
- * other way (a settlement beats a claim) — import that with
- * `discoverResolution`.
+ * The open cards a claim by `claimSide` could take, as far as this player
+ * knows them: their own first three if the claim is against them, the
+ * opponent's checked open cards if it is theirs; null if unknown.
+ */
+function candidateOpenCards(game: PrivateGame, claimSide: Side): number[] | null {
+  if (claimSide !== game.role) return game.hand.slice(0, OPEN_CARD_SLOTS);
+  const theirs = game.opponentOpen?.cards;
+  return theirs && theirs.length === OPEN_CARD_SLOTS ? [...theirs] : null;
+}
+
+/**
+ * A standing claim's terms, read off the chain: each claim pushes exactly one
+ * of four terms nullifiers (each open card, or nothing). Throws if none is
+ * found: the claim is not in the chain yet, or it took a card this player
+ * cannot name (it never saw the opponent's open cards).
+ */
+export async function claimTermsOf(
+  game: PrivateGame,
+  ctx: ActionContext,
+  claim: OpenClaim,
+  facade: PxeOps = pxe,
+): Promise<ForfeitTerms> {
+  if (claim.terms) return claim.terms;
+  const cards = candidateOpenCards(game, claim.claimSide);
+  // Unknown cards hash to terms nothing pushed; "nothing taken" is still checked.
+  const nullifiers = await facade.forfeitNullifiers(
+    ctx.owner, game.gameKey, game.record1, claim.claimNo, claim.claimSide, cards ?? [0, 0, 0],
+  );
+  const hits = await lookupNullifiers(ctx.node, nullifiers);
+  const found = hits.findIndex(Boolean);
+  if (found < 0) {
+    throw new Error(`claim ${claim.claimNo}: none of its possible terms is on-chain${cards ? '' : ' (the opponent\'s open cards are unknown here)'}`);
+  }
+  if (found === OPEN_CARD_SLOTS) return NO_FORFEIT_TERMS;
+  return { slot: found, cardId: cards![found] };
+}
+
+/** What finalizing a claim with these terms does to the game. */
+function resolutionOfClaim(claimSide: Side, terms: ForfeitTerms): Resolution {
+  if (terms.slot === NO_FORFEIT) return { kind: 'unwound' };
+  return { kind: 'forfeited', claimSide, card: { cardId: terms.cardId, slot: terms.slot } };
+}
+
+/**
+ * Wait out a claim's dispute window, then finalize it: the claimant gets
+ * their five back plus the open card the claim took, the other player the
+ * rest (both hands, if it took nothing). Anyone may finalize. Stops
+ * (ClaimContestedError) if the claim was contested meanwhile; returns null if
+ * the game resolved some other way (a settlement beats a claim) — import that
+ * with `discoverResolution`.
  */
 export async function finalizeAbandonment(
   game: PrivateGame,
@@ -609,6 +746,7 @@ export async function finalizeAbandonment(
   opts: { onDisputeProgress?: (secondsLeft: number) => void } = {},
 ): Promise<ImportResult | null> {
   const ref = refOf(game);
+  const terms = await claimTermsOf(game, ctx, claim);
   const claimSeconds = await blockTimestamp(ctx.node, claim.claimBlock);
   await waitForDisputeWindow(ctx.node as ChainClock, claimSeconds, { onProgress: opts.onDisputeProgress });
 
@@ -622,10 +760,39 @@ export async function finalizeAbandonment(
     gameId: game.roomId,
     execute: (ops, setPhase) => {
       setPhase('sending');
-      return ops.sendFinalizeAbandonedGame(ctx.owner, ref, claim, sendOpts(ctx));
+      return ops.sendFinalizeAbandonedGame(ctx.owner, ref, claim, terms, sendOpts(ctx));
     },
   });
-  return importResolution(game, ctx, { txHash, resolution: { kind: 'unwound' }, label: 'Abandoned game recovery' });
+  return importResolution(game, ctx, {
+    txHash,
+    resolution: resolutionOfClaim(claim.claimSide, terms),
+    label: 'Abandoned game recovery',
+  });
+}
+
+/**
+ * The claim a finished abandonment was finalized from, with its terms; null
+ * when the game was resolved some other way (settled, cancelled) or not yet.
+ * A finalized claim is one resolved without a contest.
+ */
+export async function finalizedClaimOf(
+  game: PrivateGame,
+  ctx: ActionContext,
+  facade: PxeOps = pxe,
+): Promise<{ claim: OpenClaim; terms: ForfeitTerms } | null> {
+  if (!game.record2) return null;
+  const { state } = await readGameState(game, ctx, facade);
+  if (!state.done) return null;
+  for (const c of CLAIM_NUMBERS) {
+    const resolved = state.resolved[c - 1];
+    if (!resolved || state.contests[c - 1]) continue;
+    const [bySide1, bySide2] = state.claims[c - 1];
+    const filed = bySide1 ?? bySide2;
+    if (!filed) continue;
+    const claim: OpenClaim = { claimNo: c, claimSide: bySide1 ? 1 : 2, claimBlock: filed.blockNumber };
+    return { claim, terms: await claimTermsOf(game, ctx, claim, facade) };
+  }
+  return null;
 }
 
 /**

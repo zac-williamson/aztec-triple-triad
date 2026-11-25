@@ -17,8 +17,11 @@ const h = vi.hoisted(() => ({
   releasedPreparedNotes: vi.fn(),
   waitForNullifier: vi.fn(),
   buildSettleGameArgs: vi.fn(),
+  buildClaimForfeitArgs: vi.fn(),
   waitForAbandonBar: vi.fn(),
   waitForDisputeWindow: vi.fn(),
+  lookupNullifiers: vi.fn(),
+  generateOpenCardsProof: vi.fn(),
 }));
 
 vi.mock('../pxe', () => ({ runPxeTx: h.runPxeTx, pxe: h.ops }));
@@ -31,22 +34,30 @@ vi.mock('../gameChain', () => ({
   findTxWithNullifier: h.findTxWithNullifier,
   releasedPreparedNotes: h.releasedPreparedNotes,
   waitForNullifier: h.waitForNullifier,
+  lookupNullifiers: h.lookupNullifiers,
 }));
-vi.mock('../settlementArgs', () => ({
+// The forfeit's own rules (chooseForfeit, NO_FORFEIT) are real; the waits and
+// the argument builders are not.
+vi.mock('../settlementArgs', async importOriginal => ({
+  ...(await importOriginal<object>()),
   buildSettleGameArgs: h.buildSettleGameArgs,
+  buildClaimForfeitArgs: h.buildClaimForfeitArgs,
   waitForAbandonBar: h.waitForAbandonBar,
   waitForDisputeWindow: h.waitForDisputeWindow,
-  DISPUTE_SECONDS: 600,
-  MIN_ABANDON_SECONDS: 480,
 }));
-vi.mock('../proofWorker', () => ({ circuitVerificationKey: vi.fn(async () => new Uint8Array([7, 7])) }));
+vi.mock('../proofWorker', () => ({
+  circuitVerificationKey: vi.fn(async () => new Uint8Array([7, 7])),
+  generateOpenCardsProof: h.generateOpenCardsProof,
+}));
 
 import {
   announcedResolution,
   cancelGame,
+  cardStrength,
   claimAbandonment,
   ClaimContestedError,
   clearGameActionCaches,
+  CommitAbandonedError,
   contestClaim,
   createGameOnChain,
   finalizeAbandonment,
@@ -58,7 +69,7 @@ import {
   settleGame,
   type PrivateGame,
 } from '../gameActions';
-import { GAME_NULLIFIER_COUNT, normalizeField, NULLIFIER_INDEX } from '../privateGame';
+import { GAME_NULLIFIER_COUNT, handCommitOf, normalizeField, NULLIFIER_INDEX } from '../privateGame';
 import { chainState, P1_HAND, P2_HAND, record, secrets, transcript } from './privateGameFixtures';
 
 const KEY = normalizeField(0x6a3en);
@@ -68,6 +79,12 @@ const EFFECT = { noteHashes: ['0xa', '0xb'], firstNullifier: '0xf' };
 const GAME_P1: PrivateGame = { roomId: 'room-1', role: 1, hand: P1_HAND, gameKey: KEY, nonce: '0x28', record1: record(1), record2: record(2) };
 const GAME_P2: PrivateGame = { ...GAME_P1, role: 2, hand: P2_HAND };
 const S = secrets(3);
+const FORFEIT_NULLIFIERS = ['0xf0', '0xf1', '0xf2', '0xf3'].map(v => normalizeField(BigInt(v)));
+/** Player 1's open cards as player 2 checked them, and player 2's own. */
+const OPEN_P1 = { cards: P1_HAND.slice(0, 3), proof: 'cDE=', publicInputs: [handCommitOf(record(1)), ...P1_HAND.slice(0, 3).map(c => normalizeField(BigInt(c)))] };
+const OWN_OPEN_P2 = { cards: P2_HAND.slice(0, 3), proof: 'cDI=', publicInputs: [handCommitOf(record(2)), ...P2_HAND.slice(0, 3).map(c => normalizeField(BigInt(c)))] };
+/** The open card a claim against player 1 takes: the strongest (ties: the lowest slot). */
+const STRONGEST_P1_SLOT = [0, 1, 2].reduce((best, s) => (cardStrength(P1_HAND[s]) > cardStrength(P1_HAND[best]) ? s : best), 0);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -85,9 +102,14 @@ beforeEach(() => {
     sendClaimAbandonedGame: vi.fn(async () => '0xCLAIM'),
     sendContestAbandonment: vi.fn(async () => '0xCONTEST'),
     sendFinalizeAbandonedGame: vi.fn(async () => '0xFINAL'),
+    forfeitNullifiers: vi.fn(async () => FORFEIT_NULLIFIERS),
     importCardNotes: vi.fn(async (_o: string, _t: string, notes: { tokenId: number }[]) => notes.map(n => n.tokenId)),
     importTokenRewardNote: vi.fn(async () => true),
   });
+  // A claim's terms: by default it took nothing (the fourth terms nullifier).
+  h.lookupNullifiers.mockResolvedValue([null, null, null, { blockNumber: 20 }]);
+  h.buildClaimForfeitArgs.mockResolvedValue(['FORFEIT-ARGS']);
+  h.generateOpenCardsProof.mockResolvedValue(OWN_OPEN_P2);
   h.runPxeTx.mockImplementation(async (o: any) => {
     const result = await o.execute(h.ops, () => {});
     if (o.postEffects) await o.postEffects(result, h.ops);
@@ -100,6 +122,14 @@ beforeEach(() => {
 });
 
 describe('commit', () => {
+  it('create: a player who left before the send commits nothing', async () => {
+    const onPrepared = vi.fn();
+    await expect(createGameOnChain(ctx, { roomId: 'room-1', gameKey: KEY, hand: P1_HAND, onPrepared, shouldSend: () => false }))
+      .rejects.toBeInstanceOf(CommitAbandonedError);
+    expect(onPrepared).not.toHaveBeenCalled();
+    expect(h.ops.sendCreateGame).not.toHaveBeenCalled();
+  });
+
   it('create: nonce → secrets → record preview → nullifiers, persisted BEFORE the send', async () => {
     const order: string[] = [];
     h.ops.sendCreateGame.mockImplementation(async () => { order.push('send'); return '0xCREATE'; });
@@ -314,19 +344,48 @@ describe('cancel', () => {
 });
 
 describe('abandonment', () => {
-  it('claim: waits for the bar from the join\'s block, then claims as our side with that block', async () => {
+  it('claim: waits for the bar from the join\'s block, then claims the leaver\'s strongest open card', async () => {
     h.readGameChainState.mockResolvedValue(chainState({ created: 3, seat2: 4, joined: 4 }));
     h.blockTimestamp.mockResolvedValue(5000);
     h.waitForNullifier.mockResolvedValue({ blockNumber: 61 });
 
-    const claim = await claimAbandonment(GAME_P2, ctx);
+    const claim = await claimAbandonment({ ...GAME_P2, opponentOpen: OPEN_P1 }, ctx);
 
     expect(h.blockTimestamp).toHaveBeenCalledWith(ctx.node, 4);
     expect(h.waitForAbandonBar).toHaveBeenCalledWith(ctx.node, 5000, expect.anything());
+    const terms = { slot: STRONGEST_P1_SLOT, cardId: P1_HAND[STRONGEST_P1_SLOT] };
+    // Their checked open-cards proof carries the forfeit.
+    expect(h.buildClaimForfeitArgs).toHaveBeenCalledWith(
+      expect.anything(), new Uint8Array([7, 7]), { terms, proof: OPEN_P1.proof, publicInputs: OPEN_P1.publicInputs });
     expect(h.ops.sendClaimAbandonedGame).toHaveBeenCalledWith(
-      '0xME', { gameKey: KEY, record1: record(1), record2: record(2) }, { side: 2, claimNo: 1, clockBlock: 4 }, expect.anything());
+      '0xME', { gameKey: KEY, record1: record(1), record2: record(2) }, { side: 2, claimNo: 1, clockBlock: 4 },
+      ['FORFEIT-ARGS'], expect.anything());
     expect(h.waitForNullifier.mock.calls[0][1]).toBe(NULLIFIERS[NULLIFIER_INDEX.claim(1, 2)]);
-    expect(claim).toEqual({ claimNo: 1, claimSide: 2, claimBlock: 61 });
+    expect(claim).toEqual({ claimNo: 1, claimSide: 2, claimBlock: 61, terms });
+  });
+
+  it('claim without the leaver\'s open cards: takes nothing, carrying our own proof', async () => {
+    h.readGameChainState.mockResolvedValue(chainState({ created: 3, seat2: 4, joined: 4 }));
+    h.blockTimestamp.mockResolvedValue(5000);
+    h.waitForNullifier.mockResolvedValue({ blockNumber: 61 });
+
+    const claim = await claimAbandonment({ ...GAME_P2, ownOpen: OWN_OPEN_P2 }, ctx);
+
+    expect(h.buildClaimForfeitArgs).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), { terms: { slot: 3, cardId: 0 }, proof: OWN_OPEN_P2.proof, publicInputs: OWN_OPEN_P2.publicInputs });
+    expect(h.generateOpenCardsProof).not.toHaveBeenCalled();
+    expect(claim.terms).toEqual({ slot: 3, cardId: 0 });
+  });
+
+  it('claim with no open cards kept at all: proves ours afresh, against our own record', async () => {
+    h.readGameChainState.mockResolvedValue(chainState({ created: 3, seat2: 4, joined: 4 }));
+    h.blockTimestamp.mockResolvedValue(5000);
+    h.waitForNullifier.mockResolvedValue({ blockNumber: 61 });
+
+    await claimAbandonment(GAME_P2, ctx);
+
+    expect(h.generateOpenCardsProof).toHaveBeenCalledWith(P2_HAND, S.blinding, handCommitOf(record(2)));
+    expect(h.buildClaimForfeitArgs.mock.calls[0][2]).toMatchObject({ terms: { slot: 3, cardId: 0 }, proof: OWN_OPEN_P2.proof });
   });
 
   it('claim 2 counts from the contest of claim 1', async () => {
@@ -335,7 +394,7 @@ describe('abandonment', () => {
     }));
     h.blockTimestamp.mockResolvedValue(9000);
     h.waitForNullifier.mockResolvedValue({ blockNumber: 70 });
-    await claimAbandonment(GAME_P2, ctx);
+    await claimAbandonment({ ...GAME_P2, opponentOpen: OPEN_P1 }, ctx);
     expect(h.ops.sendClaimAbandonedGame.mock.calls[0][2]).toEqual({ side: 2, claimNo: 2, clockBlock: 30 });
   });
 
@@ -353,7 +412,7 @@ describe('abandonment', () => {
     expect(h.ops.sendClaimAbandonedGame).not.toHaveBeenCalled();
   });
 
-  it('finalize: waits out the window from the claim\'s block, then unwinds and imports our five', async () => {
+  it('finalize a claim that took nothing: waits out the window from the claim\'s block, then imports our five', async () => {
     h.blockTimestamp.mockResolvedValue(7000);
     h.readGameChainState.mockResolvedValue(chainState({ created: 3, joined: 4, claimSlots: [20], claims: [[null, 20]] }));
     const claim = { claimNo: 1 as const, claimSide: 2 as const, claimBlock: 20 };
@@ -361,9 +420,71 @@ describe('abandonment', () => {
     const r = await finalizeAbandonment(GAME_P2, ctx, claim);
 
     expect(h.waitForDisputeWindow).toHaveBeenCalledWith(ctx.node, 7000, expect.anything());
-    expect(h.ops.sendFinalizeAbandonedGame).toHaveBeenCalledWith('0xME', expect.anything(), claim, expect.anything());
+    // Its terms were read off the chain: the "nothing taken" nullifier exists.
+    expect(h.lookupNullifiers).toHaveBeenCalledWith(ctx.node, FORFEIT_NULLIFIERS);
+    expect(h.ops.sendFinalizeAbandonedGame).toHaveBeenCalledWith('0xME', expect.anything(), claim, { slot: 3, cardId: 0 }, expect.anything());
     expect(r!.resolution).toEqual({ kind: 'unwound' });
+    expect(h.ops.importCardNotes.mock.calls[0][2].map((n: { tokenId: number }) => n.tokenId)).toEqual(P2_HAND);
     expect(h.ops.importTokenRewardNote).not.toHaveBeenCalled();
+  });
+
+  it('finalize our own forfeit claim: our five back plus the card it took, as our prize note', async () => {
+    h.blockTimestamp.mockResolvedValue(7000);
+    h.readGameChainState.mockResolvedValue(chainState({ created: 3, joined: 4, claimSlots: [20], claims: [[null, 20]] }));
+    const terms = { slot: 1, cardId: P1_HAND[1] };
+    const claim = { claimNo: 1 as const, claimSide: 2 as const, claimBlock: 20, terms };
+
+    const r = await finalizeAbandonment({ ...GAME_P2, opponentOpen: OPEN_P1 }, ctx, claim);
+
+    expect(h.lookupNullifiers).not.toHaveBeenCalled(); // we filed it: we know its terms
+    expect(h.ops.sendFinalizeAbandonedGame).toHaveBeenCalledWith('0xME', expect.anything(), claim, terms, expect.anything());
+    expect(r!.resolution).toEqual({ kind: 'forfeited', claimSide: 2, card: { cardId: P1_HAND[1], slot: 1 } });
+    const notes = h.ops.importCardNotes.mock.calls[0][2];
+    expect(notes.map((n: { tokenId: number }) => n.tokenId)).toEqual([...P2_HAND, P1_HAND[1]]);
+    expect(notes[5].randomness).toBe(S.prize);
+    expect(r!.importedCardIds).toEqual([...P2_HAND, P1_HAND[1]]);
+  });
+
+  it('finalize a claim against us: reads which of OUR open cards it took, imports the other four', async () => {
+    h.blockTimestamp.mockResolvedValue(7000);
+    h.readGameChainState.mockResolvedValue(chainState({ created: 3, joined: 4, claimSlots: [20], claims: [[20, null]] }));
+    h.lookupNullifiers.mockResolvedValue([null, null, { blockNumber: 20 }, null]); // it took slot 2
+    const claim = { claimNo: 1 as const, claimSide: 1 as const, claimBlock: 20 };
+
+    const r = await finalizeAbandonment(GAME_P2, ctx, claim);
+
+    // The candidates are our own first three cards.
+    expect(h.ops.forfeitNullifiers).toHaveBeenCalledWith('0xME', KEY, record(1), 1, 1, P2_HAND.slice(0, 3));
+    expect(h.ops.sendFinalizeAbandonedGame).toHaveBeenCalledWith(
+      '0xME', expect.anything(), claim, { slot: 2, cardId: P2_HAND[2] }, expect.anything());
+    expect(r!.resolution).toEqual({ kind: 'forfeited', claimSide: 1, card: { cardId: P2_HAND[2], slot: 2 } });
+    expect(r!.importedCardIds).toEqual([P2_HAND[0], P2_HAND[1], P2_HAND[3], P2_HAND[4]]);
+    expect(r!.takenCardId).toBe(P2_HAND[2]);
+  });
+
+  it('finalize refuses when none of a claim\'s possible terms is on-chain', async () => {
+    h.blockTimestamp.mockResolvedValue(7000);
+    h.lookupNullifiers.mockResolvedValue([null, null, null, null]);
+    const claim = { claimNo: 1 as const, claimSide: 2 as const, claimBlock: 20 };
+    // Our claim, but we never kept their open cards: only "nothing taken" can be checked.
+    await expect(finalizeAbandonment(GAME_P2, ctx, claim)).rejects.toThrow(/open cards are unknown/);
+    expect(h.ops.forfeitNullifiers).toHaveBeenCalledWith('0xME', KEY, record(1), 1, 2, [0, 0, 0]);
+    expect(h.ops.sendFinalizeAbandonedGame).not.toHaveBeenCalled();
+  });
+
+  it('a game finalized while we were away: the claim\'s terms say what to import', async () => {
+    // Claim 1 by player 2, resolved without a contest: finalized. It took slot 0.
+    h.readGameChainState.mockResolvedValue(chainState({ created: 3, joined: 4, claimSlots: [20], claims: [[null, 20]], resolved: [40], done: 40 }));
+    h.lookupNullifiers.mockResolvedValue([{ blockNumber: 20 }, null, null, null]);
+    h.findTxWithNullifier.mockResolvedValue({ txHash: '0xFOUND', ...EFFECT });
+
+    const r = await importDiscoveredResolution(GAME_P1, ctx);
+
+    expect(r!.resolution).toEqual({ kind: 'forfeited', claimSide: 2, card: { cardId: P1_HAND[0], slot: 0 } });
+    expect(r!.importedCardIds).toEqual(P1_HAND.slice(1));
+    expect(r!.takenCardId).toBe(P1_HAND[0]);
+    // Read from the chain, not inferred from the tx.
+    expect(h.releasedPreparedNotes).not.toHaveBeenCalled();
   });
 
   it('finalize stops on a contested claim, and steps aside for a game resolved another way', async () => {

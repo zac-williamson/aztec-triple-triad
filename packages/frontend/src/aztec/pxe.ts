@@ -20,6 +20,7 @@ import { toFr } from './fieldUtils';
 import { gasSettingsWithHeadroom, type BaseFeeNode } from './feeSettings';
 import { CARDS_PER_HAND } from './gameConstants';
 import type { NoteToImport, TxEffectData } from './noteImporter';
+import type { ForfeitTerms } from './settlementArgs';
 import type { OffchainMessage } from '@aztec-labs/aztec.js/contracts';
 import { diag } from './diagnostics';
 import {
@@ -377,21 +378,26 @@ function makeOps(schedule: Schedule) {
     /**
      * Claim that the other player abandoned the game. `clockBlock` is the
      * block the claim's clock nullifier landed in — the join for claim 1, the
-     * previous contest after that.
+     * previous contest after that. `forfeitArgs` is the tail
+     * `buildClaimForfeitArgs` builds: the open-cards VK, proof, inputs and the
+     * forfeit slot (which of the other player's open cards it takes, if any).
      */
     sendClaimAbandonedGame: (
       owner: string,
       game: GameRef,
       claim: { side: Side; claimNo: ClaimNo; clockBlock: number },
+      forfeitArgs: unknown[],
       opts: SendOpts,
     ): Promise<string> =>
       schedule(async () => {
         const { Fr } = await resolveContracts();
+        if (forfeitArgs.length !== 4) throw new Error(`a claim's forfeit is 4 arguments, got ${forfeitArgs.length}`);
         return sendGameMethod('claim_abandoned_game', owner, [
           ...gameRefFields(Fr, game),
           new Fr(BigInt(claim.side)),
           new Fr(BigInt(claim.claimNo)),
           blockArg(claim.clockBlock),
+          ...forfeitArgs,
         ], opts);
       }),
 
@@ -418,14 +424,17 @@ function makeOps(schedule: Schedule) {
       }),
 
     /**
-     * Finalize an uncontested claim once its window has passed: both hands go
-     * back, nobody wins anything. Anyone may finalize. `claimBlock` is the
-     * block the claim landed in.
+     * Finalize an uncontested claim once its window has passed: the claimant
+     * gets their five back plus the open card the claim took (if any), the
+     * other player the rest. Anyone may finalize. `claimBlock` is the block
+     * the claim landed in; `terms` must be the claim's own (forfeitNullifiers
+     * says which they are).
      */
     sendFinalizeAbandonedGame: (
       owner: string,
       game: GameRef,
       claim: { claimNo: ClaimNo; claimSide: Side; claimBlock: number },
+      terms: ForfeitTerms,
       opts: SendOpts,
     ): Promise<string> =>
       schedule(async () => {
@@ -435,7 +444,41 @@ function makeOps(schedule: Schedule) {
           new Fr(BigInt(claim.claimNo)),
           new Fr(BigInt(claim.claimSide)),
           blockArg(claim.claimBlock),
+          new Fr(BigInt(terms.slot)),
+          new Fr(BigInt(terms.cardId)),
         ], opts);
+      }),
+
+    /**
+     * The four SILOED terms nullifiers claim `claimNo` by `claimSide` could
+     * have pushed: taking each of `openCards` (slots 0..2 of the OTHER
+     * player's hand), then taking nothing. Exactly one exists once the claim
+     * stands — look them up to learn its terms.
+     */
+    forfeitNullifiers: (
+      owner: string,
+      gameKey: string,
+      record1: GameRecord,
+      claimNo: ClaimNo,
+      claimSide: Side,
+      openCards: number[],
+    ): Promise<string[]> =>
+      schedule(async () => {
+        const { gameContract, Fr, AztecAddress } = await resolveContracts();
+        if (openCards.length !== 3) throw new Error(`a hand shows 3 open cards, got ${openCards.length}`);
+        const addr = AztecAddress.fromStringUnsafe(owner);
+        const { result } = await gameContract.methods
+          .forfeit_nullifiers(
+            toFr(Fr, gameKey),
+            recordFields(Fr, record1),
+            new Fr(BigInt(claimNo)),
+            new Fr(BigInt(claimSide)),
+            openCards.map(id => new Fr(BigInt(id))),
+          )
+          .simulate({ from: addr });
+        const out = Array.from(result as ArrayLike<unknown>).map(normalizeField);
+        if (out.length !== 4) throw new Error(`forfeit_nullifiers returned ${out.length} values, expected 4`);
+        return out;
       }),
 
     // ── Card notes (explicit-randomness notes the PXE can't discover by tag) ──

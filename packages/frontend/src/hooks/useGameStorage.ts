@@ -58,7 +58,11 @@ export interface PersistedGameState {
   inbox?: InboundMove[];
   /** The opponent's open cards (hand slots 0..2), once their proof checked out. */
   opponentOpenCards?: number[];
-  /** The opponent's OPEN_CARDS as delivered, until it is checked. */
+  /**
+   * The opponent's OPEN_CARDS as delivered. Kept after the check: with the
+   * same cards as `opponentOpenCards` it is the checked proof, which an
+   * abandonment claim takes one of their cards with (`openCardsOf`).
+   */
   openCardsClaim?: OpenCardsPayload;
   /** Our own OPEN_CARDS as sent: resent, never re-proven, after a reconnect. */
   ownOpenCards?: OpenCardsPayload;
@@ -275,6 +279,22 @@ export function transcriptProofs(saved: Partial<PersistedGameState>): MoveProofD
   return (saved.moves ?? []).map(m => m.proof);
 }
 
+/**
+ * Both sides' open cards with their proofs, as an abandonment claim needs
+ * them. The opponent's count only once checked: `opponentOpenCards` is written
+ * when their delivered OPEN_CARDS (`openCardsClaim`) passed, so the delivered
+ * payload with those same cards is the checked one.
+ */
+export function openCardsOf(saved: Partial<PersistedGameState> | null | undefined): Pick<PrivateGame, 'opponentOpen' | 'ownOpen'> {
+  const checked = saved?.opponentOpenCards;
+  const delivered = saved?.openCardsClaim;
+  const opponentOpen = checked && delivered
+    && checked.length === delivered.cards.length && checked.every((id, i) => delivered.cards[i] === id)
+    ? delivered
+    : null;
+  return { opponentOpen, ownOpen: saved?.ownOpenCards ?? null };
+}
+
 /** The game as the chain actions see it, or null if this player never committed to it. */
 export function toPrivateGame(saved: PersistedGameState): PrivateGame | null {
   if (!hasStake(saved) || !saved.record1) return null;
@@ -287,6 +307,7 @@ export function toPrivateGame(saved: PersistedGameState): PrivateGame | null {
       nonce: normalizeField(saved.nonce),
       record1: parseRecord(saved.record1),
       record2: saved.record2 ? parseRecord(saved.record2) : null,
+      ...openCardsOf(saved),
     };
   } catch (err) {
     console.warn(`[useGameStorage] game ${saved.gameId} has a malformed record:`, err);

@@ -6,7 +6,7 @@ vi.mock('../../aztec/config', () => ({
   AZTEC_CONFIG: { gameContractAddress: '0xGAME_CONTRACT' },
 }));
 
-import { commitIsStale, hasStake, toPrivateGame, transcriptProofs, useGameStorage, type PersistedGameState } from '../useGameStorage';
+import { commitIsStale, hasStake, openCardsOf, toPrivateGame, transcriptProofs, useGameStorage, type PersistedGameState } from '../useGameStorage';
 import { normalizeField } from '../../aztec/privateGame';
 import { record } from '../../aztec/__tests__/privateGameFixtures';
 import type { MoveProofData } from '../../types';
@@ -201,10 +201,23 @@ describe('what a stored game says', () => {
   it('becomes the chain actions\' game, or nothing when we never committed', () => {
     expect(toPrivateGame(staked({ record2: record(2) }))).toEqual({
       roomId: 'game-1', role: 1, hand: [1, 2, 3, 4, 5], gameKey: KEY, nonce: normalizeField(0x28n),
-      record1: record(1), record2: record(2),
+      record1: record(1), record2: record(2), opponentOpen: null, ownOpen: null,
     });
     expect(toPrivateGame(makeSavedGame())).toBeNull();
     expect(toPrivateGame(staked({ record1: ['1', '2'] }))).toBeNull();
+  });
+
+  it('carries the open cards a claim needs: theirs only once checked, ours as sent', () => {
+    const theirs = { cards: [7, 8, 9], proof: 'cHJvb2Y=', publicInputs: ['0x1', '0x7', '0x8', '0x9'] };
+    const ours = { cards: [1, 2, 3], proof: 'b3Vycw==', publicInputs: ['0x2', '0x1', '0x2', '0x3'] };
+    // Delivered but not checked: not theirs yet.
+    expect(openCardsOf({ openCardsClaim: theirs, ownOpenCards: ours })).toEqual({ opponentOpen: null, ownOpen: ours });
+    // Checked: the delivered payload with the same cards.
+    expect(openCardsOf({ openCardsClaim: theirs, opponentOpenCards: [7, 8, 9] }).opponentOpen).toEqual(theirs);
+    // A payload with other cards than the checked ones is not the checked proof.
+    expect(openCardsOf({ openCardsClaim: theirs, opponentOpenCards: [7, 8, 10] }).opponentOpen).toBeNull();
+    expect(toPrivateGame(staked({ record2: record(2), openCardsClaim: theirs, opponentOpenCards: [7, 8, 9], ownOpenCards: ours })))
+      .toMatchObject({ opponentOpen: theirs, ownOpen: ours });
   });
 
   it('an unconfirmed commit is dropped only once nothing sent for it can still land', () => {

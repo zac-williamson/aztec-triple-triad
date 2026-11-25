@@ -9,7 +9,7 @@ import { useGameSettlement, type TxStatus } from './useGameSettlement';
 import { useUnloadGuard } from './useUnloadGuard';
 import { useAztecContext } from '../aztec/AztecContext';
 import type { Screen, MoveProofData, GameState, Player } from '../types';
-import type { StuckGame } from '../aztec/stuckGame';
+import type { StuckGame, StuckGameKind } from '../aztec/stuckGame';
 import { inspectStuckGame, recoverStuckGame } from './stuckGameCheck';
 import { contestClaim } from '../aztec/gameActions';
 
@@ -27,8 +27,16 @@ export { mapWinnerId } from './useGamePlay';
 /** How often the menu looks at a stuck game again (a claim window closing, a settlement landing). */
 const STUCK_RECHECK_MS = 60_000;
 
-/** Phases a player may walk away from: nothing of theirs is in flight that needs this screen. */
-const LEAVABLE_PHASES: OnChainPhase[] = ['idle', 'settling', 'awaiting_join', 'awaiting_create', 'awaiting_settlement'];
+/**
+ * Phases a player may walk away from: nothing of theirs is in flight that
+ * needs this screen. That includes everything before a join: a creator who
+ * leaves sends nothing more, or has the game cancelled by the menu once its
+ * create lands (docs/plan/PRIVATE_GAMES.md §5.5).
+ */
+const LEAVABLE_PHASES: OnChainPhase[] = ['idle', 'settling', 'creating', 'awaiting_join', 'awaiting_create', 'awaiting_settlement'];
+
+/** Stuck games the menu resolves by itself: nothing about them is the player's to decide. */
+const AUTO_RECOVER_KINDS: StuckGameKind[] = ['cancellable', 'finalizable'];
 
 export interface UseGameReturn {
   // Screen routing
@@ -212,13 +220,14 @@ export function useGame(wsUrl: string): UseGameReturn {
     // would re-run this on every render, and the setState inside makes a loop.
   }, [screen, aztec.accountAddress, aztec.isAvailable, stuckCheckTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** Act on the stuck game: whatever the chain allows for it right now. */
-  const handleRecoverStuckGame = useCallback(async () => {
-    const stuck = stuckGame;
-    if (!stuck || isRecovering || !aztec.accountAddress) return;
+  /** Act on a stuck game: whatever the chain allows for it right now. */
+  const isRecoveringRef = useRef(false);
+  const recoverGame = useCallback(async (stuck: StuckGame) => {
+    if (isRecoveringRef.current || !aztec.accountAddress) return;
     const saved = storage.readGame(stuck.roomId) as PersistedGameState | null;
     const game = saved ? toPrivateGame(saved) : null;
     if (!saved || !game) return;
+    isRecoveringRef.current = true;
     setIsRecovering(true);
     try {
       const result = await recoverStuckGame(stuck, saved, game, { owner: aztec.accountAddress, node: aztec.nodeClient }, {
@@ -237,17 +246,38 @@ export function useGame(wsUrl: string): UseGameReturn {
     } catch (err) {
       console.error('[useGame] recovering the stuck game failed:', err);
     } finally {
+      isRecoveringRef.current = false;
       setIsRecovering(false);
     }
-  }, [stuckGame, isRecovering, aztec.accountAddress, aztec.nodeClient, storage, channel.sendPeerFor]);
+  }, [aztec.accountAddress, aztec.nodeClient, storage, channel.sendPeerFor]);
+
+  const handleRecoverStuckGame = useCallback(async () => {
+    if (stuckGame) await recoverGame(stuckGame);
+  }, [stuckGame, recoverGame]);
+
+  // What needs no decision is done without a click (docs/plan/PRIVATE_GAMES.md
+  // §5.5): a game nobody joined is cancelled, and a claim whose window has
+  // closed is finalized — whichever side of it this player is on. Once per
+  // game (and claim) per page load: a failed send still costs a proof and a
+  // fee, and the menu's button stays for a retry.
+  const autoRecoveredRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (!stuckGame || !AUTO_RECOVER_KINDS.includes(stuckGame.kind)) return;
+    const key = `${stuckGame.roomId}|${stuckGame.kind}|${stuckGame.claim?.claimNo ?? ''}`;
+    if (autoRecoveredRef.current.has(key)) return;
+    autoRecoveredRef.current.add(key);
+    console.log(`[useGame] ${stuckGame.kind === 'cancellable' ? 'cancelling a game nobody joined' : 'finalizing a claim whose window closed'} (${stuckGame.roomId})`);
+    void recoverGame(stuckGame);
+  }, [stuckGame, recoverGame]);
 
   /** Object to a standing claim: "I am still here." */
   const handleContestClaim = useCallback(async () => {
     const stuck = stuckGame;
-    if (stuck?.kind !== 'contestable' || !stuck.claim || !aztec.accountAddress || isRecovering) return;
+    if (stuck?.kind !== 'contestable' || !stuck.claim || !aztec.accountAddress || isRecoveringRef.current) return;
     const saved = storage.readGame(stuck.roomId) as PersistedGameState | null;
     const game = saved ? toPrivateGame(saved) : null;
     if (!game) return;
+    isRecoveringRef.current = true;
     setIsRecovering(true);
     try {
       await contestClaim(game, { owner: aztec.accountAddress, node: aztec.nodeClient }, stuck.claim);
@@ -256,9 +286,10 @@ export function useGame(wsUrl: string): UseGameReturn {
     } catch (err) {
       console.error('[useGame] contesting the claim failed:', err);
     } finally {
+      isRecoveringRef.current = false;
       setIsRecovering(false);
     }
-  }, [stuckGame, aztec.accountAddress, aztec.nodeClient, isRecovering, storage]);
+  }, [stuckGame, aztec.accountAddress, aztec.nodeClient, storage]);
 
   // --- Effects ---
 

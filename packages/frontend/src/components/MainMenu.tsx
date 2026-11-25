@@ -28,7 +28,7 @@ const RECOVERABLE: Partial<Record<StuckGameKind, { text: string; button: string;
   cancellable: {
     text: 'Five of your cards are committed to a game nobody joined.',
     button: 'Cancel Game & Recover Cards',
-    note: 'Cancels the game on-chain and returns your hand.',
+    note: 'Cancels the game on-chain and returns your hand. This starts by itself when you are back on the menu.',
   },
   settleable: {
     text: 'Your last game finished but was never settled.',
@@ -38,12 +38,12 @@ const RECOVERABLE: Partial<Record<StuckGameKind, { text: string; button: string;
   claimable: {
     text: 'Five of your cards are still committed to an unfinished game.',
     button: 'Recover My Cards',
-    note: 'Claims the game abandoned and, after a ten-minute dispute window, returns both hands. It takes a while — keep this tab open.',
+    note: 'Claims the game abandoned. After a ten-minute dispute window you get your five cards back, plus one of your opponent\'s open cards: walking away from a game costs a card. It takes a while — keep this tab open.',
   },
   finalizable: {
     text: 'Your last game was claimed abandoned and nobody objected in time.',
     button: 'Recover My Cards',
-    note: 'Unwinds the game: both players get their own five cards back.',
+    note: 'Ends the game: whoever claimed it gets their five cards back plus the open card the claim took, and the other player gets their remaining cards. This starts by itself when you are back on the menu.',
   },
 };
 
@@ -55,7 +55,7 @@ const WAITING: Partial<Record<StuckGameKind, { text: string; note: (minutes: num
   },
   'claim-pending': {
     text: 'Your last game has been claimed abandoned.',
-    note: m => `The dispute window closes in about ${m} minutes; after that both hands can be returned.`,
+    note: m => `The dispute window closes in about ${m} minutes. After that the game ends and your cards come back by themselves — less one open card if the claim was against you.`,
   },
   'awaiting-winner': {
     text: 'Your last game finished and is waiting to be settled.',
@@ -262,8 +262,9 @@ export function MainMenu({
             {isRecovering ? 'Contesting…' : "I'm Still Here — Contest"}
           </button>
           <p className="main-menu__stuck-note">
-            Contesting cancels their claim and puts the game back in play. You
-            can do this once per game, so finish the game afterwards.
+            Contesting cancels their claim, and the card it would take from
+            you, and puts the game back in play. You can do this once per
+            game, so finish the game afterwards.
           </p>
         </div>
       )}

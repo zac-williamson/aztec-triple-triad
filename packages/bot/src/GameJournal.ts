@@ -60,7 +60,7 @@ export interface JournalOpenCards {
 }
 
 /** How a game was resolved on-chain, as far as our own notes go. */
-export type JournalResolution = 'settled' | 'unwound';
+export type JournalResolution = 'settled' | 'unwound' | 'forfeited';
 
 export interface JournalRecord {
   version: typeof JOURNAL_VERSION;
@@ -92,6 +92,12 @@ export interface JournalRecord {
   moves?: JournalMove[];
   /** The opponent's open cards, once their proof checked out. */
   opponentOpenCards?: number[] | null;
+  /**
+   * The opponent's open cards WITH the proof that checked out: what an
+   * abandonment claim takes one of their cards with. The cards are on the
+   * table to the bot anyway; the proof reveals nothing more.
+   */
+  opponentOpenProof?: JournalOpenCards | null;
   /** Our own open cards as sent. */
   ownOpenCards?: JournalOpenCards | null;
   /**

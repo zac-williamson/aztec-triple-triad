@@ -25,6 +25,7 @@ export type GamePxe = Pick<PxeOps,
   | 'sendClaimAbandonedGame'
   | 'sendContestAbandonment'
   | 'sendFinalizeAbandonedGame'
+  | 'forfeitNullifiers'
   | 'importCardNotes'
   | 'importTokenRewardNote'
 >;
@@ -84,11 +85,14 @@ export interface BotProofsLike {
   cardCommitHash(cardIds: number[], blindingFactor: string): Promise<string>;
   /** The game_move verification key, as settle_game takes it. */
   moveVerificationKey(): Promise<Uint8Array>;
+  /** The open-cards (prove_hand) verification key, as claim_abandoned_game takes it. */
+  handVerificationKey(): Promise<Uint8Array>;
   proveMove(args: MoveProofArgs): Promise<MoveProofData>;
   /**
    * The open-cards proof: the hand's first three committed slots, against our
    * record's hand commitment (docs/plan/PRIVATE_GAMES.md section 6). The
-   * opponent checks it; nothing on-chain does.
+   * opponent checks it, and an abandonment claim verifies it on-chain to
+   * prove the card it takes (§3.4).
    */
   proveOpenCards(hand: number[], blindingFactor: string, handCommit: string): Promise<OpenCardsPayload>;
   /**

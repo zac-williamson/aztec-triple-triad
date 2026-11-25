@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { UseWebSocketReturn } from './useWebSocket';
-import type { PersistedGameState, UseGameStorageReturn } from './useGameStorage';
+import { openCardsOf, type PersistedGameState, type UseGameStorageReturn } from './useGameStorage';
 import type { UseGameChannelReturn } from './useGameChannel';
 import { useAztecContext } from '../aztec/AztecContext';
 import { removeCards } from '../aztec/cardStore';
@@ -198,7 +198,11 @@ export function useGameSession({ ws, screen, cardIds, channel, storage }: UseGam
     if (!room || !role || !gameKey || !r1 || handRef.current.length === 0) return null;
     // Our own commit must be known: the creator's record1, the joiner's record2.
     if (!nonce || (role === 2 && !record2Ref.current)) return null;
-    return { roomId: room, role, hand: [...handRef.current], gameKey, nonce, record1: r1, record2: record2Ref.current };
+    return {
+      roomId: room, role, hand: [...handRef.current], gameKey, nonce, record1: r1, record2: record2Ref.current,
+      // Read when asked: the open cards arrive (and are checked) during play.
+      ...openCardsOf(storageRef.current.readGame(room)),
+    };
   }, []);
 
   const ctx = useCallback(() => {
@@ -394,6 +398,8 @@ export function useGameSession({ ws, screen, cardIds, channel, storage }: UseGam
         roomId: room,
         gameKey,
         hand,
+        // Left during the preview: send nothing, commit nothing.
+        shouldSend: () => !abandoned(room),
         onPrepared: ({ nonce, record }) => {
           // Persisted BEFORE the send: whatever happens next, this tab knows
           // what it may have committed.
@@ -405,11 +411,19 @@ export function useGameSession({ ws, screen, cardIds, channel, storage }: UseGam
           });
         },
       }).then(async (result) => {
+        removeCards(context.owner, hand);
+        aztecRef.current.updateOwnedCards(prev => removeOneOfEach(prev, hand));
+        if (abandoned(room)) {
+          // Left while the create was on its way: tell nobody (no RECORD, no
+          // TX_CONFIRMED, so no opponent joins), and leave this session's
+          // state to whatever game comes next. The menu cancels this one and
+          // returns the cards (docs/plan/PRIVATE_GAMES.md §5.5).
+          console.log('[useGameSession] P1: create_game mined after we left — the menu will cancel it');
+          return;
+        }
         setBlindingFactor(result.secrets.blinding);
         setOnChainGameId(result.nullifiers[NULLIFIER_INDEX.created]);
         setRecord1(result.record);
-        removeCards(context.owner, hand);
-        aztecRef.current.updateOwnedCards(prev => removeOneOfEach(prev, hand));
         transitionPhase('awaiting_join');
         console.log('[useGameSession] P1: create_game mined; announcing our record once it is on-chain');
 

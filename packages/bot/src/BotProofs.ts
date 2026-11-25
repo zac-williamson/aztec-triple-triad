@@ -69,6 +69,12 @@ export class BotProofs implements BotProofsLike {
     return onProver(() => circuitVerificationKey('game_move'));
   }
 
+  /** The open-cards verification key: what an abandonment claim's proof is checked against. */
+  async handVerificationKey(): Promise<Uint8Array> {
+    const { circuitVerificationKey } = await worker();
+    return onProver(() => circuitVerificationKey('prove_hand'));
+  }
+
   /** poseidon2 commitment to the bot's five cards. */
   async cardCommitHash(cardIds: number[], blindingFactor: string): Promise<string> {
     const { computeCardCommitPoseidon2 } = await worker();

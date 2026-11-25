@@ -11,7 +11,7 @@
  * The chain actions are mocked; the transcript, the prize mapping and the
  * announcement reading are real.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { P1_HAND, P2_HAND, record, transcript } from '../../aztec/__tests__/privateGameFixtures';
 import { normalizeField } from '../../aztec/privateGame';
@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
   claimAbandonment: vi.fn(),
   finalizeAbandonment: vi.fn(),
   contestClaim: vi.fn(),
+  readGameState: vi.fn(),
   updateOwnedCards: vi.fn(),
   refreshOwnedCards: vi.fn(),
   refreshTokenBalance: vi.fn(),
@@ -50,10 +51,13 @@ vi.mock('../../aztec/gameActions', async (orig) => {
     claimAbandonment: h.claimAbandonment,
     finalizeAbandonment: h.finalizeAbandonment,
     contestClaim: h.contestClaim,
+    readGameState: h.readGameState,
   };
 });
 
-import { useGameSettlement } from '../useGameSettlement';
+import { CLAIM_WATCH_MS, useGameSettlement } from '../useGameSettlement';
+import { abandonmentPosition } from '../../aztec/privateGame';
+import { chainState } from '../../aztec/__tests__/privateGameFixtures';
 import { ClaimContestedError, OpponentResumedError, type PrivateGame } from '../../aztec/gameActions';
 import type { OnChainPhase } from '../useGameSession';
 import type { PeerPayload } from '../../aztec/peerChannel';
@@ -317,5 +321,64 @@ describe('abandonment (opponent idle)', () => {
     over.hook.rerender({ socket: { ...over.ws, opponentDisconnected: true } as never });
     await flush();
     expect(h.claimAbandonment).not.toHaveBeenCalled();
+  });
+});
+
+describe('a claim against a player who is here', () => {
+  /** The game's state as readGameState returns it, from chain-state hits. */
+  const stateWith = (hits: Parameters<typeof chainState>[0]) => {
+    const state = chainState(hits);
+    return { nullifiers: [], state, position: abandonmentPosition(state) };
+  };
+  const tick = async () => {
+    await act(async () => { vi.advanceTimersByTime(CLAIM_WATCH_MS); });
+    await flush();
+  };
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('is contested as soon as it lands: walking away costs a card, and we did not walk away', async () => {
+    const t = setup({ role: 1 });
+    h.contestClaim.mockResolvedValue('0xCT');
+    h.readGameState.mockResolvedValue(stateWith({ created: 3, seat2: 4, joined: 4, claimSlots: [40], claims: [[null, 40]] }));
+
+    await tick();
+
+    expect(h.contestClaim).toHaveBeenCalledTimes(1);
+    expect(h.contestClaim).toHaveBeenCalledWith(t.game, expect.anything(), expect.objectContaining({ claimNo: 1, claimSide: 2, claimBlock: 40 }));
+  });
+
+  it('leaves our own claim alone, and stops once our one contest is spent', async () => {
+    setup({ role: 1 });
+    h.readGameState.mockResolvedValue(stateWith({ created: 3, seat2: 4, joined: 4, claimSlots: [40], claims: [[40, null]] }));
+    await tick();
+    expect(h.contestClaim).not.toHaveBeenCalled();
+
+    // Their second claim, after we already contested their first: each side contests once.
+    h.readGameState.mockResolvedValue(stateWith({
+      created: 3, seat2: 4, joined: 4, claimSlots: [40, 90], claims: [[null, 40], [null, 90]],
+      contests: [50], resolved: [50], contestedBy: [50, null],
+    }));
+    await tick();
+    expect(h.contestClaim).not.toHaveBeenCalled();
+  });
+
+  it('only watches a live game', async () => {
+    setup({ role: 1, phase: 'settling' });
+    h.readGameState.mockResolvedValue(stateWith({ created: 3, seat2: 4, joined: 4, claimSlots: [40], claims: [[null, 40]] }));
+    await tick();
+    expect(h.readGameState).not.toHaveBeenCalled();
+    expect(h.contestClaim).not.toHaveBeenCalled();
+  });
+
+  it('keeps watching after a failed read', async () => {
+    setup({ role: 2 });
+    h.contestClaim.mockResolvedValue('0xCT');
+    h.readGameState.mockRejectedValueOnce(new Error('node unreachable'));
+    await tick();
+    h.readGameState.mockResolvedValue(stateWith({ created: 3, seat2: 4, joined: 4, claimSlots: [40], claims: [[40, null]] }));
+    await tick();
+    expect(h.contestClaim).toHaveBeenCalledTimes(1);
   });
 });

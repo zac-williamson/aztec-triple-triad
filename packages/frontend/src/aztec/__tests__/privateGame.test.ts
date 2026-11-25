@@ -299,13 +299,23 @@ describe('reading a resolution off the released notes', () => {
       .toEqual({ kind: 'cancelled' });
   });
 
+  it('four returns and no reward: we walked away, and a claim took the fifth', () => {
+    expect(resolutionFromReleased({ role: 1, hand: P1_HAND, returns: [true, true, true, true, false], reward: false, winner: null, joined: true }))
+      .toEqual({ kind: 'forfeited', claimSide: 2, card: { cardId: P1_HAND[4], slot: 4 } });
+    expect(resolutionFromReleased({ role: 2, hand: P2_HAND, returns: [false, true, true, true, true], reward: false, winner: null, joined: true }))
+      .toEqual({ kind: 'forfeited', claimSide: 1, card: { cardId: P2_HAND[0], slot: 0 } });
+  });
+
   it('refuses what no resolution of this game can look like', () => {
     expect(() => resolutionFromReleased({ role: 1, hand: P1_HAND, returns: [false, false, false, false, false], reward: true, winner: null, joined: true }))
       .toThrow(/not this game's resolution/);
     expect(() => resolutionFromReleased({ role: 1, hand: P1_HAND, returns: [true, true, false, false, true], reward: true, winner: null, joined: true }))
       .toThrow(/at most one/);
-    expect(() => resolutionFromReleased({ role: 1, hand: P1_HAND, returns: [true, true, true, true, false], reward: false, winner: null, joined: true }))
-      .toThrow(/unwind/);
+    expect(() => resolutionFromReleased({ role: 1, hand: P1_HAND, returns: [true, true, false, true, false], reward: false, winner: null, joined: true }))
+      .toThrow(/all but one/);
+    // Nobody joined, so nobody could have claimed a card.
+    expect(() => resolutionFromReleased({ role: 1, hand: P1_HAND, returns: [true, true, true, true, false], reward: false, winner: null, joined: false }))
+      .toThrow(/all but one/);
   });
 
   it('records are opaque but distinct per player', () => {

@@ -8,7 +8,16 @@ vi.mock('../proofWorker', () => ({
   computeBoardStateHash: vi.fn(async () => stateHash(0)),
 }));
 
-import { buildSettleGameArgs, MOVE_PUBLIC_INPUTS, sortProofChain } from '../settlementArgs';
+import {
+  assertForfeitTerms,
+  buildClaimForfeitArgs,
+  buildSettleGameArgs,
+  chooseForfeit,
+  MOVE_PUBLIC_INPUTS,
+  NO_FORFEIT,
+  NO_FORFEIT_TERMS,
+  sortProofChain,
+} from '../settlementArgs';
 
 class FakeFr {
   constructor(public v: bigint) {}
@@ -154,5 +163,47 @@ describe('waitForAbandonBar', () => {
   it('refuses a game with no clock time', async () => {
     const { waitForAbandonBar } = await import('../settlementArgs');
     await expect(waitForAbandonBar(node(5) as any, 0)).rejects.toThrow(/no clock time/);
+  });
+});
+
+describe('the forfeit a claim carries', () => {
+  const OPEN = [11, 12, 13];
+  const inputs = (cards = OPEN) => [normalizeField(0x77n), ...cards.map(c => normalizeField(BigInt(c)))];
+  const proof = Buffer.alloc(32 * 3).toString('base64');
+
+  it('takes the open card the measure rates highest, the lowest slot on a tie', () => {
+    const strength = (id: number) => ({ 11: 5, 12: 9, 13: 9 } as Record<number, number>)[id] ?? 0;
+    expect(chooseForfeit(OPEN, strength)).toEqual({ slot: 1, cardId: 12 });
+    expect(chooseForfeit(OPEN, () => 1)).toEqual({ slot: 0, cardId: 11 });
+    expect(() => chooseForfeit([11, 12], () => 1)).toThrow(/3 open cards/);
+  });
+
+  it('terms must name the open card in their slot, or nothing', () => {
+    assertForfeitTerms({ slot: 2, cardId: 13 }, OPEN);
+    assertForfeitTerms(NO_FORFEIT_TERMS, null);
+    expect(() => assertForfeitTerms({ slot: 2, cardId: 12 }, OPEN)).toThrow(/not the open card in slot 2/);
+    expect(() => assertForfeitTerms({ slot: 3, cardId: 12 }, OPEN)).toThrow(/takes nothing names card 0/);
+    expect(() => assertForfeitTerms({ slot: 4, cardId: 0 }, OPEN)).toThrow(/open card \(0\.\.2\) or none/);
+    expect(() => assertForfeitTerms({ slot: 0, cardId: 11 }, null)).toThrow(/not the open card/);
+  });
+
+  it('builds [hand_vk, open_proof, open_inputs, forfeit_slot] from the proof that names the card', async () => {
+    const args = await buildClaimForfeitArgs(FakeFr, new Uint8Array(32 * 2), {
+      terms: { slot: 1, cardId: 12 }, proof, publicInputs: inputs(),
+    }) as any[];
+    expect(args).toHaveLength(4);
+    expect(args[0]).toHaveLength(2);          // the VK, as fields
+    expect(args[1]).toHaveLength(3);          // the proof, as fields
+    expect(args[2].map((f: FakeFr) => f.v)).toEqual([0x77n, 11n, 12n, 13n]);
+    expect(args[3].v).toBe(1n);
+  });
+
+  it('refuses terms the proof does not support, before anything is sent', async () => {
+    await expect(buildClaimForfeitArgs(FakeFr, new Uint8Array(32), { terms: { slot: 0, cardId: 99 }, proof, publicInputs: inputs() }))
+      .rejects.toThrow(/not the open card in slot 0/);
+    await expect(buildClaimForfeitArgs(FakeFr, new Uint8Array(32), { terms: NO_FORFEIT_TERMS, proof, publicInputs: inputs().slice(0, 3) }))
+      .rejects.toThrow(/4/);
+    const none = await buildClaimForfeitArgs(FakeFr, new Uint8Array(32), { terms: NO_FORFEIT_TERMS, proof, publicInputs: inputs() }) as any[];
+    expect(none[3].v).toBe(BigInt(NO_FORFEIT));
   });
 });

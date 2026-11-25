@@ -352,12 +352,17 @@ export function prizeOfMove(ordered: MoveProofData[], winner: Side, prizeMove: n
  *
  *   - `settled`: settle_game. Every return but the loser's prize slot, the
  *     winner's prize, and both rewards.
- *   - `unwound`: finalize_abandoned_game. All ten returns, no rewards.
+ *   - `unwound`: finalize_abandoned_game of a claim that took nothing. All
+ *     ten returns, no rewards.
+ *   - `forfeited`: finalize_abandoned_game of a claim that took an open card.
+ *     The claimant's five returns and that card (as their prize note), the
+ *     other player's four other returns; no rewards.
  *   - `cancelled`: cancel_game. The creator's five returns.
  */
 export type Resolution =
   | { kind: 'settled'; winner: Winner; prize?: { cardId: number; slot: number } }
   | { kind: 'unwound' }
+  | { kind: 'forfeited'; claimSide: Side; card: { cardId: number; slot: number } }
   | { kind: 'cancelled' };
 
 export interface OwnNote {
@@ -403,6 +408,16 @@ export function selectOwnNotes(opts: {
   if (resolution.kind === 'unwound') {
     return { cards: returns(null), reward: null, takenCardId: null };
   }
+  if (resolution.kind === 'forfeited') {
+    if (resolution.claimSide === role) {
+      // We stayed: our five back, and the leaver's card on our prize partial.
+      const cards = returns(null);
+      cards.push({ tokenId: resolution.card.cardId, randomness: secrets.prize, kind: 'prize' });
+      return { cards, reward: null, takenCardId: null };
+    }
+    // We left: the claim took the card in that slot of our hand.
+    return { cards: returns(resolution.card.slot), reward: null, takenCardId: hand[resolution.card.slot] ?? null };
+  }
 
   const reward = { amount: GAME_TOKEN_REWARD, randomness: secrets.reward };
   if (resolution.winner === 'draw') return { cards: returns(null), reward, takenCardId: null };
@@ -428,7 +443,12 @@ export function selectOwnNotes(opts: {
  *
  * `returns[i]` is whether the return note of hand slot i is in the tx,
  * `reward` whether this player's reward note is. A settlement always
- * releases both rewards; an unwind or a cancel never does.
+ * releases both rewards; an abandonment or a cancel never does.
+ *
+ * Without a reward, four returns means this player walked away and a claim
+ * took the fifth. Five can be an unwind, a cancel, or a forfeit THIS player
+ * claimed — its prize note is not one of our prepared hashes, so this cannot
+ * tell; the caller reads the claim's terms (`claimTermsOf`) for that.
  */
 export function resolutionFromReleased(opts: {
   role: Side;
@@ -446,8 +466,13 @@ export function resolutionFromReleased(opts: {
   if (released === 0) throw new Error('none of this player\'s return notes are in the tx — it is not this game\'s resolution');
 
   if (!reward) {
-    if (released !== CARDS_PER_HAND) throw new Error(`an unwind returns all ${CARDS_PER_HAND} cards, the tx released ${released}`);
-    return joined ? { kind: 'unwound' } : { kind: 'cancelled' };
+    if (released === CARDS_PER_HAND) return joined ? { kind: 'unwound' } : { kind: 'cancelled' };
+    if (joined && released === CARDS_PER_HAND - 1) {
+      const slot = returns.findIndex(r => !r);
+      const claimSide: Side = role === 1 ? 2 : 1;
+      return { kind: 'forfeited', claimSide, card: { cardId: hand[slot], slot } };
+    }
+    throw new Error(`an abandonment returns all ${CARDS_PER_HAND} cards or all but one, the tx released ${released}`);
   }
   if (released === CARDS_PER_HAND) {
     // A draw or a win look the same from one's own returns. The transcript

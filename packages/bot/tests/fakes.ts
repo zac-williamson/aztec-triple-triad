@@ -97,6 +97,8 @@ export const N = {
   contestedBy: (side: Side) => NULLIFIERS[NULLIFIER_INDEX.contestedBy(side)],
   contest: (c: ClaimNo) => NULLIFIERS[NULLIFIER_INDEX.contest(c)],
   resolved: (c: ClaimNo) => NULLIFIERS[NULLIFIER_INDEX.resolved(c)],
+  /** Claim c by `side`'s terms nullifier: taking open slot 0..2, or nothing (3). */
+  forfeit: (c: ClaimNo, side: Side, slot: number) => F(0xa000 + c * 100 + side * 10 + slot),
 };
 
 /** Valid base64 for N 32-byte fields — the real settle-args builder decodes it. */
@@ -378,8 +380,11 @@ export function fakeChain(over: Record<string, any> = {}) {
     sendClaimAbandonedGame: async (...a: any[]) => {
       calls.push(['claim', ...a]);
       const { side, claimNo } = a[2];
+      // a[3] is the forfeit tail [hand_vk, open_proof, open_inputs, forfeit_slot].
+      const slot = Number(BigInt(a[3][3].toString()));
       s.hits.set(N.claimSlot(claimNo), 30);
       s.hits.set(N.claim(claimNo, side), 30);
+      s.hits.set(N.forfeit(claimNo, side, slot), 30);
       return F(0xc1a);
     },
     sendContestAbandonment: async (...a: any[]) => {
@@ -392,8 +397,16 @@ export function fakeChain(over: Record<string, any> = {}) {
     },
     sendFinalizeAbandonedGame: async (...a: any[]) => {
       calls.push(['finalize', ...a]);
-      resolveIn(50, [N.resolved(a[2].claimNo)]);
+      // The contract refuses terms the claim did not push.
+      const { claimNo, claimSide } = a[2];
+      if (!s.hits.has(N.forfeit(claimNo, claimSide, a[3].slot))) throw new Error('Nullifier membership witness not found');
+      resolveIn(50, [N.resolved(claimNo)]);
       return RESOLVING_TX.txHash;
+    },
+    forfeitNullifiers: async (...a: any[]) => {
+      calls.push(['forfeitNullifiers', ...a]);
+      const [, , , claimNo, claimSide] = a;
+      return [0, 1, 2, 3].map(slot => N.forfeit(claimNo, claimSide, slot));
     },
     importCardNotes: async (_o: string, txHash: string, notes: { tokenId: number; randomness: string }[]) => {
       calls.push(['importCards', txHash, notes]);
@@ -432,6 +445,7 @@ export function fakeProofs(checks: ProofChecks = fakeChecks(), over: Partial<Bot
   const proofs: BotProofsLike = {
     cardCommitHash: async () => RECORD2[1],
     moveVerificationKey: async () => new Uint8Array(32 * 4),
+    handVerificationKey: async () => new Uint8Array(32 * 4),
     proveMove: async (a: MoveProofArgs) => { proved.push(a); return proveLike(a, checks.hashState); },
     proveOpenCards: async (hand, blinding, handCommit) => {
       openProved.push({ hand: [...hand], blinding, handCommit });

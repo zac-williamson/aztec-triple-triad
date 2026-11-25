@@ -86,6 +86,46 @@ beforeEach(() => {
 });
 
 describe('creator pipeline', () => {
+  it('a creator who leaves while the create is on its way tells nobody: no RECORD, no TX_CONFIRMED', async () => {
+    let land!: () => void;
+    h.createGameOnChain.mockImplementation(async (_ctx: unknown, opts: any) => {
+      expect(opts.shouldSend(), 'still here at the send').toBe(true);
+      opts.onPrepared({ nonce: '0x28', record: record(1) });
+      await new Promise<void>(r => { land = r; });
+      return { nonce: '0x28', record: record(1), secrets: secrets(1), nullifiers: NULLIFIERS, txHash: '0xC' };
+    });
+    const ch = makeChannel(KEY);
+    const ws = makeWs();
+    const { result } = renderHook(() => useGameSession({ ws, screen: 'game', cardIds: HAND, channel: ch.channel, storage }));
+    await flush();
+    expect(result.current.getPhase()).toBe('creating');
+
+    // Leave (useGame.handleBackToMenu), then the create lands.
+    act(() => { result.current.forceIdle(); });
+    land();
+    await flush();
+
+    expect(ch.channel.sendPeer).not.toHaveBeenCalled();
+    expect((ws as any).notifyTxConfirmed).not.toHaveBeenCalled();
+    expect(result.current.getPhase(), 'the next game starts from idle').toBe('idle');
+    // The committed cards are out of the collection until the menu's cancel returns them.
+    expect(h.removeCards).toHaveBeenCalledWith('0xME', HAND);
+  });
+
+  it('a creator who left during the preview has nothing sent: the send asks first', async () => {
+    let shouldSend: (() => boolean) | undefined;
+    h.createGameOnChain.mockImplementation(async (_ctx: unknown, opts: any) => {
+      shouldSend = opts.shouldSend;
+      return new Promise(() => {});
+    });
+    const ch = makeChannel(KEY);
+    const { result } = renderHook(() => useGameSession({ ws: makeWs(), screen: 'game', cardIds: HAND, channel: ch.channel, storage }));
+    await flush();
+    expect(shouldSend!()).toBe(true);
+    act(() => { result.current.forceIdle(); });
+    expect(shouldSend!()).toBe(false);
+  });
+
   it('creates once the key exchange is done, persists the record before the send, then announces it', async () => {
     h.createGameOnChain.mockImplementation(async (_ctx: unknown, opts: any) => {
       opts.onPrepared({ nonce: '0x28', record: record(1) });
@@ -128,6 +168,8 @@ describe('creator pipeline', () => {
     expect(result.current.commits).toEqual({ commit1: record(1)[1], commit2: record(2)[1], roomId: 'room-1' });
     expect(result.current.getGame()).toEqual({
       roomId: 'room-1', role: 1, hand: HAND, gameKey: KEY, nonce: '0x28', record1: record(1), record2: record(2),
+      // Nobody has sent open cards yet: a claim now would take nothing.
+      opponentOpen: null, ownOpen: null,
     });
   });
 

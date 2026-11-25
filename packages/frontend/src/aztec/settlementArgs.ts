@@ -104,6 +104,89 @@ export async function buildSettleGameArgs(inputs: SettleGameInputs): Promise<unk
 }
 
 // ---------------------------------------------------------------------------
+// The forfeit an abandonment claim carries (docs/plan/PRIVATE_GAMES.md §3.4)
+//
+// A player who walks away from a started game forfeits one of their three
+// open cards. The claim names it by hand slot and carries that player's
+// open-cards proof; a claimant without it takes nothing (NO_FORFEIT) and
+// carries its OWN open-cards proof instead, so every claim verifies one.
+// ---------------------------------------------------------------------------
+
+/** Public inputs of an open-cards proof: `[hand_commit, open_0, open_1, open_2]`. */
+export const OPEN_CARDS_PUBLIC_INPUTS = 4;
+
+/** Open cards per hand: hand slots 0..2. */
+export const OPEN_CARD_SLOTS = 3;
+
+/** Mirrors NO_FORFEIT in the game contract: the forfeit slot of a claim that takes nothing. */
+export const NO_FORFEIT = 3;
+
+/** What a claim takes: the other player's open card at `slot`, or nothing. */
+export interface ForfeitTerms {
+  /** 0..2: the other player's hand slot; NO_FORFEIT: nothing. */
+  slot: number;
+  /** The card taken; 0 when nothing is. */
+  cardId: number;
+}
+
+export const NO_FORFEIT_TERMS: ForfeitTerms = { slot: NO_FORFEIT, cardId: 0 };
+
+/** The proof a claim carries, with the terms it supports. */
+export interface ClaimForfeit {
+  terms: ForfeitTerms;
+  /** The open-cards proof (base64): the other player's for a forfeit, the claimant's own for none. */
+  proof: string;
+  /** Its public inputs, `[hand_commit, open_0, open_1, open_2]`. */
+  publicInputs: string[];
+}
+
+/** Check terms against the open cards they name (the contract does the same). */
+export function assertForfeitTerms(terms: ForfeitTerms, openCards: readonly number[] | null): void {
+  if (terms.slot === NO_FORFEIT) {
+    if (terms.cardId !== 0) throw new Error(`a claim that takes nothing names card 0, got ${terms.cardId}`);
+    return;
+  }
+  if (!Number.isInteger(terms.slot) || terms.slot < 0 || terms.slot >= OPEN_CARD_SLOTS) {
+    throw new Error(`a forfeit slot is an open card (0..${OPEN_CARD_SLOTS - 1}) or none (${NO_FORFEIT}), got ${terms.slot}`);
+  }
+  if (!openCards || openCards[terms.slot] !== terms.cardId) {
+    throw new Error(`card ${terms.cardId} is not the open card in slot ${terms.slot}`);
+  }
+}
+
+/**
+ * The tail of `claim_abandoned_game`'s arguments:
+ * `[hand_vk, open_proof, open_inputs, forfeit_slot]`.
+ */
+export async function buildClaimForfeitArgs(Fr: any, handVk: Uint8Array, forfeit: ClaimForfeit): Promise<unknown[]> {
+  const { bytesToFrArray, base64ToFrArray, hexToFr } = await import('./fieldUtils');
+  if (forfeit.publicInputs.length !== OPEN_CARDS_PUBLIC_INPUTS) {
+    throw new Error(`an open-cards proof has ${OPEN_CARDS_PUBLIC_INPUTS} public inputs, got ${forfeit.publicInputs.length}`);
+  }
+  const openCards = forfeit.publicInputs.slice(1).map(v => Number(BigInt(v)));
+  assertForfeitTerms(forfeit.terms, openCards);
+  return [
+    bytesToFrArray(Fr, handVk),
+    base64ToFrArray(Fr, forfeit.proof),
+    forfeit.publicInputs.map(v => hexToFr(Fr, v)),
+    new Fr(BigInt(forfeit.terms.slot)),
+  ];
+}
+
+/**
+ * The card a claim takes from the other player's three open cards: the one
+ * `strength` rates highest (ties: the lowest slot).
+ */
+export function chooseForfeit(openCards: readonly number[], strength: (cardId: number) => number): ForfeitTerms {
+  if (openCards.length !== OPEN_CARD_SLOTS) throw new Error(`a hand shows ${OPEN_CARD_SLOTS} open cards, got ${openCards.length}`);
+  let best = 0;
+  for (let slot = 1; slot < OPEN_CARD_SLOTS; slot++) {
+    if (strength(openCards[slot]) > strength(openCards[best])) best = slot;
+  }
+  return { slot: best, cardId: openCards[best] };
+}
+
+// ---------------------------------------------------------------------------
 // The contract's abandonment clocks
 //
 // A claim is honest only MIN_ABANDON_SECONDS after its clock started — the

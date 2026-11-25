@@ -349,6 +349,8 @@ interface ChainGame {
   moves: TranscriptMove[];
   /** The opponent's three open cards, once their proof checked out. */
   opponentOpen: number[] | null;
+  /** The OPEN_CARDS that checked out, with its proof: an abandonment claim takes one of these cards. */
+  opponentOpenProof: OpenCardsPayload | null;
   /** Their OPEN_CARDS as delivered, until it is checked. */
   openCardsClaim: OpenCardsPayload | null;
   /** Their MOVEs as delivered, until each is checked. */
@@ -384,7 +386,7 @@ function newGame(relayGameId: string, cardIds: number[]): ChainGame {
     keyPair: null, opponentPublicKey: null, channel: null, deriving: false, pendingPeer: [],
     record1: null, record2: null, nonce: null, secrets: null,
     joinStarted: false, committed: false, committedAt: 0,
-    moves: [], opponentOpen: null, openCardsClaim: null, inbox: [], inbound: Promise.resolve(), recheck: null,
+    moves: [], opponentOpen: null, opponentOpenProof: null, openCardsClaim: null, inbox: [], inbound: Promise.resolve(), recheck: null,
     ownOpen: null, ownOpenTask: null, moveInFlight: null, sentOn: new Map(), protocolError: null,
     outcome: null, prizeMove: null, settlingSelf: false, settledHint: null,
     importing: null, imported: false,
@@ -1277,6 +1279,8 @@ export class ArenaBot {
           return this.refuse(ctx, 'their open cards', result.reason);
         }
         ctx.opponentOpen = result.value;
+        // Kept with its proof: a claim takes one of these cards if they walk away.
+        ctx.opponentOpenProof = claim;
         this.journalGame(ctx);
         this.log('their open cards check out');
         continue;
@@ -1750,6 +1754,9 @@ export class ArenaBot {
         moveProofs: ctx.moves.map(m => ({ ...m.proof, publicInputs: [...m.proof.publicInputs] })),
         moves: ctx.moves.map(({ moveNumber, cardId, slot, row, col }) => ({ moveNumber, cardId, slot, row, col })),
         opponentOpenCards: ctx.opponentOpen ? [...ctx.opponentOpen] : null,
+        opponentOpenProof: ctx.opponentOpenProof
+          ? { cards: [...ctx.opponentOpenProof.cards], proof: ctx.opponentOpenProof.proof, publicInputs: [...ctx.opponentOpenProof.publicInputs] }
+          : null,
         ownOpenCards: ctx.ownOpen
           ? { cards: [...ctx.ownOpen.cards], proof: ctx.ownOpen.proof, publicInputs: [...ctx.ownOpen.publicInputs] }
           : null,

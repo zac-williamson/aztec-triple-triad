@@ -104,22 +104,58 @@ describe('the menu and a game that still holds cards', () => {
     expect(h.refreshTokenBalance).toHaveBeenCalled();
   });
 
-  it('recovers with the stored game, then forgets it', async () => {
+  it('finalizes a claim whose window closed by itself: the stored game, then forgets it', async () => {
     const storage = storeStakedGame();
     h.inspectStuckGame.mockResolvedValueOnce({ roomId: 'room-1', kind: 'finalizable', claim: { claimNo: 1, claimSide: 2, claimBlock: 40 } });
     h.recoverStuckGame.mockResolvedValue({ importedCardIds: P1_HAND, prizeUncertain: false });
     const { result } = renderHook(() => useGame('ws://test'));
-    await waitFor(() => expect(result.current.stuckGame?.kind).toBe('finalizable'));
 
-    await act(async () => { await result.current.handleRecoverStuckGame(); });
-
+    // No click: nothing about it is the player's to decide.
+    await waitFor(() => expect(h.recoverStuckGame).toHaveBeenCalledTimes(1));
     const [stuck, , game, ctx, deps] = h.recoverStuckGame.mock.calls[0];
     expect(stuck.kind).toBe('finalizable');
     expect(game).toMatchObject({ roomId: 'room-1', role: 1, gameKey: KEY, record1: record(1), record2: record(2) });
     expect(ctx).toEqual({ owner: '0xME', node: { node: true } });
     expect(deps.sendPeerFor).toBe(h.channel.sendPeerFor);
-    expect(storage.readGame('room-1')).toBeNull();
+    await waitFor(() => expect(storage.readGame('room-1')).toBeNull());
     expect(result.current.stuckGame).toBeNull();
+  });
+
+  it('cancels a game nobody joined by itself', async () => {
+    const storage = storeStakedGame();
+    h.inspectStuckGame.mockResolvedValueOnce({ roomId: 'room-1', kind: 'cancellable' });
+    h.recoverStuckGame.mockResolvedValue({ importedCardIds: P1_HAND, prizeUncertain: false });
+    renderHook(() => useGame('ws://test'));
+
+    await waitFor(() => expect(h.recoverStuckGame).toHaveBeenCalledTimes(1));
+    expect(h.recoverStuckGame.mock.calls[0][0].kind).toBe('cancellable');
+    await waitFor(() => expect(storage.readGame('room-1')).toBeNull());
+  });
+
+  it('leaves a claim to the player: a claimable game is offered, not claimed', async () => {
+    storeStakedGame();
+    h.inspectStuckGame.mockResolvedValueOnce({ roomId: 'room-1', kind: 'claimable' });
+    h.recoverStuckGame.mockResolvedValue(null);
+    const { result } = renderHook(() => useGame('ws://test'));
+    await waitFor(() => expect(result.current.stuckGame?.kind).toBe('claimable'));
+    await new Promise(r => setTimeout(r, 20));
+    expect(h.recoverStuckGame).not.toHaveBeenCalled();
+
+    await act(async () => { await result.current.handleRecoverStuckGame(); });
+    expect(h.recoverStuckGame).toHaveBeenCalledTimes(1);
+  });
+
+  it('tries an automatic recovery once: a failure leaves the button for the player', async () => {
+    storeStakedGame();
+    h.inspectStuckGame.mockResolvedValueOnce({ roomId: 'room-1', kind: 'cancellable' });
+    h.recoverStuckGame.mockRejectedValue(new Error('reverted'));
+    const { result } = renderHook(() => useGame('ws://test'));
+
+    await waitFor(() => expect(h.recoverStuckGame).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.isRecovering).toBe(false));
+    await new Promise(r => setTimeout(r, 20));
+    expect(h.recoverStuckGame).toHaveBeenCalledTimes(1);
+    expect(result.current.stuckGame?.kind).toBe('cancellable');
   });
 
   it('contests the standing claim with the stored records', async () => {

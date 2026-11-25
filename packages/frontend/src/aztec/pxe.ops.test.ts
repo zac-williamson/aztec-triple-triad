@@ -117,12 +117,13 @@ describe('pxe game sends — enqueue + base-fee headroom, contract stays inside'
     await expect(pxe.sendCancelGame('0xME', KEY, record(1).slice(0, 8), { node: {}, timeoutMs: 9 })).rejects.toThrow(/9 fields/);
   });
 
-  it('sendClaimAbandonedGame: (key, r1, r2, side, claim_no, clock_block)', async () => {
+  it('sendClaimAbandonedGame: (key, r1, r2, side, claim_no, clock_block, hand_vk, open_proof, open_inputs, forfeit_slot)', async () => {
     const claim_abandoned_game = vi.fn(() => ({ send: mined('0xCL') }));
     gameWith({ claim_abandoned_game });
     const ref = { gameKey: KEY, record1: record(1), record2: record(2) };
+    const forfeit = [['vk'], ['proof'], ['inputs'], 'slot'];
 
-    await pxe.sendClaimAbandonedGame('0xME', ref, { side: 2, claimNo: 1, clockBlock: 77 }, { node: {}, timeoutMs: 9 });
+    await pxe.sendClaimAbandonedGame('0xME', ref, { side: 2, claimNo: 1, clockBlock: 77 }, forfeit, { node: {}, timeoutMs: 9 });
 
     const args = claim_abandoned_game.mock.calls[0] as unknown as any[];
     expect(args[0]).toBe(KEY);
@@ -131,6 +132,14 @@ describe('pxe game sends — enqueue + base-fee headroom, contract stays inside'
     expect(args[3].v).toBe(2n);
     expect(args[4].v).toBe(1n);
     expect(args[5]).toBe(77); // u32: a plain number
+    expect(args.slice(6)).toEqual(forfeit); // the forfeit tail, as buildClaimForfeitArgs built it
+  });
+
+  it('sendClaimAbandonedGame refuses a forfeit tail that is not four arguments', async () => {
+    gameWith({ claim_abandoned_game: vi.fn() });
+    const ref = { gameKey: KEY, record1: record(1), record2: record(2) };
+    await expect(pxe.sendClaimAbandonedGame('0xME', ref, { side: 2, claimNo: 1, clockBlock: 77 }, ['vk'], { node: {}, timeoutMs: 9 }))
+      .rejects.toThrow(/4 arguments/);
   });
 
   it('sendContestAbandonment: (key, r1, r2, side, claim_no, claim_side, before_claim_block)', async () => {
@@ -144,21 +153,32 @@ describe('pxe game sends — enqueue + base-fee headroom, contract stays inside'
     expect([args[3].v, args[4].v, args[5].v, args[6]]).toEqual([1n, 2n, 2n, 99]);
   });
 
-  it('sendFinalizeAbandonedGame: (key, r1, r2, claim_no, claim_side, claim_block)', async () => {
+  it('sendFinalizeAbandonedGame: (key, r1, r2, claim_no, claim_side, claim_block, forfeit_slot, forfeit_card)', async () => {
     const finalize_abandoned_game = vi.fn(() => ({ send: mined('0xFN') }));
     gameWith({ finalize_abandoned_game });
     const ref = { gameKey: KEY, record1: record(1), record2: record(2) };
 
-    await pxe.sendFinalizeAbandonedGame('0xME', ref, { claimNo: 3, claimSide: 1, claimBlock: 150 }, { node: {}, timeoutMs: 9 });
+    await pxe.sendFinalizeAbandonedGame('0xME', ref, { claimNo: 3, claimSide: 1, claimBlock: 150 }, { slot: 2, cardId: 41 }, { node: {}, timeoutMs: 9 });
 
     const args = finalize_abandoned_game.mock.calls[0] as unknown as any[];
-    expect([args[3].v, args[4].v, args[5]]).toEqual([3n, 1n, 150]);
+    expect([args[3].v, args[4].v, args[5], args[6].v, args[7].v]).toEqual([3n, 1n, 150, 2n, 41n]);
+  });
+
+  it('forfeitNullifiers: the four terms a claim could have, from the contract', async () => {
+    const forfeit_nullifiers = vi.fn(() => sim([1n, 2n, 3n, 4n]));
+    gameWith({ forfeit_nullifiers });
+    const out = await pxe.forfeitNullifiers('0xME', KEY, record(1), 2, 1, [7, 8, 9]);
+    expect(out).toEqual([1n, 2n, 3n, 4n].map(normalizeField));
+    const args = forfeit_nullifiers.mock.calls[0] as unknown as any[];
+    expect(args[0]).toBe(KEY);
+    expect(args[1]).toEqual(record(1));
+    expect([args[2].v, args[3].v, args[4].map((f: any) => f.v)]).toEqual([2n, 1n, [7n, 8n, 9n]]);
   });
 
   it('refuses a block number a u32 cannot hold', async () => {
     gameWith({ claim_abandoned_game: vi.fn() });
     const ref = { gameKey: KEY, record1: record(1), record2: record(2) };
-    await expect(pxe.sendClaimAbandonedGame('0xME', ref, { side: 1, claimNo: 1, clockBlock: -1 }, { node: {}, timeoutMs: 9 }))
+    await expect(pxe.sendClaimAbandonedGame('0xME', ref, { side: 1, claimNo: 1, clockBlock: -1 }, [1, 2, 3, 4], { node: {}, timeoutMs: 9 }))
       .rejects.toThrow(/not a block number/);
   });
 

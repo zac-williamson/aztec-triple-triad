@@ -14,8 +14,9 @@ import { GameJournal, type JournalRecord } from '../src/GameJournal.js';
 import { AbandonmentSweep } from '../src/AbandonmentSweep.js';
 import { DISPUTE_SECONDS, MIN_ABANDON_SECONDS } from '../src/protocol.js';
 import {
-  BOT_HAND, F, GAME_KEY, N, NONCE, RECORD1, RECORD2, RESOLVING_TX, fakeChain, transcript,
+  BOT_HAND, F, GAME_KEY, HUMAN_HAND, N, NONCE, RECORD1, RECORD2, RESOLVING_TX, fakeChain, fakeProofs, openCardsLike, transcript,
 } from './fakes.js';
+import { cardValue } from '../src/protocol.js';
 
 // settle_game's argument list is the frontend's to build (and its own tests'
 // to pin); here it only has to be built from the right game.
@@ -64,7 +65,7 @@ function harness(over: { sweepOpts?: Record<string, unknown>; chain?: Record<str
   const logs: string[] = [];
   const sweep = new AbandonmentSweep({
     journal, chain: f.chain as never,
-    proofs: { moveVerificationKey: async () => new Uint8Array([9]) },
+    proofs: fakeProofs().proofs,
     log: m => logs.push(m), now: () => NOW, minAgeMs: 1_000,
     ...over.sweepOpts,
   });
@@ -157,15 +158,32 @@ describe('AbandonmentSweep: a game abandoned mid-play', () => {
     const stats = await h.sweep.run();
 
     expect(h.steps()).toEqual(['claim']);
-    const [, owner, ref, claim, opts] = h.f.called('claim')[0];
+    const [, owner, ref, claim, forfeit, opts] = h.f.called('claim')[0];
     expect(owner).toBe('0xbot');
     expect(ref).toEqual({ gameKey: GAME_KEY, record1: RECORD1, record2: RECORD2 });
     expect(claim).toEqual({ side: 2, claimNo: 1, clockBlock: 5 });
+    // The human never sent their open cards here: the claim takes nothing,
+    // with the bot's own open-cards proof (the four-argument forfeit tail).
+    expect(forfeit).toHaveLength(4);
+    expect(BigInt(forfeit[3].toString())).toBe(3n);
     // pxe.ts hands this to the SDK's wait, which counts seconds.
     expect(opts.timeoutMs).toBe(600);
     expect(stats.claimed).toBe(1);
     // The worklist can say the game is serving out its window.
     expect(h.journal.read('room-1')!.claimedAt).toBe(T(30));
+  });
+
+  it('claims the human\'s open card it values most when it holds their checked open cards', async () => {
+    const h = harness();
+    const theirs = openCardsLike(HUMAN_HAND, RECORD1[1]);
+    h.journal.write(record({ opponentOpenCards: theirs.cards, opponentOpenProof: theirs }));
+    await h.sweep.run();
+
+    const best = [0, 1, 2].reduce((b, s) => (cardValue(HUMAN_HAND[s]) > cardValue(HUMAN_HAND[b]) ? s : b), 0);
+    const forfeit = h.f.called('claim')[0][4];
+    expect(BigInt(forfeit[3].toString())).toBe(BigInt(best));
+    expect(h.f.state.hits.has(N.forfeit(1, 2, best))).toBe(true);
+    expect(h.logs.join('\n')).toMatch(new RegExp(`taking their open card ${HUMAN_HAND[best]}`));
   });
 
   it('claims a game the bot halted because the opponent\'s move did not check out — it can never settle', async () => {
@@ -187,10 +205,11 @@ describe('AbandonmentSweep: a game abandoned mid-play', () => {
     expect(h.logs.join('\n')).toMatch(/claim 1 opens in/);
   });
 
-  it('finalizes its claim after the dispute window and takes all five back — nobody wins', async () => {
+  it('finalizes its claim that took nothing after the dispute window, and takes its five back', async () => {
     const h = harness();
     h.f.state.hits.set(N.claimSlot(1), 30);
     h.f.state.hits.set(N.claim(1, 2), 30);
+    h.f.state.hits.set(N.forfeit(1, 2, 3), 30);
     h.f.state.now = T(30) + DISPUTE_SECONDS + 60;
     h.f.state.released = { returns: [true, true, true, true, true], reward: false };
     h.journal.write(record({ claimedAt: T(30) }));
@@ -199,10 +218,29 @@ describe('AbandonmentSweep: a game abandoned mid-play', () => {
 
     expect(h.steps()).toEqual(['finalize', 'importCards']);
     expect(h.f.called('finalize')[0][3]).toEqual({ claimNo: 1, claimSide: 2, claimBlock: 30 });
+    expect(h.f.called('finalize')[0][4]).toEqual({ slot: 3, cardId: 0 });
     expect(h.f.called('importCards')[0][2].map((n: { tokenId: number }) => n.tokenId)).toEqual(BOT_HAND);
     expect(stats.finalized).toBe(1);
     expect(stats.cardsRecovered).toBe(5);
     expect(h.journal.read('room-1')!.resolution).toBe('unwound');
+  });
+
+  it('finalizes its forfeit claim: its five back plus the human\'s card, as its prize note', async () => {
+    const h = harness();
+    const theirs = openCardsLike(HUMAN_HAND, RECORD1[1]);
+    h.f.state.hits.set(N.claimSlot(1), 30);
+    h.f.state.hits.set(N.claim(1, 2), 30);
+    h.f.state.hits.set(N.forfeit(1, 2, 1), 30); // it took their slot 1
+    h.f.state.now = T(30) + DISPUTE_SECONDS + 60;
+    h.journal.write(record({ claimedAt: T(30), opponentOpenCards: theirs.cards, opponentOpenProof: theirs }));
+
+    const stats = await h.sweep.run();
+
+    expect(h.f.called('finalize')[0][4]).toEqual({ slot: 1, cardId: HUMAN_HAND[1] });
+    const notes = h.f.called('importCards')[0][2];
+    expect(notes.map((n: { tokenId: number }) => n.tokenId)).toEqual([...BOT_HAND, HUMAN_HAND[1]]);
+    expect(stats.cardsRecovered).toBe(6);
+    expect(h.journal.read('room-1')!.resolution).toBe('forfeited');
   });
 
   it('does not finalize inside the window', async () => {
@@ -220,14 +258,40 @@ describe('AbandonmentSweep: a game abandoned mid-play', () => {
     const h = harness();
     h.f.state.hits.set(N.claimSlot(1), 30);
     h.f.state.hits.set(N.claim(1, 1), 30);
+    h.f.state.hits.set(N.forfeit(1, 1, 0), 30); // their claim took the bot's slot 0
     h.f.state.now = T(30) + 120;
     h.journal.write(record());
     await h.sweep.run();
     expect(h.steps(), 'inside the window: no contest, just wait').toEqual([]);
 
     h.f.state.now = T(30) + DISPUTE_SECONDS + 60;
-    await h.sweep.run();
+    const stats = await h.sweep.run();
     expect(h.f.called('finalize')[0][3]).toEqual({ claimNo: 1, claimSide: 1, claimBlock: 30 });
+    // The candidates were the bot's own first three cards.
+    expect(h.f.called('forfeitNullifiers')[0][6]).toEqual(BOT_HAND.slice(0, 3));
+    expect(h.f.called('finalize')[0][4]).toEqual({ slot: 0, cardId: BOT_HAND[0] });
+    // The bot walked away: its other four come back.
+    expect(h.f.called('importCards')[0][2].map((n: { tokenId: number }) => n.tokenId)).toEqual(BOT_HAND.slice(1));
+    expect(stats.cardsRecovered).toBe(4);
+    expect(h.journal.read('room-1')!.resolution).toBe('forfeited');
+  });
+
+  it('imports a game finalized while it was away from the claim\'s terms, not a guess', async () => {
+    const h = harness();
+    // The human's claim 1 took the bot's slot 2 and someone finalized it.
+    h.f.state.hits.set(N.claimSlot(1), 30);
+    h.f.state.hits.set(N.claim(1, 1), 30);
+    h.f.state.hits.set(N.forfeit(1, 1, 2), 30);
+    h.f.state.hits.set(N.resolved(1), 50);
+    h.f.state.hits.set(N.done, 50);
+    h.f.state.txs.set(50, RESOLVING_TX);
+    h.journal.write(record());
+
+    await h.sweep.run();
+
+    expect(h.f.called('importCards')[0][2].map((n: { tokenId: number }) => n.tokenId))
+      .toEqual([BOT_HAND[0], BOT_HAND[1], BOT_HAND[3], BOT_HAND[4]]);
+    expect(h.journal.read('room-1')!.resolution).toBe('forfeited');
   });
 
   it('after its claim is contested, claims again from the contest\'s block', async () => {

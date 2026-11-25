@@ -813,9 +813,12 @@ describe('ArenaBot journals committed games', () => {
     const rec = h.j.store.get('g1')!;
     expect(Object.keys(rec).sort()).toEqual([
       'cardIds', 'committedAt', 'gameKey', 'keyPair', 'moveProofs', 'moves', 'nonce', 'opponentOpenCards',
-      'opponentPublicKey', 'outcome', 'ownOpenCards', 'phase', 'prizeMove', 'protocolError', 'record1', 'record2',
-      'relayGameId', 'updatedAt', 'version',
+      'opponentOpenProof', 'opponentPublicKey', 'outcome', 'ownOpenCards', 'phase', 'prizeMove', 'protocolError',
+      'record1', 'record2', 'relayGameId', 'updatedAt', 'version',
     ]);
+    // Their open cards keep the proof that checked out: a claim takes one of
+    // them if they walk away. It is exactly what they sent to show them.
+    expect(rec.opponentOpenProof!.cards).toEqual([1, 180, 247]);
     expect(rec.keyPair.privateJwk, 'our private key: a restarted bot can still open the channel').toBeTruthy();
     expect(rec.opponentPublicKey).toBe(HUMAN_PK);
     expect(rec.cardIds, 'OUR hand').toEqual(BOT_HAND);

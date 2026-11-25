@@ -16,8 +16,10 @@
  *   resolved      import our own notes from the tx that pushed `done`
  *   complete      settle it on its merits (a full transcript outranks any
  *                 claim), contesting an opponent's standing claim first
- *   incomplete    claim it as abandoned, and once the claim has stood its
- *                 dispute window, finalize: both hands back, nobody wins
+ *   incomplete    claim it as abandoned, taking the opponent's best open
+ *                 card (walking away costs a card, §3.4), and once the claim
+ *                 has stood its dispute window, finalize: our five back plus
+ *                 that card, the rest to them
  *
  * Deliberately conservative:
  *  - The CHAIN decides, never the journal. Each pass re-reads the nullifiers.
@@ -30,15 +32,30 @@ import type { GameJournal, JournalRecord } from './GameJournal.js';
 import type { BotChainLike, BotProofsLike } from './chainTypes.js';
 import {
   abandonmentPosition,
+  CLAIM_NUMBERS,
   hasContested,
   NULLIFIER_INDEX,
   parseGameChainState,
+  RECORD_HAND,
   type ClaimNo,
+  type GameChainState,
+  type Resolution,
   type Side,
 } from '../../frontend/src/aztec/privateGame.js';
 import {
+  buildClaimForfeitArgs,
+  chooseForfeit,
+  NO_FORFEIT,
+  NO_FORFEIT_TERMS,
+  OPEN_CARD_SLOTS,
+  type ClaimForfeit,
+  type ForfeitTerms,
+} from '../../frontend/src/aztec/settlementArgs.js';
+import type { OpenCardsPayload } from '../../frontend/src/aztec/localGame.js';
+import {
   BOT_SIDE,
   blocksToTime,
+  cardValue,
   checkTranscript,
   decideSweepStep,
   DISPUTE_SECONDS,
@@ -84,7 +101,7 @@ export interface SweepDeps {
   journal: Pick<GameJournal, 'outstanding' | 'read' | 'write' | 'forget' | 'markResolved'>
     & Partial<Pick<GameJournal, 'pruneResolved'>>;
   chain: BotChainLike;
-  proofs: Pick<BotProofsLike, 'moveVerificationKey'>;
+  proofs: Pick<BotProofsLike, 'moveVerificationKey' | 'handVerificationKey' | 'proveOpenCards'>;
   log?: (msg: string) => void;
   now?: () => number;
   /**
@@ -284,7 +301,7 @@ export class AbandonmentSweep {
       case 'resolved': {
         const tx = await findResolvingTx(this.settlementDeps(), game);
         if (!tx) throw new Error('the game reads as resolved, but no tx carries its resolution');
-        await this.importFrom(rec, game, tx);
+        await this.importFrom(rec, game, tx, await this.finalizedClaimResolution(game, state));
         return;
       }
       case 'wait':
@@ -303,16 +320,25 @@ export class AbandonmentSweep {
     }
   }
 
-  /** Import our own notes from the tx that resolved the game, and close the record. */
-  private async importFrom(rec: JournalRecord, game: BotGame, tx: FoundTx): Promise<void> {
-    const result = await importOwnNotes(this.settlementDeps(), game, tx);
+  /**
+   * Import our own notes from the tx that resolved the game, and close the
+   * record. `resolution` is what the chain already says the tx was (a
+   * finalized claim's terms); without it the tx itself is read.
+   */
+  private async importFrom(rec: JournalRecord, game: BotGame, tx: FoundTx, resolution?: Resolution): Promise<void> {
+    const result = await importOwnNotes(this.settlementDeps(), game, tx, resolution);
     this.stats.recovered += 1;
     this.stats.cardsRecovered += Math.max(0, result.gainedCards);
     if (result.gainedCards < result.expectedCards) {
       this.log(`sweep: ${short(rec.relayGameId)} WARNING expected ${result.expectedCards} card(s) back, ` +
                `gained ${result.gainedCards} — the rest are ours on-chain but invisible`);
     }
-    this.deps.journal.markResolved(rec.relayGameId, result.resolution.kind === 'unwound' ? 'unwound' : 'settled', result.txHash);
+    const kind = result.resolution.kind;
+    this.deps.journal.markResolved(
+      rec.relayGameId,
+      kind === 'unwound' || kind === 'forfeited' ? kind : 'settled',
+      result.txHash,
+    );
     this.log(`sweep: ${short(rec.relayGameId)} ${describeResolution(result.resolution)} — ` +
              `took back ${result.gainedCards} card(s) ${short(result.txHash)}`);
   }
@@ -366,6 +392,68 @@ export class AbandonmentSweep {
     await this.importFrom(rec, { ...game, prizeMove }, tx);
   }
 
+  /**
+   * What our claim carries (docs/plan/PRIVATE_GAMES.md §3.4): the opponent's
+   * checked open-cards proof, taking the open card the bot values most; or,
+   * if they never sent theirs, our own, taking nothing.
+   */
+  private async claimForfeit(game: BotGame): Promise<ClaimForfeit> {
+    const theirs = game.opponentOpen;
+    if (theirs && theirs.cards.length === OPEN_CARD_SLOTS) {
+      return { terms: chooseForfeit(theirs.cards, cardValue), proof: theirs.proof, publicInputs: theirs.publicInputs };
+    }
+    const own = game.ownOpen ?? await this.proveOwnOpenCards(game);
+    return { terms: NO_FORFEIT_TERMS, proof: own.proof, publicInputs: own.publicInputs };
+  }
+
+  private async proveOwnOpenCards(game: BotGame): Promise<OpenCardsPayload> {
+    const { chain } = this.deps;
+    const secrets = await chain.pxe.computeGameSecrets(chain.address, game.nonce);
+    return this.deps.proofs.proveOpenCards(game.cardIds, secrets.blinding, game.record2[RECORD_HAND]);
+  }
+
+  /**
+   * A claim's terms, read off the chain: it pushed one of four terms
+   * nullifiers (each open card, or nothing). The cards a claim against us
+   * could take are our own first three; ours took from the opponent's.
+   */
+  private async claimTerms(game: BotGame, claimNo: ClaimNo, claimSide: Side): Promise<ForfeitTerms> {
+    const { chain } = this.deps;
+    const theirs = game.opponentOpen?.cards;
+    const cards = claimSide !== BOT_SIDE
+      ? game.cardIds.slice(0, OPEN_CARD_SLOTS)
+      : theirs && theirs.length === OPEN_CARD_SLOTS ? [...theirs] : null;
+    // Unknown cards hash to terms nobody pushed; "nothing taken" is still checked.
+    const nullifiers = await chain.pxe.forfeitNullifiers(
+      chain.address, game.gameKey, game.record1, claimNo, claimSide, cards ?? [0, 0, 0],
+    );
+    const found = (await chain.lookupNullifiers(nullifiers)).findIndex(Boolean);
+    if (found < 0) throw new Error(`claim ${claimNo}: none of its possible terms is on-chain`);
+    if (found === OPEN_CARD_SLOTS) return NO_FORFEIT_TERMS;
+    return { slot: found, cardId: cards![found] };
+  }
+
+  /**
+   * How a resolved game ended, when it ended by an abandonment claim: that
+   * claim's terms. Undefined for a settlement or a cancel (the tx says).
+   */
+  private async finalizedClaimResolution(game: BotGame, state: GameChainState): Promise<Resolution | undefined> {
+    for (const c of CLAIM_NUMBERS) {
+      // Resolved without a contest: finalized.
+      if (!state.resolved[c - 1] || state.contests[c - 1]) continue;
+      const [bySide1, bySide2] = state.claims[c - 1];
+      if (!bySide1 && !bySide2) continue;
+      const claimSide: Side = bySide1 ? 1 : 2;
+      try {
+        return resolutionOf(claimSide, await this.claimTerms(game, c, claimSide));
+      } catch (err) {
+        this.log(`sweep: could not read claim ${c}'s terms (${(err as Error).message}) — reading the tx instead`);
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+
   /** Claim the game as abandoned. Finalized by a later pass, once the dispute window has passed. */
   private async claim(
     rec: JournalRecord,
@@ -377,11 +465,15 @@ export class AbandonmentSweep {
     const { chain } = this.deps;
     const deps = this.settlementDeps();
     const id = short(rec.relayGameId);
-    this.log(`sweep: ${id} abandoned (${rec.moveProofs.length}/9 moves) — filing claim ${claimNo}`);
+    const forfeit = await this.claimForfeit(game);
+    const taking = forfeit.terms.slot === NO_FORFEIT ? 'taking nothing' : `taking their open card ${forfeit.terms.cardId}`;
+    this.log(`sweep: ${id} abandoned (${rec.moveProofs.length}/9 moves) — filing claim ${claimNo}, ${taking}`);
+    const { Fr } = await import('@aztec-labs/aztec.js/fields');
     await chain.pxe.sendClaimAbandonedGame(
       chain.address,
       { gameKey: game.gameKey, record1: game.record1, record2: game.record2 },
       { side: BOT_SIDE, claimNo, clockBlock },
+      await buildClaimForfeitArgs(Fr, await this.deps.proofs.handVerificationKey(), forfeit),
       deps.sendOpts(),
     );
     this.stats.claimed += 1;
@@ -396,7 +488,11 @@ export class AbandonmentSweep {
     this.log(`sweep: ${id} claim ${claimNo} filed — finalizable after the ${DISPUTE_SECONDS}s dispute window`);
   }
 
-  /** Finalize a claim that stood its window — anyone may — and take our five back. */
+  /**
+   * Finalize a claim that stood its window — anyone may — and take our cards
+   * back: our five plus the card it took if the claim was ours, our other four
+   * if it was theirs.
+   */
   private async finalize(
     rec: JournalRecord,
     game: BotGame,
@@ -407,12 +503,15 @@ export class AbandonmentSweep {
     const { chain } = this.deps;
     const deps = this.settlementDeps();
     const id = short(rec.relayGameId);
-    this.log(`sweep: ${id} claim ${claimNo} stood its window — finalizing`);
+    const terms = await this.claimTerms(game, claimNo, claimSide);
+    this.log(`sweep: ${id} claim ${claimNo} stood its window — finalizing` +
+             (terms.slot === NO_FORFEIT ? '' : ` (it took card ${terms.cardId})`));
     try {
       await chain.pxe.sendFinalizeAbandonedGame(
         chain.address,
         { gameKey: game.gameKey, record1: game.record1, record2: game.record2 },
         { claimNo, claimSide, claimBlock },
+        terms,
         deps.sendOpts(),
       );
     } catch (err) {
@@ -428,7 +527,7 @@ export class AbandonmentSweep {
     if (this.yieldToGame(`${id} finalized; import deferred`)) return;
     const tx = await findResolvingTx(deps, game, { waitMs: RESOLUTION_WAIT_MS });
     if (!tx) throw new Error('finalized, but the unwind is not visible on the node yet — the next pass imports it');
-    await this.importFrom(rec, game, tx);
+    await this.importFrom(rec, game, tx, resolutionOf(claimSide, terms));
   }
 
   /** Re-read and merge, so a field the bot wrote meanwhile is not lost. */
@@ -438,6 +537,20 @@ export class AbandonmentSweep {
       if (fresh) this.deps.journal.write({ ...fresh, ...fields });
     } catch { /* bookkeeping must never stop a recovery in progress */ }
   }
+}
+
+/** What finalizing a claim with these terms did to the game. */
+function resolutionOf(claimSide: Side, terms: ForfeitTerms): Resolution {
+  if (terms.slot === NO_FORFEIT) return { kind: 'unwound' };
+  return { kind: 'forfeited', claimSide, card: { cardId: terms.cardId, slot: terms.slot } };
+}
+
+/** A journalled open-cards payload, if it is well formed. */
+function openCardsOf(v: unknown): OpenCardsPayload | null {
+  const o = v as { cards?: unknown; proof?: unknown; publicInputs?: unknown } | null | undefined;
+  if (!o || !Array.isArray(o.cards) || typeof o.proof !== 'string' || !Array.isArray(o.publicInputs)) return null;
+  if (!o.cards.every(c => Number.isInteger(c)) || !o.publicInputs.every(p => typeof p === 'string')) return null;
+  return { cards: [...o.cards] as number[], proof: o.proof, publicInputs: [...o.publicInputs] as string[] };
 }
 
 /** The journal entry as settlement and import see it, or null if it is missing what they need. */
@@ -458,6 +571,8 @@ export function toBotGame(rec: JournalRecord): BotGame | null {
     moveProofs,
     outcome: rec.outcome ?? null,
     prizeMove: rec.prizeMove ?? null,
+    opponentOpen: openCardsOf(rec.opponentOpenProof),
+    ownOpen: openCardsOf(rec.ownOpenCards),
   };
 }
 
