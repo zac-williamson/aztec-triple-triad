@@ -4,10 +4,12 @@ Axolotl Arena (repo: `aztec-triple-triad`) is a Triple Triad card game on the
 [Aztec Network](https://aztec.network). Cards are private NFTs; matches play out
 off-chain with a client-side ZK proof per move, exchanged peer-to-peer over a
 WebSocket relay. Only three transactions touch the chain per game — create,
-join, settle — and settlement recursively verifies the full proof transcript
-(2 hand proofs + 9 move proofs) inside one private function before transferring
-the wagered card. See `README.md` for setup as a user; this file is for people
-(and agents) changing the code.
+join, settle — and settlement recursively verifies the nine move proofs inside
+one private function. Games leave **no public state**: a game is a set of
+nullifiers derived from a key only its two players share, each player prepares
+their own payouts when they commit, and settlement just releases them
+(docs/plan/PRIVATE_GAMES.md). See `README.md` for setup as a user; this file is
+for people (and agents) changing the code.
 
 ## Current state (November 2026)
 
@@ -183,15 +185,19 @@ learned the hard way.
 8. **`.simulate()` results stringify as DECIMAL** — never `Fr.fromHexString()`
    them blindly; use the prefix-checking `toFr` helper in
    `packages/frontend/src/aztec/fieldUtils.ts`.
-9. **Card notes carry no tag, so nothing discovers them by scanning.** Every
-   card mint delivers its note messages offchain, and whoever sent the tx
-   takes its own cards by handing the send's `offchainMessages` to
-   `offchain_receive` (`receiveCardMessages` in `pxe.ts`); the PXE stores the
-   notes at its next NFT sync. `import_note` is for recovery — the boot-time
-   restore — plus the settlement loser's relayed cards and the bot's stock,
-   which sends no messages (docs/plan/OFFCHAIN_DELIVERY.md).
-10. **`game_id` and `randomness` are derived IN-CIRCUIT** — never pass them in
-    from the frontend.
+9. **Card notes carry no tag, so nothing discovers them by scanning.** Minted
+   cards (starter, packs) are delivered offchain to their owner, who hands the
+   send's `offchainMessages` to `offchain_receive` (`receiveCardMessages` in
+   `pxe.ts`). Game payouts are different: each player's commit PREPARES their
+   own return, prize and reward notes, settlement RELEASES them with no message
+   at all, and each owner imports their own from the settle tx's effects with
+   `import_note`, using secrets only they hold. **Never relay note data, an
+   address, randomness or a blinding factor to the other player** — the
+   contracts no longer need any of it (docs/plan/PRIVATE_GAMES.md).
+10. **Per-game secrets are derived IN-CIRCUIT** from the player's own keys
+    (`commit_hand`, `compute_game_secrets`) — never pass randomness from the
+    frontend. The only per-game value the client supplies is `game_key`, from
+    the key exchange (`aztec/gameKeys.ts`); it must never reach the relay.
 11. **`npm install --legacy-peer-deps`**, always.
 12. **Card packs are ONE transaction.** The audit's F6 (pack rarity is
     grindable by generating accounts) is **closed as irrelevant — do not
