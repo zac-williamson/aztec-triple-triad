@@ -317,6 +317,14 @@ and derives the following from the shared secret with HKDF-SHA256:
 
 The private key is persisted with the game so a reload can still decrypt.
 
+**Limit: the exchange is unauthenticated.** A relay that actively swaps in its
+own keys ends up sharing a different game key with each player. The join then
+fails, because the joiner's game id doesn't exist. But by then the relay has
+read the creator's sealed `RECORD`, so it can find the creator's create tx and
+its fee payer. This is detectable but not prevented. Preventing it needs an
+authenticated exchange: a short code both players compare, or keys bound to
+long-term identities. The design assumes an honest-but-curious relay.
+
 `PEER {gameId, iv, ciphertext}` carries every player-to-player payload. The
 relay forwards and buffers it without reading it. Payload kinds in Phase A:
 
