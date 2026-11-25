@@ -121,7 +121,8 @@ function SceneContent(props: SwampSceneProps) {
   return (
     <>
       <CameraController />
-      <SceneBridge /> {/* no-op unless VITE_TESTKIT=1 */}
+      {/* no-op unless VITE_TESTKIT=1 */}
+      <SceneBridge selectedCardIndex={selectedCardIndex} isMyTurn={isMyTurn} />
 
       {/* Lighting */}
       <ambientLight color="#2a4a2a" intensity={0.5} />

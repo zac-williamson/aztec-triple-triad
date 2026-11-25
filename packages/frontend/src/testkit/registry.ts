@@ -23,6 +23,17 @@ export interface SceneBridgeState {
   /** Canvas size in CSS pixels (matches pointer-event coordinates). */
   size: { width: number; height: number };
   canvas: HTMLCanvasElement;
+  /**
+   * The gates the scene's own click handlers read — the selected hand card
+   * (what a board cell places) and whose turn it is (whether the hand takes a
+   * click) — as the canvas last committed them. The canvas is a React root of
+   * its own, and react-three-fiber commits it in a scheduler task after the
+   * page's commit, not in the same microtask: these lag GameScreenBridgeState,
+   * by seconds on a busy main thread, and a click in that gap is ignored (a
+   * cell that does not yet know a card is selected drops it).
+   */
+  selectedCardIndex: number | null;
+  isMyTurn: boolean;
 }
 
 interface Registry {

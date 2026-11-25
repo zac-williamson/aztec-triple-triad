@@ -104,6 +104,10 @@ function snapshotPhase(): PhaseSnapshot | null {
           selectedCardIndex: gameScreen.selectedCardIndex,
           flying: gameScreen.flying,
           cascading: gameScreen.cascading,
+          // From inside the canvas, which commits after the page: the gates
+          // its click handlers actually read (see SceneBridgeState).
+          sceneSelectedCardIndex: registry.scene ? registry.scene.selectedCardIndex : null,
+          sceneIsMyTurn: registry.scene ? registry.scene.isMyTurn : null,
         }
       : null,
   };

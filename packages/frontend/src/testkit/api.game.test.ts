@@ -11,7 +11,7 @@ vi.mock('../aztec/txManager', () => ({ default: { getEntries: () => [], enqueueP
 vi.mock('../aztec/txProgress', () => ({ txProgress: { subscribe: vi.fn() } }));
 
 import { createApi } from './api';
-import { registry, publishApp } from './registry';
+import { registry, publishApp, publishGameScreen, publishScene, type SceneBridgeState } from './registry';
 import { hiddenCard } from '../aztec/localGame';
 import type { UseAztecReturn } from '../hooks/useAztec';
 import type { UseGameReturn } from '../hooks/useGame';
@@ -26,6 +26,8 @@ function emptyBoard(): GameState['board'] {
 beforeEach(() => {
   registry.aztec = null;
   registry.game = null;
+  registry.gameScreen = null;
+  registry.scene = null;
 });
 
 describe('phase() reads the client\'s own game', () => {
@@ -67,5 +69,41 @@ describe('phase() reads the client\'s own game', () => {
     const snap = createApi().phase()!;
     expect(snap.game).toBeNull();
     expect(snap.ws.gameOver).toBeNull();
+  });
+});
+
+describe('phase() reports the interaction gates as the 3D scene has them', () => {
+  const scene = (selectedCardIndex: number | null, isMyTurn: boolean): SceneBridgeState => ({
+    camera: {} as SceneBridgeState['camera'], scene: {} as SceneBridgeState['scene'],
+    size: { width: 1440, height: 900 }, canvas: {} as HTMLCanvasElement, selectedCardIndex, isMyTurn,
+  });
+
+  it('separately from the game screen, so a harness can wait for the canvas to catch up', () => {
+    publishApp(
+      { status: 'connected', accountAddress: '0xME', ownedCardIds: [], tokenBalance: 0 } as unknown as UseAztecReturn,
+      { screen: 'game', gameState: null, gameOver: null, playerNumber: 1, roomId: 'room-1',
+        ws: { connected: true, gameId: 'room-1', playerNumber: 1, matchmakingStatus: 'matched', opponentDisconnected: false, abandonmentWarning: null } } as unknown as UseGameReturn,
+    );
+    // The page has the card selected; the canvas — its own React root,
+    // committed a scheduler task later — does not yet. A cell clicked now
+    // drops the click, and the snapshot has to say so.
+    publishGameScreen({ selectedCardIndex: 0, flying: false, cascading: false });
+    publishScene(scene(null, true));
+    expect(createApi().phase()!.interaction).toEqual({
+      selectedCardIndex: 0, flying: false, cascading: false, sceneSelectedCardIndex: null, sceneIsMyTurn: true,
+    });
+
+    publishScene(scene(0, true));
+    expect(createApi().phase()!.interaction).toMatchObject({ selectedCardIndex: 0, sceneSelectedCardIndex: 0 });
+  });
+
+  it('no scene mounted: the scene gates are null', () => {
+    publishApp(
+      { status: 'connected', accountAddress: '0xME', ownedCardIds: [], tokenBalance: 0 } as unknown as UseAztecReturn,
+      { screen: 'game', gameState: null, gameOver: null, playerNumber: 2, roomId: 'room-1',
+        ws: { connected: true, gameId: 'room-1', playerNumber: 2, matchmakingStatus: 'matched', opponentDisconnected: false, abandonmentWarning: null } } as unknown as UseGameReturn,
+    );
+    publishGameScreen({ selectedCardIndex: null, flying: false, cascading: false });
+    expect(createApi().phase()!.interaction).toMatchObject({ sceneSelectedCardIndex: null, sceneIsMyTurn: null });
   });
 });

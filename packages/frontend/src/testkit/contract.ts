@@ -110,6 +110,16 @@ export interface PhaseSnapshot {
     selectedCardIndex: number | null;
     flying: boolean;
     cascading: boolean;
+    /**
+     * The selected hand card as the 3D scene has committed it — what a board
+     * cell's click acts on. It can lag `selectedCardIndex`: the canvas is a
+     * React root of its own, committed a scheduler task later (seconds on a
+     * busy main thread), and a cell clicked before it catches up drops the
+     * click. Null without a scene.
+     */
+    sceneSelectedCardIndex: number | null;
+    /** Whose turn it is as the 3D scene has committed it (the hand ignores clicks until true). Null without a scene. */
+    sceneIsMyTurn: boolean | null;
   } | null;
 }
 
