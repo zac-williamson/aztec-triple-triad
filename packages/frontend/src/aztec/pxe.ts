@@ -16,12 +16,24 @@
  */
 import txManager from './txManager';
 import type { TxType, TxPhase } from './txManager';
-import { toFr, toHexString } from './fieldUtils';
+import { toFr } from './fieldUtils';
 import { gasSettingsWithHeadroom, type BaseFeeNode } from './feeSettings';
 import { CARDS_PER_HAND } from './gameConstants';
 import type { NoteToImport, TxEffectData } from './noteImporter';
 import type { OffchainMessage } from '@aztec-labs/aztec.js/contracts';
 import { diag } from './diagnostics';
+import {
+  GAME_NULLIFIER_COUNT,
+  normalizeField,
+  parseGameSecrets,
+  parseRecord,
+  RECORD_LEN,
+  ZERO_RECORD,
+  type ClaimNo,
+  type GameRecord,
+  type GameSecrets,
+  type Side,
+} from './privateGame';
 
 type Schedule = <T>(fn: () => Promise<T>) => Promise<T>;
 
@@ -33,10 +45,10 @@ export interface SendOpts {
 }
 
 /**
- * A mined send that created card notes: its hash, and the notes' offchain
- * messages — one per note, each addressed to the card's owner — for
- * `receiveCardMessages`. A settlement mints to both players from one tx, so
- * its messages are for two recipients.
+ * A mined send that created card notes (a pack, the starter set): its hash,
+ * and the notes' offchain messages — one per note, each addressed to the
+ * card's owner — for `receiveCardMessages`. Game txs deliver nothing; their
+ * notes are imported by each owner (see `importCardNotes`).
  */
 export interface MintedTx {
   txHash: string;
@@ -84,6 +96,39 @@ function padNoteHashes(Fr: any, noteHashes: string[]): any[] {
   return padded;
 }
 
+/** The two records and key every abandonment call takes. */
+export interface GameRef {
+  gameKey: string;
+  record1: GameRecord;
+  record2: GameRecord;
+}
+
+/** A hand as the five `[Field; 5]` card ids the game functions take. */
+function handFields(Fr: any, cardIds: number[]): any[] {
+  if (cardIds.length !== CARDS_PER_HAND) {
+    throw new Error(`a hand is exactly ${CARDS_PER_HAND} card ids, got ${cardIds.length}`);
+  }
+  return cardIds.map((id) => new Fr(BigInt(id)));
+}
+
+/** A record as `[Field; 9]`. */
+function recordFields(Fr: any, record: GameRecord): any[] {
+  if (record.length !== RECORD_LEN) throw new Error(`a record is ${RECORD_LEN} fields, got ${record.length}`);
+  return record.map((v) => toFr(Fr, v));
+}
+
+function gameRefFields(Fr: any, game: GameRef): any[] {
+  return [toFr(Fr, game.gameKey), recordFields(Fr, game.record1), recordFields(Fr, game.record2)];
+}
+
+/** A block number for a `u32` parameter. */
+function blockArg(blockNumber: number): number {
+  if (!Number.isInteger(blockNumber) || blockNumber < 0 || blockNumber > 0xffffffff) {
+    throw new Error(`not a block number: ${blockNumber}`);
+  }
+  return blockNumber;
+}
+
 /**
  * Named PXE operations. ONE implementation each; `schedule` picks enqueue vs
  * inline. Callers pass and receive plain values (hex strings, numbers, bigints,
@@ -121,55 +166,66 @@ function makeOps(schedule: Schedule) {
         return BigInt(result.toString());
       }),
 
-    /**
-     * P1 create-game preview: derive the next game's id, per-game randomness,
-     * blinding factor, and current on-chain status from the note nonce.
-     */
-    previewCreateGame: (
-      owner: string,
-    ): Promise<{ gameId: string; randomness: string[]; blindingFactor: string; status: number }> =>
+    // ── Private games (docs/plan/PRIVATE_GAMES.md) ────────────────
+    // A game's commit consumes the player's note nonce and derives every
+    // per-game secret from it, so the nonce is read BEFORE the commit — inside
+    // the same queue item as the send (runPxeTx), so nothing can advance it
+    // in between.
+
+    /** The player's current note nonce (`get_note_nonce`), as a field (hex). */
+    readNoteNonce: (owner: string): Promise<string> =>
       schedule(async () => {
-        const { gameContract, nftContract, Fr, AztecAddress } = await resolveContracts();
+        const { nftContract, AztecAddress } = await resolveContracts();
         const addr = AztecAddress.fromStringUnsafe(owner);
-        const { result: nonceResult } = await nftContract.methods.get_note_nonce(addr).simulate({ from: addr });
-        const nonceFr = toFr(Fr, nonceResult);
-        const { result: preview }: any = await nftContract.methods.preview_game_data(nonceFr).simulate({ from: addr });
-        const gameId = String(preview[0]);
-        const randomness = Array.from({ length: 6 }, (_, i) => toHexString(preview[i + 1]));
-        const gameIdFr = toFr(Fr, gameId);
-        const { result: status } = await gameContract.methods.get_game_status(gameIdFr).simulate({ from: addr });
-        const { result: blinding } = await nftContract.methods.compute_blinding_factor(gameIdFr).simulate({ from: addr });
-        return { gameId: toHexString(gameId), randomness, blindingFactor: toHexString(blinding), status: Number(status) };
+        const { result } = await nftContract.methods.get_note_nonce(addr).simulate({ from: addr });
+        return normalizeField(result);
       }),
 
-    /** P2 join-game preview: per-game randomness + blinding factor for `gameId`. */
-    previewJoinGame: (
-      owner: string,
-      gameId: string,
-    ): Promise<{ randomness: string[]; blindingFactor: string }> =>
+    /**
+     * The player's own secrets for the game committed at `nonce`:
+     * `[blinding, r_0..r_4, prize_randomness, reward_randomness]`. Never leave
+     * the device.
+     */
+    computeGameSecrets: (owner: string, nonce: string): Promise<GameSecrets> =>
       schedule(async () => {
         const { nftContract, Fr, AztecAddress } = await resolveContracts();
         const addr = AztecAddress.fromStringUnsafe(owner);
-        const gameIdFr = toFr(Fr, gameId);
-        const { result: nonceResult } = await nftContract.methods.get_note_nonce(addr).simulate({ from: addr });
-        const { result: blinding } = await nftContract.methods.compute_blinding_factor(gameIdFr).simulate({ from: addr });
-        const nonceFr = toFr(Fr, nonceResult);
-        const { result: preview }: any = await nftContract.methods.preview_game_data(nonceFr).simulate({ from: addr });
-        const randomness = Array.from({ length: 6 }, (_, i) => toHexString(preview[i + 1]));
-        return { randomness, blindingFactor: toHexString(blinding) };
+        const { result } = await nftContract.methods.compute_game_secrets(toFr(Fr, nonce)).simulate({ from: addr });
+        return parseGameSecrets(Array.from(result as ArrayLike<unknown>));
       }),
 
     /**
-     * On-chain status of a game: 0 none, 1 created, 2 active, 3 settled,
-     * 4 cancelled, 5 abandoned_claimed. The authority on whether committed
-     * cards are still locked — a local record can be stale in either direction.
+     * The record `create_game` / `join_game` will commit for `owner` at
+     * `nonce` — built by the contract, with no side effects. The creator
+     * sends it to the joiner; both need it to prove moves and to import.
      */
-    readGameStatus: (owner: string, gameId: string): Promise<number> =>
+    previewRecord: (owner: string, gameKey: string, cardIds: number[], nonce: string): Promise<GameRecord> =>
       schedule(async () => {
         const { gameContract, Fr, AztecAddress } = await resolveContracts();
         const addr = AztecAddress.fromStringUnsafe(owner);
-        const { result } = await gameContract.methods.get_game_status(toFr(Fr, gameId)).simulate({ from: addr });
-        return Number(result);
+        const { result } = await gameContract.methods
+          .preview_record(toFr(Fr, gameKey), handFields(Fr, cardIds), toFr(Fr, nonce))
+          .simulate({ from: addr });
+        return parseRecord(Array.from(result as ArrayLike<unknown>));
+      }),
+
+    /**
+     * The game's 21 SILOED nullifiers, computed by the contract so TypeScript
+     * never reimplements the hashes. Look them up on the node (gameChain.ts).
+     * Before a join, pass `record2 = null` (`joined` is then meaningless).
+     */
+    gameNullifiers: (owner: string, gameKey: string, record1: GameRecord, record2: GameRecord | null): Promise<string[]> =>
+      schedule(async () => {
+        const { gameContract, Fr, AztecAddress } = await resolveContracts();
+        const addr = AztecAddress.fromStringUnsafe(owner);
+        const { result } = await gameContract.methods
+          .game_nullifiers(toFr(Fr, gameKey), recordFields(Fr, record1), recordFields(Fr, record2 ?? ZERO_RECORD))
+          .simulate({ from: addr });
+        const out = Array.from(result as ArrayLike<unknown>).map(normalizeField);
+        if (out.length !== GAME_NULLIFIER_COUNT) {
+          throw new Error(`game_nullifiers returned ${out.length} values, expected ${GAME_NULLIFIER_COUNT}`);
+        }
+        return out;
       }),
 
     /**
@@ -224,61 +280,6 @@ function makeOps(schedule: Schedule) {
         return ids;
       }),
 
-    /**
-     * Everything the UI needs to decide what it may honestly offer for a game
-     * that still holds cards: how long it has been active, whether a claim is
-     * standing, who filed it and when.
-     *
-     * Read together because a button offered on stale facts is a button that
-     * reverts, and that has already happened here more than once.
-     */
-    readAbandonmentInfo: (
-      owner: string,
-      gameId: string,
-    ): Promise<{ status: number; activeAt: number; claimAt: number; claimPlayer: string }> =>
-      schedule(async () => {
-        const { gameContract, Fr, AztecAddress } = await resolveContracts();
-        const addr = AztecAddress.fromStringUnsafe(owner);
-        const id = toFr(Fr, gameId);
-        const [status, activeAt, claimAt, claimPlayer] = await Promise.all([
-          gameContract.methods.get_game_status(id).simulate({ from: addr }),
-          gameContract.methods.get_game_active_at(id).simulate({ from: addr }),
-          gameContract.methods.get_game_claim_at(id).simulate({ from: addr }),
-          gameContract.methods.get_game_claim_player(id).simulate({ from: addr }),
-        ]);
-        return {
-          status: Number((status as any).result),
-          activeAt: Number((activeAt as any).result),
-          claimAt: Number((claimAt as any).result),
-          claimPlayer: String((claimPlayer as any).result),
-        };
-      }),
-
-    /**
-     * Contest a standing abandonment claim: "I am still here."
-     *
-     * Same shape as every other send here, and for the same reasons: gas
-     * headroom, because a base fee that moves between simulate and send makes
-     * the tx fail; a bounded wait on a 15s poll, because the default receipt
-     * poll is fast enough to trip the node's per-IP rate cap, whose 429s the
-     * browser mis-reports as CORS errors. An unbounded `.wait()` also hangs the
-     * UI forever on a tx that never mines — and this one runs against a clock,
-     * since the dispute window closes.
-     */
-    sendContestAbandonment: (owner: string, gameId: string, opts: SendOpts): Promise<string> =>
-      schedule(async () => {
-        const { gameContract, Fr, AztecAddress } = await resolveContracts();
-        const addr = AztecAddress.fromStringUnsafe(owner);
-        const { receipt } = await gameContract.methods
-          .contest_abandonment(toFr(Fr, gameId))
-          .send({
-            from: addr,
-            fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) },
-            wait: { timeout: opts.timeoutMs, interval: 15 },
-          });
-        return requireTxHash(receipt, 'contest_abandonment');
-      }),
-
     /** Card-pack preview: the IDs a purchase would mint + the note nonce that
      *  derives their randomness (captured BEFORE the purchase advances it). */
     previewCardPack: (owner: string, count: number): Promise<{ cardIds: number[]; nonce: string }> =>
@@ -316,25 +317,22 @@ function makeOps(schedule: Schedule) {
     // overlaps the proving read-bursts and pushes past the node's 300-req/min/IP
     // rate cap — whose 429s the browser mis-reports as bogus "CORS" errors and
     // kills the settle. 15s detects mining promptly at 1/15 the request rate.
-    sendCreateGame: (owner: string, ids: number[], opts: SendOpts): Promise<string> =>
-      schedule(() => withReorgRetry('create_game', async () => {
-        const { gameContract, Fr, AztecAddress } = await resolveContracts();
-        const addr = AztecAddress.fromStringUnsafe(owner);
-        const { receipt } = await gameContract.methods
-          .create_game(ids.map((id) => new Fr(BigInt(id))))
-          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
-        return requireTxHash(receipt, 'create_game');
-      })),
+    /**
+     * Commit a hand and create a game: `create_game(game_key, card_ids)`. The
+     * record it commits is the one `previewRecord` returned at the same nonce.
+     */
+    sendCreateGame: (owner: string, gameKey: string, cardIds: number[], opts: SendOpts): Promise<string> =>
+      schedule(async () => {
+        const { Fr } = await resolveContracts();
+        return sendGameMethod('create_game', owner, [toFr(Fr, gameKey), handFields(Fr, cardIds)], opts);
+      }),
 
-    sendJoinGame: (owner: string, gameId: string, ids: number[], opts: SendOpts): Promise<string> =>
-      schedule(() => withReorgRetry('join_game', async () => {
-        const { gameContract, Fr, AztecAddress } = await resolveContracts();
-        const addr = AztecAddress.fromStringUnsafe(owner);
-        const { receipt } = await gameContract.methods
-          .join_game(toFr(Fr, gameId), ids.map((id) => new Fr(BigInt(id))))
-          .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
-        return requireTxHash(receipt, 'join_game');
-      })),
+    /** Join the game whose creator committed `record1`. Needs its `created` nullifier mined. */
+    sendJoinGame: (owner: string, gameKey: string, record1: GameRecord, cardIds: number[], opts: SendOpts): Promise<string> =>
+      schedule(async () => {
+        const { Fr } = await resolveContracts();
+        return sendGameMethod('join_game', owner, [toFr(Fr, gameKey), recordFields(Fr, record1), handFields(Fr, cardIds)], opts);
+      }),
 
     sendPurchaseCardPack: (owner: string, opts: SendOpts): Promise<MintedTx> =>
       schedule(() => withReorgRetry('purchase_card_pack', async () => {
@@ -357,47 +355,97 @@ function makeOps(schedule: Schedule) {
       }),
 
     /**
-     * Settlement / abandoned-game sends. The caller builds the ordered Fr/address
-     * argument array (it owns the proof transcript + VK fields and needs Fr for
-     * that anyway); the contract is resolved and invoked here so it never escapes.
+     * Settle a finished game. The caller builds the ordered argument list
+     * (`buildSettleGameArgs`: it owns the transcript and the VK); the contract
+     * is resolved and invoked here so it never escapes. Anyone may settle.
+     * Nothing is delivered: each player imports their own notes from the tx.
      */
-    sendProcessGame: (owner: string, args: unknown[], opts: SendOpts): Promise<MintedTx> =>
-      schedule(() => sendGameMethod('process_game', owner, args, opts)),
+    sendSettleGame: (owner: string, args: unknown[], opts: SendOpts): Promise<string> =>
+      schedule(() => sendGameMethod('settle_game', owner, args, opts)),
+
     /**
-     * Cancel a game nobody joined, re-minting the creator's five cards.
-     *
-     * The contract has supported this since launch but nothing called it, so a
-     * player whose game was never joined had five cards committed with NO
-     * in-app way to get them back — they are nullified out of the PXE until the
-     * game resolves, and a created-but-unjoined game never does. Only the
-     * creator can cancel, and only while the game is still in `created` state.
+     * Cancel a game nobody joined: the creator's own five prepared return
+     * notes are released (import them afterwards). Creator only; fails once
+     * anyone has joined, because join and cancel both close seat 2.
      */
-    sendCancelGame: (owner: string, gameId: string, cardIds: number[], opts: SendOpts): Promise<string> =>
+    sendCancelGame: (owner: string, gameKey: string, record1: GameRecord, opts: SendOpts): Promise<string> =>
       schedule(async () => {
         const { Fr } = await resolveContracts();
-        if (cardIds.length !== CARDS_PER_HAND) {
-          throw new Error(`cancel_game needs exactly ${CARDS_PER_HAND} card ids, got ${cardIds.length}`);
-        }
-        // cancel_game re-mints with tagged (onchain) delivery: no messages.
-        const { txHash } = await sendGameMethod('cancel_game', owner, [
-          toFr(Fr, gameId),
-          cardIds.map(id => new Fr(BigInt(id))),
-        ], opts);
-        return txHash;
+        return sendGameMethod('cancel_game', owner, [toFr(Fr, gameKey), recordFields(Fr, record1)], opts);
       }),
-    sendClaimAbandonedGame: (owner: string, args: unknown[], opts: SendOpts): Promise<string> =>
-      schedule(async () => (await sendGameMethod('claim_abandoned_game', owner, args, opts)).txHash),
-    sendSettleAbandonedGame: (owner: string, args: unknown[], opts: SendOpts): Promise<MintedTx> =>
-      schedule(() => sendGameMethod('settle_abandoned_game', owner, args, opts)),
+
+    /**
+     * Claim that the other player abandoned the game. `clockBlock` is the
+     * block the claim's clock nullifier landed in — the join for claim 1, the
+     * previous contest after that.
+     */
+    sendClaimAbandonedGame: (
+      owner: string,
+      game: GameRef,
+      claim: { side: Side; claimNo: ClaimNo; clockBlock: number },
+      opts: SendOpts,
+    ): Promise<string> =>
+      schedule(async () => {
+        const { Fr } = await resolveContracts();
+        return sendGameMethod('claim_abandoned_game', owner, [
+          ...gameRefFields(Fr, game),
+          new Fr(BigInt(claim.side)),
+          new Fr(BigInt(claim.claimNo)),
+          blockArg(claim.clockBlock),
+        ], opts);
+      }),
+
+    /**
+     * Contest a standing claim: "I am still here." `beforeClaimBlock` is a
+     * block in which the claim did not yet exist (its block minus one); the
+     * contest must land within DISPUTE_SECONDS of it.
+     */
+    sendContestAbandonment: (
+      owner: string,
+      game: GameRef,
+      contest: { side: Side; claimNo: ClaimNo; claimSide: Side; beforeClaimBlock: number },
+      opts: SendOpts,
+    ): Promise<string> =>
+      schedule(async () => {
+        const { Fr } = await resolveContracts();
+        return sendGameMethod('contest_abandonment', owner, [
+          ...gameRefFields(Fr, game),
+          new Fr(BigInt(contest.side)),
+          new Fr(BigInt(contest.claimNo)),
+          new Fr(BigInt(contest.claimSide)),
+          blockArg(contest.beforeClaimBlock),
+        ], opts);
+      }),
+
+    /**
+     * Finalize an uncontested claim once its window has passed: both hands go
+     * back, nobody wins anything. Anyone may finalize. `claimBlock` is the
+     * block the claim landed in.
+     */
+    sendFinalizeAbandonedGame: (
+      owner: string,
+      game: GameRef,
+      claim: { claimNo: ClaimNo; claimSide: Side; claimBlock: number },
+      opts: SendOpts,
+    ): Promise<string> =>
+      schedule(async () => {
+        const { Fr } = await resolveContracts();
+        return sendGameMethod('finalize_abandoned_game', owner, [
+          ...gameRefFields(Fr, game),
+          new Fr(BigInt(claim.claimNo)),
+          new Fr(BigInt(claim.claimSide)),
+          blockArg(claim.claimBlock),
+        ], opts);
+      }),
 
     // ── Card notes (explicit-randomness notes the PXE can't discover by tag) ──
     /**
      * Hand a mint's offchain messages to the NFT contract's `offchain_receive`
      * — the normal way a card note reaches its owner's PXE.
      *
-     * Only the messages for `owner` from the NFT contract: a settlement mints
-     * to both players from one tx, and a PXE can process only its own
-     * accounts' messages (the inbox is scoped by recipient). Received messages
+     * Only the messages for `owner` from the NFT contract: a PXE can process
+     * only its own accounts' messages (the inbox is scoped by recipient).
+     * Received messages
      * wait in a persistent inbox; the PXE stores each note at the next NFT
      * contract sync once the tx is found on-chain — any later NFT read or
      * call triggers it — and processes it again after a reorg. Receiving the
@@ -424,12 +472,13 @@ function makeOps(schedule: Schedule) {
 
     /**
      * Inject NFT card notes into `owner`'s PXE via import_note — not the path a
-     * mint takes. It serves the boot-time restore from the card store, the
-     * loser's cards (which reach them as plaintext over the relay rather than
-     * as messages), and the bot's stock (which is minted with no messages).
-     * Per-note failures are tolerated (idempotent re-import of an already-held
-     * note). `txEffect` (a node read) is fetched by the caller and passed in,
-     * so this op is pure PXE.
+     * mint takes. It serves the boot-time restore from the card store, every
+     * card a game releases (settlement, unwind and cancel deliver nothing:
+     * each player rebuilds their own notes from their own secrets), and the
+     * bot's stock (which is minted with no messages). A note that is not in the
+     * tx is discarded by the contract, not stored. Per-note failures are
+     * tolerated (idempotent re-import of an already-held note). `txEffect` (a
+     * node read) is fetched by the caller and passed in, so this op is pure PXE.
      */
     importCardNotes: (
       owner: string,
@@ -459,15 +508,15 @@ function makeOps(schedule: Schedule) {
       }),
 
     /**
-     * Inject the settlement +reward ArenaToken balance note into `owner`'s PXE.
-     * The note randomness is derived in-contract from the recipient's own per-game
-     * randomness; recompute it (compute_reward_randomness) then import_note.
+     * Inject a settlement's +reward ArenaToken note into `owner`'s PXE. The
+     * player prepared it at commit time with their own `reward_randomness`
+     * (`computeGameSecrets`), so that is the randomness to import it with.
      */
     importTokenRewardNote: (
       owner: string,
       txHash: string,
       amount: number,
-      playerRandomness: string[],
+      rewardRandomness: string,
       txEffect: TxEffectData,
     ): Promise<boolean> =>
       schedule(async () => {
@@ -477,9 +526,6 @@ function makeOps(schedule: Schedule) {
           return false;
         }
         const myAddr = AztecAddress.fromStringUnsafe(owner);
-        const { result: rewardRandomness } = await tokenContract.methods
-          .compute_reward_randomness(playerRandomness.map((r) => toFr(Fr, r)))
-          .simulate({ from: myAddr });
         const { noteHashes, firstNullifier } = txEffect;
         const paddedHashes = padNoteHashes(Fr, noteHashes);
         try {
@@ -609,14 +655,22 @@ export async function withReorgRetry<T>(
   }
 }
 
-/** Shared impl for the game-contract proof sends (process/claim/settle). */
-async function sendGameMethod(method: string, owner: string, args: unknown[], opts: SendOpts): Promise<MintedTx> {
+/**
+ * Shared impl for every game-contract send. Returns the mined tx's hash.
+ *
+ * Gas headroom, because a base fee that moves between simulate and send makes
+ * the tx fail; a bounded wait on a 15s poll, because the default receipt poll
+ * is fast enough to trip the node's per-IP rate cap (whose 429s the browser
+ * mis-reports as CORS errors), and an unbounded wait hangs the UI forever on a
+ * tx that never mines. Game txs deliver no notes — nothing to receive.
+ */
+async function sendGameMethod(method: string, owner: string, args: unknown[], opts: SendOpts): Promise<string> {
   return withReorgRetry(method, async () => {
     const { gameContract, AztecAddress } = await resolveContracts();
     const addr = AztecAddress.fromStringUnsafe(owner);
-    const sent = await gameContract.methods[method](...args)
+    const { receipt } = await gameContract.methods[method](...args)
       .send({ from: addr, fee: { gasSettings: await gasSettingsWithHeadroom(opts.node as BaseFeeNode) }, wait: { timeout: opts.timeoutMs, interval: 15 } });
-    return mintedTx(sent, method, opts.node);
+    return requireTxHash(receipt, method);
   });
 }
 
@@ -676,7 +730,7 @@ export type PxeOps = ReturnType<typeof makeOps>;
 /** Standalone facade: every op is enqueued on the serial PXE queue. */
 /**
  * Queued facade. Each op carries its own name so the queue diagnostics can say
- * WHAT is waiting and what is holding it — "previewJoinGame queued behind 1
+ * WHAT is waiting and what is holding it — "sendJoinGame queued behind 1
  * item" is the line that would have ended a very long production hunt in one
  * pass.
  */

@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react';
-import type { Card, HandProofData, MoveProofData } from '../types';
+import type { Card, MoveProofData } from '../types';
 import { txProgress, type TxProgressEvent } from '../aztec/txProgress';
 import { TOTAL_MOVES } from '../aztec/gameConstants';
 import './ChainViewPanel.css';
 
 /** Everything the panel shows that comes from the game hooks. */
 export interface ChainViewData {
+  /** The game's `created` nullifier: the only trace its creation leaves. */
   onChainGameId: string | null;
-  myHandProof: HandProofData | null;
-  opponentHandProof: HandProofData | null;
+  /** Our hand commitment, from our record. */
+  myHandCommit: string | null;
+  /** The opponent's hand commitment, from their record. */
+  opponentHandCommit: string | null;
   moveProofs: MoveProofData[];
   settleTxHash: string | null;
 }
@@ -67,11 +70,12 @@ function ProofRow({ label, done, duration, detail }: {
 
 /**
  * "You see / chain sees" — the privacy demo panel. Left: the full hand only
- * this client knows. Right: the only things that ever reach the chain —
- * commitment hashes, a proof transcript, and one settlement transaction.
+ * this client knows. Right: what reaches the chain — nullifiers nobody else
+ * can link to this game, inside private transactions; the hand commitments
+ * the move proofs bind are shared only between the two players.
  */
 export function ChainViewPanel({ data, myHand, opponentHandCount, onClose }: ChainViewPanelProps) {
-  const { onChainGameId, myHandProof, opponentHandProof, moveProofs, settleTxHash } = data;
+  const { onChainGameId, myHandCommit, opponentHandCommit, moveProofs, settleTxHash } = data;
 
   // Live tx activity (create/join/settle) from the instrumented wallet.
   const [txEvents, setTxEvents] = useState<Map<string, TxProgressEvent>>(new Map());
@@ -85,8 +89,8 @@ export function ChainViewPanel({ data, myHand, opponentHandCount, onClose }: Cha
     });
   }, []);
 
-  const proofsDone = (myHandProof ? 1 : 0) + (opponentHandProof ? 1 : 0) + Math.min(moveProofs.length, TOTAL_MOVES);
-  const totalProofs = TOTAL_MOVES + 2;
+  const proofsDone = Math.min(moveProofs.length, TOTAL_MOVES);
+  const totalProofs = TOTAL_MOVES;
 
   const liveTxs = [...txEvents.values()]
     .sort((a, b) => b.startTime - a.startTime)
@@ -122,14 +126,14 @@ export function ChainViewPanel({ data, myHand, opponentHandCount, onClose }: Cha
 
         <section className="chain-view__col chain-view__col--chain">
           <h3 className="chain-view__col-title">Chain sees</h3>
-          <div className="chain-view__col-caption">commitments only — hands stay private</div>
+          <div className="chain-view__col-caption">unlinkable nullifiers — no game state, no hands</div>
           <dl className="chain-view__facts">
-            <dt>game id</dt>
-            <dd>{onChainGameId ? <HashValue value={onChainGameId} label="On-chain game id" /> : <span className="chain-view__muted">not created yet</span>}</dd>
+            <dt>game nullifier</dt>
+            <dd>{onChainGameId ? <HashValue value={onChainGameId} label="The game's created nullifier" /> : <span className="chain-view__muted">not created yet</span>}</dd>
             <dt>your hand commitment</dt>
-            <dd>{myHandProof ? <HashValue value={myHandProof.cardCommit} label="Your card_commit" /> : <span className="chain-view__muted">proving…</span>}</dd>
+            <dd>{myHandCommit ? <HashValue value={myHandCommit} label="Your hand commitment" /> : <span className="chain-view__muted">committing…</span>}</dd>
             <dt>their hand commitment</dt>
-            <dd>{opponentHandProof ? <HashValue value={opponentHandProof.cardCommit} label="Opponent card_commit" /> : <span className="chain-view__muted">waiting…</span>}</dd>
+            <dd>{opponentHandCommit ? <HashValue value={opponentHandCommit} label="Opponent hand commitment" /> : <span className="chain-view__muted">waiting…</span>}</dd>
           </dl>
         </section>
       </div>
@@ -140,8 +144,6 @@ export function ChainViewPanel({ data, myHand, opponentHandCount, onClose }: Cha
           <span className="chain-view__counter">{proofsDone}/{totalProofs}</span>
         </h3>
         <div className="chain-view__proofs">
-          <ProofRow label="Hand proof — you" done={!!myHandProof} duration={myHandProof?.durationMs} />
-          <ProofRow label="Hand proof — opponent" done={!!opponentHandProof} duration={opponentHandProof?.durationMs} />
           {Array.from({ length: TOTAL_MOVES }, (_, i) => {
             const proof = moveProofs[i];
             return (
@@ -160,9 +162,9 @@ export function ChainViewPanel({ data, myHand, opponentHandCount, onClose }: Cha
       <section className="chain-view__section">
         <h3 className="chain-view__section-title">Settlement</h3>
         <p className="chain-view__explainer">
-          All {totalProofs} proofs are verified <em>recursively inside one private
-          function</em> — the chain learns who won and which card changed hands,
-          never the moves or the hands themselves.
+          All {totalProofs} move proofs are verified <em>recursively inside one private
+          function</em> that releases notes each player prepared for themselves —
+          the chain learns neither the players, the hands, the moves nor the result.
         </p>
         {liveTxs.map(tx => (
           <div key={tx.txId} className="chain-view__tx" data-testid="chain-view-tx">

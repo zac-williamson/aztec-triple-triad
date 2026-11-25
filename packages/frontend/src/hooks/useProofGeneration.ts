@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'react';
-import type { HandProofData, MoveProofData, GameState } from '../types';
+import type { MoveProofData, GameState } from '../types';
 import type { PlayerHandData } from '../aztec/proofWorker';
 
 export type { PlayerHandData };
@@ -42,13 +42,8 @@ export function encodeOriginalOwners(board: GameState['board']): number[] {
 }
 
 export interface UseProofGenerationReturn {
-  generateHandProof: (
-    cardIds: number[],
-    blindingFactor: string,
-    cardCommitHash: string,
-    opponentRandomness: string[],
-    opponentPlayerStateHash: string,
-  ) => Promise<HandProofData>;
+  /** `playerHandData.cardIds` is the mover's hand in COMMITTED order: the
+   *  placed card's index in it is the proof's public `placed_slot`. */
   generateMoveProof: (
     cardId: number,
     row: number,
@@ -74,23 +69,6 @@ export interface UseProofGenerationReturn {
  */
 export function useProofGeneration(): UseProofGenerationReturn {
   const proofQueueRef = useRef<Promise<void>>(Promise.resolve());
-
-  const generateHandProof = useCallback(
-    async (
-      cardIds: number[],
-      blindingFactor: string,
-      cardCommitHash: string,
-      opponentRandomness: string[],
-      opponentPlayerStateHash: string,
-    ): Promise<HandProofData> => {
-      const { generateProveHandProof } = await import('../aztec/proofWorker');
-      return generateProveHandProof(
-        cardIds, blindingFactor, cardCommitHash,
-        opponentRandomness, opponentPlayerStateHash,
-      );
-    },
-    [],
-  );
 
   const generateMoveProof = useCallback(
     async (
@@ -142,5 +120,5 @@ export function useProofGeneration(): UseProofGenerationReturn {
     proofQueueRef.current = Promise.resolve();
   }, []);
 
-  return { generateHandProof, generateMoveProof, reset };
+  return { generateMoveProof, reset };
 }

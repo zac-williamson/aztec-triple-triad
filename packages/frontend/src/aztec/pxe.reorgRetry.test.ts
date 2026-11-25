@@ -48,7 +48,7 @@ describe('withReorgRetry', () => {
   it('surfaces a genuine failure immediately — never retries, never resyncs', async () => {
     const attempt = vi.fn(async () => { throw new Error('Assertion failed: not active'); });
     const resync = healthyResync();
-    await expect(withReorgRetry('process_game', attempt, resync)).rejects.toThrow('Assertion failed');
+    await expect(withReorgRetry('settle_game', attempt, resync)).rejects.toThrow('Assertion failed');
     expect(attempt).toHaveBeenCalledTimes(1);
     expect(resync).not.toHaveBeenCalled();
   });

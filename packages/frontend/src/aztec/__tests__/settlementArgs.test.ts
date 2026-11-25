@@ -1,21 +1,22 @@
-import { describe, it, expect, beforeAll } from 'vitest';
-import { padToHand, sortProofChain } from '../settlementArgs';
+import { describe, it, expect, vi } from 'vitest';
+import { normalizeField } from '../privateGame';
+import { record, stateHash, transcript } from './privateGameFixtures';
 
-class FakeFr { constructor(public v: bigint) {} }
+// The canonical initial hash is a pedersen hash in bb.js; the transcript
+// fixtures start their chain at stateHash(0) instead.
+vi.mock('../proofWorker', () => ({
+  computeBoardStateHash: vi.fn(async () => stateHash(0)),
+}));
+
+import { buildSettleGameArgs, MOVE_PUBLIC_INPUTS, sortProofChain } from '../settlementArgs';
+
+class FakeFr {
+  constructor(public v: bigint) {}
+  static fromHexString(s: string) { return new FakeFr(BigInt(s)); }
+  toString() { return '0x' + this.v.toString(16); }
+}
 
 const link = (start: string, end: string) => ({ startStateHash: start, endStateHash: end });
-
-describe('padToHand', () => {
-  it('pads a short hand to five and converts to field elements', () => {
-    const out = padToHand(FakeFr as any, [3, 7]) as any[];
-    expect(out).toHaveLength(5);
-    expect(out.map(f => f.v)).toEqual([3n, 7n, 0n, 0n, 0n]);
-  });
-
-  it('truncates anything longer than a hand', () => {
-    expect(padToHand(FakeFr as any, [1, 2, 3, 4, 5, 6, 7])).toHaveLength(5);
-  });
-});
 
 describe('sortProofChain', () => {
   it('orders proofs by chaining end hash to start hash', () => {
@@ -46,83 +47,69 @@ describe('sortProofChain', () => {
 });
 
 /**
- * A COMPLETE transcript is a legal abandonment claim.
- *
- * It used to throw here, mirroring a contract that capped `num_valid_moves` at
- * 8. That cap made the single most recoverable situation unrecoverable: a game
- * that ran all nine moves and whose winner then vanished has a whole transcript
- * and a settlement that is provably owed, yet neither side could act — the
- * loser was refused, and the winner was gone. Ten cards locked forever.
- *
- * The contract now accepts 9 and skips its turn-parity check there, because a
- * finished game has nobody whose turn it is. This guard has to agree, or the
- * claim is refused in the browser before it ever reaches the chain.
+ * `settle_game(game_key, record_1, record_2, move_vk, 9 x (proof, inputs[8]),
+ * prize_move)` — one flat, order-critical list, rejected only on-chain (after
+ * the recursive verification) when it is wrong.
  */
-describe('buildClaimAbandonedArgs move-count guard', () => {
-  // The first call past the guard imports proofWorker (bb.js + noir_js) and
-  // fieldUtils (the SDK's Fr), and starts Barretenberg's WASM to hash the
-  // canonical initial state. None of that is what these tests are about, and on
-  // a 2-core CI runner it alone outgrew the 5s per-test budget after the v6
-  // bump (5018ms on the first case). Pay it once, up front, under a budget that
-  // fits it, so each case times only the guard.
-  beforeAll(async () => {
-    await import('../fieldUtils');
-    const { computeCanonicalInitialHash } = await import('../settlementArgs');
-    await computeCanonicalInitialHash();
-  }, 120_000);
+describe('buildSettleGameArgs', () => {
+  const vk = new Uint8Array(64).map((_, i) => i);
+  const inputs = (over: Partial<Parameters<typeof buildSettleGameArgs>[0]> = {}) => ({
+    Fr: FakeFr,
+    gameKey: normalizeField(0x6a3en),
+    record1: record(1),
+    record2: record(2),
+    moveVk: vk,
+    moveProofs: transcript({ winner: 1 }),
+    prizeMove: 3,
+    ...over,
+  });
 
-  const moves = (n: number) =>
-    Array.from({ length: n }, (_, i) => ({
-      proof: '', publicInputs: [], startStateHash: `${i}`, endStateHash: `${i + 1}`,
-    }));
+  it('lays out key, both records, the VK, nine chained (proof, inputs) pairs and the prize move', async () => {
+    const t = transcript({ winner: 1 });
+    const shuffled = [t[5], t[0], t[8], t[3], t[1], t[7], t[2], t[6], t[4]];
+    const args = await buildSettleGameArgs(inputs({ moveProofs: shuffled })) as any[];
 
-  /** Reach the guard and report only whether it let us past. */
-  async function rejectsAt(n: number): Promise<boolean> {
-    const { buildClaimAbandonedArgs } = await import('../settlementArgs');
-    try {
-      await buildClaimAbandonedArgs({
-        Fr: FakeFr as any,
-        onChainGameId: '0x1',
-        callerIsPlayer1: true,
-        handVk: new Uint8Array(), moveVk: new Uint8Array(), dummyVk: new Uint8Array(),
-        handProof1: { proof: '', publicInputs: [] },
-        handProof2: { proof: '', publicInputs: [] },
-        validMoveProofs: moves(n),
-        makeDummyProof: async () => '',
-      } as any);
-      return false;
-    } catch (err) {
-      // Only the guard's own message counts as a rejection; anything else means
-      // we got PAST it and failed later on the fake Fr, which is a pass.
-      return /valid move proofs/.test((err as Error).message);
+    expect(args).toHaveLength(1 + 2 + 1 + 18 + 1);
+    expect(args[0].v).toBe(0x6a3en);
+    expect(args[1].map((f: FakeFr) => f.v)).toEqual(record(1).map(v => BigInt(v)));
+    expect(args[2].map((f: FakeFr) => f.v)).toEqual(record(2).map(v => BigInt(v)));
+    expect(args[3]).toHaveLength(2); // 64 bytes of VK → 2 fields
+    for (let i = 0; i < 9; i++) {
+      const proofFields = args[4 + 2 * i] as FakeFr[];
+      const inputFields = args[5 + 2 * i] as FakeFr[];
+      // Chained into move order, whatever order they arrived in.
+      expect(inputFields.map(f => f.v)).toEqual(t[i].publicInputs.map(v => BigInt(v)));
+      expect(inputFields).toHaveLength(MOVE_PUBLIC_INPUTS);
+      expect(proofFields.length).toBeGreaterThan(0);
     }
-  }
-
-  it('accepts a complete nine-move transcript', async () => {
-    expect(await rejectsAt(9), 'a finished game is exactly what n == 9 is for').toBe(false);
+    expect(args[22].v).toBe(3n);
   });
 
-  it('still accepts a partial transcript', async () => {
-    expect(await rejectsAt(4)).toBe(false);
+  it('refuses a move proof with the old six public inputs', async () => {
+    const t = transcript({ winner: 1 });
+    t[4] = { ...t[4], publicInputs: t[4].publicInputs.slice(0, 6) };
+    await expect(buildSettleGameArgs(inputs({ moveProofs: t }))).rejects.toThrow(/6 public inputs/);
   });
 
-  it('accepts zero moves — someone who left before their first turn', async () => {
-    expect(await rejectsAt(0)).toBe(false);
+  it('refuses a prize move outside the board, and a record of the wrong length', async () => {
+    await expect(buildSettleGameArgs(inputs({ prizeMove: 9 }))).rejects.toThrow(/prize_move/);
+    await expect(buildSettleGameArgs(inputs({ prizeMove: -1 }))).rejects.toThrow(/prize_move/);
+    await expect(buildSettleGameArgs(inputs({ record2: record(2).slice(0, 8) }))).rejects.toThrow(/9-field records/);
   });
 
-  it('rejects more moves than a board can hold', async () => {
-    expect(await rejectsAt(10)).toBe(true);
+  it('refuses a broken transcript locally rather than on-chain', async () => {
+    const t = transcript({ winner: 1 });
+    await expect(buildSettleGameArgs(inputs({ moveProofs: t.slice(0, 8) }))).rejects.toThrow(/Proof chain broken at step 8/);
   });
 });
 
 /**
- * The dispute wait must refuse an unknown claim time.
+ * Waiting out the dispute window on the CHAIN's clock, from the claim's block.
  *
- * `claimAt` is 0 when the contract has no claim on record — which a reader
- * hits by reading before its own claim is visible at its anchor. Treated as a
- * timestamp that is 1970, so the elapsed window is astronomical and the wait
- * returns immediately: settle early, revert, and tell the player their
- * recovery failed after they paid for the proving.
+ * A claim time of 0 means no time at all: as a timestamp it is 1970, the
+ * elapsed window is astronomical and the wait returns at once — finalizing
+ * early, reverting, and telling the player their recovery failed after they
+ * paid for the proof.
  */
 describe('waitForDisputeWindow', () => {
   const node = (chainSeconds: number) => ({
@@ -133,7 +120,7 @@ describe('waitForDisputeWindow', () => {
   it('refuses a zero claim time instead of treating it as long ago', async () => {
     const { waitForDisputeWindow } = await import('../settlementArgs');
     await expect(waitForDisputeWindow(node(1_700_000) as any, 0))
-      .rejects.toThrow(/No claim on record/);
+      .rejects.toThrow(/No time for the claim/);
   });
 
   it('returns once the window has elapsed in CHAIN time', async () => {
@@ -149,42 +136,23 @@ describe('waitForDisputeWindow', () => {
   });
 });
 
-/**
- * Trimming a claim to a parity the contract will accept.
- *
- * Holding one proof too many for your side is the NORMAL case — it just means
- * the opponent moved last. The bot's sweep has always trimmed; the browser
- * passed everything it held straight through, so a player 1 holding eight
- * proofs sent n=8, which makes player 1 next to move, and the claim reverted.
- */
-describe('claimableMoveCount', () => {
-  it('a complete transcript is exempt from parity — nine stands for either side', async () => {
-    const { claimableMoveCount } = await import('../settlementArgs');
-    expect(claimableMoveCount(9, true)).toBe(9);
-    expect(claimableMoveCount(9, false)).toBe(9);
+describe('waitForAbandonBar', () => {
+  const node = (chainSeconds: number) => ({
+    getBlockNumber: async () => 1,
+    getBlock: async () => ({ header: { globalVariables: { timestamp: chainSeconds } } }),
   });
 
-  it('player 1 claims on an ODD count, trimming down when it holds an even one', async () => {
-    const { claimableMoveCount } = await import('../settlementArgs');
-    expect(claimableMoveCount(8, true)).toBe(7);
-    expect(claimableMoveCount(7, true)).toBe(7);
-    expect(claimableMoveCount(2, true)).toBe(1);
+  it('waits MIN_ABANDON_SECONDS of chain time from the clock block', async () => {
+    const { waitForAbandonBar, MIN_ABANDON_SECONDS } = await import('../settlementArgs');
+    await expect(waitForAbandonBar(node(1_000 + MIN_ABANDON_SECONDS) as any, 1_000)).resolves.toBeUndefined();
+    const progress: number[] = [];
+    await expect(waitForAbandonBar(node(1_100) as any, 1_000, { maxMs: 1, pollMs: 1, onProgress: s => progress.push(s) }))
+      .rejects.toThrow(/abandonment bar did not pass/);
+    expect(progress[0]).toBe(MIN_ABANDON_SECONDS - 100);
   });
 
-  it('player 2 claims on an EVEN count', async () => {
-    const { claimableMoveCount } = await import('../settlementArgs');
-    expect(claimableMoveCount(8, false)).toBe(8);
-    expect(claimableMoveCount(7, false)).toBe(6);
-    expect(claimableMoveCount(0, false)).toBe(0);
-  });
-
-  it('never proposes more than the board holds', async () => {
-    const { claimableMoveCount } = await import('../settlementArgs');
-    expect(claimableMoveCount(12, true)).toBe(9);
-  });
-
-  it('reports player 1 with no moves as unclaimable — they owe the first move', async () => {
-    const { claimableMoveCount } = await import('../settlementArgs');
-    expect(claimableMoveCount(0, true)).toBe(-1);
+  it('refuses a game with no clock time', async () => {
+    const { waitForAbandonBar } = await import('../settlementArgs');
+    await expect(waitForAbandonBar(node(5) as any, 0)).rejects.toThrow(/no clock time/);
   });
 });

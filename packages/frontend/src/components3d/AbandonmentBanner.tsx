@@ -7,14 +7,14 @@ interface AbandonmentBannerProps {
   warning: AbandonmentWarning | null;
   /** This client's player side, to decide idle-vs-waiting framing. */
   myPlayer: Player;
-  /** True while the on-chain claim+settle flow is running (button → disabled). */
+  /** True while the on-chain claim → finalize flow is running (button → disabled). */
   isClaimingAbandoned: boolean;
   /** Seconds until the contract will accept the claim, while the flow waits
    *  for the game to reach MIN_ABANDON_SECONDS; else null. */
   abandonBarCountdown?: number | null;
   /** Seconds left in the on-chain dispute window during claim, else null. */
   abandonedDisputeCountdown: number | null;
-  /** Fire the claim flow (claim_abandoned_game → dispute wait → settle). */
+  /** Fire the claim flow (claim_abandoned_game → dispute wait → finalize_abandoned_game). */
   onClaimAbandoned: () => void;
 }
 

@@ -434,12 +434,12 @@ describe('TxManager', () => {
       expect(txManager.hasInFlightForGame('abandoned-1')).toBe(false);
     });
 
-    it('tracks settle_abandoned_game in-flight', async () => {
+    it('tracks finalize_abandoned_game in-flight', async () => {
       let resolveExecute: () => void;
       const blockingPromise = new Promise<void>(r => { resolveExecute = r; });
 
       const txPromise = txManager.runTx({
-        type: 'settle_abandoned_game',
+        type: 'finalize_abandoned_game',
         label: 'Settling abandoned game...',
         gameId: 'abandoned-1',
         execute: async () => {
@@ -449,12 +449,12 @@ describe('TxManager', () => {
       });
 
       await new Promise(r => setTimeout(r, 10));
-      expect(txManager.hasInFlight('settle_abandoned_game')).toBe(true);
+      expect(txManager.hasInFlight('finalize_abandoned_game')).toBe(true);
 
       resolveExecute!();
       await txPromise;
 
-      expect(txManager.hasInFlight('settle_abandoned_game')).toBe(false);
+      expect(txManager.hasInFlight('finalize_abandoned_game')).toBe(false);
     });
 
     it('claim and settle run sequentially through PXE queue', async () => {
@@ -472,7 +472,7 @@ describe('TxManager', () => {
       });
 
       const settle = txManager.runTx({
-        type: 'settle_abandoned_game',
+        type: 'finalize_abandoned_game',
         label: 'Settle',
         gameId: 'seq-test',
         execute: async () => {
@@ -485,11 +485,11 @@ describe('TxManager', () => {
       expect(order).toEqual(['claim', 'settle']);
     });
 
-    it('settle_abandoned_game postEffects run correctly', async () => {
+    it('finalize_abandoned_game postEffects run correctly', async () => {
       let postEffectRan = false;
 
       await txManager.runTx({
-        type: 'settle_abandoned_game',
+        type: 'finalize_abandoned_game',
         label: 'Settle with post',
         gameId: 'post-test',
         execute: async () => ({ hash: '0xabc', callerRandomness: [] }),

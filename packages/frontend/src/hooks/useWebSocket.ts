@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { ClientMessage, ServerMessage, GameState, Player, GameListEntry, HandProofData, MoveProofData, PlaintextNoteData } from '../types';
+import type { ClientMessage, ServerMessage, GameState, Player, GameListEntry, MoveProofData, SealedPeerMessage } from '../types';
 
 /**
  * Present-but-idle abandonment warning, as surfaced to the UI. Mirrors the
@@ -31,47 +31,25 @@ export interface UseWebSocketReturn {
   opponentDisconnected: boolean;
   /** Live present-but-idle abandonment warning, or null when none is active. */
   abandonmentWarning: AbandonmentWarning | null;
-  opponentHandProof: HandProofData | null;
   lastMoveProof: { moveProof: MoveProofData; handIndex: number; row: number; col: number } | null;
-  opponentAztecAddress: string | null;
-  opponentOnChainGameId: string | null;
-  opponentCardIds: number[];
-  // Note relay (offchain settlement delivery)
-  incomingNoteData: { txHash: string; notes: PlaintextNoteData[] } | null;
-  relayNoteData: (gameId: string, txHash: string, notes: PlaintextNoteData[]) => void;
-  // Settlement lifecycle
-  opponentSettling: { selectedCardId: number } | null;
-  notifySettleStarted: (gameId: string, selectedCardId: number) => void;
-  /** Report a mined settle_abandoned_game tx — the server releases both
+  /** Report a mined finalize_abandoned_game tx — the server releases both
    *  players' room bindings and replies with a standard GAME_OVER. Send
    *  only AFTER the tx is mined (QA-F3, docs/plan/LANE_4_BACKEND.md). */
   notifyAbandonedGameSettled: (gameId: string) => void;
-  // On-chain tx lifecycle
+  // On-chain tx lifecycle. No tx hash: the relay must not find the game's txs.
   opponentTxConfirmed: boolean;
-  notifyTxConfirmed: (gameId: string, txType: 'create_game' | 'join_game', txHash: string) => void;
+  notifyTxConfirmed: (gameId: string, txType: 'create_game' | 'join_game') => void;
+  /** Our half of the per-game key exchange: only the public key. */
+  sendKeyExchange: (gameId: string, publicKey: string) => void;
+  /** A player-to-player payload, already sealed with the channel key. */
+  sendPeer: (gameId: string, sealed: SealedPeerMessage) => void;
   // Matchmaking
   matchmakingStatus: 'idle' | 'queued' | 'matched';
   queuePosition: number | null;
   createGame: (cardIds: number[]) => void;
   joinGame: (gameId: string, cardIds: number[]) => void;
   placeCard: (handIndex: number, row: number, col: number) => void;
-  submitHandProof: (gameId: string, handProof: HandProofData) => void;
   submitMoveProof: (gameId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData, moveNumber: number) => void;
-  shareAztecInfo: (gameId: string, aztecAddress: string, onChainGameId?: string, gameRandomness?: string[]) => void;
-  /** Send at GAME OVER only — earlier would let the opponent brute-force your hand. */
-  shareBlinding: (gameId: string, blindingFactor: string) => void;
-  opponentGameRandomness: string[] | null;
-  /** The opponent's blinding factor, relayed at game over. Settlement cannot
-   *  prove their card ids without it. */
-  opponentBlinding: string | null;
-  /**
-   * Identity-stable read of the same value, for settlement callbacks.
-   *
-   * They capture their dependencies once and run minutes later, so reading the
-   * field directly gave them the null it held when the callback was built — and
-   * settlement failed on a message that had in fact arrived.
-   */
-  getOpponentBlinding: () => string | null;
   refreshGameList: () => void;
   leaveGame: () => void;
   disconnect: () => void;
@@ -82,6 +60,7 @@ export interface UseWebSocketReturn {
   // Synchronous message listener — invoked in the WebSocket onmessage handler,
   // NOT deferred to a React render cycle. Use for bridging data into refs that
   // async functions (e.g. txManager execute callbacks) read between awaits.
+  // OPPONENT_KEY and PEER reach the app only this way (useGameChannel).
   addMessageListener: (cb: (msg: ServerMessage) => void) => () => void;
 }
 
@@ -105,18 +84,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
   const [gameOver, setGameOver] = useState<{ winner: Player | 'draw' } | null>(null);
   const [opponentDisconnected, setOpponentDisconnected] = useState(false);
   const [abandonmentWarning, setAbandonmentWarning] = useState<AbandonmentWarning | null>(null);
-  const [opponentHandProof, setOpponentHandProof] = useState<HandProofData | null>(null);
   const [lastMoveProof, setLastMoveProof] = useState<{ moveProof: MoveProofData; handIndex: number; row: number; col: number } | null>(null);
-  const [opponentAztecAddress, setOpponentAztecAddress] = useState<string | null>(null);
-  const [opponentOnChainGameId, setOpponentOnChainGameId] = useState<string | null>(null);
-  const [opponentCardIds, setOpponentCardIds] = useState<number[]>([]);
-  const [incomingNoteData, setIncomingNoteData] = useState<{ txHash: string; notes: PlaintextNoteData[] } | null>(null);
-  const [opponentSettling, setOpponentSettling] = useState<{ selectedCardId: number } | null>(null);
-  const [opponentGameRandomness, setOpponentGameRandomness] = useState<string[] | null>(null);
-  const [opponentBlinding, setOpponentBlinding] = useState<string | null>(null);
-  const opponentBlindingRef = useRef<string | null>(null);
-  opponentBlindingRef.current = opponentBlinding;
-  const getOpponentBlinding = useCallback((): string | null => opponentBlindingRef.current, []);
   const [opponentTxConfirmed, setOpponentTxConfirmed] = useState(false);
   const [matchmakingStatus, setMatchmakingStatus] = useState<'idle' | 'queued' | 'matched'>('idle');
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
@@ -216,10 +184,6 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
           setGameOver({ winner: msg.winner });
           // Game ended — no further abandonment warning applies.
           setAbandonmentWarning(null);
-          if (playerNumberRef.current) {
-            const oppIds = playerNumberRef.current === 1 ? msg.player2CardIds : msg.player1CardIds;
-            if (oppIds && oppIds.length > 0) setOpponentCardIds(oppIds);
-          }
           break;
         case 'GAME_LIST':
           setGameList(msg.games);
@@ -233,18 +197,6 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
             secondsIdle: msg.secondsIdle,
             secondsUntilClaimable: msg.secondsUntilClaimable,
           });
-          // The claimant (the NON-idle player) needs the abandoner's committed
-          // hand to claim a card on-chain. Card ids are otherwise exchanged only
-          // at GAME_OVER, which an abandonment never reaches — so adopt the idle
-          // player's ids here. (Guarded so the idle player never overwrites its
-          // own opponentCardIds with its own hand.)
-          if (playerNumberRef.current && msg.idlePlayerCardIds?.length) {
-            const myPlayer: Player = playerNumberRef.current === 1 ? 'player1' : 'player2';
-            if (msg.idlePlayer !== myPlayer) setOpponentCardIds(msg.idlePlayerCardIds);
-          }
-          break;
-        case 'HAND_PROOF':
-          setOpponentHandProof(msg.handProof);
           break;
         case 'MOVE_PROVEN':
           setGameState(msg.gameState);
@@ -258,19 +210,10 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
             col: msg.col,
           });
           break;
-        case 'OPPONENT_BLINDING':
-          setOpponentBlinding(msg.blindingFactor);
-          break;
-        case 'OPPONENT_AZTEC_INFO':
-          setOpponentAztecAddress(msg.aztecAddress);
-          if (msg.onChainGameId) setOpponentOnChainGameId(msg.onChainGameId);
-          if (msg.gameRandomness) setOpponentGameRandomness(msg.gameRandomness);
-          break;
-        case 'NOTE_DATA':
-          setIncomingNoteData({ txHash: msg.txHash, notes: msg.notes });
-          break;
-        case 'OPPONENT_SETTLING':
-          setOpponentSettling({ selectedCardId: msg.selectedCardId });
+        case 'OPPONENT_KEY':
+        case 'PEER':
+          // Handled by the game channel's listener (useGameChannel): the
+          // payloads are sealed, and only it holds the keys.
           break;
         case 'ON_CHAIN_STATUS': {
           const s = msg.status;
@@ -379,39 +322,26 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     send({ type: 'LIST_GAMES' });
   }, [send]);
 
-  const submitHandProof = useCallback((gId: string, handProof: HandProofData) => {
-    setError(null);
-    send({ type: 'SUBMIT_HAND_PROOF', gameId: gId, handProof });
-  }, [send]);
-
-  const shareAztecInfo = useCallback((gId: string, aztecAddress: string, onChainGameId?: string, gameRandomness?: string[]) => {
-    send({ type: 'SHARE_AZTEC_INFO', gameId: gId, aztecAddress, onChainGameId, gameRandomness });
-  }, [send]);
-
-  const shareBlinding = useCallback((gId: string, blindingFactor: string) => {
-    send({ type: 'SHARE_BLINDING', gameId: gId, blindingFactor });
-  }, [send]);
-
   const submitMoveProof = useCallback((gId: string, handIndex: number, row: number, col: number, moveProof: MoveProofData, moveNumber: number) => {
     if (!gId) return;
     setError(null);
     send({ type: 'SUBMIT_MOVE_PROOF', gameId: gId, handIndex, row, col, moveNumber, moveProof });
   }, [send]);
 
-  const relayNoteData = useCallback((gId: string, txHash: string, notes: PlaintextNoteData[]) => {
-    send({ type: 'RELAY_NOTE_DATA', gameId: gId, txHash, notes });
-  }, [send]);
-
-  const notifySettleStarted = useCallback((gId: string, selectedCardId: number) => {
-    send({ type: 'SETTLE_STARTED', gameId: gId, selectedCardId });
-  }, [send]);
-
   const notifyAbandonedGameSettled = useCallback((gId: string) => {
     send({ type: 'ABANDONED_GAME_SETTLED', gameId: gId });
   }, [send]);
 
-  const notifyTxConfirmed = useCallback((gId: string, txType: 'create_game' | 'join_game', txHash: string) => {
-    send({ type: 'TX_CONFIRMED', gameId: gId, txType, txHash });
+  const notifyTxConfirmed = useCallback((gId: string, txType: 'create_game' | 'join_game') => {
+    send({ type: 'TX_CONFIRMED', gameId: gId, txType });
+  }, [send]);
+
+  const sendKeyExchange = useCallback((gId: string, publicKey: string) => {
+    send({ type: 'KEY_EXCHANGE', gameId: gId, publicKey });
+  }, [send]);
+
+  const sendPeer = useCallback((gId: string, sealed: SealedPeerMessage) => {
+    send({ type: 'PEER', gameId: gId, iv: sealed.iv, ciphertext: sealed.ciphertext });
   }, [send]);
 
   const queueMatchmaking = useCallback((cardIds: number[]) => {
@@ -462,14 +392,7 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     setError(null);
     setOpponentDisconnected(false);
     setAbandonmentWarning(null);
-    setOpponentHandProof(null);
     setLastMoveProof(null);
-    setOpponentAztecAddress(null);
-    setOpponentOnChainGameId(null);
-    setOpponentCardIds([]);
-    setIncomingNoteData(null);
-    setOpponentSettling(null);
-    setOpponentGameRandomness(null);
     setOpponentTxConfirmed(false);
     setMatchmakingStatus('idle');
     setQueuePosition(null);
@@ -498,30 +421,18 @@ export function useWebSocket(wsUrl?: string): UseWebSocketReturn {
     gameOver,
     opponentDisconnected,
     abandonmentWarning,
-    opponentHandProof,
     lastMoveProof,
-    opponentAztecAddress,
-    opponentOnChainGameId,
-    opponentCardIds,
-    incomingNoteData,
-    opponentSettling,
-    notifySettleStarted,
     notifyAbandonedGameSettled,
-    opponentGameRandomness,
-    opponentBlinding,
-    getOpponentBlinding,
     opponentTxConfirmed,
-    relayNoteData,
     notifyTxConfirmed,
+    sendKeyExchange,
+    sendPeer,
     matchmakingStatus,
     queuePosition,
     createGame,
     joinGame,
     placeCard,
-    submitHandProof,
     submitMoveProof,
-    shareAztecInfo,
-    shareBlinding,
     refreshGameList,
     leaveGame,
     disconnect,

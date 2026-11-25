@@ -31,7 +31,7 @@
 
 let warmed: Promise<void> | null = null;
 
-/** The dynamic imports on the settlement path. Keep in step with useGameSettlement. */
+/** The dynamic imports on the settlement path. Keep in step with useGameSettlement and gameActions. */
 const SETTLEMENT_IMPORTS: Array<() => Promise<unknown>> = [
   () => import('./pxe'),
   // pxe pulls this one in dynamically at settlement time, so it is a separate
@@ -39,7 +39,13 @@ const SETTLEMENT_IMPORTS: Array<() => Promise<unknown>> = [
   // miss. The coverage test below follows these transitively for that reason.
   () => import('./contracts'),
   () => import('./settlementArgs'),
-  () => import('./claimParity'),
+  () => import('./gameActions'),
+  () => import('./gameChain'),
+  () => import('./privateGame'),
+  () => import('./noteImporter'),
+  // ...which loads the NFT artifact through these on first contract use.
+  () => import('./contractArtifacts'),
+  () => import('@aztec-labs/aztec.js/abi'),
   () => import('./fieldUtils'),
   () => import('./proofWorker'),
   () => import('./proofBackend'),
@@ -47,6 +53,10 @@ const SETTLEMENT_IMPORTS: Array<() => Promise<unknown>> = [
   () => import('./gameConstants'),
   () => import('@aztec-labs/aztec.js/fields'),
   () => import('@aztec-labs/aztec.js/addresses'),
+  // Node reads: nullifier lookups, the settle tx's effects, note siloing.
+  () => import('@aztec-labs/stdlib/trees'),
+  () => import('@aztec-labs/stdlib/hash'),
+  () => import('@aztec-labs/stdlib/tx'),
   // The proving stack. These are the biggest chunks on the path and therefore
   // the ones most worth having in memory before a deploy can move them.
   () => import('@aztec-foundation/bb.js'),

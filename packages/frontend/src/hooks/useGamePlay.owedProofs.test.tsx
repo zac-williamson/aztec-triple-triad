@@ -14,14 +14,9 @@ import { renderHook, act } from '@testing-library/react';
 import type { Board, Card, GameState } from '../types';
 
 const generateMoveProof = vi.fn();
-const generateHandProof = vi.fn();
 
 vi.mock('./useProofGeneration', () => ({
-  useProofGeneration: () => ({ generateHandProof, generateMoveProof, reset: vi.fn() }),
-}));
-vi.mock('../aztec/proofWorker', () => ({
-  computeCardCommitPoseidon2: vi.fn().mockResolvedValue('0xCOMMIT'),
-  computePlayerStateHash: vi.fn().mockResolvedValue('0xOPPSTATE'),
+  useProofGeneration: () => ({ generateMoveProof, reset: vi.fn() }),
 }));
 vi.mock('../aztec/AztecContext', () => ({ useAztecContext: () => ({ isAvailable: true }) }));
 vi.mock('../aztec/gameConstants', () => ({ TOTAL_MOVES: 9 }));
@@ -52,10 +47,8 @@ function joinerPreMoveState(): GameState {
 function makeWs(gameState: GameState, overrides: Partial<UseWebSocketReturn> = {}): UseWebSocketReturn {
   return {
     gameId: 'game-1', playerNumber: 2, gameState,
-    opponentGameRandomness: ['0x1', '0x2', '0x3', '0x4', '0x5', '0x6'],
-    opponentHandProof: { proof: 'ohp', publicInputs: ['0xC2', '0x0'], cardCommit: '0xC2' },
     lastMoveProof: null,
-    placeCard: vi.fn(), submitMoveProof: vi.fn(), submitHandProof: vi.fn(),
+    placeCard: vi.fn(), submitMoveProof: vi.fn(),
     ...overrides,
   } as unknown as UseWebSocketReturn;
 }
@@ -63,7 +56,6 @@ function makeWs(gameState: GameState, overrides: Partial<UseWebSocketReturn> = {
 describe('useGamePlay owedMoveProofs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    generateHandProof.mockResolvedValue({ proof: 'hp', publicInputs: ['0xC1', '0x0'], cardCommit: '0xC1' });
   });
 
   it('owes a proof while one is generating, and stops owing once it is sent', async () => {
@@ -71,7 +63,7 @@ describe('useGamePlay owedMoveProofs', () => {
     generateMoveProof.mockReturnValue(new Promise(r => { release = r; }));
 
     const ws = makeWs(joinerPreMoveState());
-    const { result } = renderHook(() => useGamePlay({ ws, cardIds: [10, 11, 12, 13, 14], blindingFactor: '0xBF' }));
+    const { result } = renderHook(() => useGamePlay({ ws, cardIds: [10, 11, 12, 13, 14], blindingFactor: '0xBF', commits: { commit1: '0xC1', commit2: '0xC2' } }));
     await act(async () => { await new Promise(r => setTimeout(r, 0)); });
     expect(result.current.owedMoveProofs).toBe(0);
 
@@ -108,7 +100,7 @@ describe('useGamePlay owedMoveProofs', () => {
   it('stops owing even when proving FAILS', async () => {
     generateMoveProof.mockRejectedValue(new Error('prover exploded'));
     const ws = makeWs(joinerPreMoveState());
-    const { result } = renderHook(() => useGamePlay({ ws, cardIds: [10, 11, 12, 13, 14], blindingFactor: '0xBF' }));
+    const { result } = renderHook(() => useGamePlay({ ws, cardIds: [10, 11, 12, 13, 14], blindingFactor: '0xBF', commits: { commit1: '0xC1', commit2: '0xC2' } }));
     await act(async () => { await new Promise(r => setTimeout(r, 0)); });
 
     await act(async () => { await result.current.handlePlaceCard(0, 1, 1); });

@@ -1,12 +1,13 @@
 /**
  * Node-side helpers for the note-import flow.
  *
- * Notes created via create_and_push_note skip on-chain tagging, so the PXE
- * cannot auto-discover them. Importing them needs the tx's effect data
- * (note hashes + first nullifier), which is read from the NODE here. The
- * actual `import_note` PXE calls live in the serial-queue door (`pxe.ts`,
- * `importCardNotes` / `importTokenRewardNote`) — this module only does the
- * node read + artifact fetch, neither of which touches the PXE/IndexedDB.
+ * Card notes carry no tag, and the notes a game releases (returns, the prize,
+ * the rewards) are delivered to nobody: each owner rebuilds their own from
+ * their own secrets. Importing them needs the tx's effect data (note hashes +
+ * first nullifier), which is read from the NODE here. The actual `import_note`
+ * PXE calls live in the serial-queue door (`pxe.ts`, `importCardNotes` /
+ * `importTokenRewardNote`) — this module only does the node read + artifact
+ * fetch, neither of which touches the PXE/IndexedDB.
  */
 
 /** Timeout for TxEffect fetch retries (ms between attempts) */

@@ -1,5 +1,10 @@
 /**
- * Integration tests for Noir circuit execution (prove_hand + game_move).
+ * Integration tests for Noir circuit execution (game_move).
+ *
+ * The move proof's public inputs are 8 (docs/plan/PRIVATE_GAMES.md section 4):
+ * the placed card and its slot in the mover's committed hand are public, and
+ * the circuit checks the slot really holds that card. There are no hand
+ * proofs in the protocol any more.
  *
  * These tests ACTUALLY execute the compiled Noir circuits using @noir-lang/noir_js
  * and verify that valid inputs produce valid witnesses and invalid inputs are rejected.
@@ -97,103 +102,19 @@ async function hashBoardState(
  * Compute player_state_hash using Poseidon2.
  * Matches circuit: Poseidon2::hash(randomness, 6)
  */
-async function computePlayerStateHash(randomness: bigint[]): Promise<string> {
-  const inputs = randomness.map((v) => numToField(v));
-  const result = await bb.poseidon2Hash({ inputs });
-  return bufToHex(result.hash);
-}
 
 // ====================== Test Suite ======================
 
 describe('proof generation integration', () => {
-  let proveHandArtifact: any;
   let gameMoveArtifact: any;
 
   beforeAll(async () => {
     await initCrypto();
     const circuitsDir = resolve(__dirname, '../../public/circuits');
-    proveHandArtifact = JSON.parse(
-      readFileSync(resolve(circuitsDir, 'prove_hand.json'), 'utf-8'),
-    );
     gameMoveArtifact = JSON.parse(
       readFileSync(resolve(circuitsDir, 'game_move.json'), 'utf-8'),
     );
   }, 60000);
-
-  // ====================== prove_hand Tests ======================
-
-  describe('prove_hand circuit', () => {
-    const cardIds = [1n, 2n, 3n, 4n, 5n];
-    const blindingFactor = 12345n;
-    const oppRandomness = [100n, 200n, 300n, 400n, 500n, 600n];
-
-    async function makeHandInputs(
-      ids: bigint[],
-      bf: bigint,
-      oppRand: bigint[] = oppRandomness,
-      overrides: Record<string, unknown> = {},
-    ): Promise<Record<string, unknown>> {
-      const cardCommitHash = await computeCardCommit(ids, bf);
-      const oppStateHash = await computePlayerStateHash(oppRand);
-      return {
-        card_commit_hash: cardCommitHash,
-        opponent_player_state_hash: oppStateHash,
-        card_ids: ids.map((id) => toHex(id)),
-        blinding_factor: toHex(bf),
-        opponent_randomness: oppRand.map((r) => toHex(r)),
-        ...overrides,
-      };
-    }
-
-    it('executes with valid inputs (cards 1-5)', async () => {
-      const inputs = await makeHandInputs(cardIds, blindingFactor);
-
-      const noir = new Noir(proveHandArtifact as never);
-      const { witness } = await noir.execute(inputs as never);
-      expect(witness).toBeDefined();
-      expect(witness.length).toBeGreaterThan(0);
-    }, 120000);
-
-    it('rejects card ID 0 (below valid range)', async () => {
-      const badIds = [0n, 2n, 3n, 4n, 5n];
-      const inputs = await makeHandInputs(badIds, blindingFactor);
-
-      const noir = new Noir(proveHandArtifact as never);
-      await expect(noir.execute(inputs as never)).rejects.toThrow();
-    }, 120000);
-
-    it('rejects card ID 257 (above valid range)', async () => {
-      const badIds = [1n, 2n, 3n, 4n, 257n];
-      const inputs = await makeHandInputs(badIds, blindingFactor);
-
-      const noir = new Noir(proveHandArtifact as never);
-      await expect(noir.execute(inputs as never)).rejects.toThrow();
-    }, 120000);
-
-    it('rejects wrong card commitment', async () => {
-      const oppStateHash = await computePlayerStateHash(oppRandomness);
-      const inputs: Record<string, unknown> = {
-        card_commit_hash: '0xdeadbeef',
-        opponent_player_state_hash: oppStateHash,
-        card_ids: cardIds.map((id) => toHex(id)),
-        blinding_factor: toHex(blindingFactor),
-        opponent_randomness: oppRandomness.map((r) => toHex(r)),
-      };
-
-      const noir = new Noir(proveHandArtifact as never);
-      await expect(noir.execute(inputs as never)).rejects.toThrow();
-    }, 120000);
-
-    it('rejects duplicate card IDs', async () => {
-      const dupeIds = [1n, 2n, 3n, 4n, 1n];
-      const inputs = await makeHandInputs(dupeIds, blindingFactor);
-
-      const noir = new Noir(proveHandArtifact as never);
-      await expect(noir.execute(inputs as never)).rejects.toThrow();
-    }, 120000);
-  });
-
-  // ====================== game_move Tests ======================
 
   describe('game_move circuit', () => {
     // Player 1: cards 1-5
@@ -236,7 +157,8 @@ describe('proof generation integration', () => {
         game_ended: '0x0',
         winner_id: '0x0',
         current_player: '0x1',
-        card_id: '0x1',
+        placed_card_id: '0x1',
+        placed_slot: '0x0',
         row: '0x0',
         col: '0x0',
         board_before: boardBefore.map((v) => toHex(v)),
@@ -280,7 +202,8 @@ describe('proof generation integration', () => {
         game_ended: '0x0',
         winner_id: '0x0',
         current_player: '0x2',
-        card_id: toHex(10),
+        placed_card_id: toHex(10),
+        placed_slot: '0x0',
         row: '0x1',
         col: '0x1',
         board_before: boardBefore.map((v) => toHex(v)),
@@ -331,7 +254,8 @@ describe('proof generation integration', () => {
         game_ended: '0x0',
         winner_id: '0x0',
         current_player: '0x1',
-        card_id: '0x4',
+        placed_card_id: '0x4',
+        placed_slot: '0x3',
         row: '0x1',
         col: '0x1',
         board_before: boardBefore.map((v) => toHex(v)),
@@ -386,7 +310,8 @@ describe('proof generation integration', () => {
         game_ended: '0x0',
         winner_id: '0x0',
         current_player: '0x1',
-        card_id: '0x5',
+        placed_card_id: '0x5',
+        placed_slot: '0x4',
         row: '0x1',
         col: '0x1',
         board_before: boardBefore.map((v) => toHex(v)),
@@ -446,7 +371,8 @@ describe('proof generation integration', () => {
         game_ended: '0x0',
         winner_id: '0x0',
         current_player: '0x2', // P2 trying to go when it's P1's turn
-        card_id: toHex(10),
+        placed_card_id: toHex(10),
+        placed_slot: '0x0',
         row: '0x0',
         col: '0x0',
         board_before: boardBefore.map((v) => toHex(v)),
@@ -484,7 +410,8 @@ describe('proof generation integration', () => {
         game_ended: '0x0',
         winner_id: '0x0',
         current_player: '0x1',
-        card_id: '0x2',
+        placed_card_id: '0x2',
+        placed_slot: '0x1',
         row: '0x0',
         col: '0x0', // OCCUPIED
         board_before: boardBefore.map((v) => toHex(v)),
@@ -500,6 +427,45 @@ describe('proof generation integration', () => {
 
       const noir = new Noir(gameMoveArtifact as never);
       await expect(noir.execute(inputs as never)).rejects.toThrow();
+    }, 120000);
+
+    it('rejects a placed_slot that does not hold the placed card', async () => {
+      // Settlement withholds the loser's return note BY SLOT, so a slot that
+      // lies would hold back the wrong card. The circuit asserts
+      // player_card_ids[placed_slot] == placed_card_id.
+      const cc1 = await computeCardCommit(p1CardIds, p1BlindingFactor);
+      const cc2 = await computeCardCommit(p2CardIds, p2BlindingFactor);
+      const boardBefore = new Array(18).fill(0n) as bigint[];
+      const boardAfter = new Array(18).fill(0n) as bigint[];
+      boardAfter[0] = 1n; boardAfter[1] = 1n;
+      const startHash = await hashBoardState(boardBefore, [5n, 5n], 1n, owners());
+      const endHash = await hashBoardState(boardAfter, [5n, 5n], 2n, owners([0, 1]));
+      const inputs = (slot: string): Record<string, unknown> => ({
+        card_commit_1: cc1,
+        card_commit_2: cc2,
+        start_state_hash: startHash,
+        end_state_hash: endHash,
+        game_ended: '0x0',
+        winner_id: '0x0',
+        placed_card_id: '0x1',
+        placed_slot: slot,
+        current_player: '0x1',
+        row: '0x0',
+        col: '0x0',
+        board_before: boardBefore.map((v) => toHex(v)),
+        board_after: boardAfter.map((v) => toHex(v)),
+        scores_before: ['0x5', '0x5'],
+        scores_after: ['0x5', '0x5'],
+        current_turn_before: '0x1',
+        original_owners_before: owners().map((v) => toHex(v)),
+        original_owners_after: owners([0, 1]).map((v) => toHex(v)),
+        player_card_ids: p1CardIds.map((id) => toHex(id)),
+        blinding_factor: toHex(p1BlindingFactor),
+      });
+
+      const noir = new Noir(gameMoveArtifact as never);
+      await expect(noir.execute(inputs('0x0') as never)).resolves.toBeDefined();
+      await expect(noir.execute(inputs('0x2') as never)).rejects.toThrow();
     }, 120000);
 
     it('rejects replaying a card this player already placed (C2 original-owner check)', async () => {
@@ -526,7 +492,8 @@ describe('proof generation integration', () => {
         game_ended: '0x0',
         winner_id: '0x0',
         current_player: '0x1',
-        card_id: '0x1',
+        placed_card_id: '0x1',
+        placed_slot: '0x0',
         row: '0x1',
         col: '0x1',
         board_before: boardBefore.map((v) => toHex(v)),

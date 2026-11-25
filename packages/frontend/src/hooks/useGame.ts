@@ -1,57 +1,34 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useWebSocket } from './useWebSocket';
 import type { ProofStatus } from './useProofGeneration';
-import { useGameStorage, type PersistedGameState } from './useGameStorage';
-import { useGameSession } from './useGameSession';
+import { useGameStorage, commitIsStale, toPrivateGame, type PersistedGameState } from './useGameStorage';
+import { useGameChannel } from './useGameChannel';
+import { useGameSession, type CommitStatus, type OnChainPhase } from './useGameSession';
 import { useGamePlay } from './useGamePlay';
 import { useGameSettlement, type TxStatus } from './useGameSettlement';
 import { useUnloadGuard } from './useUnloadGuard';
 import { useAztecContext } from '../aztec/AztecContext';
-import type { Screen, HandProofData, MoveProofData } from '../types';
-import { TOTAL_MOVES } from '../aztec/gameConstants';
-// The contract's abandonment timing, mirrored once (contractConstants.test).
-import { MIN_ABANDON_SECONDS, DISPUTE_SECONDS } from '../aztec/settlementArgs';
+import type { Screen, MoveProofData } from '../types';
+import type { StuckGame } from '../aztec/stuckGame';
+import { inspectStuckGame, recoverStuckGame } from './stuckGameCheck';
+import { contestClaim } from '../aztec/gameActions';
 
-/** Chain time is in seconds; so is everything compared against it here. */
-const nowSeconds = () => Math.floor(Date.now() / 1000);
-
-/**
- * A game that still holds this player's cards on-chain.
- *
- * `claimable` — fewer than nine moves, so the abandonment claim applies and we
- * can get the cards back from here.
- * A COMPLETE game is claimable too, and is the case that matters most: the
- * whole transcript exists, so settlement is provably owed, and a winner who
- * never returns would otherwise lock both hands forever. That used to be a
- * dead end ('awaiting-winner') because the contract capped a claim at eight
- * moves. It no longer does.
- */
-export interface StuckGame {
-  onChainGameId: string;
-  kind: StuckGameKind;
-  /** Seconds until a claim becomes possible; only for 'too-soon'. */
-  waitSeconds?: number;
-}
-
-export type StuckGameKind =
-  /** Old enough, incomplete: the claim will work. */
-  | 'claimable'
-  /** Still holding cards, but the contract's abandonment bar has not passed. */
-  | 'too-soon'
-  /** The opponent has claimed it and the dispute window is still open. */
-  | 'contestable'
-  /** Claimed, window closed: nothing left to do but let it complete. */
-  | 'claimed-by-opponent';
-
+export type { StuckGame, StuckGameKind } from '../aztec/stuckGame';
 
 // Re-export types consumers need
-export type { TxStatus, ProofStatus };
+export type { TxStatus, ProofStatus, CommitStatus };
 
 // Re-export the on-chain phase machine and winner mapping so consumers and
 // tests keep importing from useGame (they live in useGameSession/useGamePlay).
 export { VALID_TRANSITIONS } from './useGameSession';
 export type { OnChainPhase } from './useGameSession';
 export { mapWinnerId } from './useGamePlay';
+
+/** How often the menu looks at a stuck game again (a claim window closing, a settlement landing). */
+const STUCK_RECHECK_MS = 60_000;
+
+/** Phases a player may walk away from: nothing of theirs is in flight that needs this screen. */
+const LEAVABLE_PHASES: OnChainPhase[] = ['idle', 'settling', 'awaiting_join', 'awaiting_create', 'awaiting_settlement'];
 
 export interface UseGameReturn {
   // Screen routing
@@ -61,17 +38,21 @@ export interface UseGameReturn {
   // WebSocket state (pass-through for components)
   ws: ReturnType<typeof useWebSocket>;
 
-  // On-chain + proof state (previously game.session.*)
+  // On-chain + proof state
+  /** The game's `created` nullifier, once known (its only public trace). */
   onChainGameId: string | null;
-  handProofStatus: ProofStatus;
+  /** Both players' commitments: 'ready' once both records are committed and known. */
+  commitStatus: CommitStatus;
   moveProofStatus: ProofStatus;
   canSettle: boolean;
   settleTxStatus: TxStatus;
   onChainError: string | null;
 
-  // Chain-view data (privacy panel): live proofs + settlement tx hash
-  myHandProof: HandProofData | null;
-  opponentHandProof: HandProofData | null;
+  // Chain-view data (privacy panel)
+  /** Our hand commitment (from our record), once committed. */
+  myHandCommit: string | null;
+  /** The opponent's hand commitment (from their record), once known. */
+  opponentHandCommit: string | null;
   collectedMoveProofs: MoveProofData[];
   settleTxHash: string | null;
 
@@ -80,6 +61,7 @@ export interface UseGameReturn {
   /** A game still holding this player's cards on-chain, if any. */
   stuckGame: StuckGame | null;
   isRecovering: boolean;
+  /** Act on the stuck game: cancel, settle, claim or finalize — whatever it allows. */
   handleRecoverStuckGame: () => Promise<void>;
   handleContestClaim: () => Promise<void>;
   packResult: { location: string; cardIds: number[] } | null;
@@ -117,36 +99,29 @@ export interface UseGameReturn {
  * data. The split is intentional:
  *
  * **React state** — values that the UI needs to render:
- *   screen, cardIds, handProofStatus, moveProofStatus, settleTxStatus, etc.
+ *   screen, cardIds, commitStatus, moveProofStatus, settleTxStatus, etc.
  *   Changes trigger re-renders, which update the UI.
  *
  * **Refs** — values consumed by async closures or that must survive
  * navigation. Each hook documents its own refs in its header:
- *   useGameSession:    settlementInfoRef, onChainPhaseRef,
- *                      activePhaseResolveRef, ws-opponent mirror refs.
- *   useGamePlay:       cardIdsRef, moveProofsRef, myHandProofRef/
- *                      opponentHandProofRef, pendingMovesRef,
- *                      gameStateHistoryRef, proof-wait resolvers,
- *                      idempotency guards.
- *   useGameSettlement: noteImportProcessedRef, abandonedClaimStartedRef,
- *                      opponent-settle tracking refs.
+ *   useGameChannel:    the live channel, held inbound payloads.
+ *   useGameSession:    the phase, the game's records/key/nonce, the
+ *                      active-phase resolver.
+ *   useGamePlay:       the committed hand, move proofs, the pending-move queue.
+ *   useGameSettlement: settle/import guards, the resolution poll.
  * Cross-hook access goes only through identity-stable accessor functions
- * (getPhase, getSettlementInfo, getMoveProofs, waitFor*…), never raw refs —
+ * (getPhase, getGame, getMoveProofs, waitFor*…), never raw refs —
  * so callbacks like handleSettle stay memoized while always reading current
  * values (the stale-closure settle bug, see FUTURE_IMPROVEMENTS.md).
- *
- * The general rule: if a value is read inside a txManager.execute() callback
- * or needs to survive screen transitions, it's a ref. If the UI renders it,
- * it's state. Some values exist as both (e.g., useGamePlay's myHandProof is
- * state for the UI status indicator AND a ref for the settlement closure).
  */
 
 /**
- * Facade composing the three game hooks — useGameSession (on-chain
- * lifecycle), useGamePlay (proof orchestration), useGameSettlement
- * (process_game + abandoned-game flows) — plus screen routing, matchmaking,
- * and localStorage game persistence. App.tsx and tests consume only this
- * hook's return value; the sub-hooks are wired here and nowhere else.
+ * Facade composing the game hooks — useGameChannel (key exchange, sealed
+ * peer payloads), useGameSession (on-chain lifecycle), useGamePlay (move
+ * proofs), useGameSettlement (settle, import, abandonment) — plus screen
+ * routing, matchmaking, the menu's recovery of unfinished games, and
+ * localStorage persistence. App.tsx and tests consume only this hook's return
+ * value; the sub-hooks are wired here and nowhere else.
  */
 export function useGame(wsUrl: string): UseGameReturn {
   const aztec = useAztecContext();
@@ -162,133 +137,115 @@ export function useGame(wsUrl: string): UseGameReturn {
    * A game that still holds this player's cards on-chain.
    *
    * Committing cards is the easy half; getting them back needs somebody to
-   * settle or claim. If a player closes the tab mid-game their five cards stay
-   * locked, and until now nothing in the app told them so or offered a way
-   * out — the claim button lives on the game screen, which they can no longer
-   * reach. The bot had exactly this problem and it cost thirty cards.
+   * settle, cancel or unwind — and every one of those needs this player's
+   * stored records, so the menu is where a player who closed the tab finds
+   * their way back.
    */
   const [stuckGame, setStuckGame] = useState<StuckGame | null>(null);
   const [isRecovering, setIsRecovering] = useState(false);
 
-  // --- On-chain session: phase machine, create/join pipeline, settlement info ---
-  const session = useGameSession({ ws, screen, cardIds });
+  // --- Key exchange and the sealed channel to the opponent ---
+  const channel = useGameChannel({ ws, storage });
 
-  // --- Proof orchestration: hand/move proofs, move queue, board history ---
-  const play = useGamePlay({ ws, cardIds, blindingFactor: session.blindingFactor });
+  // --- On-chain session: phase machine, create/join pipeline, records ---
+  const session = useGameSession({ ws, screen, cardIds, channel, storage });
 
-  // --- Settlement: process_game, loser note import, abandoned-game flow ---
-  const settlement = useGameSettlement({ ws, cardIds, session, play });
+  // --- Move proofs: bound to both records' hand commitments ---
+  const play = useGamePlay({ ws, cardIds, blindingFactor: session.blindingFactor, commits: session.commits });
 
-  // Look for cards stranded in an unfinished game whenever we are sitting on
-  // the menu. Status 2 is ACTIVE: created, joined, and neither settled nor
-  // claimed, which is exactly the state where cards are locked.
+  // --- Settlement: settle, import, abandoned-game flow ---
+  const settlement = useGameSettlement({ ws, session, play, channel, storage });
+
+  const aztecRef = useRef(aztec);
+  aztecRef.current = aztec;
+
+  // Look for a game that needs the player whenever they sit on the menu, and
+  // keep looking while one is there: claim windows close, settlements land.
+  const [stuckCheckTick, setStuckCheckTick] = useState(0);
   useEffect(() => {
-    if (screen !== 'main-menu' || !aztec.accountAddress) { return; }
+    if (screen !== 'main-menu' || !aztec.accountAddress) return;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     void (async () => {
-      // loadClaimable, not loadGame: the game we are looking for is OVER, and
-      // the resume-oriented loader hides exactly those. This is the whole
-      // point — a stuck game is by definition one that is not resumable.
-      const saved = storage.loadClaimable();
-      if (!saved?.onChainGameId) { if (!cancelled) setStuckGame(null); return; }
       try {
-        const { pxe } = await import('../aztec/pxe');
-        const info = await pxe.readAbandonmentInfo(aztec.accountAddress!, saved.onChainGameId);
-        if (cancelled) return;
-
-        // 5 = claimed as abandoned. Somebody has moved on our game.
-        if (info.status === 5) {
-          const mine = info.claimPlayer === aztec.accountAddress;
-          const open = nowSeconds() - info.claimAt < DISPUTE_SECONDS;
-          setStuckGame({
-            onChainGameId: saved.onChainGameId,
-            kind: !mine && open ? 'contestable' : 'claimed-by-opponent',
-          });
-          return;
-        }
-        if (info.status !== 2) {
-          // Resolved on chain — settled, cancelled, or already recovered. The
-          // record has done its job and can finally go.
-          storage.clearGame();
-          setStuckGame(null);
-          return;
-        }
-
-        // A complete transcript is claimable on the same terms as a partial
-        // one; the contract skips its turn-parity check when n == 9.
-
-        // The contract will not accept a claim before its own bar, so do
-        // not offer one. Showing the wait is honest; a button that reverts is
-        // not, and this file has already made that mistake once.
-        const age = nowSeconds() - info.activeAt;
-        setStuckGame(age >= MIN_ABANDON_SECONDS
-          ? { onChainGameId: saved.onChainGameId, kind: 'claimable' }
-          : {
-              onChainGameId: saved.onChainGameId,
-              kind: 'too-soon',
-              waitSeconds: MIN_ABANDON_SECONDS - age,
-            });
+        const next = await inspectStuckGame(storage, { owner: aztec.accountAddress!, node: aztec.nodeClient }, {
+          // A settlement still running in the background owns its game.
+          skip: roomId => session.getPhase() !== 'idle' && session.getGame()?.roomId === roomId,
+          onImported: (result) => {
+            const a = aztecRef.current;
+            if (result.importedCardIds.length > 0) a.updateOwnedCards(prev => [...prev, ...result.importedCardIds]);
+            if (result.prizeUncertain) void a.refreshOwnedCards();
+            void a.refreshTokenBalance();
+          },
+        });
+        if (!cancelled) setStuckGame(next);
       } catch (err) {
         // A read failure must not invent a stuck game, nor hide a real one —
-        // leave whatever we last knew and try again next time we are here.
+        // leave whatever we last knew and try again shortly.
         console.warn('[useGame] could not check for a stuck game:', err);
       }
+      if (!cancelled) timer = setTimeout(() => setStuckCheckTick(t => t + 1), STUCK_RECHECK_MS);
     })();
-    return () => { cancelled = true; };
-    // `storage.loadClaimable`, not `storage`: depending on the hook's object
-    // identity re-runs this on every render, and the setState inside it makes
-    // that a loop.
-  }, [screen, aztec.accountAddress, storage.loadClaimable]);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    // `storage.listClaimable` etc. are stable; depending on the hook's object
+    // would re-run this on every render, and the setState inside makes a loop.
+  }, [screen, aztec.accountAddress, stuckCheckTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /**
-   * Get the cards back out of a game nobody finished.
-   *
-   * Restores the saved proofs into the session first — the claim needs both
-   * hand proofs, the move proofs so far, and our blinding factor, and all of
-   * those are on disk from when the game was live.
-   */
+  /** Act on the stuck game: whatever the chain allows for it right now. */
   const handleRecoverStuckGame = useCallback(async () => {
-    const saved = storage.loadClaimable();
-    // Guarded, not merely hidden: only a game the contract will actually
-    // accept a claim for, so this refuses even if something else calls it.
-    if (!saved || isRecovering || stuckGame?.kind !== 'claimable') return;
+    const stuck = stuckGame;
+    if (!stuck || isRecovering || !aztec.accountAddress) return;
+    const saved = storage.readGame(stuck.roomId) as PersistedGameState | null;
+    const game = saved ? toPrivateGame(saved) : null;
+    if (!saved || !game) return;
     setIsRecovering(true);
     try {
-      setCardIds(saved.selectedCardIds);
-      play.restoreFromSave(saved);
-      session.restoreFromSave(saved);
-      await settlement.handleAbandonedGame();
+      const result = await recoverStuckGame(stuck, saved, game, { owner: aztec.accountAddress, node: aztec.nodeClient }, {
+        storage,
+        sendPeerFor: channel.sendPeerFor,
+        onUnwound: ws.notifyAbandonedGameSettled,
+      });
+      if (result) {
+        const a = aztecRef.current;
+        if (result.importedCardIds.length > 0) a.updateOwnedCards(prev => [...prev, ...result.importedCardIds]);
+        if (result.prizeUncertain) void a.refreshOwnedCards();
+        void a.refreshTokenBalance();
+        storage.clearGame(stuck.roomId);
+      }
       setStuckGame(null);
+      setStuckCheckTick(t => t + 1);
     } catch (err) {
       console.error('[useGame] recovering the stuck game failed:', err);
     } finally {
       setIsRecovering(false);
     }
-  }, [storage.loadClaimable, isRecovering, stuckGame?.kind, play.restoreFromSave,
-      session.restoreFromSave, settlement.handleAbandonedGame]);
+  }, [stuckGame, isRecovering, aztec.accountAddress, aztec.nodeClient, storage, channel.sendPeerFor,
+      ws.notifyAbandonedGameSettled]);
 
   /** Object to a standing claim: "I am still here." */
   const handleContestClaim = useCallback(async () => {
-    if (stuckGame?.kind !== 'contestable' || !aztec.accountAddress || isRecovering) return;
+    const stuck = stuckGame;
+    if (stuck?.kind !== 'contestable' || !stuck.claim || !aztec.accountAddress || isRecovering) return;
+    const saved = storage.readGame(stuck.roomId) as PersistedGameState | null;
+    const game = saved ? toPrivateGame(saved) : null;
+    if (!game) return;
     setIsRecovering(true);
     try {
-      const { pxe } = await import('../aztec/pxe');
-      const { AZTEC_TX_TIMEOUT } = await import('../aztec/gameConstants');
-      await pxe.sendContestAbandonment(aztec.accountAddress, stuckGame.onChainGameId, {
-        node: aztec.nodeClient,
-        timeoutMs: AZTEC_TX_TIMEOUT,
-      });
+      await contestClaim(game, { owner: aztec.accountAddress, node: aztec.nodeClient }, stuck.claim);
       setStuckGame(null);
+      setStuckCheckTick(t => t + 1);
     } catch (err) {
       console.error('[useGame] contesting the claim failed:', err);
     } finally {
       setIsRecovering(false);
     }
-  }, [stuckGame, aztec.accountAddress, isRecovering]);
+  }, [stuckGame, aztec.accountAddress, aztec.nodeClient, isRecovering, storage]);
 
   // --- Effects ---
 
-  // Persist game state to localStorage
+  // Persist the game. The records, key and nonce are written by the channel
+  // and the session the moment they exist; this adds role, hand and the
+  // transcript, MERGED into the same record.
   useEffect(() => {
     if (!ws.gameId || !ws.playerNumber || cardIds.length === 0) return;
     if (screen !== 'game' && screen !== 'finding-opponent') return;
@@ -299,25 +256,10 @@ export function useGame(wsUrl: string): UseGameReturn {
       selectedCardIds: cardIds,
       savedAt: Date.now(),
     };
-    if (session.onChainGameId) persisted.onChainGameId = session.onChainGameId;
-    if (play.myHandProof) persisted.myHandProof = play.myHandProof;
-    if (play.opponentHandProof) persisted.opponentHandProof = play.opponentHandProof;
     if (play.collectedMoveProofs.length > 0) persisted.collectedMoveProofs = play.collectedMoveProofs;
-    if (ws.opponentAztecAddress) persisted.opponentAztecAddress = ws.opponentAztecAddress;
-    if (ws.opponentOnChainGameId) persisted.opponentOnChainGameId = ws.opponentOnChainGameId;
-    if (session.gameRandomness) persisted.gameRandomness = session.gameRandomness;
-    if (session.blindingFactor) persisted.blindingFactor = session.blindingFactor;
-    if (ws.opponentGameRandomness) persisted.opponentGameRandomness = ws.opponentGameRandomness;
-
     storage.saveGame(persisted);
     setHasGameInProgress(true);
-  }, [
-    ws.gameId, ws.playerNumber, cardIds, screen,
-    session.onChainGameId, session.gameRandomness, session.blindingFactor,
-    play.myHandProof, play.opponentHandProof, play.collectedMoveProofs,
-    ws.opponentAztecAddress, ws.opponentOnChainGameId, ws.opponentGameRandomness,
-    storage,
-  ]);
+  }, [ws.gameId, ws.playerNumber, cardIds, screen, play.collectedMoveProofs, storage]);
 
   // Catch a move proof that lands after we left the game screen.
   //
@@ -325,20 +267,13 @@ export function useGame(wsUrl: string): UseGameReturn {
   // likely to arrive outside that gate is the opponent's last one — proved in
   // their browser for seconds after the board fills, which is exactly when a
   // losing player clicks back to the menu. Missing it leaves 8 of 9 and no way
-  // to claim. Deduped, so this costs nothing during normal play.
+  // to settle. Deduped, so this costs nothing during normal play.
   useEffect(() => {
     if (ws.lastMoveProof?.moveProof) storage.mergeMoveProof(ws.lastMoveProof.moveProof);
   }, [ws.lastMoveProof, storage]);
 
-  // Mark the game over — but KEEP the transcript.
-  //
-  // This used to delete it, which destroyed the player's only copy of their
-  // own proofs at the exact moment they stopped needing the game and started
-  // needing the evidence. Every recovery path reads this record, so a player
-  // who lost and whose opponent then walked away had no route back to their
-  // cards at all. markFinished stops it being offered as "Resume" without
-  // throwing away what a claim is built from; it is cleared for real once the
-  // chain says the game resolved (see the stuck-game check above).
+  // Mark the game over — but KEEP the record: until this player's notes from
+  // the resolution are imported it is the only way back to their cards.
   useEffect(() => {
     if (ws.gameOver) {
       storage.markFinished();
@@ -359,12 +294,8 @@ export function useGame(wsUrl: string): UseGameReturn {
   // dynamically, and those resolve to hashed chunks that a deploy replaces —
   // so a tab opened before a deploy asks for a file that no longer exists and
   // settlement dies with "Failed to fetch dynamically imported module", with
-  // the wager already committed. That happened during this project's own
-  // testing: a deploy landed between the last move and the settle, and the
-  // game had to go through the hour-long abandonment claim instead.
-  //
-  // Importing here puts them in the tab's module registry while nothing is at
-  // stake yet; a later deploy cannot take them back.
+  // the wager already committed. Importing here puts them in the tab's module
+  // registry while nothing is at stake yet; a later deploy cannot take them back.
   useEffect(() => {
     if (screen !== 'game' && screen !== 'finding-opponent') return;
     void import('../aztec/warmSettlementModules').then(m => m.warmSettlementModules());
@@ -380,12 +311,13 @@ export function useGame(wsUrl: string): UseGameReturn {
   // Reset state on returning to menu
   useEffect(() => {
     if (screen === 'main-menu') {
+      channel.resetForMenu();
       // Session state/refs (onChainPhaseRef deliberately survives — see
       // useGameSession.resetForMenu)
       session.resetForMenu();
-      // Proof state, move queue, board history, proof-wait resolvers
+      // Proof state, move queue
       play.resetForMenu();
-      // Settle tx state, loser-side tracking, note-import guard
+      // Settle tx state, loser-side tracking, the resolution poll
       settlement.resetForMenu();
     }
   }, [screen]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -396,14 +328,15 @@ export function useGame(wsUrl: string): UseGameReturn {
     const saved = storage.loadGame();
     if (saved) {
       setCardIds(saved.selectedCardIds);
-      play.restoreFromSave(saved);
+      channel.restoreFromSave(saved);
       session.restoreFromSave(saved);
+      play.restoreFromSave(saved);
       ws.queueMatchmaking(saved.selectedCardIds);
       setScreen('finding-opponent');
       return;
     }
     setScreen('card-selector');
-  }, [storage, ws, play.restoreFromSave, session.restoreFromSave]);
+  }, [storage, ws, channel.restoreFromSave, play.restoreFromSave, session.restoreFromSave]);
 
   const handleCardPacks = useCallback(() => {
     setScreen('card-packs');
@@ -419,7 +352,7 @@ export function useGame(wsUrl: string): UseGameReturn {
   const handleCancelMatchmaking = useCallback(() => {
     ws.cancelMatchmaking();
     setCardIds([]);
-    storage.clearGame();
+    storage.leaveCurrentGame();
     setHasGameInProgress(false);
     setScreen('main-menu');
   }, [ws, storage]);
@@ -442,13 +375,14 @@ export function useGame(wsUrl: string): UseGameReturn {
     setScreen('card-packs');
   }, [aztec]);
 
-  // canGoBack: winner can leave after picking a card (settlement runs in background via txManager).
-  // Winner can leave once settlement started (txManager runs in background).
-  // Loser must wait for NOTE_DATA (awaiting_settlement blocks navigation).
+  // A player may leave once nothing of theirs that needs this screen is in
+  // flight: no commit tx, and no move proof the opponent is waiting for. A
+  // finished game can be left before its settlement — the record stays, and
+  // the menu imports (or settles) it.
   const phase = session.getPhase();
-  const canGoBack = screen === 'main-menu'
-    || phase === 'settling'   // winner: settlement in progress, can leave
-    || phase === 'idle';      // no lifecycle active
+  const gameOverNothingOwed = !!ws.gameOver && play.owedMoveProofs === 0;
+  const canLeave = LEAVABLE_PHASES.includes(phase) || (phase === 'active' && gameOverNothingOwed);
+  const canGoBack = screen === 'main-menu' || canLeave;
 
   // Closing the tab now costs somebody real cards — us if our own settlement is
   // in flight, the OPPONENT if we still owe them a move proof they need to
@@ -463,30 +397,37 @@ export function useGame(wsUrl: string): UseGameReturn {
 
   const handleBackToMenu = useCallback(() => {
     const currentPhase = session.getPhase();
-    if (currentPhase !== 'idle' && currentPhase !== 'settling') {
+    const leavable = LEAVABLE_PHASES.includes(currentPhase)
+      || (currentPhase === 'active' && !!ws.gameOver && play.owedMoveProofs === 0);
+    if (!leavable) {
       console.log('[useGame] Back to menu blocked: game in-flight (phase:', currentPhase, ')');
       return;
     }
 
     ws.leaveGame();
     setCardIds([]);
-    storage.clearGame();
+    // Keeps the record if it still holds cards: the menu needs it to get them back.
+    storage.leaveCurrentGame();
     setHasGameInProgress(false);
+    // A settlement in flight finishes on its own; anything else ends here.
+    if (currentPhase !== 'settling') session.forceIdle();
     settlement.cancelAbandonedUi();
     setScreen('main-menu');
-  }, [ws, storage, session.getPhase, settlement.cancelAbandonedUi]);
+  }, [ws, storage, session.getPhase, session.forceIdle, settlement.cancelAbandonedUi, play.owedMoveProofs]);
 
+  const myRole = ws.playerNumber;
+  const commits = session.commits;
   return {
     screen, setScreen,
     ws,
     onChainGameId: session.onChainGameId,
-    handProofStatus: play.handProofStatus,
+    commitStatus: session.commitStatus,
     moveProofStatus: play.moveProofStatus,
     canSettle: play.canSettle,
     settleTxStatus: settlement.settleTxStatus,
     onChainError: session.onChainError,
-    myHandProof: play.myHandProof,
-    opponentHandProof: play.opponentHandProof,
+    myHandCommit: commits && myRole ? (myRole === 1 ? commits.commit1 : commits.commit2) : null,
+    opponentHandCommit: commits && myRole ? (myRole === 1 ? commits.commit2 : commits.commit1) : null,
     collectedMoveProofs: play.collectedMoveProofs,
     settleTxHash: settlement.settleTxHash,
     cardIds, packResult, hasGameInProgress,

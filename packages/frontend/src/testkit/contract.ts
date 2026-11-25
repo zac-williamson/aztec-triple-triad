@@ -52,9 +52,21 @@ export interface PhaseSnapshot {
     opponentScore: number;
   } | null;
   chain: {
+    /**
+     * The game's `created` nullifier (siloed, hex) once known — the one public
+     * trace a game's creation leaves, which both players (and nobody else)
+     * can compute. Not a contract-side game id: there is none any more.
+     */
     onChainGameId: string | null;
+    /**
+     * Status of the two hand COMMITMENTS (the players' records): 'generating'
+     * while this player's commit is in flight, 'ready' once both records are
+     * committed and known. Named for the hand proofs it replaced, which no
+     * longer exist.
+     */
     handProofStatus: string;
     moveProofStatus: string;
+    /** Both records known and all nine move proofs collected (no hand proofs any more). */
     canSettle: boolean;
     settleTxStatus: string;
     opponentSettled: boolean;
@@ -124,7 +136,7 @@ export interface TriadTestApi {
   getPrivateCards(): Promise<number[]>;
   /** Arena Token balance from THIS tab's PXE (serialized through the app's PXE queue). */
   getTokenBalance(): Promise<number>;
-  /** Live txManager entries (create_game / join_game / settle_game lifecycle). */
+  /** Live txManager entries (create_game / join_game / settle_game / cancel / claim / finalize). */
   txEntries(): TxEntrySnapshot[];
   /** Recent txProgress events (wallet-level phases incl. aztecTxHash). */
   txEvents(): TxEventSnapshot[];

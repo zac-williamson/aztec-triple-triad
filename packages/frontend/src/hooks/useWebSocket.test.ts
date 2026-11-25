@@ -324,26 +324,14 @@ describe('useWebSocket', () => {
       expect(result.current.lastCaptures).toEqual(captures);
     });
 
-    it('GAME_OVER sets gameOver, gameState, and opponentCardIds', async () => {
+    it('GAME_OVER sets gameOver and gameState — and carries no card ids', async () => {
       const { result, ws } = await setupConnectedHook();
-      // Set player number first
       act(() => { ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 }); });
       const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 6, player2Score: 4, status: 'finished', winner: 'player1' };
-      act(() => {
-        ws.simulateMessage({
-          type: 'GAME_OVER', gameState: state, winner: 'player1',
-          player1CardIds: [1, 2, 3, 4, 5], player2CardIds: [6, 7, 8, 9, 10],
-        });
-      });
+      act(() => { ws.simulateMessage({ type: 'GAME_OVER', gameState: state, winner: 'player1' }); });
       expect(result.current.gameOver).toEqual({ winner: 'player1' });
-      expect(result.current.opponentCardIds).toEqual([6, 7, 8, 9, 10]);
-    });
-
-    it('HAND_PROOF sets opponentHandProof', async () => {
-      const { result, ws } = await setupConnectedHook();
-      const handProof = { proof: 'abc', cardCommit: '0x1' };
-      act(() => { ws.simulateMessage({ type: 'HAND_PROOF', handProof }); });
-      expect(result.current.opponentHandProof).toEqual(handProof);
+      expect(result.current.gameState).toEqual(state);
+      expect('opponentCardIds' in result.current).toBe(false);
     });
 
     it('MOVE_PROVEN sets gameState, captures, and lastMoveProof', async () => {
@@ -358,33 +346,6 @@ describe('useWebSocket', () => {
       });
       expect(result.current.gameState).toEqual(state);
       expect(result.current.lastMoveProof).toEqual({ moveProof, handIndex: 0, row: 0, col: 0 });
-    });
-
-    it('OPPONENT_AZTEC_INFO sets address, onChainGameId, and randomness', async () => {
-      const { result, ws } = await setupConnectedHook();
-      act(() => {
-        ws.simulateMessage({
-          type: 'OPPONENT_AZTEC_INFO',
-          aztecAddress: '0xABC', onChainGameId: '0xGAME',
-          gameRandomness: ['0x1', '0x2', '0x3', '0x4', '0x5', '0x6'],
-        });
-      });
-      expect(result.current.opponentAztecAddress).toBe('0xABC');
-      expect(result.current.opponentOnChainGameId).toBe('0xGAME');
-      expect(result.current.opponentGameRandomness).toEqual(['0x1', '0x2', '0x3', '0x4', '0x5', '0x6']);
-    });
-
-    it('NOTE_DATA sets incomingNoteData', async () => {
-      const { result, ws } = await setupConnectedHook();
-      const notes = [{ noteHash: '0x1', tokenId: 1, randomness: '0xr' }];
-      act(() => { ws.simulateMessage({ type: 'NOTE_DATA', txHash: '0xTX', notes }); });
-      expect(result.current.incomingNoteData).toEqual({ txHash: '0xTX', notes });
-    });
-
-    it('OPPONENT_SETTLING sets opponentSettling', async () => {
-      const { result, ws } = await setupConnectedHook();
-      act(() => { ws.simulateMessage({ type: 'OPPONENT_SETTLING', selectedCardId: 42 }); });
-      expect(result.current.opponentSettling).toEqual({ selectedCardId: 42 });
     });
 
     it('ON_CHAIN_STATUS sets opponentTxConfirmed for P2 when P1 confirmed', async () => {
@@ -618,10 +579,7 @@ describe('useWebSocket', () => {
 
       const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 6, player2Score: 4, status: 'finished', winner: 'player1' };
       act(() => {
-        ws.simulateMessage({
-          type: 'GAME_OVER', gameState: state, winner: 'player1',
-          player1CardIds: [1, 2, 3, 4, 5], player2CardIds: [6, 7, 8, 9, 10],
-        });
+        ws.simulateMessage({ type: 'GAME_OVER', gameState: state, winner: 'player1' });
       });
       expect(result.current.abandonmentWarning).toBeNull();
     });
@@ -638,40 +596,6 @@ describe('useWebSocket', () => {
       expect(result.current.abandonmentWarning).toBeNull();
     });
 
-    // The claimant needs the abandoner's hand to claim a card on-chain. Card ids
-    // are otherwise exchanged only at GAME_OVER, which an abandonment never
-    // reaches, so the relay rides them on the warning and the NON-idle player
-    // adopts them — without this the claim falls back to a no-card recovery.
-    it('the NON-idle (claimant) player adopts the abandoner\'s hand as opponentCardIds', async () => {
-      const { result, ws } = await setupConnectedHook();
-      // I am player2; player1 is idle (the abandoner).
-      act(() => { ws.simulateMessage({ type: 'GAME_JOINED', gameId: 'g1', playerNumber: 2,
-        gameState: { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 5, player2Score: 5, status: 'playing', winner: null } }); });
-      expect(result.current.opponentCardIds).toEqual([]);
-      act(() => {
-        ws.simulateMessage({
-          type: 'GAME_ABANDONMENT_WARNING', gameId: 'g1',
-          idlePlayer: 'player1', secondsIdle: 60, secondsUntilClaimable: 0,
-          idlePlayerCardIds: [1, 2, 3, 4, 5],
-        });
-      });
-      expect(result.current.opponentCardIds).toEqual([1, 2, 3, 4, 5]);
-    });
-
-    it('the IDLE player does NOT overwrite opponentCardIds with its own hand', async () => {
-      const { result, ws } = await setupConnectedHook();
-      // I am player1 — the idle/abandoning player. The warning is ABOUT me, so
-      // idlePlayerCardIds is my OWN hand; it must not become my opponentCardIds.
-      act(() => { ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 }); });
-      act(() => {
-        ws.simulateMessage({
-          type: 'GAME_ABANDONMENT_WARNING', gameId: 'g1',
-          idlePlayer: 'player1', secondsIdle: 60, secondsUntilClaimable: 0,
-          idlePlayerCardIds: [1, 2, 3, 4, 5],
-        });
-      });
-      expect(result.current.opponentCardIds).toEqual([]);
-    });
   });
 
   describe('notifyAbandonedGameSettled', () => {
@@ -685,6 +609,54 @@ describe('useWebSocket', () => {
 
       const sent = JSON.parse(ws.sentMessages[ws.sentMessages.length - 1]);
       expect(sent).toEqual({ type: 'ABANDONED_GAME_SETTLED', gameId: 'game-42' });
+    });
+  });
+
+  describe('the private-games relay protocol (Phase A)', () => {
+    async function connected() {
+      const { result } = renderHook(() => useWebSocket('ws://test'));
+      await act(async () => { await waitForConnect(); });
+      const ws = latestWs();
+      act(() => { ws.simulateSessionEstablished(); });
+      return { result, ws, last: () => JSON.parse(ws.sentMessages[ws.sentMessages.length - 1]) };
+    }
+
+    it('sends only the public half of the key exchange', async () => {
+      const { result, last } = await connected();
+      act(() => { result.current.sendKeyExchange('room-1', 'BASE64PUB'); });
+      expect(last()).toEqual({ type: 'KEY_EXCHANGE', gameId: 'room-1', publicKey: 'BASE64PUB' });
+    });
+
+    it('sends sealed peer payloads as they are', async () => {
+      const { result, last } = await connected();
+      act(() => { result.current.sendPeer('room-1', { iv: 'IV', ciphertext: 'CT' }); });
+      expect(last()).toEqual({ type: 'PEER', gameId: 'room-1', iv: 'IV', ciphertext: 'CT' });
+    });
+
+    it('TX_CONFIRMED carries no tx hash: the relay must not find the game\'s txs', async () => {
+      const { result, last } = await connected();
+      act(() => { result.current.notifyTxConfirmed('room-1', 'create_game'); });
+      expect(last()).toEqual({ type: 'TX_CONFIRMED', gameId: 'room-1', txType: 'create_game' });
+    });
+
+    it('hands OPPONENT_KEY and PEER to the listeners only — no React state holds them', async () => {
+      const { result, ws } = await connected();
+      const seen: string[] = [];
+      act(() => { result.current.addMessageListener(m => seen.push(m.type)); });
+      act(() => {
+        ws.simulateMessage({ type: 'OPPONENT_KEY', gameId: 'room-1', publicKey: 'PK' });
+        ws.simulateMessage({ type: 'PEER', gameId: 'room-1', iv: 'IV', ciphertext: 'CT' });
+      });
+      expect(seen).toEqual(['OPPONENT_KEY', 'PEER']);
+      expect(result.current.error).toBeNull();
+    });
+
+    it('no longer exposes anything about the opponent\'s notes, address or secrets', async () => {
+      const { result } = await connected();
+      for (const gone of ['opponentAztecAddress', 'opponentGameRandomness', 'opponentBlinding', 'incomingNoteData',
+        'opponentSettling', 'opponentHandProof', 'shareAztecInfo', 'shareBlinding', 'relayNoteData', 'submitHandProof']) {
+        expect(gone in result.current, gone).toBe(false);
+      }
     });
   });
 

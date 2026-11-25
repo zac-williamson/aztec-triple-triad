@@ -199,7 +199,7 @@ function AppInner() {
           onBackToLobby={game.handleBackToMenu}
           aztecStatus={aztec.status}
           proofStatus={{
-            hand: game.handProofStatus,
+            commit: game.commitStatus,
             move: game.moveProofStatus,
           }}
           canSettle={
@@ -218,8 +218,8 @@ function AppInner() {
           onClaimAbandoned={game.handleClaimAbandoned}
           chainView={{
             onChainGameId: game.onChainGameId,
-            myHandProof: game.myHandProof,
-            opponentHandProof: game.opponentHandProof,
+            myHandCommit: game.myHandCommit,
+            opponentHandCommit: game.opponentHandCommit,
             moveProofs: game.collectedMoveProofs,
             settleTxHash: game.settleTxHash,
           }}

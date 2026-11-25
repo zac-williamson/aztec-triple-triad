@@ -1,28 +1,19 @@
 /**
  * ChainViewPanel — the "you see / chain sees" privacy demo (lane item C).
- * Pins: hands render locally while the chain column shows only commitment
- * hashes; the 11-proof ticker tracks live proof state with prover timings;
- * settlement activity streams from txProgress; GameHUD's toggle mounts it.
+ * Pins: hands render locally while the chain column shows only the game's
+ * nullifier and the two hand commitments (from the records); the 9-proof
+ * ticker tracks live move proofs with prover timings; settlement activity
+ * streams from txProgress; GameHUD's toggle mounts it.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { ChainViewPanel, truncateHash, type ChainViewData } from './ChainViewPanel';
 import { GameHUD } from './GameHUD';
 import { txProgress } from '../aztec/txProgress';
-import type { GameState, HandProofData, MoveProofData } from '../types';
+import type { GameState, MoveProofData } from '../types';
 
-const myHandProof: HandProofData = {
-  proof: 'AA==',
-  publicInputs: ['0xabc'],
-  cardCommit: '0x1111111111111111111111111111111111111111111111111111111111111111',
-  durationMs: 8200,
-};
-
-const oppHandProof: HandProofData = {
-  proof: 'AA==',
-  publicInputs: ['0xdef'],
-  cardCommit: '0x2222222222222222222222222222222222222222222222222222222222222222',
-};
+const myHandCommit = '0x1111111111111111111111111111111111111111111111111111111111111111';
+const oppHandCommit = '0x2222222222222222222222222222222222222222222222222222222222222222';
 
 function makeMoveProof(n: number): MoveProofData {
   return {
@@ -34,14 +25,14 @@ function makeMoveProof(n: number): MoveProofData {
     endStateHash: `0xend${n}aaaaaaaaaaaaaaaa`,
     gameEnded: false,
     winnerId: 0,
-    durationMs: 3000 + n,
+    durationMs: 3000 + n * 100,
   };
 }
 
 const baseData: ChainViewData = {
   onChainGameId: '0x3333333333333333333333333333333333333333333333333333333333333333',
-  myHandProof,
-  opponentHandProof: oppHandProof,
+  myHandCommit,
+  opponentHandCommit: oppHandCommit,
   moveProofs: [makeMoveProof(1), makeMoveProof(2), makeMoveProof(3)],
   settleTxHash: null,
 };
@@ -68,34 +59,34 @@ describe('ChainViewPanel', () => {
     expect(screen.getByText(/4 hidden cards/)).toBeTruthy();
 
     // Chain sees: truncated commitments, never card names
-    expect(screen.getByText(truncateHash(myHandProof.cardCommit))).toBeTruthy();
-    expect(screen.getByText(truncateHash(oppHandProof.cardCommit))).toBeTruthy();
+    expect(screen.getByText(truncateHash(myHandCommit))).toBeTruthy();
+    expect(screen.getByText(truncateHash(oppHandCommit))).toBeTruthy();
     expect(screen.getByText(truncateHash(baseData.onChainGameId!))).toBeTruthy();
   });
 
   it('renders placeholders before the pipeline produced commitments', () => {
     render(
       <ChainViewPanel
-        data={{ onChainGameId: null, myHandProof: null, opponentHandProof: null, moveProofs: [], settleTxHash: null }}
+        data={{ onChainGameId: null, myHandCommit: null, opponentHandCommit: null, moveProofs: [], settleTxHash: null }}
         myHand={myHand}
         opponentHandCount={5}
         onClose={() => {}}
       />,
     );
     expect(screen.getByText('not created yet')).toBeTruthy();
-    expect(screen.getByText('proving…')).toBeTruthy();
+    expect(screen.getByText('committing…')).toBeTruthy();
     expect(screen.getByText('waiting…')).toBeTruthy();
-    expect(screen.getByText('0/11')).toBeTruthy();
+    expect(screen.getByText('0/9')).toBeTruthy();
   });
 
   it('ticks the proof transcript: done count, per-proof prover timings, pending rows', () => {
     render(<ChainViewPanel data={baseData} myHand={myHand} opponentHandCount={4} onClose={() => {}} />);
 
-    // 2 hand proofs + 3 move proofs done out of 11
-    expect(screen.getByText('5/11')).toBeTruthy();
-    // My hand proof carries its prover duration
-    expect(screen.getByText('8.2s')).toBeTruthy();
-    // Opponent's proof arrived without timing — row is done but shows no duration
+    // 3 move proofs done out of 9 — there are no hand proofs any more
+    expect(screen.getByText('3/9')).toBeTruthy();
+    expect(screen.queryByText(/Hand proof/)).toBeNull();
+    // Each done move proof carries its prover duration
+    expect(screen.getByText('3.1s')).toBeTruthy();
     const moveRows = screen.getAllByText(/^Move proof \d$/);
     expect(moveRows).toHaveLength(9);
     // Moves 4..9 still pending

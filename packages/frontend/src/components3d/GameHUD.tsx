@@ -57,6 +57,14 @@ function getProofStatusLabel(status: string): string {
   }
 }
 
+function getCommitStatusLabel(status: string): string {
+  switch (status) {
+    case 'generating': return 'Committing hands on-chain...';
+    case 'error': return 'Commit failed';
+    default: return '';
+  }
+}
+
 function getSettleTxLabel(status: SettleTxStatus): string {
   switch (status) {
     case 'idle': return '';
@@ -124,7 +132,7 @@ export function GameHUD({
     }
   }
   // Proof status display
-  const handLabel = proofStatus ? getProofStatusLabel(proofStatus.hand) : '';
+  const handLabel = proofStatus ? getCommitStatusLabel(proofStatus.commit) : '';
   const moveLabel = proofStatus ? getProofStatusLabel(proofStatus.move) : '';
   const settleLabel = getSettleTxLabel(settleTxStatus);
   const showProofStatus = handLabel || moveLabel || settleLabel;

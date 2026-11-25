@@ -57,6 +57,9 @@ describe('warmSettlementModules', () => {
     // directly, and is far easier to miss — ./contracts was.
     const SCANNED = [
       'hooks/useGameSettlement.ts',
+      'aztec/gameActions.ts',
+      'aztec/gameChain.ts',
+      'aztec/noteImporter.ts',
       'aztec/pxe.ts',
       'aztec/settlementArgs.ts',
       'aztec/proofBackend.ts',

@@ -54,7 +54,7 @@ export function SettlementCardPicker({
           <>
             <h3 className="settle-heading">Claim a Card</h3>
             <p className="settle-subtext">
-              Select one of your opponent's cards to claim as your prize.
+              Select one of the cards your opponent played to claim as your prize.
             </p>
           </>
         )}

@@ -1,16 +1,19 @@
 /**
  * Proof generation module.
  *
- * Generates real Noir circuit proofs using Barretenberg (bb.js) and noir_js.
- * Loads compiled circuit artifacts and generates UltraHonk proofs for:
- * - prove_hand: Proves ownership of 5 cards (poseidon2 commitment)
- * - game_move: Proves a valid game move with chain capture logic
+ * Generates real Noir circuit proofs using Barretenberg (bb.js) and noir_js:
+ * - game_move: proves a valid move with chain capture logic, bound to both
+ *   players' hand commitments, and publishes the placed card and its slot in
+ *   the mover's committed hand (docs/plan/PRIVATE_GAMES.md section 4).
+ *
+ * There are no hand proofs in the protocol any more: `commit_hand` checks a
+ * hand on-chain and the move proofs bind both commitments.
  */
 
 import { Noir } from '@noir-lang/noir_js';
 import { UltraHonkBackend } from '@aztec-foundation/bb.js';
-import type { HandProofData, MoveProofData } from '../types';
-import { loadProveHandCircuit, loadGameMoveCircuit } from './circuitLoader';
+import type { MoveProofData } from '../types';
+import { loadGameMoveCircuit } from './circuitLoader';
 import { getBarretenberg } from './proofBackend';
 
 // ====================== UltraHonkBackend Cache ======================
@@ -185,81 +188,26 @@ export async function computeBoardStateHash(
   return bufToHex(hash);
 }
 
-// ====================== prove_hand Proof ======================
-
-/**
- * Compute player_state_hash = poseidon2(randomness[6]) matching the circuit.
- */
-export async function computePlayerStateHash(randomness: string[]): Promise<string> {
-  if (randomness.length !== 6) {
-    throw new Error(`computePlayerStateHash: expected 6 values, got ${randomness.length}`);
-  }
-  const inputs = randomness.map((r) => safeToField(r));
-  const hash = await poseidon2Hash(inputs);
-  return bufToHex(hash);
-}
-
-/**
- * Generate a prove_hand proof.
- *
- * Proves ownership of 5 cards via poseidon2 commitment.
- * Circuit has 2 public inputs: card_commit_hash, opponent_player_state_hash.
- * Private inputs: card_ids[5], blinding_factor, opponent_randomness[6].
- */
-export async function generateProveHandProof(
-  cardIds: number[],
-  blindingFactor: string,
-  cardCommitHash: string,
-  opponentRandomness: string[],
-  opponentPlayerStateHash: string,
-): Promise<HandProofData> {
-  console.log('[proofWorker] Generating prove_hand proof...');
-  const startTime = performance.now();
-
-  const artifact = await loadProveHandCircuit();
-
-  // Build witness inputs matching circuit parameter names
-  const inputs: Record<string, unknown> = {
-    card_commit_hash: toFieldHex(cardCommitHash),
-    opponent_player_state_hash: toFieldHex(opponentPlayerStateHash),
-    card_ids: cardIds.map((id) => toFieldHex(id)),
-    blinding_factor: toFieldHex(blindingFactor),
-    opponent_randomness: opponentRandomness.map((r) => toFieldHex(r)),
-  };
-
-  const noir = new Noir(artifact as never);
-  const { witness } = await noir.execute(inputs as never);
-  console.log('[proofWorker] Witness generated, creating proof...');
-
-  const backend = await getOrCreateBackend('prove_hand', artifact.bytecode);
-  const proofData = await backend.generateProof(witness);
-
-  const durationMs = performance.now() - startTime;
-  console.log(`[proofWorker] prove_hand proof generated in ${(durationMs / 1000).toFixed(1)}s`);
-
-  // Public inputs: [0] card_commit_hash, [1] opponent_player_state_hash
-  if (proofData.publicInputs.length < 2) {
-    throw new Error(
-      `prove_hand: expected at least 2 public inputs, got ${proofData.publicInputs.length}`
-    );
-  }
-
-  return {
-    proof: proofToBase64(proofData.proof),
-    publicInputs: proofData.publicInputs,
-    cardCommit: proofData.publicInputs[0],
-    durationMs,
-  };
-}
-
 // ====================== game_move Proof ======================
 
 /**
  * Player's hand data needed by the game_move circuit.
  */
 export interface PlayerHandData {
+  /** The mover's five card ids, in the order they were COMMITTED. */
   cardIds: number[];
   blindingFactor: string;
+}
+
+/**
+ * The hand slot a card was committed in — the circuit's `placed_slot`. A
+ * committed hand never repeats an id (`commit_hand` checks), so the id names
+ * exactly one slot.
+ */
+export function slotOfCard(committedHand: number[], cardId: number): number {
+  const slot = committedHand.indexOf(cardId);
+  if (slot < 0) throw new Error(`card ${cardId} is not in the committed hand [${committedHand.join(', ')}]`);
+  return slot;
 }
 
 /**
@@ -268,8 +216,11 @@ export interface PlayerHandData {
  * Proves a valid game move: card placement, chain capture logic,
  * board state transition, score verification.
  *
- * Circuit public inputs (6): card_commit_1, card_commit_2,
- *   start_state_hash, end_state_hash, game_ended, winner_id
+ * Circuit public inputs (8): card_commit_1, card_commit_2,
+ *   start_state_hash, end_state_hash, game_ended, winner_id,
+ *   placed_card_id, placed_slot
+ * (`placed_slot` = the placed card's index in the mover's committed hand,
+ * which the circuit checks against `player_card_ids`).
  */
 export async function generateGameMoveProof(
   cardId: number,
@@ -288,7 +239,8 @@ export async function generateGameMoveProof(
   originalOwnersBefore: number[],
   originalOwnersAfter: number[],
 ): Promise<MoveProofData> {
-  console.log(`[proofWorker] Generating game_move proof (card ${cardId} at [${row},${col}])...`);
+  const placedSlot = slotOfCard(playerHandData.cardIds, cardId);
+  console.log(`[proofWorker] Generating game_move proof (card ${cardId} from slot ${placedSlot} at [${row},${col}])...`);
   const startTime = performance.now();
 
   const artifact = await loadGameMoveCircuit();
@@ -312,9 +264,10 @@ export async function generateGameMoveProof(
     end_state_hash: endStateHash,
     game_ended: gameEnded ? '0x1' : '0x0',
     winner_id: toFieldHex(winnerId),
+    placed_card_id: toFieldHex(cardId),
+    placed_slot: toFieldHex(placedSlot),
     // Private inputs
     current_player: toFieldHex(currentPlayer),
-    card_id: toFieldHex(cardId),
     row: toFieldHex(row),
     col: toFieldHex(col),
     board_before: boardBefore.map((v) => toFieldHex(Number(v))),
@@ -338,25 +291,29 @@ export async function generateGameMoveProof(
   const durationMs = performance.now() - startTime;
   console.log(`[proofWorker] game_move proof generated in ${(durationMs / 1000).toFixed(1)}s`);
 
-  // Public inputs: [0] card_commit_1, [1] card_commit_2,
-  // [2] start_state_hash, [3] end_state_hash,
-  // [4] game_ended, [5] winner_id
-  if (proofData.publicInputs.length < 6) {
-    throw new Error(
-      `game_move: expected at least 6 public inputs, got ${proofData.publicInputs.length}`
-    );
-  }
+  return moveProofFromOutput(proofToBase64(proofData.proof), proofData.publicInputs, durationMs);
+}
 
-  const ZERO_FIELD = '0x0000000000000000000000000000000000000000000000000000000000000000';
+/**
+ * Read a game_move proof's 8 public inputs: `[card_commit_1, card_commit_2,
+ * start_state_hash, end_state_hash, game_ended, winner_id, placed_card_id,
+ * placed_slot]`.
+ */
+export function moveProofFromOutput(proof: string, publicInputs: string[], durationMs?: number): MoveProofData {
+  if (publicInputs.length !== 8) {
+    throw new Error(`game_move: expected 8 public inputs, got ${publicInputs.length}`);
+  }
   return {
-    proof: proofToBase64(proofData.proof),
-    publicInputs: proofData.publicInputs,
-    cardCommit1: proofData.publicInputs[0],
-    cardCommit2: proofData.publicInputs[1],
-    startStateHash: proofData.publicInputs[2],
-    endStateHash: proofData.publicInputs[3],
-    gameEnded: proofData.publicInputs[4] !== ZERO_FIELD && proofData.publicInputs[4] !== '0',
-    winnerId: Number(BigInt(proofData.publicInputs[5])),
+    proof,
+    publicInputs,
+    cardCommit1: publicInputs[0],
+    cardCommit2: publicInputs[1],
+    startStateHash: publicInputs[2],
+    endStateHash: publicInputs[3],
+    gameEnded: BigInt(publicInputs[4]) !== 0n,
+    winnerId: Number(BigInt(publicInputs[5])),
+    placedCardId: Number(BigInt(publicInputs[6])),
+    placedSlot: Number(BigInt(publicInputs[7])),
     durationMs,
   };
 }

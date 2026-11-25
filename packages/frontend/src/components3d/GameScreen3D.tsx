@@ -10,7 +10,8 @@ import { useCaptureAnimation, type CaptureAnimationEntry } from './hooks/useCapt
 import { useGameScreenBridge } from '../testkit';
 
 export type ProofStatusInfo = {
-  hand: string;
+  /** Both hands committed on-chain (the records): idle / generating / ready / error. */
+  commit: string;
   move: string;
 };
 

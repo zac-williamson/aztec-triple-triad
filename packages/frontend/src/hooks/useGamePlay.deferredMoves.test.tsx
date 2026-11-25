@@ -16,16 +16,11 @@ import { renderHook, act } from '@testing-library/react';
 import type { Board, Card, GameState } from '../types';
 
 const generateMoveProof = vi.fn();
-const generateHandProof = vi.fn();
 
 vi.mock('./useProofGeneration', () => ({
-  useProofGeneration: () => ({ generateHandProof, generateMoveProof, reset: vi.fn() }),
+  useProofGeneration: () => ({ generateMoveProof, reset: vi.fn() }),
 }));
 
-vi.mock('../aztec/proofWorker', () => ({
-  computeCardCommitPoseidon2: vi.fn().mockResolvedValue('0xCOMMIT'),
-  computePlayerStateHash: vi.fn().mockResolvedValue('0xOPPSTATE'),
-}));
 
 vi.mock('../aztec/AztecContext', () => ({
   useAztecContext: () => ({ isAvailable: true }),
@@ -64,12 +59,9 @@ function makeWs(gameState: GameState, overrides: Partial<UseWebSocketReturn> = {
     gameId: 'game-1',
     playerNumber: 1,
     gameState,
-    opponentGameRandomness: null,
-    opponentHandProof: null,
     lastMoveProof: null,
     placeCard: vi.fn(),
     submitMoveProof: vi.fn(),
-    submitHandProof: vi.fn(),
     ...overrides,
   } as unknown as UseWebSocketReturn;
 }
@@ -77,7 +69,6 @@ function makeWs(gameState: GameState, overrides: Partial<UseWebSocketReturn> = {
 describe('useGamePlay deferred move processing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    generateHandProof.mockResolvedValue({ proof: 'hp', publicInputs: ['0xC1', '0x0'], cardCommit: '0xC1' });
     generateMoveProof.mockResolvedValue({
       proof: 'mp', publicInputs: ['0xC1', '0xC2', '0xs', '0xe', '0', '0'],
       cardCommit1: '0xC1', cardCommit2: '0xC2', startStateHash: '0xs', endStateHash: '0xe',
@@ -89,13 +80,13 @@ describe('useGamePlay deferred move processing', () => {
     const cardIds = [5, 6, 7, 8, 9];
     const blindingFactor = '0xBF';
 
-    // 1. Hand proofs not ready (no opponentGameRandomness / opponentHandProof).
+    // 1. Commitments not known yet (the joiner's record has not arrived).
     const ws0 = makeWs(playingState(emptyBoard()));
     const submitMoveProof = ws0.submitMoveProof as ReturnType<typeof vi.fn>;
 
     const { result, rerender } = renderHook(
-      ({ ws }) => useGamePlay({ ws, cardIds, blindingFactor }),
-      { initialProps: { ws: ws0 } },
+      ({ ws, commits }) => useGamePlay({ ws, cardIds, blindingFactor, commits }),
+      { initialProps: { ws: ws0, commits: null as { commit1: string; commit2: string } | null } },
     );
 
     // 2. Player places card 5 at (2,2) on the empty board → queued (no proofs).
@@ -108,16 +99,12 @@ describe('useGamePlay deferred move processing', () => {
     const advanced = emptyBoard();
     advanced[2][2] = { card: card(5), owner: 'player1', originalOwner: 'player1' };
     const ws1 = makeWs(playingState(advanced));
-    await act(async () => { rerender({ ws: ws1 }); });
+    await act(async () => { rerender({ ws: ws1, commits: null }); });
 
-    // 4. Hand proofs become ready → deferred processor runs.
-    const ws2 = makeWs(playingState(advanced), {
-      opponentGameRandomness: ['0x1', '0x2', '0x3', '0x4', '0x5', '0x6'],
-      opponentHandProof: { proof: 'ohp', publicInputs: ['0xC2', '0x0'], cardCommit: '0xC2' } as never,
-      submitMoveProof,
-    });
+    // 4. Both records known → the deferred processor runs.
+    const ws2 = makeWs(playingState(advanced), { submitMoveProof });
     await act(async () => {
-      rerender({ ws: ws2 });
+      rerender({ ws: ws2, commits: { commit1: '0xC1', commit2: '0xC2' } });
       await new Promise(r => setTimeout(r, 0));
       await new Promise(r => setTimeout(r, 0));
     });

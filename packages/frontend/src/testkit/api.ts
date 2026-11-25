@@ -65,7 +65,9 @@ function snapshotPhase(): PhaseSnapshot | null {
       : null,
     chain: {
       onChainGameId: game.onChainGameId,
-      handProofStatus: game.handProofStatus,
+      // Hand proofs are gone (docs/plan/PRIVATE_GAMES.md section 4); the
+      // field keeps its name for the harness and reports the commitments.
+      handProofStatus: game.commitStatus,
       moveProofStatus: game.moveProofStatus,
       canSettle: game.canSettle,
       settleTxStatus: game.settleTxStatus,

@@ -3,7 +3,7 @@
  * generation is async/queued, so handlePlaceCard must hand it a DEEP CLONE of
  * the pre-move board captured at click time, never the live ws.gameState.board.
  *
- * The bug (playtest attempt-4): P2/the joiner moves with both hand proofs ready
+ * The bug (playtest attempt-4): P2/the joiner moves with everything ready
  * and hit the immediate path, which passed the live board reference into the
  * async proof encoder. A later board update then changed what the proof
  * encoded → game_move "Card already placed" → P2 generated 0/4 proofs → the
@@ -15,16 +15,11 @@ import { renderHook, act } from '@testing-library/react';
 import type { Board, Card, GameState } from '../types';
 
 const generateMoveProof = vi.fn();
-const generateHandProof = vi.fn();
 
 vi.mock('./useProofGeneration', () => ({
-  useProofGeneration: () => ({ generateHandProof, generateMoveProof, reset: vi.fn() }),
+  useProofGeneration: () => ({ generateMoveProof, reset: vi.fn() }),
 }));
 
-vi.mock('../aztec/proofWorker', () => ({
-  computeCardCommitPoseidon2: vi.fn().mockResolvedValue('0xCOMMIT'),
-  computePlayerStateHash: vi.fn().mockResolvedValue('0xOPPSTATE'),
-}));
 
 vi.mock('../aztec/AztecContext', () => ({ useAztecContext: () => ({ isAvailable: true }) }));
 vi.mock('../aztec/gameConstants', () => ({ TOTAL_MOVES: 9 }));
@@ -61,12 +56,9 @@ function makeWs(gameState: GameState, overrides: Partial<UseWebSocketReturn> = {
     gameId: 'game-1',
     playerNumber: 2, // the joiner
     gameState,
-    opponentGameRandomness: ['0x1', '0x2', '0x3', '0x4', '0x5', '0x6'],
-    opponentHandProof: { proof: 'ohp', publicInputs: ['0xC2', '0x0'], cardCommit: '0xC2' },
     lastMoveProof: null,
     placeCard: vi.fn(),
     submitMoveProof: vi.fn(),
-    submitHandProof: vi.fn(),
     ...overrides,
   } as unknown as UseWebSocketReturn;
 }
@@ -74,7 +66,6 @@ function makeWs(gameState: GameState, overrides: Partial<UseWebSocketReturn> = {
 describe('useGamePlay immediate (joiner) move proofs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    generateHandProof.mockResolvedValue({ proof: 'hp', publicInputs: ['0xC1', '0x0'], cardCommit: '0xC1' });
     generateMoveProof.mockResolvedValue({
       proof: 'mp', publicInputs: ['0xC1', '0xC2', '0xs', '0xe', '0', '0'],
       cardCommit1: '0xC1', cardCommit2: '0xC2', startStateHash: '0xs', endStateHash: '0xe',
@@ -86,9 +77,9 @@ describe('useGamePlay immediate (joiner) move proofs', () => {
     const ws = makeWs(joinerPreMoveState());
     const submitMoveProof = ws.submitMoveProof as ReturnType<typeof vi.fn>;
 
-    const { result } = renderHook(() => useGamePlay({ ws, cardIds: [10, 11, 12, 13, 14], blindingFactor: '0xBF' }));
+    const { result } = renderHook(() => useGamePlay({ ws, cardIds: [10, 11, 12, 13, 14], blindingFactor: '0xBF', commits: { commit1: '0xC1', commit2: '0xC2' } }));
 
-    // Both hand proofs ready (opponent from ws, own auto-generated) → immediate path.
+    // Both commitments and our blinding known → immediate path.
     await act(async () => { await new Promise(r => setTimeout(r, 0)); });
 
     // P2 places card 10 at (1,1) — an empty cell.
@@ -108,5 +99,12 @@ describe('useGamePlay immediate (joiner) move proofs', () => {
     expect(boardBefore[1][1].card).toBeNull();
 
     expect(submitMoveProof).toHaveBeenCalledWith('game-1', 0, 1, 1, expect.anything(), 1);
+
+    // card_commit_1 / card_commit_2 are the two records' hand commitments, and
+    // the proof's hand data is the COMMITTED hand (its slot is the public
+    // placed_slot settlement withholds a return note by).
+    const call = generateMoveProof.mock.calls[0];
+    expect([call[8], call[9]]).toEqual(['0xC1', '0xC2']);
+    expect(call[12]).toEqual({ cardIds: [10, 11, 12, 13, 14], blindingFactor: '0xBF' });
   });
 });

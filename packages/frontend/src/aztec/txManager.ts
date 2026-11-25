@@ -14,7 +14,10 @@
 
 import { diag } from './diagnostics';
 
-export type TxType = 'deploy_account' | 'connect_wallet' | 'create_game' | 'join_game' | 'settle_game' | 'purchase_card_pack' | 'claim_abandoned_game' | 'settle_abandoned_game';
+export type TxType =
+  | 'deploy_account' | 'connect_wallet' | 'create_game' | 'join_game' | 'settle_game'
+  | 'purchase_card_pack' | 'cancel_game' | 'claim_abandoned_game' | 'contest_abandonment'
+  | 'finalize_abandoned_game';
 
 /**
  * Priority map — lower number = higher priority = runs first.
@@ -27,9 +30,12 @@ const TX_PRIORITY: Record<TxType, number> = {
   create_game: 1,
   join_game: 1,
   purchase_card_pack: 2,
+  cancel_game: 2,
+  // A contest races the dispute window: it goes before any settlement.
+  contest_abandonment: 2,
   settle_game: 3,
   claim_abandoned_game: 3,
-  settle_abandoned_game: 4,
+  finalize_abandoned_game: 4,
 };
 
 export type TxPhase =

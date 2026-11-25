@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { StuckGame } from '../hooks/useGame';
+import type { StuckGame, StuckGameKind } from '../hooks/useGame';
 import type { ConnectionStatus } from '../hooks/useAztec';
 import './MainMenu.css';
 
@@ -22,6 +22,46 @@ export function connectionBadge(
   if (aztecStatus === 'connected') return { label: 'Connected', tone: 'ok' };
   return { label: 'Connecting to Aztec...', tone: 'pending' };
 }
+
+/** Stuck games the player can act on now: what to say, and what the button does. */
+const RECOVERABLE: Partial<Record<StuckGameKind, { text: string; button: string; note: string }>> = {
+  cancellable: {
+    text: 'Five of your cards are committed to a game nobody joined.',
+    button: 'Cancel Game & Recover Cards',
+    note: 'Cancels the game on-chain and returns your hand.',
+  },
+  settleable: {
+    text: 'Your last game finished but was never settled.',
+    button: 'Settle Game',
+    note: 'Settles it from the moves you both proved. Each player then collects their own cards and reward.',
+  },
+  claimable: {
+    text: 'Five of your cards are still committed to an unfinished game.',
+    button: 'Recover My Cards',
+    note: 'Claims the game abandoned and, after a ten-minute dispute window, returns both hands. It takes a while — keep this tab open.',
+  },
+  finalizable: {
+    text: 'Your last game was claimed abandoned and nobody objected in time.',
+    button: 'Recover My Cards',
+    note: 'Unwinds the game: both players get their own five cards back.',
+  },
+};
+
+/** Stuck games the player can only wait on. */
+const WAITING: Partial<Record<StuckGameKind, { text: string; note: (minutes: number) => string }>> = {
+  'too-soon': {
+    text: 'Five of your cards are committed to a game that has not finished.',
+    note: m => `You can recover them if your opponent does not come back. That becomes available about ${m} minutes from now — the wait is what stops a claim being used to cut a live game short.`,
+  },
+  'claim-pending': {
+    text: 'Your last game has been claimed abandoned.',
+    note: m => `The dispute window closes in about ${m} minutes; after that both hands can be returned.`,
+  },
+  'awaiting-winner': {
+    text: 'Your last game finished and is waiting to be settled.',
+    note: m => `The winner settles it. If they have not in about ${m} minutes, you can settle it yourself.`,
+  },
+};
 
 interface MainMenuProps {
   connected: boolean;
@@ -178,41 +218,30 @@ export function MainMenu({
         <p className="main-menu__card-status">Loading your cards from Aztec...</p>
       )}
 
-      {/* Cards locked in a game nobody finished. Before this the only claim
-          button lived on the game screen, so a player who closed the tab had
-          no route back to their own cards. */}
-      {stuckGame?.kind === 'claimable' && (
-        <div className="main-menu__stuck" data-testid="stuck-game">
-          <p className="main-menu__stuck-text">
-            Five of your cards are still committed to an unfinished game.
-          </p>
+      {/* Cards locked in a game nobody finished. Every one of these offers is
+          something the contract will accept right now (aztec/stuckGame.ts). */}
+      {stuckGame && RECOVERABLE[stuckGame.kind] && (
+        <div className="main-menu__stuck" data-testid="stuck-game" data-kind={stuckGame.kind}>
+          <p className="main-menu__stuck-text">{RECOVERABLE[stuckGame.kind]!.text}</p>
           <button
             className="main-menu__btn main-menu__btn--recover"
             data-testid="recover-stuck-game"
             onClick={onRecoverStuckGame}
             disabled={isRecovering || !connected}
           >
-            {isRecovering ? 'Recovering your cards…' : 'Recover My Cards'}
+            {isRecovering ? 'Recovering your cards…' : RECOVERABLE[stuckGame.kind]!.button}
           </button>
-          <p className="main-menu__stuck-note">
-            This proves the game was abandoned and returns your hand. It takes a
-            few minutes and includes a short dispute window.
-          </p>
+          <p className="main-menu__stuck-note">{RECOVERABLE[stuckGame.kind]!.note}</p>
         </div>
       )}
 
-      {/* The contract will not accept a claim yet, so we do not offer one —
-          we say how long. */}
-      {stuckGame?.kind === 'too-soon' && (
-        <div className="main-menu__stuck" data-testid="stuck-game-too-soon">
-          <p className="main-menu__stuck-text">
-            Five of your cards are committed to a game that has not finished.
-          </p>
+      {/* The contract will not accept anything yet, so we offer nothing — we
+          say how long. */}
+      {stuckGame && WAITING[stuckGame.kind] && (
+        <div className="main-menu__stuck" data-testid={`stuck-game-${stuckGame.kind}`}>
+          <p className="main-menu__stuck-text">{WAITING[stuckGame.kind]!.text}</p>
           <p className="main-menu__stuck-note">
-            You can recover them if your opponent does not come back. That
-            becomes available about {Math.max(1, Math.round((stuckGame.waitSeconds ?? 0) / 60))}
-            {' '}minutes from now — the wait is what stops a claim being used to
-            cut a live game short.
+            {WAITING[stuckGame.kind]!.note(Math.max(1, Math.round((stuckGame.waitSeconds ?? 0) / 60)))}
           </p>
         </div>
       )}
@@ -235,18 +264,6 @@ export function MainMenu({
           <p className="main-menu__stuck-note">
             Contesting cancels their claim and puts the game back in play. You
             can do this once per game, so finish the game afterwards.
-          </p>
-        </div>
-      )}
-
-      {stuckGame?.kind === 'claimed-by-opponent' && (
-        <div className="main-menu__stuck" data-testid="stuck-game-claimed">
-          <p className="main-menu__stuck-text">
-            Your last game was claimed as abandoned and the window to object has closed.
-          </p>
-          <p className="main-menu__stuck-note">
-            Your own five cards are still yours to recover — they are returned
-            per player, so nobody took them.
           </p>
         </div>
       )}

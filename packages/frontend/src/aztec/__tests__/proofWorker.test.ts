@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toFieldHex, bufToHex, numToField, hexToField } from '../proofWorker';
+import { toFieldHex, bufToHex, numToField, hexToField, slotOfCard, moveProofFromOutput } from '../proofWorker';
 import { encodeBoardState } from '../../hooks/useProofGeneration';
 import type { GameState } from '../../types';
 
@@ -218,5 +218,26 @@ describe('encodeBoardState', () => {
       expect(() => Number(val)).not.toThrow();
       expect(Number.isFinite(Number(val))).toBe(true);
     }
+  });
+});
+
+describe('the move proof\'s placed card and slot', () => {
+  it('the slot is the card\'s index in the COMMITTED hand, not in what is left of it', () => {
+    const committed = [21, 22, 23, 24, 25];
+    expect(slotOfCard(committed, 24)).toBe(3);
+    expect(() => slotOfCard(committed, 99)).toThrow(/not in the committed hand/);
+  });
+
+  it('reads the 8 public inputs, including placed_card_id and placed_slot', () => {
+    const f = (n: number) => '0x' + n.toString(16).padStart(64, '0');
+    const p = moveProofFromOutput('cHJvb2Y=', [f(0xc1), f(0xc2), f(1), f(2), f(1), f(2), f(24), f(3)], 1234);
+    expect(p).toMatchObject({
+      cardCommit1: f(0xc1), cardCommit2: f(0xc2), startStateHash: f(1), endStateHash: f(2),
+      gameEnded: true, winnerId: 2, placedCardId: 24, placedSlot: 3, durationMs: 1234,
+    });
+  });
+
+  it('refuses a proof with the old six public inputs', () => {
+    expect(() => moveProofFromOutput('x', ['0x1', '0x2', '0x3', '0x4', '0x0', '0x0'])).toThrow(/expected 8 public inputs/);
   });
 });

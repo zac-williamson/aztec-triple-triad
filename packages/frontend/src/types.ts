@@ -45,10 +45,13 @@ export interface SerializedProof {
   durationMs?: number;
 }
 
-export interface HandProofData extends SerializedProof {
-  cardCommit: string;
-}
-
+/**
+ * A game_move proof. Its 8 public inputs are
+ * `[card_commit_1, card_commit_2, start_state_hash, end_state_hash,
+ *   game_ended, winner_id, placed_card_id, placed_slot]`.
+ * `placedSlot` is the index of the placed card in its mover's committed hand —
+ * what settlement uses to hold back the loser's return note for the prize.
+ */
 export interface MoveProofData extends SerializedProof {
   cardCommit1: string;
   cardCommit2: string;
@@ -56,12 +59,16 @@ export interface MoveProofData extends SerializedProof {
   endStateHash: string;
   gameEnded: boolean;
   winnerId: number;
+  /** Optional only because a relayed proof may predate the field; read it
+   *  through `placedOf` (privateGame.ts), which falls back to the inputs. */
+  placedCardId?: number;
+  placedSlot?: number;
 }
 
-/** Plaintext note data for frontend-driven delivery (no tagging) */
-export interface PlaintextNoteData {
-  tokenId: number;
-  randomness: string;   // Fr hex string
+/** A player-to-player payload, sealed with the game's channel key. */
+export interface SealedPeerMessage {
+  iv: string;
+  ciphertext: string;
 }
 
 // On-chain transaction status tracking
@@ -80,24 +87,20 @@ export type ClientMessage =
   | { type: 'PLACE_CARD'; gameId: string; handIndex: number; row: number; col: number; moveNumber: number }
   | { type: 'LIST_GAMES' }
   | { type: 'GET_GAME'; gameId: string }
-  | { type: 'SUBMIT_HAND_PROOF'; gameId: string; handProof: HandProofData }
   | { type: 'SUBMIT_MOVE_PROOF'; gameId: string; handIndex: number; row: number; col: number; moveNumber: number; moveProof: MoveProofData }
-  // On-chain lifecycle messages
-  | { type: 'TX_CONFIRMED'; gameId: string; txType: 'create_game' | 'join_game'; txHash: string }
+  // On-chain lifecycle messages. No tx hash: the relay must not be able to
+  // find a game's transactions (docs/plan/PRIVATE_GAMES.md section 7).
+  | { type: 'TX_CONFIRMED'; gameId: string; txType: 'create_game' | 'join_game' }
   | { type: 'TX_FAILED'; gameId: string; txType: 'create_game' | 'join_game'; error: string }
   | { type: 'CANCEL_GAME'; gameId: string }
   /** "I am done with this game" — releases only the sender's binding. */
   | { type: 'LEAVE_GAME'; gameId: string }
-  // Aztec info exchange
-  | { type: 'SHARE_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string; gameRandomness?: string[] }
-  /** Sent at GAME OVER only — earlier would let the opponent brute-force your
-   *  hand from the on-chain commitment. */
-  | { type: 'SHARE_BLINDING'; gameId: string; blindingFactor: string }
-  // Note relay (offchain settlement delivery)
-  | { type: 'RELAY_NOTE_DATA'; gameId: string; txHash: string; notes: PlaintextNoteData[] }
-  // Settlement lifecycle
-  | { type: 'SETTLE_STARTED'; gameId: string; selectedCardId: number }
-  // Abandoned-game settlement mined on-chain — server releases both players'
+  // The per-game key exchange (section 5.1): only public keys cross the relay.
+  | { type: 'KEY_EXCHANGE'; gameId: string; publicKey: string }
+  // Every player-to-player payload, sealed with the channel key. The relay
+  // forwards and buffers it without being able to read it.
+  | { type: 'PEER'; gameId: string; iv: string; ciphertext: string }
+  // An abandoned game was unwound on-chain — the server releases both players'
   // room bindings on receipt (QA-F3, docs/plan/LANE_4_BACKEND.md)
   | { type: 'ABANDONED_GAME_SETTLED'; gameId: string }
   // Matchmaking
@@ -113,7 +116,8 @@ export type ServerMessage =
   | { type: 'GAME_JOINED'; gameId: string; playerNumber: 2; gameState: GameState }
   | { type: 'GAME_START'; gameId: string; gameState: GameState }
   | { type: 'GAME_STATE'; gameId: string; gameState: GameState; captures: { row: number; col: number }[] }
-  | { type: 'GAME_OVER'; gameId: string; gameState: GameState; winner: Player | 'draw'; player1CardIds: number[]; player2CardIds: number[] }
+  // No card ids: a game's hands are nobody's business but its players'.
+  | { type: 'GAME_OVER'; gameId: string; gameState: GameState; winner: Player | 'draw' }
   | { type: 'GAME_LIST'; games: GameListEntry[] }
   | { type: 'GAME_INFO'; game: GameListEntry | null }
   | { type: 'OPPONENT_DISCONNECTED'; gameId: string }
@@ -121,24 +125,15 @@ export type ServerMessage =
   // player whose turn it is has not moved for >=60s. Re-sent/updated as the
   // window progresses; cleared client-side when a move/GAME_STATE arrives or
   // the game ends (docs/plan/ABANDONED_GAMES.md "Message contract").
-  // `idlePlayerCardIds` is the idle player's hand, relayed so the OTHER player
-  // can claim a card on-chain (an abandonment never reaches GAME_OVER, the only
-  // other point card ids are exchanged). Optional so the client tolerates an
-  // older relay that does not send it (it then falls back to a no-card recovery).
-  | { type: 'GAME_ABANDONMENT_WARNING'; gameId: string; idlePlayer: Player; secondsIdle: number; secondsUntilClaimable: number; idlePlayerCardIds?: number[] }
+  | { type: 'GAME_ABANDONMENT_WARNING'; gameId: string; idlePlayer: Player; secondsIdle: number; secondsUntilClaimable: number }
   | { type: 'ERROR'; message: string }
-  | { type: 'HAND_PROOF'; gameId: string; handProof: HandProofData; fromPlayer: 1 | 2 }
   | { type: 'MOVE_PROVEN'; gameId: string; gameState: GameState; captures: { row: number; col: number }[]; moveProof: MoveProofData; handIndex: number; row: number; col: number }
   // On-chain lifecycle messages
   | { type: 'ON_CHAIN_STATUS'; gameId: string; status: OnChainGameStatus }
   | { type: 'GAME_CANCELLED'; gameId: string; reason: string }
-  // Aztec info exchange
-  | { type: 'OPPONENT_AZTEC_INFO'; gameId: string; aztecAddress: string; onChainGameId?: string; gameRandomness?: string[] }
-  | { type: 'OPPONENT_BLINDING'; gameId: string; blindingFactor: string }
-  // Note relay (offchain settlement delivery)
-  | { type: 'NOTE_DATA'; gameId: string; txHash: string; notes: PlaintextNoteData[] }
-  // Settlement lifecycle
-  | { type: 'OPPONENT_SETTLING'; gameId: string; selectedCardId: number }
+  // The opponent's half of the key exchange, and their sealed payloads.
+  | { type: 'OPPONENT_KEY'; gameId: string; publicKey: string }
+  | { type: 'PEER'; gameId: string; iv: string; ciphertext: string }
   // Matchmaking
   | { type: 'MATCHMAKING_QUEUED'; position: number }
   | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState }

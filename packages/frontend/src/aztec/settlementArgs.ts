@@ -1,22 +1,18 @@
 /**
- * Settlement transcript assembly — shared by the browser (useGameSettlement) and
- * the arena bot.
+ * Settlement transcript assembly and the contract's clocks — shared by the
+ * browser and the arena bot.
  *
- * `process_game` takes the entire 11-proof transcript as a flat, ORDER-CRITICAL
- * argument list. Getting that order or the chain ordering wrong produces a tx
- * that is only rejected on-chain, after the expensive recursive verification, so
- * there must be exactly one implementation of it. These functions are pure and
- * React-free precisely so both callers can share them.
+ * `settle_game` takes both records and the nine-move transcript as a flat,
+ * ORDER-CRITICAL argument list. Getting that order or the chain ordering wrong
+ * produces a tx that is only rejected on-chain, after the expensive recursive
+ * verification, so there is exactly one implementation of it. Pure and
+ * React-free so every caller can share it.
  */
-import { CARDS_PER_HAND, TOTAL_MOVES } from './gameConstants';
-export { claimableMoveCount } from './claimParity';
+import { TOTAL_MOVES } from './gameConstants';
+import { RECORD_LEN } from './privateGame';
 
-/** Pad a card-ID list to a full hand of Fr field elements. */
-export function padToHand<F>(Fr: new (v: bigint) => F, ids: number[]): F[] {
-  const padded = [...ids];
-  while (padded.length < CARDS_PER_HAND) padded.push(0);
-  return padded.slice(0, CARDS_PER_HAND).map(id => new Fr(BigInt(id)));
-}
+/** Public inputs per move proof (section 4 of docs/plan/PRIVATE_GAMES.md). */
+export const MOVE_PUBLIC_INPUTS = 8;
 
 /**
  * Order move proofs into the on-chain verification chain: proof i+1's start
@@ -50,261 +46,127 @@ export function sortProofChain<P extends { startStateHash: string; endStateHash:
  */
 export async function computeCanonicalInitialHash(): Promise<string> {
   const { computeBoardStateHash } = await import('./proofWorker');
-  return computeBoardStateHash(Array(18).fill('0'), [CARDS_PER_HAND, CARDS_PER_HAND], 1, Array(9).fill(0));
+  return computeBoardStateHash(Array(18).fill('0'), [5, 5], 1, Array(9).fill(0));
 }
 
-export interface ProcessGameInputs {
-  /** Fr constructor and AztecAddress, injected so this module stays import-light. */
+export interface SettleGameInputs {
+  /** Fr constructor, injected so this module stays import-light. */
   Fr: any;
-  AztecAddress: any;
-  onChainGameId: string;
-  handVk: Uint8Array;
+  gameKey: string;
+  record1: string[];
+  record2: string[];
   moveVk: Uint8Array;
-  /** Both hand proofs, already assigned to their player slots. */
-  handProof1: { proof: string; publicInputs: string[] };
-  handProof2: { proof: string; publicInputs: string[] };
   /** All TOTAL_MOVES move proofs, in any order — they are chained here. */
   moveProofs: { proof: string; publicInputs: string[]; startStateHash: string; endStateHash: string }[];
-  opponentAddress: string;
-  selectedCardId: number;
-  myCardIds: number[];
-  opponentCardIds: number[];
-  myRandomness: string[];
-  opponentRandomness: string[];
   /**
-   * Blinding factors, one per player. The contract recomputes
-   * poseidon2([card_ids, blinding]) and asserts it against the commitment
-   * stored at create/join — without them it would mint whatever ids it was
-   * handed. Yours comes from `compute_blinding_factor(game_id)`; the
-   * opponent's is exchanged over the relay at game over, when hands stop being
-   * secret.
+   * Index (0..8) of a move the LOSER made: its card is the prize. Player 1
+   * moves at even indices, player 2 at odd. Ignored for a draw (pass 0).
    */
-  myBlinding: string;
-  opponentBlinding: string;
+  prizeMove: number;
 }
 
 /**
- * Build the ordered `process_game` argument list.
+ * Build the ordered `settle_game` argument list:
+ * `[game_key, record_1, record_2, move_vk, (proof_i, inputs_i) x 9, prize_move]`.
  *
- * The caller owns the proof transcript and VK fields; the contract is resolved
- * and invoked inside pxe.ts.
+ * The caller owns the transcript and the VK; the contract is resolved and
+ * invoked inside pxe.ts.
  */
-export async function buildProcessGameArgs(inputs: ProcessGameInputs): Promise<unknown[]> {
-  const { toFr, bytesToFrArray, base64ToFrArray, hexToFr } = await import('./fieldUtils');
-  const { Fr, AztecAddress } = inputs;
-
-  const toFrArr = (b64: string) => base64ToFrArray(Fr, b64);
-  const toFrHex = (hex: string) => hexToFr(Fr, hex);
-
-  const sorted = sortProofChain(inputs.moveProofs, TOTAL_MOVES, await computeCanonicalInitialHash());
-  const mp = sorted.map(m => toFrArr(m.proof));
-  const mi = sorted.map(m => m.publicInputs.map(toFrHex));
-
-  return [
-    toFr(Fr, inputs.onChainGameId),
-    bytesToFrArray(Fr, inputs.handVk),
-    bytesToFrArray(Fr, inputs.moveVk),
-    toFrArr(inputs.handProof1.proof), inputs.handProof1.publicInputs.map(toFrHex),
-    toFrArr(inputs.handProof2.proof), inputs.handProof2.publicInputs.map(toFrHex),
-    mp[0], mi[0], mp[1], mi[1], mp[2], mi[2],
-    mp[3], mi[3], mp[4], mi[4], mp[5], mi[5],
-    mp[6], mi[6], mp[7], mi[7], mp[8], mi[8],
-    AztecAddress.fromStringUnsafe(inputs.opponentAddress),
-    new Fr(BigInt(inputs.selectedCardId)),
-    padToHand(Fr, inputs.myCardIds),
-    padToHand(Fr, inputs.opponentCardIds),
-    inputs.myRandomness.map(v => toFr(Fr, v)),
-    inputs.opponentRandomness.map(v => toFr(Fr, v)),
-    toFr(Fr, inputs.myBlinding),
-    toFr(Fr, inputs.opponentBlinding),
-  ];
-}
-
-// ---------------------------------------------------------------------------
-// Abandoned-game recovery
-//
-// The escape hatch when the other side never completes the transcript: a player
-// whose opponent walked away claims the game with a PARTIAL chain padded with
-// dummy proofs, waits out a dispute window, and settles. It is the only way
-// committed cards ever come back from a game that cannot be settled normally,
-// which makes it load-bearing for anything running unattended — a bot cannot
-// cancel (cancel is creator-only) and will otherwise strand five cards per
-// abandoned game, permanently and monotonically.
-//
-// Shared with the browser for the same reason as process_game: one flat,
-// order-critical argument list, rejected only on-chain if it is wrong.
-// ---------------------------------------------------------------------------
-
-/** Mirrors DISPUTE_SECONDS in the game contract: seconds between claim and settle. */
-export const DISPUTE_SECONDS = 600;
-
-export interface ClaimAbandonedInputs {
-  Fr: any;
-  onChainGameId: string;
-  callerIsPlayer1: boolean;
-  handVk: Uint8Array;
-  moveVk: Uint8Array;
-  dummyVk: Uint8Array;
-  handProof1: { proof: string; publicInputs: string[] };
-  handProof2: { proof: string; publicInputs: string[] };
-  /** The moves that DID complete — 0..9 of them, in any order. */
-  validMoveProofs: { proof: string; publicInputs: string[]; startStateHash: string; endStateHash: string }[];
-  /** Generates one dummy proof, base64-encoded, to pad the chain. */
-  makeDummyProof: () => Promise<string>;
-}
-
-/**
- * Build the ordered `claim_abandoned_game` argument list.
- *
- * The real moves are chained exactly as in `process_game` and the remaining
- * slots are filled with dummy proofs carrying all-zero public inputs; the
- * contract verifies the first `num_valid_moves` against the move VK and the
- * rest against the dummy VK. `num_valid_moves` must therefore match the number
- * of real proofs exactly.
- */
-export async function buildClaimAbandonedArgs(inputs: ClaimAbandonedInputs): Promise<unknown[]> {
+export async function buildSettleGameArgs(inputs: SettleGameInputs): Promise<unknown[]> {
   const { toFr, bytesToFrArray, base64ToFrArray, hexToFr } = await import('./fieldUtils');
   const { Fr } = inputs;
-  const toFrArr = (b64: string) => base64ToFrArray(Fr, b64);
-  const toFrHex = (hex: string) => hexToFr(Fr, hex);
-
-  const numValid = inputs.validMoveProofs.length;
-  if (numValid > TOTAL_MOVES) {
-    throw new Error(
-      `claim_abandoned_game takes 0..${TOTAL_MOVES} valid move proofs, got ${numValid}`,
-    );
+  if (inputs.record1.length !== RECORD_LEN || inputs.record2.length !== RECORD_LEN) {
+    throw new Error(`settle_game needs two ${RECORD_LEN}-field records`);
   }
-  // A COMPLETE chain (nine) is a legal claim, and the important one: a game
-  // that ran to the end and whose winner then vanished is the case where the
-  // whole transcript exists and settlement is provably owed. This used to
-  // throw, because the contract capped n at 8 — it no longer does, and the
-  // contract skips the turn-parity check when n == 9 precisely because a
-  // finished game has nobody whose turn it is.
-  // ZERO is valid: a player can abandon between joining and their first move,
-  // and refusing that claim leaves both hands locked with no route back. The
-  // contract restricts a zero-move claim to player 2 — the party that did not
-  // fail to move — via its "it must be the opponent's turn" check.
+  if (!Number.isInteger(inputs.prizeMove) || inputs.prizeMove < 0 || inputs.prizeMove >= TOTAL_MOVES) {
+    throw new Error(`prize_move must be a move index 0..${TOTAL_MOVES - 1}, got ${inputs.prizeMove}`);
+  }
 
-  const sorted = sortProofChain(inputs.validMoveProofs, numValid, await computeCanonicalInitialHash());
-  const allProofs: unknown[] = sorted.map(m => toFrArr(m.proof));
-  const allInputs: unknown[] = sorted.map(m => m.publicInputs.map(toFrHex));
-  const zeroInputs = ['0x0', '0x0', '0x0', '0x0', '0x0', '0x0'];
-  for (let i = numValid; i < TOTAL_MOVES; i++) {
-    allProofs.push(toFrArr(await inputs.makeDummyProof()));
-    allInputs.push(zeroInputs.map(toFrHex));
+  const sorted = sortProofChain(inputs.moveProofs, TOTAL_MOVES, await computeCanonicalInitialHash());
+  for (const [i, m] of sorted.entries()) {
+    if (m.publicInputs.length !== MOVE_PUBLIC_INPUTS) {
+      throw new Error(`move ${i} carries ${m.publicInputs.length} public inputs; settle_game takes ${MOVE_PUBLIC_INPUTS}`);
+    }
+  }
+  const moves: unknown[] = [];
+  for (const m of sorted) {
+    moves.push(base64ToFrArray(Fr, m.proof), m.publicInputs.map(v => hexToFr(Fr, v)));
   }
 
   return [
-    toFr(Fr, inputs.onChainGameId),
-    new Fr(BigInt(numValid)),
-    inputs.callerIsPlayer1,
-    bytesToFrArray(Fr, inputs.handVk),
+    toFr(Fr, inputs.gameKey),
+    inputs.record1.map(v => toFr(Fr, v)),
+    inputs.record2.map(v => toFr(Fr, v)),
     bytesToFrArray(Fr, inputs.moveVk),
-    bytesToFrArray(Fr, inputs.dummyVk),
-    toFrArr(inputs.handProof1.proof), inputs.handProof1.publicInputs.map(toFrHex),
-    toFrArr(inputs.handProof2.proof), inputs.handProof2.publicInputs.map(toFrHex),
-    allProofs[0], allInputs[0], allProofs[1], allInputs[1], allProofs[2], allInputs[2],
-    allProofs[3], allInputs[3], allProofs[4], allInputs[4], allProofs[5], allInputs[5],
-    allProofs[6], allInputs[6], allProofs[7], allInputs[7], allProofs[8], allInputs[8],
+    ...moves,
+    new Fr(BigInt(inputs.prizeMove)),
   ];
 }
 
-export interface SettleAbandonedInputs {
-  Fr: any;
-  onChainGameId: string;
-  myCardIds: number[];
-  myRandomness: string[];
-  /** Proves the ids being re-minted are the ones this player committed. */
-  myBlinding: string;
-}
+// ---------------------------------------------------------------------------
+// The contract's abandonment clocks
+//
+// A claim is honest only MIN_ABANDON_SECONDS after its clock started — the
+// block the join landed in for the first claim, the previous contest's block
+// after that — and stands DISPUTE_SECONDS from the block it landed in before
+// anyone may finalize it. The contract compares block TIMESTAMPS (its anchor's
+// against those blocks'), so the waits below poll the chain's own clock.
+// ---------------------------------------------------------------------------
 
-/**
- * Build the ordered `settle_abandoned_game` argument list.
- *
- * Recovers only YOUR OWN stake. There is no claimed card and no opponent data:
- * the absent player's ids cannot be verified — that binding needs their
- * blinding factor and they are not there to reveal it — so minting anything on
- * their behalf meant minting whatever the claimant asserted. They recover their
- * own five cards themselves, whenever they come back.
- */
-export function buildSettleAbandonedArgs(inputs: SettleAbandonedInputs): Promise<unknown[]> {
-  return (async () => {
-    const { toFr } = await import('./fieldUtils');
-    const { Fr } = inputs;
-    return [
-      toFr(Fr, inputs.onChainGameId),
-      padToHand(Fr, inputs.myCardIds),
-      inputs.myRandomness.map(v => toFr(Fr, v)),
-      toFr(Fr, inputs.myBlinding),
-    ];
-  })();
-}
-
-/**
- * Wait out the dispute window on the CHAIN's clock.
- *
- * This used to count blocks, for a good reason that has since stopped being
- * true: the contract compared block heights, and a wall-clock sleep settles
- * early on a slow chain. The contract now compares TIMESTAMPS, and block rate
- * is not a clock — measured on this testnet it ranges from 27 to 72 seconds,
- * so a five-block wait is anywhere from two to six minutes against a ten-minute
- * window. Production duly failed with "Dispute window not elapsed" after doing
- * all the proving work.
- *
- * So: poll the chain's own timestamp and compare it against the claim's. Immune
- * to block-rate variance and to local clock skew, which a wall-clock sleep is
- * not. Fails loudly at the ceiling rather than waiting forever.
- */
-export async function waitForDisputeWindow(
-  node: ChainClock,
-  claimedAtSeconds: number,
-  opts: ChainWaitOpts = {},
-): Promise<void> {
-  // A claim time of zero is the contract's "no claim on record", which happens
-  // when this read lands before the claim is visible at the reader's anchor.
-  // Treated as a timestamp it means 1970, so `elapsed` is astronomically past
-  // the window and the wait returns AT ONCE — settling early, reverting, and
-  // reporting a recovery failure after paying for the proving. Both callers
-  // read claimAt straight after their own claim tx, so both can hit it.
-  if (!Number.isFinite(claimedAtSeconds) || claimedAtSeconds <= 0) {
-    throw new Error(
-      `No claim on record for this game (claimAt=${claimedAtSeconds}). ` +
-      'Refusing to start the dispute window from an unknown time — retry the claim.',
-    );
-  }
-  return waitForChainSeconds(node, claimedAtSeconds, DISPUTE_SECONDS, opts, (elapsed, waitedMs) =>
-    `Dispute window did not open: ${elapsed}/${DISPUTE_SECONDS}s of chain time in ` +
-    `${Math.round(waitedMs / 1000)}s of ours. Refusing to settle early or wait indefinitely.`);
-}
+/** Mirrors DISPUTE_SECONDS in the game contract: seconds between claim and finalize. */
+export const DISPUTE_SECONDS = 600;
 
 /** Mirrors MIN_ABANDON_SECONDS in the game contract. */
 export const MIN_ABANDON_SECONDS = 480;
 
 /**
+ * Wait out the dispute window on the CHAIN's clock: until the latest block is
+ * DISPUTE_SECONDS past the block the claim landed in.
+ *
+ * Block rate is not a clock — on this testnet it ranges from 27 to 72 seconds
+ * — so counting blocks finalizes early and reverts "Dispute window not
+ * elapsed" after paying for the proof. Polling chain time is immune to that and
+ * to local clock skew. Fails loudly at the ceiling rather than waiting forever.
+ */
+export async function waitForDisputeWindow(
+  node: ChainClock,
+  claimBlockSeconds: number,
+  opts: ChainWaitOpts = {},
+): Promise<void> {
+  // Zero is no time at all: as a timestamp it means 1970, the wait would pass
+  // at once, and the finalize would revert after its proof.
+  if (!Number.isFinite(claimBlockSeconds) || claimBlockSeconds <= 0) {
+    throw new Error(
+      `No time for the claim's block (claimAt=${claimBlockSeconds}). ` +
+      'Refusing to start the dispute window from an unknown time.',
+    );
+  }
+  return waitForChainSeconds(node, claimBlockSeconds, DISPUTE_SECONDS, opts, (elapsed, waitedMs) =>
+    `Dispute window did not open: ${elapsed}/${DISPUTE_SECONDS}s of chain time in ` +
+    `${Math.round(waitedMs / 1000)}s of ours. Refusing to finalize early or wait indefinitely.`);
+}
+
+/**
  * Wait until the game is old enough for the contract to accept an abandonment
- * claim: MIN_ABANDON_SECONDS of CHAIN time since it went active.
+ * claim: MIN_ABANDON_SECONDS of CHAIN time since the claim's clock block.
  *
  * The relay offers the claim once the opponent has been idle for a minute,
  * which in a young game is well before the contract will take it. Proving the
- * claim anyway costs a recursive proof and reverts "Too soon to call this game
- * abandoned" — and the automatic trigger, which fires once per game, then
- * stays spent. So the claim flow waits the bar out first, counting down.
+ * claim anyway reverts "Too soon to call this game abandoned" — so the claim
+ * flow waits the bar out first, counting down.
  */
 export async function waitForAbandonBar(
   node: ChainClock,
-  activeAtSeconds: number,
+  clockBlockSeconds: number,
   opts: ChainWaitOpts = {},
 ): Promise<void> {
-  // Zero is the contract's "never went active": the join has not landed, or is
-  // not yet visible. As a timestamp it is 1970 and the wait would pass at once,
-  // straight into a claim the contract rejects for not being active.
-  if (!Number.isFinite(activeAtSeconds) || activeAtSeconds <= 0) {
+  if (!Number.isFinite(clockBlockSeconds) || clockBlockSeconds <= 0) {
     throw new Error(
-      `This game has no active time on record (activeAt=${activeAtSeconds}) — ` +
-      'it is not active on-chain yet, so there is nothing to claim.',
+      `This game has no clock time on record (clockAt=${clockBlockSeconds}) — ` +
+      'it is not joined on-chain yet, so there is nothing to claim.',
     );
   }
-  return waitForChainSeconds(node, activeAtSeconds, MIN_ABANDON_SECONDS, opts, (elapsed, waitedMs) =>
+  return waitForChainSeconds(node, clockBlockSeconds, MIN_ABANDON_SECONDS, opts, (elapsed, waitedMs) =>
     `The abandonment bar did not pass: ${elapsed}/${MIN_ABANDON_SECONDS}s of chain time in ` +
     `${Math.round(waitedMs / 1000)}s of ours. Refusing to claim early or wait indefinitely.`);
 }
@@ -318,8 +180,15 @@ export interface ChainClock {
 export interface ChainWaitOpts {
   maxMs?: number;
   pollMs?: number;
-  /** Called on each poll that is still short, with the seconds left. */
+  /** Called on each poll that is still short, with the seconds left. Throw to stop waiting. */
   onProgress?: (secondsLeft: number) => void;
+}
+
+/** The chain's current time: the latest block's timestamp, in seconds. */
+export async function chainNowSeconds(node: ChainClock): Promise<number> {
+  const height = Number(await node.getBlockNumber());
+  const block = await node.getBlock(height);
+  return Number(block?.header?.globalVariables?.timestamp ?? 0);
 }
 
 /**
@@ -338,14 +207,8 @@ async function waitForChainSeconds(
   const pollMs = opts.pollMs ?? 5000;
   const started = Date.now();
 
-  const chainNow = async (): Promise<number> => {
-    const height = Number(await node.getBlockNumber());
-    const block = await node.getBlock(height);
-    return Number(block?.header?.globalVariables?.timestamp ?? 0);
-  };
-
   for (;;) {
-    const now = await chainNow();
+    const now = await chainNowSeconds(node);
     const elapsed = now - fromSeconds;
     if (elapsed >= windowSeconds) return;
     if (Date.now() - started > maxMs) {
