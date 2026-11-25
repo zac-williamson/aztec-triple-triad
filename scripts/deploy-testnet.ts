@@ -321,27 +321,23 @@ async function main() {
 
   await wallet.registerSender(deployerAddress, 'deployer');
 
-  // Compute VK hashes for circuits (including dummy_move — required by
-  // TripleTriadGame constructor since the abandoned-game flow was added).
+  // Compute VK hashes for circuits. Settlement verifies move proofs only (the
+  // hand proof left the protocol, docs/plan/PRIVATE_GAMES.md §4); dummy_move's
+  // VK is registered so the constructor can refuse it as a move VK.
   console.log('\nComputing VK hashes...');
   const api = await Barretenberg.new();
-  const handArtifact = loadCircuitArtifact('prove_hand');
   const moveArtifact = loadCircuitArtifact('game_move');
   const dummyMoveArtifact = loadCircuitArtifact('dummy_move');
 
-  const handBackend = new UltraHonkBackend(handArtifact.bytecode, api);
   const moveBackend = new UltraHonkBackend(moveArtifact.bytecode, api);
   const dummyMoveBackend = new UltraHonkBackend(dummyMoveArtifact.bytecode, api);
 
-  const [handVkBuf, moveVkBuf, dummyVkBuf] = await Promise.all([
-    handBackend.getVerificationKey(),
+  const [moveVkBuf, dummyVkBuf] = await Promise.all([
     moveBackend.getVerificationKey(),
     dummyMoveBackend.getVerificationKey(),
   ]);
-  const handVkHash = await computeVkHash(api, handVkBuf);
   const moveVkHash = await computeVkHash(api, moveVkBuf);
   const dummyVkHash = await computeVkHash(api, dummyVkBuf);
-  console.log(`  hand VK hash:  ${handVkHash}`);
   console.log(`  move VK hash:  ${moveVkHash}`);
   console.log(`  dummy VK hash: ${dummyVkHash}`);
 
@@ -409,7 +405,6 @@ async function main() {
     const gameRes = await Contract.deploy(wallet, gameArtifact, [
       deployerAddress, // admin (for upgradeability)
       nftContract.address,
-      Fr.fromHexString(handVkHash),
       Fr.fromHexString(moveVkHash),
       tokenContract.address,
       Fr.fromHexString(dummyVkHash),

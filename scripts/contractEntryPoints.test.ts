@@ -36,25 +36,22 @@ const NFT: Record<string, string> = {
   // Create card notes, and who may call them.
   get_cards_for_new_player: 'creates cards: any account, once (the starter claim)',
   purchase_card_pack: 'creates cards: any account, burning CARD_PACK_COST tokens',
-  mint_for_game_winner: 'creates cards: the game contract (settlement)',
-  mint_for_game_loser: 'creates cards: the game contract (settlement)',
-  mint_for_game_draw_offchain: 'creates cards: the game contract (settlement, abandonment)',
-  mint_for_game_draw: 'creates cards: the game contract (cancel_game)',
+  release_game_cards:
+    'creates cards: the game contract, releasing notes prepared by the owners\' own commits (settle, cancel, unwind)',
   mint_to_private: 'creates cards: the minter',
   mint_to_public: 'creates cards: the minter',
   mint_bot_cards: 'creates cards: the minter, for a registered arena bot',
   transfer_private: 'creates cards: the owner, consuming the card moved',
   reclaim_card: 'creates cards: the public owner, consuming public ownership',
   // Consume or move cards.
-  commit_five_nfts_create: 'consumes cards: the owner, or the game contract for them',
-  commit_five_nfts_join: 'consumes cards: the owner, or the game contract for them',
+  commit_hand: 'consumes cards: the game contract, inside the owner\'s own tx',
   transfer_private_to_public: 'consumes cards: the owner',
   transfer_public: 'moves a public card: its public owner',
   // Derivations, read through simulate.
-  compute_blinding_factor: 'derivation',
+  compute_game_secrets: 'derivation (view, the caller\'s own secrets)',
   compute_note_randomness: 'derivation',
   preview_card_ids: 'derivation',
-  preview_game_data: 'derivation',
+  preview_commit: 'derivation (view, the owner or the game contract)',
   // Setup: the minter, each address set once.
   constructor: 'setup',
   set_game_contract: 'setup',
@@ -79,6 +76,29 @@ const NFT: Record<string, string> = {
   public_dispatch: 'framework',
 };
 
+/**
+ * The game holds no public state (docs/plan/PRIVATE_GAMES.md): every entry
+ * point but the constructor and one immutable read is private, so nothing a
+ * game does names the contract on-chain. A new public function here would
+ * bring public calls -- and with them linkable game transactions -- back.
+ */
+const GAME: Record<string, string> = {
+  create_game: 'private',
+  join_game: 'private',
+  cancel_game: 'private: the creator, proven by seat',
+  settle_game: 'private: anyone with both records and the transcript',
+  claim_abandoned_game: 'private: a player, proven by seat',
+  contest_abandonment: 'private: the other player, proven by seat',
+  finalize_abandoned_game: 'private: anyone, after the window',
+  preview_record: 'derivation (view)',
+  game_nullifiers: 'utility',
+  constructor: 'setup',
+  has_permissive_vks: 'view (immutable)',
+  offchain_receive: 'framework',
+  sync_state: 'framework',
+  public_dispatch: 'framework',
+};
+
 describe('deployed entry points', () => {
   it('no shipped contract has a test-only entry point', () => {
     const found = CONTRACTS.flatMap(c => entryPoints(c).filter(isTestOnly).map(fn => `${c}.${fn}`));
@@ -90,5 +110,12 @@ describe('deployed entry points', () => {
       entryPoints('triple_triad_nft-TripleTriadNFT'),
       'the NFT gained or lost an entry point: review who may call it, then update this list',
     ).toEqual(Object.keys(NFT).sort());
+  });
+
+  it('the game has exactly the reviewed entry points', () => {
+    expect(
+      entryPoints('triple_triad_game-TripleTriadGame'),
+      'the game gained or lost an entry point: a public one would make games linkable again',
+    ).toEqual(Object.keys(GAME).sort());
   });
 });

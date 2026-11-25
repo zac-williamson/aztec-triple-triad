@@ -5,9 +5,9 @@
  * Usage:
  *   npx tsx scripts/deploy-contracts.ts [--permissive-vks]
  *
- * --permissive-vks registers the DUMMY circuit VK hashes as hand_vk_hash and
- * move_vk_hash, so the deployment accepts constraint-free padding proofs in
- * place of real hand/move proofs (playtest fast mode, Lane 8). Such a
+ * --permissive-vks registers the DUMMY circuit VK hash as move_vk_hash, so the
+ * deployment accepts constraint-free padding proofs in place of real move
+ * proofs (playtest fast mode, Lane 8). Such a
  * deployment has NO gameplay soundness and is refused off-localhost.
  *
  * Prerequisites:
@@ -203,28 +203,25 @@ async function main() {
   console.log('Computing VK hashes...');
   const api = await Barretenberg.new({ threads: 1 });
 
-  const proveHandCircuit = loadCircuitArtifact('prove_hand');
+  // Settlement verifies move proofs only: the hand proof left the protocol when
+  // the commit itself started checking hands (docs/plan/PRIVATE_GAMES.md §4).
   const gameMoveCircuit = loadCircuitArtifact('game_move');
   const dummyMoveCircuit = loadCircuitArtifact('dummy_move');
 
-  let handVkHash = await computeVkHash(api, proveHandCircuit.bytecode);
   let moveVkHash = await computeVkHash(api, gameMoveCircuit.bytecode);
   const dummyVkHash = await computeVkHash(api, dummyMoveCircuit.bytecode);
 
   if (PERMISSIVE_VKS) {
     console.log('');
     console.log('!'.repeat(72));
-    console.log('!!  --permissive-vks: registering DUMMY VK hashes for hand and move');
+    console.log('!!  --permissive-vks: registering the DUMMY VK hash for move');
     console.log('!!  proofs. This deployment accepts constraint-free proofs and has');
     console.log('!!  NO GAMEPLAY SOUNDNESS. Playtest fast mode only - NEVER production.');
     console.log('!'.repeat(72));
     console.log('');
-    const dummyHandCircuit = loadCircuitArtifact('dummy_hand');
-    handVkHash = await computeVkHash(api, dummyHandCircuit.bytecode);
     moveVkHash = dummyVkHash;
   }
 
-  console.log(`  hand_vk_hash: ${handVkHash}${PERMISSIVE_VKS ? ' (PERMISSIVE: dummy_hand)' : ''}`);
   console.log(`  move_vk_hash: ${moveVkHash}${PERMISSIVE_VKS ? ' (PERMISSIVE: dummy_move)' : ''}`);
   console.log(`  dummy_vk_hash: ${dummyVkHash}`);
 
@@ -276,10 +273,10 @@ async function main() {
 
   // 7. Deploy Game contract
   console.log('\nDeploying TripleTriadGame...');
-  // Constructor: (admin, nft_address, hand_vk_hash, move_vk_hash, token_address,
+  // Constructor: (admin, nft_address, move_vk_hash, token_address,
   //               dummy_vk_hash, permissive_vks)
   //
-  // The constructor now REJECTS a deployment whose hand or move VK is the dummy
+  // The constructor REJECTS a deployment whose move VK is the dummy
   // VK unless permissive_vks says so explicitly. The URL guard above is still
   // the thing that keeps --permissive-vks off a real node, but it is no longer
   // the ONLY thing: an unsound deployment has to ask for it, and the answer is
@@ -287,7 +284,6 @@ async function main() {
   const { contract: gameContract } = await Contract.deploy(wallet, gameArtifact, [
     deployerAddress, // admin (for upgradeability)
     nftAddress,
-    Fr.fromHexString(handVkHash),
     Fr.fromHexString(moveVkHash),
     tokenAddress,
     Fr.fromHexString(dummyVkHash),
@@ -386,7 +382,6 @@ DEPLOYER_SIGNING_KEY=${deployerSigningKey.toString()}
   console.log(`Token Contract: ${tokenAddress.toString()}`);
   console.log(`Deployer:       ${deployerAddress.toString()}`);
   console.log(`\nVK Hashes:`);
-  console.log(`  hand:  ${handVkHash}`);
   console.log(`  move:  ${moveVkHash}`);
   console.log(`  dummy: ${dummyVkHash}`);
   console.log(`\nCard minting happens in-app via get_cards_for_new_player()`);

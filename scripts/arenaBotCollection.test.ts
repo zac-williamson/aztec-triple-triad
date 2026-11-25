@@ -34,7 +34,7 @@ describe('arena bot collection', () => {
     }
   });
 
-  it('yields distinct token ids — duplicates are untested against commit_five_nfts', () => {
+  it('yields distinct token ids — duplicates are untested against commit_hand', () => {
     const ids = collectionFor(100).map(e => e.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
