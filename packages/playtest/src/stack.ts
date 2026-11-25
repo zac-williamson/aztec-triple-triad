@@ -92,6 +92,26 @@ async function httpOk(url: string): Promise<boolean> {
   return res.ok;
 }
 
+/**
+ * `httpOk` for a server the harness started on this machine, on EITHER
+ * loopback family. vite binds whichever family `localhost` resolves to first,
+ * and that is ::1 on macOS but can be [::1]-only on Linux while Node's fetch
+ * tries 127.0.0.1 — so a probe of `localhost` alone never saw a vite that was
+ * up (found on a Linux box: "frontend (vite): not ready after 120s" with vite
+ * serving on [::1]). The port guard already checks both families before boot,
+ * so whichever answers is ours.
+ */
+async function httpOkOnLoopback(url: string): Promise<boolean> {
+  const u = new URL(url);
+  if (u.hostname !== 'localhost') return httpOk(url);
+  for (const host of ['127.0.0.1', '[::1]']) {
+    const candidate = new URL(url);
+    candidate.hostname = host;
+    if (await httpOk(candidate.toString()).catch(() => false)) return true;
+  }
+  return false;
+}
+
 export class Stack {
   private children: { name: string; proc: ChildProcess }[] = [];
   readonly logsDir: string;
@@ -251,7 +271,7 @@ export class Stack {
       cwd: frontendCwd,
       env: viteEnv,
     });
-    await waitFor('frontend (vite)', () => httpOk(FRONTEND_URL), BOOT_TIMEOUTS.frontendMs, proc);
+    await waitFor('frontend (vite)', () => httpOkOnLoopback(FRONTEND_URL), BOOT_TIMEOUTS.frontendMs, proc);
   }
 
   async bootAll(): Promise<StackInfo> {
