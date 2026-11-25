@@ -26,8 +26,10 @@ function snapshotPhase(): PhaseSnapshot | null {
   if (!aztec || !game) return null;
 
   const ws = game.ws;
-  const gameState = ws.gameState;
-  const playerNumber = ws.playerNumber;
+  // The game is the client's own (useGamePlay): the relay holds no board,
+  // hand or result any more. The snapshot keeps its shape and reads it here.
+  const gameState = game.gameState;
+  const playerNumber = game.playerNumber;
   const myPlayer: Player | null = playerNumber === 1 ? 'player1' : playerNumber === 2 ? 'player2' : null;
 
   return {
@@ -41,10 +43,10 @@ function snapshotPhase(): PhaseSnapshot | null {
     tokenBalance: aztec.tokenBalance,
     ws: {
       connected: ws.connected,
-      gameId: ws.gameId,
+      gameId: ws.gameId ?? game.roomId,
       playerNumber,
       matchmakingStatus: ws.matchmakingStatus,
-      gameOver: ws.gameOver,
+      gameOver: game.gameOver,
       opponentDisconnected: ws.opponentDisconnected,
     },
     game: gameState && myPlayer
@@ -59,8 +61,11 @@ function snapshotPhase(): PhaseSnapshot | null {
           }))),
           myHandCardIds: (myPlayer === 'player1' ? gameState.player1Hand : gameState.player2Hand)
             .map(c => c.id),
+          opponentHandCardIds: (myPlayer === 'player1' ? gameState.player2Hand : gameState.player1Hand)
+            .map(c => c.id),
           myScore: myPlayer === 'player1' ? gameState.player1Score : gameState.player2Score,
           opponentScore: myPlayer === 'player1' ? gameState.player2Score : gameState.player1Score,
+          protocolError: game.protocolError,
         }
       : null,
     chain: {

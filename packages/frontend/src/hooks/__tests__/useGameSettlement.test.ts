@@ -77,17 +77,18 @@ function setup(opts: { role?: 1 | 2; winner?: 1 | 2 | 3; phase?: OnChainPhase; g
     markLifecycleComplete: vi.fn(),
   };
   const moveProofs = transcript({ winner: opts.winner ?? 1 });
-  const play = { getMoveProofs: vi.fn(() => moveProofs), waitForMoveProofs: vi.fn(async () => {}), canSettle: true };
+  // The result comes from the client's own game (useGamePlay), not the relay.
+  const play = {
+    getMoveProofs: vi.fn(() => moveProofs), waitForMoveProofs: vi.fn(async () => {}), canSettle: true,
+    gameOver: opts.gameOver ?? null,
+  };
   const listeners = new Set<(p: PeerPayload, room: string) => void>();
   const channel = {
     sendPeer: vi.fn(async (_p: PeerPayload) => {}),
     addPeerListener: (cb: (p: PeerPayload, room: string) => void) => { listeners.add(cb); return () => { listeners.delete(cb); }; },
   };
   const storage = { mergeGame: vi.fn() };
-  const ws = {
-    gameId: 'room-1', playerNumber: role, gameOver: opts.gameOver ?? null, opponentDisconnected: false,
-    notifyAbandonedGameSettled: vi.fn(),
-  };
+  const ws = { gameId: 'room-1', playerNumber: role, opponentDisconnected: false };
   const hook = renderHook(
     ({ socket }) => useGameSettlement({ ws: socket as never, session, play, channel, storage }),
     { initialProps: { socket: ws } },
@@ -164,8 +165,8 @@ describe('the winner settles', () => {
   it('handleSettle keeps its identity across socket updates (callbacks read state late)', () => {
     const t = setup({ role: 1 });
     const first = t.hook.result.current.handleSettle;
-    t.hook.rerender({ socket: { ...t.ws, gameOver: { winner: 'player1' } } as never });
-    t.hook.rerender({ socket: { ...t.ws, opponentDisconnected: true, gameOver: { winner: 'player1' } } as never });
+    t.hook.rerender({ socket: { ...t.ws, gameId: 'room-1' } as never });
+    t.hook.rerender({ socket: { ...t.ws, opponentDisconnected: true } as never });
     expect(t.hook.result.current.handleSettle).toBe(first);
   });
 });
@@ -251,7 +252,7 @@ describe('the loser', () => {
 });
 
 describe('abandonment (opponent idle)', () => {
-  it('claims, waits out the window, finalizes and imports — then tells the relay', async () => {
+  it('claims, waits out the window, finalizes and imports — the relay is told nothing', async () => {
     const t = setup({ role: 1 });
     h.claimAbandonment.mockResolvedValue({ claimNo: 1, claimSide: 1, claimBlock: 50 });
     h.finalizeAbandonment.mockImplementation(async (_g: unknown, _c: unknown, _claim: unknown, o: { onDisputeProgress: (s: number) => void }) => {
@@ -264,7 +265,6 @@ describe('abandonment (opponent idle)', () => {
     expect(h.claimAbandonment).toHaveBeenCalledWith(t.game, expect.anything(), expect.objectContaining({ shouldStop: expect.any(Function) }));
     expect(h.finalizeAbandonment).toHaveBeenCalledWith(t.game, expect.anything(), { claimNo: 1, claimSide: 1, claimBlock: 50 }, expect.anything());
     expect(h.updateOwnedCards).toHaveBeenCalled();
-    expect(t.ws.notifyAbandonedGameSettled).toHaveBeenCalledWith('room-1');
     expect(t.phase()).toBe('idle');
     expect(t.hook.result.current.isClaimingAbandoned).toBe(false);
   });

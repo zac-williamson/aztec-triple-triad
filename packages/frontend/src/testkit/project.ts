@@ -53,8 +53,8 @@ export function getScreenXY(target: ClickTarget): { x: number; y: number } {
   const plane = scene.getObjectByName(HAND_PLANE_NAME);
   if (!plane) throw new Error(`testkit: hand hit plane ${HAND_PLANE_NAME} not found in scene`);
   const game = registry.game;
-  const gameState = game?.ws.gameState;
-  const playerNumber = game?.ws.playerNumber;
+  const gameState = game?.gameState;
+  const playerNumber = game?.playerNumber;
   if (!gameState || !playerNumber) throw new Error('testkit: no game state — cannot size the hand fan');
   const myHand = playerNumber === 1 ? gameState.player1Hand : gameState.player2Hand;
   const total = myHand.length;

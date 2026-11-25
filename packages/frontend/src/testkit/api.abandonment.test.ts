@@ -48,11 +48,12 @@ function publish(opts: {
     abandonedDisputeCountdown: opts.abandonedDisputeCountdown ?? null,
     handleClaimAbandoned: opts.handleClaimAbandoned ?? (() => {}),
     handlePlaceCard: () => {},
+    // The game is the client's own (useGamePlay); the socket only knows the room.
+    gameState: null, gameOver: null, playerNumber: opts.playerNumber ?? 1, roomId: 'ws-game', protocolError: null,
     ws: {
       connected: true, gameId: 'ws-game', playerNumber: opts.playerNumber ?? 1,
-      matchmakingStatus: 'idle', gameOver: null, opponentDisconnected: false,
+      matchmakingStatus: 'idle', opponentDisconnected: false,
       abandonmentWarning: opts.warning ?? null,
-      gameState: null,
     },
   } as unknown as UseGameReturn;
 

@@ -1,20 +1,31 @@
 /**
- * Proof generation module.
+ * Proof generation and verification module (bb.js + noir_js).
  *
- * Generates real Noir circuit proofs using Barretenberg (bb.js) and noir_js:
  * - game_move: proves a valid move with chain capture logic, bound to both
  *   players' hand commitments, and publishes the placed card and its slot in
  *   the mover's committed hand (docs/plan/PRIVATE_GAMES.md section 4).
+ * - prove_hand, the OPEN-CARDS proof (section 6): the hand's first three
+ *   committed slots, against the record's hand commitment.
+ * - Verification of both, for the opponent's moves and open cards (section
+ *   6.3), against verification keys computed once from the artifacts.
  *
- * There are no hand proofs in the protocol any more: `commit_hand` checks a
- * hand on-chain and the move proofs bind both commitments.
+ * Heavy: import it dynamically. Callers serialise their use of the shared
+ * Barretenberg instance through `onProver` (proverQueue.ts).
  */
 
 import { Noir } from '@noir-lang/noir_js';
-import { UltraHonkBackend } from '@aztec-foundation/bb.js';
+import { UltraHonkBackend, UltraHonkVerifierBackend } from '@aztec-foundation/bb.js';
 import type { MoveProofData } from '../types';
-import { loadGameMoveCircuit } from './circuitLoader';
+import { loadGameMoveCircuit, loadProveHandCircuit, type CircuitArtifact } from './circuitLoader';
 import { getBarretenberg } from './proofBackend';
+import {
+  moveProofFromOutput,
+  OPEN_CARD_COUNT,
+  OPEN_CARDS_PUBLIC_INPUTS,
+  type OpenCardsPayload,
+} from './localGame';
+
+export { moveProofFromOutput };
 
 // ====================== UltraHonkBackend Cache ======================
 
@@ -118,6 +129,13 @@ function proofToBase64(proof: Uint8Array): string {
       .map((b) => String.fromCharCode(b))
       .join(''),
   );
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const s = atob(b64);
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
 }
 
 // ====================== Cryptographic Helpers ======================
@@ -294,26 +312,86 @@ export async function generateGameMoveProof(
   return moveProofFromOutput(proofToBase64(proofData.proof), proofData.publicInputs, durationMs);
 }
 
+// ====================== Verification keys ======================
+
+export type VerifiedCircuit = 'game_move' | 'prove_hand';
+
+const LOADERS: Record<VerifiedCircuit, () => Promise<CircuitArtifact>> = {
+  game_move: loadGameMoveCircuit,
+  prove_hand: loadProveHandCircuit,
+};
+
+const vkCache = new Map<VerifiedCircuit, Promise<Uint8Array>>();
+
 /**
- * Read a game_move proof's 8 public inputs: `[card_commit_1, card_commit_2,
- * start_state_hash, end_state_hash, game_ended, winner_id, placed_card_id,
- * placed_slot]`.
+ * A circuit's verification key, computed from its artifact (the artifacts
+ * carry none) with the same default settings the proofs are made with.
+ * Computed once per page: settlement and every move check share it.
  */
-export function moveProofFromOutput(proof: string, publicInputs: string[], durationMs?: number): MoveProofData {
-  if (publicInputs.length !== 8) {
-    throw new Error(`game_move: expected 8 public inputs, got ${publicInputs.length}`);
+export function circuitVerificationKey(name: VerifiedCircuit): Promise<Uint8Array> {
+  let vk = vkCache.get(name);
+  if (!vk) {
+    vk = (async () => {
+      const artifact = await LOADERS[name]();
+      const backend = await getOrCreateBackend(name, artifact.bytecode);
+      return backend.getVerificationKey();
+    })();
+    vkCache.set(name, vk);
+    // A failed computation must not stick: the next caller tries again.
+    vk.catch(() => { if (vkCache.get(name) === vk) vkCache.delete(name); });
   }
-  return {
-    proof,
-    publicInputs,
-    cardCommit1: publicInputs[0],
-    cardCommit2: publicInputs[1],
-    startStateHash: publicInputs[2],
-    endStateHash: publicInputs[3],
-    gameEnded: BigInt(publicInputs[4]) !== 0n,
-    winnerId: Number(BigInt(publicInputs[5])),
-    placedCardId: Number(BigInt(publicInputs[6])),
-    placedSlot: Number(BigInt(publicInputs[7])),
-    durationMs,
-  };
+  return vk;
+}
+
+/** Test seam. */
+export function clearVerificationKeyCache(): void {
+  vkCache.clear();
+}
+
+async function verifyHonkProof(name: VerifiedCircuit, proof: string, publicInputs: string[]): Promise<boolean> {
+  const verificationKey = await circuitVerificationKey(name);
+  const verifier = new UltraHonkVerifierBackend(await getBarretenberg());
+  return verifier.verifyProof({ proof: base64ToBytes(proof), publicInputs, verificationKey });
+}
+
+/** Verify a game_move proof (base64) against its 8 public inputs. */
+export function verifyGameMoveProof(proof: string, publicInputs: string[]): Promise<boolean> {
+  return verifyHonkProof('game_move', proof, publicInputs);
+}
+
+/** Verify an open-cards proof (base64) against `[hand_commit, open_0, open_1, open_2]`. */
+export function verifyOpenCardsProof(proof: string, publicInputs: string[]): Promise<boolean> {
+  return verifyHonkProof('prove_hand', proof, publicInputs);
+}
+
+// ====================== Open-cards proof ======================
+
+/**
+ * Prove our three open cards: the committed hand's slots 0..2, against our
+ * record's hand commitment. The opponent checks it (section 6); nothing
+ * on-chain does.
+ */
+export async function generateOpenCardsProof(
+  hand: number[],
+  blindingFactor: string,
+  handCommit: string,
+): Promise<OpenCardsPayload> {
+  if (hand.length !== 5) throw new Error(`open cards: a hand is 5 cards, got ${hand.length}`);
+  const cards = hand.slice(0, OPEN_CARD_COUNT);
+  const startTime = performance.now();
+  const artifact = await loadProveHandCircuit();
+  const noir = new Noir(artifact as never);
+  const { witness } = await noir.execute({
+    card_commit_hash: toFieldHex(handCommit),
+    open_cards: cards.map(id => toFieldHex(id)),
+    card_ids: hand.map(id => toFieldHex(id)),
+    blinding_factor: toFieldHex(blindingFactor),
+  } as never);
+  const backend = await getOrCreateBackend('prove_hand', artifact.bytecode);
+  const proofData = await backend.generateProof(witness);
+  if (proofData.publicInputs.length !== OPEN_CARDS_PUBLIC_INPUTS) {
+    throw new Error(`prove_hand: expected ${OPEN_CARDS_PUBLIC_INPUTS} public inputs, got ${proofData.publicInputs.length}`);
+  }
+  console.log(`[proofWorker] open-cards proof generated in ${((performance.now() - startTime) / 1000).toFixed(1)}s`);
+  return { cards, proof: proofToBase64(proofData.proof), publicInputs: proofData.publicInputs };
 }

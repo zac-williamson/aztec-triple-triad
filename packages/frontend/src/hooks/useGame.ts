@@ -8,7 +8,7 @@ import { useGamePlay } from './useGamePlay';
 import { useGameSettlement, type TxStatus } from './useGameSettlement';
 import { useUnloadGuard } from './useUnloadGuard';
 import { useAztecContext } from '../aztec/AztecContext';
-import type { Screen, MoveProofData } from '../types';
+import type { Screen, MoveProofData, GameState, Player } from '../types';
 import type { StuckGame } from '../aztec/stuckGame';
 import { inspectStuckGame, recoverStuckGame } from './stuckGameCheck';
 import { contestClaim } from '../aztec/gameActions';
@@ -37,6 +37,24 @@ export interface UseGameReturn {
 
   // WebSocket state (pass-through for components)
   ws: ReturnType<typeof useWebSocket>;
+
+  // The game, as this client runs it (useGamePlay): the relay holds none of it
+  /** Board, hands (the opponent's unseen cards face down), turn, scores, status, winner. */
+  gameState: GameState | null;
+  lastCaptures: { row: number; col: number }[];
+  gameOver: { winner: Player | 'draw' } | null;
+  /** This player's side in the game on screen. */
+  playerNumber: 1 | 2 | null;
+  /** The relay room of the game on screen. */
+  roomId: string | null;
+  /** Per card of our hand as shown: true when the opponent cannot see it. */
+  myHandHidden: boolean[];
+  /** The opponent's open cards are proven and shown. */
+  opponentOpenKnown: boolean;
+  /** The opponent sent a move or open cards that did not check out: the game cannot settle. */
+  protocolError: string | null;
+  /** A problem on our side (a proof that failed, a check that could not run). */
+  playError: string | null;
 
   // On-chain + proof state
   /** The game's `created` nullifier, once known (its only public trace). */
@@ -150,8 +168,8 @@ export function useGame(wsUrl: string): UseGameReturn {
   // --- On-chain session: phase machine, create/join pipeline, records ---
   const session = useGameSession({ ws, screen, cardIds, channel, storage });
 
-  // --- Move proofs: bound to both records' hand commitments ---
-  const play = useGamePlay({ ws, cardIds, blindingFactor: session.blindingFactor, commits: session.commits });
+  // --- The game itself: our moves proven and sent, theirs checked and applied ---
+  const play = useGamePlay({ ws, cardIds, blindingFactor: session.blindingFactor, commits: session.commits, channel, storage });
 
   // --- Settlement: settle, import, abandoned-game flow ---
   const settlement = useGameSettlement({ ws, session, play, channel, storage });
@@ -206,7 +224,6 @@ export function useGame(wsUrl: string): UseGameReturn {
       const result = await recoverStuckGame(stuck, saved, game, { owner: aztec.accountAddress, node: aztec.nodeClient }, {
         storage,
         sendPeerFor: channel.sendPeerFor,
-        onUnwound: ws.notifyAbandonedGameSettled,
       });
       if (result) {
         const a = aztecRef.current;
@@ -222,8 +239,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     } finally {
       setIsRecovering(false);
     }
-  }, [stuckGame, isRecovering, aztec.accountAddress, aztec.nodeClient, storage, channel.sendPeerFor,
-      ws.notifyAbandonedGameSettled]);
+  }, [stuckGame, isRecovering, aztec.accountAddress, aztec.nodeClient, storage, channel.sendPeerFor]);
 
   /** Object to a standing claim: "I am still here." */
   const handleContestClaim = useCallback(async () => {
@@ -247,8 +263,8 @@ export function useGame(wsUrl: string): UseGameReturn {
   // --- Effects ---
 
   // Persist the game. The records, key and nonce are written by the channel
-  // and the session the moment they exist; this adds role, hand and the
-  // transcript, MERGED into the same record.
+  // and the session the moment they exist, and the transcript by useGamePlay
+  // as it grows; this adds role and hand, MERGED into the same record.
   useEffect(() => {
     if (!ws.gameId || !ws.playerNumber || cardIds.length === 0) return;
     if (screen !== 'game' && screen !== 'finding-opponent') return;
@@ -259,30 +275,18 @@ export function useGame(wsUrl: string): UseGameReturn {
       selectedCardIds: cardIds,
       savedAt: Date.now(),
     };
-    if (play.collectedMoveProofs.length > 0) persisted.collectedMoveProofs = play.collectedMoveProofs;
     storage.saveGame(persisted);
     setHasGameInProgress(true);
-  }, [ws.gameId, ws.playerNumber, cardIds, screen, play.collectedMoveProofs, storage]);
-
-  // Catch a move proof that lands after we left the game screen.
-  //
-  // The save effect above is gated on being IN a game, and the proof most
-  // likely to arrive outside that gate is the opponent's last one — proved in
-  // their browser for seconds after the board fills, which is exactly when a
-  // losing player clicks back to the menu. Missing it leaves 8 of 9 and no way
-  // to settle. Deduped, so this costs nothing during normal play.
-  useEffect(() => {
-    if (ws.lastMoveProof?.moveProof) storage.mergeMoveProof(ws.lastMoveProof.moveProof);
-  }, [ws.lastMoveProof, storage]);
+  }, [ws.gameId, ws.playerNumber, cardIds, screen, storage]);
 
   // Mark the game over — but KEEP the record: until this player's notes from
   // the resolution are imported it is the only way back to their cards.
   useEffect(() => {
-    if (ws.gameOver) {
+    if (play.gameOver) {
       storage.markFinished();
       setHasGameInProgress(false);
     }
-  }, [ws.gameOver, storage]);
+  }, [play.gameOver, storage]);
 
   // Matchmaking: transition to game when match found
   useEffect(() => {
@@ -327,6 +331,13 @@ export function useGame(wsUrl: string): UseGameReturn {
 
   // --- User actions ---
 
+  /**
+   * Play — or, with a game in progress, Resume it: rebuilt from its stored
+   * transcript (section 6.4), with the relay's room — the replayed moves were
+   * kept as they arrived, and ROOM_STATE says which of ours it never got.
+   * Never a new queue: that would open a new room, and the cards are committed
+   * to this one.
+   */
   const handlePlay = useCallback(() => {
     const saved = storage.loadGame();
     if (saved) {
@@ -334,12 +345,14 @@ export function useGame(wsUrl: string): UseGameReturn {
       channel.restoreFromSave(saved);
       session.restoreFromSave(saved);
       play.restoreFromSave(saved);
-      ws.queueMatchmaking(saved.selectedCardIds);
-      setScreen('finding-opponent');
+      if (ws.gameId !== saved.gameId) {
+        console.warn(`[useGame] resuming ${saved.gameId}, which the relay does not report (it has ${ws.gameId ?? 'none'})`);
+      }
+      setScreen('game');
       return;
     }
     setScreen('card-selector');
-  }, [storage, ws, channel.restoreFromSave, play.restoreFromSave, session.restoreFromSave]);
+  }, [storage, ws.gameId, channel.restoreFromSave, play.restoreFromSave, session.restoreFromSave]);
 
   const handleCardPacks = useCallback(() => {
     setScreen('card-packs');
@@ -348,7 +361,8 @@ export function useGame(wsUrl: string): UseGameReturn {
   const handleHandSelected = useCallback((ids: number[]) => {
     console.log('[useGame] handleHandSelected: selectedIds=', ids, 'ownedCards=', aztec.ownedCardIds);
     setCardIds(ids);
-    ws.queueMatchmaking(ids);
+    // The relay is told nothing about the hand: it only pairs us.
+    ws.queueMatchmaking();
     setScreen('finding-opponent');
   }, [ws, aztec.ownedCardIds]);
 
@@ -382,8 +396,10 @@ export function useGame(wsUrl: string): UseGameReturn {
   // flight: no commit tx, and no move proof the opponent is waiting for. A
   // finished game can be left before its settlement — the record stays, and
   // the menu imports (or settles) it.
+  // A game halted by a refused move (or open cards) can never settle: it may
+  // be left too, and the menu offers its claim once the contract allows one.
   const phase = session.getPhase();
-  const gameOverNothingOwed = !!ws.gameOver && play.owedMoveProofs === 0;
+  const gameOverNothingOwed = (!!play.gameOver || !!play.protocolError) && play.owedMoveProofs === 0;
   const canLeave = LEAVABLE_PHASES.includes(phase) || (phase === 'active' && gameOverNothingOwed);
   const canGoBack = screen === 'main-menu' || canLeave;
 
@@ -401,7 +417,7 @@ export function useGame(wsUrl: string): UseGameReturn {
   const handleBackToMenu = useCallback(() => {
     const currentPhase = session.getPhase();
     const leavable = LEAVABLE_PHASES.includes(currentPhase)
-      || (currentPhase === 'active' && !!ws.gameOver && play.owedMoveProofs === 0);
+      || (currentPhase === 'active' && (!!play.gameOver || !!play.protocolError) && play.owedMoveProofs === 0);
     if (!leavable) {
       console.log('[useGame] Back to menu blocked: game in-flight (phase:', currentPhase, ')');
       return;
@@ -416,13 +432,23 @@ export function useGame(wsUrl: string): UseGameReturn {
     if (currentPhase !== 'settling') session.forceIdle();
     settlement.cancelAbandonedUi();
     setScreen('main-menu');
-  }, [ws, storage, session.getPhase, session.forceIdle, settlement.cancelAbandonedUi, play.owedMoveProofs]);
+  }, [ws, storage, session.getPhase, session.forceIdle, settlement.cancelAbandonedUi, play.owedMoveProofs, play.gameOver,
+      play.protocolError]);
 
-  const myRole = ws.playerNumber;
+  const myRole = play.role ?? ws.playerNumber;
   const commits = session.commits;
   return {
     screen, setScreen,
     ws,
+    gameState: play.gameState,
+    lastCaptures: play.lastCaptures,
+    gameOver: play.gameOver,
+    playerNumber: myRole,
+    roomId: play.roomId ?? ws.gameId,
+    myHandHidden: play.myHandHidden,
+    opponentOpenKnown: play.opponentOpenKnown,
+    protocolError: play.protocolError,
+    playError: play.playError,
     onChainGameId: session.onChainGameId,
     commitStatus: session.commitStatus,
     moveProofStatus: play.moveProofStatus,

@@ -43,6 +43,8 @@ interface SwampSceneProps {
   onCellClick?: (row: number, col: number) => void;
   // 3D hand props
   myHand: Card[];
+  /** Per card of myHand: hidden from the opponent (lock) rather than open (eye). */
+  myHandHidden?: boolean[];
   opponentHand: Card[];
   myPlayer: Player;
   selectedCardIndex: number | null;
@@ -72,7 +74,7 @@ interface SwampSceneProps {
 function SceneContent(props: SwampSceneProps) {
   const {
     board, validPlacements, onCellClick,
-    myHand, opponentHand, myPlayer, selectedCardIndex, isMyTurn, isFinished,
+    myHand, myHandHidden, opponentHand, myPlayer, selectedCardIndex, isMyTurn, isFinished,
     onCardClick, flyingCard, onFlyComplete, isAnimatingCell,
     activeCaptureEntry, captureActiveIndex, onCaptureAnimComplete,
     isCaptureAnimatingCell, getPendingCaptureOwner, playerNumber,
@@ -204,6 +206,7 @@ function SceneContent(props: SwampSceneProps) {
       {/* Player hands — kept outside the tilt so they stay in front of the camera */}
       <PlayerHand3D
         cards={myHand}
+        hiddenFlags={myHandHidden}
         owner={myPlayer}
         selectedIndex={selectedCardIndex}
         isMyTurn={isMyTurn}

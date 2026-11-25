@@ -239,8 +239,7 @@ describe('useWebSocket', () => {
       await act(async () => { await waitForConnect(); });
       const ws = latestWs();
       act(() => { ws.simulateSessionEstablished(); });
-      // GAME_CREATED is what sets gameId; GAME_START only carries the board.
-      act(() => { ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 }); });
+      act(() => { ws.simulateMessage({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1 }); });
       expect(result.current.gameId).toBe('g1');
 
       act(() => { result.current.leaveGame(); });
@@ -292,66 +291,40 @@ describe('useWebSocket', () => {
       return { result: hook.result, ws };
     }
 
-    it('GAME_CREATED sets gameId and playerNumber', async () => {
+    it('MATCH_FOUND names the room and our side — and carries no game state', async () => {
       const { result, ws } = await setupConnectedHook();
-      act(() => { ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 }); });
-      expect(result.current.gameId).toBe('g1');
-      expect(result.current.playerNumber).toBe(1);
-    });
-
-    it('GAME_JOINED sets gameId, playerNumber, and gameState', async () => {
-      const { result, ws } = await setupConnectedHook();
-      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
-      act(() => { ws.simulateMessage({ type: 'GAME_JOINED', gameId: 'g1', playerNumber: 2, gameState: state }); });
+      act(() => { ws.simulateMessage({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2 }); });
       expect(result.current.gameId).toBe('g1');
       expect(result.current.playerNumber).toBe(2);
-      expect(result.current.gameState).toEqual(state);
+      expect(result.current.matchmakingStatus).toBe('matched');
+      // The relay runs no game: nothing here holds a board, a hand or a result.
+      for (const gone of ['gameState', 'lastCaptures', 'gameOver', 'lastMoveProof', 'gameList']) {
+        expect(gone in result.current, gone).toBe(false);
+      }
     });
 
-    it('GAME_START sets gameState', async () => {
+    it('ROOM_STATE (after a resume) restores the room, our side, and whether the opponent is here', async () => {
       const { result, ws } = await setupConnectedHook();
-      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
-      act(() => { ws.simulateMessage({ type: 'GAME_START', gameState: state }); });
-      expect(result.current.gameState).toEqual(state);
-    });
-
-    it('GAME_STATE sets gameState and captures', async () => {
-      const { result, ws } = await setupConnectedHook();
-      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player2', player1Score: 6, player2Score: 4, status: 'playing', winner: null };
-      const captures = [{ row: 0, col: 1 }];
-      act(() => { ws.simulateMessage({ type: 'GAME_STATE', gameState: state, captures }); });
-      expect(result.current.gameState).toEqual(state);
-      expect(result.current.lastCaptures).toEqual(captures);
-    });
-
-    it('GAME_OVER sets gameOver and gameState — and carries no card ids', async () => {
-      const { result, ws } = await setupConnectedHook();
-      act(() => { ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 }); });
-      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 6, player2Score: 4, status: 'finished', winner: 'player1' };
-      act(() => { ws.simulateMessage({ type: 'GAME_OVER', gameState: state, winner: 'player1' }); });
-      expect(result.current.gameOver).toEqual({ winner: 'player1' });
-      expect(result.current.gameState).toEqual(state);
-      expect('opponentCardIds' in result.current).toBe(false);
-    });
-
-    it('MOVE_PROVEN sets gameState, captures, and lastMoveProof', async () => {
-      const { result, ws } = await setupConnectedHook();
-      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player2', player1Score: 6, player2Score: 4, status: 'playing', winner: null };
-      const moveProof = { proof: 'xyz' };
       act(() => {
-        ws.simulateMessage({
-          type: 'MOVE_PROVEN', gameState: state, captures: [{ row: 1, col: 1 }],
-          moveProof, handIndex: 0, row: 0, col: 0,
-        });
+        ws.simulateMessage({ type: 'ROOM_STATE', gameId: 'g1', playerNumber: 1, movesMade: 4, opponentConnected: false });
       });
-      expect(result.current.gameState).toEqual(state);
-      expect(result.current.lastMoveProof).toEqual({ moveProof, handIndex: 0, row: 0, col: 0 });
+      expect(result.current.gameId).toBe('g1');
+      expect(result.current.playerNumber).toBe(1);
+      expect(result.current.roomState).toEqual({ gameId: 'g1', playerNumber: 1, movesMade: 4, opponentConnected: false });
+      expect(result.current.opponentDisconnected).toBe(true);
+      // Each ROOM_STATE is a new object, so a consumer acts once per message.
+      const first = result.current.roomState;
+      act(() => {
+        ws.simulateMessage({ type: 'ROOM_STATE', gameId: 'g1', playerNumber: 1, movesMade: 4, opponentConnected: true });
+      });
+      expect(result.current.roomState).not.toBe(first);
+      expect(result.current.opponentDisconnected).toBe(false);
     });
 
     it('ON_CHAIN_STATUS sets opponentTxConfirmed for P2 when P1 confirmed', async () => {
       const { result, ws } = await setupConnectedHook();
       // Set as player 2
-      act(() => { ws.simulateMessage({ type: 'GAME_JOINED', gameId: 'g1', playerNumber: 2, gameState: null }); });
+      act(() => { ws.simulateMessage({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 2 }); });
       act(() => {
         ws.simulateMessage({
           type: 'ON_CHAIN_STATUS',
@@ -368,25 +341,13 @@ describe('useWebSocket', () => {
       expect(result.current.queuePosition).toBe(3);
     });
 
-    it('MATCH_FOUND sets game state', async () => {
-      const { result, ws } = await setupConnectedHook();
-      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
-      act(() => {
-        ws.simulateMessage({ type: 'MATCH_FOUND', gameId: 'match-1', playerNumber: 1, gameState: state });
-      });
-      expect(result.current.matchmakingStatus).toBe('matched');
-      expect(result.current.gameId).toBe('match-1');
-      expect(result.current.playerNumber).toBe(1);
-    });
-
     it('never exposes who the opponent is, even if a server sends the old flag', async () => {
       // The bot is a fallback for when nobody else is queuing, and a player
       // should not be able to tell they got one. An older relay may still put
       // opponentIsBot on the wire; the client must not surface it anywhere.
       const { result, ws } = await setupConnectedHook();
-      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
       act(() => {
-        ws.simulateMessage({ type: 'MATCH_FOUND', gameId: 'm', playerNumber: 1, gameState: state, opponentIsBot: true });
+        ws.simulateMessage({ type: 'MATCH_FOUND', gameId: 'm', playerNumber: 1, opponentIsBot: true });
       });
       expect(result.current.matchmakingStatus).toBe('matched');
       expect('opponentIsBot' in result.current).toBe(false);
@@ -455,33 +416,43 @@ describe('useWebSocket', () => {
     });
   });
 
-  // --- placeCard ---
+  // --- Moves and matchmaking (docs/plan/PRIVATE_GAMES.md section 6.1) ---
 
-  describe('placeCard', () => {
-    it('derives moveNumber from occupied board cells', async () => {
+  describe('moves and matchmaking', () => {
+    async function connected() {
       const { result } = renderHook(() => useWebSocket('ws://test'));
       await act(async () => { await waitForConnect(); });
       const ws = latestWs();
       act(() => { ws.simulateSessionEstablished(); });
+      return { result, ws, last: () => JSON.parse(ws.sentMessages[ws.sentMessages.length - 1]) };
+    }
 
-      // Set up game with 2 cards on board
-      const board = [
-        [{ card: { id: 1 }, owner: 'player1' }, { card: null, owner: null }, { card: null, owner: null }],
-        [{ card: null, owner: null }, { card: { id: 2 }, owner: 'player2' }, { card: null, owner: null }],
-        [{ card: null, owner: null }, { card: null, owner: null }, { card: null, owner: null }],
-      ];
-      act(() => {
-        ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 });
-      });
-      act(() => {
-        ws.simulateMessage({ type: 'GAME_STATE', gameState: { board, player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 1, player2Score: 1, status: 'playing', winner: null }, captures: [] });
-      });
+    it('a MOVE goes out sealed: the relay reads its number and nothing else', async () => {
+      const { result, last } = await connected();
+      act(() => { result.current.sendMove('room-1', 3, { iv: 'IV', ciphertext: 'CT' }); });
+      expect(last()).toEqual({ type: 'MOVE', gameId: 'room-1', moveNumber: 3, iv: 'IV', ciphertext: 'CT' });
+    });
 
-      act(() => { result.current.placeCard(0, 0, 1); });
+    it('an incoming MOVE reaches the listeners only — no React state holds it', async () => {
+      const { result, ws } = await connected();
+      const seen: unknown[] = [];
+      act(() => { result.current.addMessageListener(m => seen.push(m)); });
+      act(() => { ws.simulateMessage({ type: 'MOVE', gameId: 'room-1', moveNumber: 0, iv: 'IV', ciphertext: 'CT' }); });
+      expect(seen).toEqual([{ type: 'MOVE', gameId: 'room-1', moveNumber: 0, iv: 'IV', ciphertext: 'CT' }]);
+      expect(result.current.error).toBeNull();
+    });
 
-      const sent = JSON.parse(ws.sentMessages[ws.sentMessages.length - 1]);
-      expect(sent.type).toBe('PLACE_CARD');
-      expect(sent.moveNumber).toBe(2); // 2 cells occupied
+    it('queueing tells the relay nothing about the hand', async () => {
+      const { result, last } = await connected();
+      act(() => { result.current.queueMatchmaking(); });
+      expect(last()).toEqual({ type: 'QUEUE_MATCHMAKING' });
+    });
+
+    it('offers none of the relay-run game\'s actions any more', async () => {
+      const { result } = await connected();
+      for (const gone of ['placeCard', 'submitMoveProof', 'createGame', 'joinGame', 'refreshGameList', 'notifyAbandonedGameSettled']) {
+        expect(gone in result.current, gone).toBe(false);
+      }
     });
   });
 
@@ -533,7 +504,20 @@ describe('useWebSocket', () => {
       });
     });
 
-    it('clears the warning when a GAME_STATE (board update / move) arrives', async () => {
+    it('clears the warning when the opponent\'s MOVE arrives', async () => {
+      const { result, ws } = await setupConnectedHook();
+      act(() => {
+        ws.simulateMessage({
+          type: 'GAME_ABANDONMENT_WARNING', gameId: 'g1',
+          idlePlayer: 'player2', secondsIdle: 60, secondsUntilClaimable: 5,
+        });
+      });
+      expect(result.current.abandonmentWarning).not.toBeNull();
+      act(() => { ws.simulateMessage({ type: 'MOVE', gameId: 'g1', moveNumber: 1, iv: 'IV', ciphertext: 'CT' }); });
+      expect(result.current.abandonmentWarning).toBeNull();
+    });
+
+    it('clears the warning when we send our MOVE', async () => {
       const { result, ws } = await setupConnectedHook();
       act(() => {
         ws.simulateMessage({
@@ -541,46 +525,7 @@ describe('useWebSocket', () => {
           idlePlayer: 'player1', secondsIdle: 60, secondsUntilClaimable: 5,
         });
       });
-      expect(result.current.abandonmentWarning).not.toBeNull();
-
-      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player2', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
-      act(() => { ws.simulateMessage({ type: 'GAME_STATE', gameState: state, captures: [] }); });
-      expect(result.current.abandonmentWarning).toBeNull();
-    });
-
-    it('clears the warning when the opponent proves a move (MOVE_PROVEN)', async () => {
-      const { result, ws } = await setupConnectedHook();
-      act(() => {
-        ws.simulateMessage({
-          type: 'GAME_ABANDONMENT_WARNING', gameId: 'g1',
-          idlePlayer: 'player1', secondsIdle: 60, secondsUntilClaimable: 5,
-        });
-      });
-      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player2', player1Score: 5, player2Score: 5, status: 'playing', winner: null };
-      act(() => {
-        ws.simulateMessage({
-          type: 'MOVE_PROVEN', gameState: state, captures: [],
-          moveProof: { proof: 'x' }, handIndex: 0, row: 0, col: 0,
-        });
-      });
-      expect(result.current.abandonmentWarning).toBeNull();
-    });
-
-    it('clears the warning when the game ends (GAME_OVER)', async () => {
-      const { result, ws } = await setupConnectedHook();
-      act(() => { ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 }); });
-      act(() => {
-        ws.simulateMessage({
-          type: 'GAME_ABANDONMENT_WARNING', gameId: 'g1',
-          idlePlayer: 'player2', secondsIdle: 60, secondsUntilClaimable: 0,
-        });
-      });
-      expect(result.current.abandonmentWarning).not.toBeNull();
-
-      const state = { board: [], player1Hand: [], player2Hand: [], currentTurn: 'player1', player1Score: 6, player2Score: 4, status: 'finished', winner: 'player1' };
-      act(() => {
-        ws.simulateMessage({ type: 'GAME_OVER', gameState: state, winner: 'player1' });
-      });
+      act(() => { result.current.sendMove('g1', 2, { iv: 'IV', ciphertext: 'CT' }); });
       expect(result.current.abandonmentWarning).toBeNull();
     });
 
@@ -596,20 +541,6 @@ describe('useWebSocket', () => {
       expect(result.current.abandonmentWarning).toBeNull();
     });
 
-  });
-
-  describe('notifyAbandonedGameSettled', () => {
-    it('sends ABANDONED_GAME_SETTLED with the gameId (QA-F3)', async () => {
-      const { result } = renderHook(() => useWebSocket('ws://test'));
-      await act(async () => { await waitForConnect(); });
-      const ws = latestWs();
-      act(() => { ws.simulateSessionEstablished(); });
-
-      act(() => { result.current.notifyAbandonedGameSettled('game-42'); });
-
-      const sent = JSON.parse(ws.sentMessages[ws.sentMessages.length - 1]);
-      expect(sent).toEqual({ type: 'ABANDONED_GAME_SETTLED', gameId: 'game-42' });
-    });
   });
 
   describe('the private-games relay protocol (Phase A)', () => {
@@ -701,9 +632,9 @@ describe('useWebSocket', () => {
 
       // These should not throw
       act(() => {
-        result.current.createGame([1, 2, 3, 4, 5]);
+        result.current.queueMatchmaking();
         result.current.ping();
-        result.current.refreshGameList();
+        result.current.sendMove('g1', 0, { iv: 'IV', ciphertext: 'CT' });
       });
     });
   });
@@ -719,7 +650,8 @@ describe('useWebSocket', () => {
       act(() => { ws.simulateSessionEstablished(); });
 
       act(() => {
-        ws.simulateMessage({ type: 'GAME_CREATED', gameId: 'g1', playerNumber: 1 });
+        ws.simulateMessage({ type: 'MATCH_FOUND', gameId: 'g1', playerNumber: 1 });
+        ws.simulateMessage({ type: 'ROOM_STATE', gameId: 'g1', playerNumber: 1, movesMade: 2, opponentConnected: true });
       });
       expect(result.current.gameId).toBe('g1');
 
@@ -727,7 +659,7 @@ describe('useWebSocket', () => {
 
       expect(result.current.gameId).toBeNull();
       expect(result.current.playerNumber).toBeNull();
-      expect(result.current.gameState).toBeNull();
+      expect(result.current.roomState).toBeNull();
       expect(result.current.connected).toBe(false);
     });
   });

@@ -58,10 +58,9 @@ beforeEach(() => {
     updateOwnedCards: h.updateOwnedCards, refreshOwnedCards: h.refreshOwnedCards, refreshTokenBalance: h.refreshTokenBalance,
   });
   Object.assign(h.ws, {
-    connected: true, gameId: null, playerNumber: null, gameState: null, gameOver: null, lastMoveProof: null,
+    connected: true, gameId: null, playerNumber: null, roomState: null,
     matchmakingStatus: 'idle', opponentDisconnected: false, abandonmentWarning: null,
     leaveGame: vi.fn(), queueMatchmaking: vi.fn(), cancelMatchmaking: vi.fn(), ping: vi.fn(),
-    notifyAbandonedGameSettled: vi.fn(),
   });
   Object.assign(h.channel, { resetForMenu: vi.fn(), restoreFromSave: vi.fn(), sendPeerFor: vi.fn() });
   Object.assign(h.session, {
@@ -69,6 +68,8 @@ beforeEach(() => {
     getPhase: () => phase, forceIdle: vi.fn(() => { phase = 'idle'; }), restoreFromSave: vi.fn(), resetForMenu: vi.fn(),
   });
   Object.assign(h.play, {
+    roomId: null, role: null, gameState: null, lastCaptures: [], gameOver: null, myHandHidden: [],
+    opponentOpenKnown: false, protocolError: null, playError: null,
     collectedMoveProofs: [], owedMoveProofs: 0, moveProofStatus: 'idle', canSettle: false,
     handlePlaceCard: vi.fn(), restoreFromSave: vi.fn(), resetForMenu: vi.fn(),
   });
@@ -116,7 +117,7 @@ describe('the menu and a game that still holds cards', () => {
     expect(stuck.kind).toBe('finalizable');
     expect(game).toMatchObject({ roomId: 'room-1', role: 1, gameKey: KEY, record1: record(1), record2: record(2) });
     expect(ctx).toEqual({ owner: '0xME', node: { node: true } });
-    expect(deps.onUnwound).toBe(h.ws.notifyAbandonedGameSettled);
+    expect(deps.sendPeerFor).toBe(h.channel.sendPeerFor);
     expect(storage.readGame('room-1')).toBeNull();
     expect(result.current.stuckGame).toBeNull();
   });
@@ -156,8 +157,10 @@ describe('the menu and a game that still holds cards', () => {
 });
 
 describe('leaving a game', () => {
-  function inGame(over: Record<string, unknown> = {}) {
-    Object.assign(h.ws, { gameId: 'room-1', playerNumber: 1, gameState: { status: 'playing' }, ...over });
+  /** In room-1 as player 1; `gameOver` is the result the client's own game reached. */
+  function inGame(over: { gameOver?: { winner: string } } = {}) {
+    Object.assign(h.ws, { gameId: 'room-1', playerNumber: 1 });
+    Object.assign(h.play, { roomId: 'room-1', role: 1, gameState: { status: over.gameOver ? 'finished' : 'playing' }, gameOver: over.gameOver ?? null });
   }
 
   it('is blocked mid-game, while a commit or the game itself is in flight', () => {
@@ -197,12 +200,62 @@ describe('leaving a game', () => {
     expect(result.current.canGoBack).toBe(false);
   });
 
+  it('a game halted by a refused move may be left — it can never settle, and the menu offers its claim', () => {
+    const storage = storeStakedGame();
+    inGame();
+    phase = 'active';
+    h.play.protocolError = 'the opponent\'s move 3 was rejected: its proof does not verify';
+    const { result } = renderHook(() => useGame('ws://test'));
+    act(() => { result.current.setScreen('game'); });
+    expect(result.current.canGoBack).toBe(true);
+    act(() => { result.current.handleBackToMenu(); });
+    expect(result.current.screen).toBe('main-menu');
+    expect(storage.loadClaimable()?.gameId).toBe('room-1');
+  });
+
   it('a creator waiting for a joiner may leave (the menu then offers the cancel)', () => {
     inGame();
     phase = 'awaiting_join';
     const { result } = renderHook(() => useGame('ws://test'));
     act(() => { result.current.setScreen('game'); });
     expect(result.current.canGoBack).toBe(true);
+  });
+});
+
+describe('starting and resuming', () => {
+  it('queues for a match without telling the relay anything about the hand', () => {
+    const { result } = renderHook(() => useGame('ws://test'));
+    act(() => { result.current.handleHandSelected(P1_HAND); });
+    expect(h.ws.queueMatchmaking).toHaveBeenCalledWith();
+    expect(result.current.cardIds).toEqual(P1_HAND);
+    expect(result.current.screen).toBe('finding-opponent');
+  });
+
+  it('resumes a game in progress from its stored transcript — never by queueing for a new room', () => {
+    const { result: stored } = renderHook(() => useGameStorage());
+    stored.current.saveGame({ gameId: 'room-1', playerNumber: 2, selectedCardIds: P1_HAND, savedAt: Date.now(), gameKey: KEY, nonce: '0x28', record1: record(1), record2: record(2) });
+    h.ws.gameId = 'room-1';
+    const { result } = renderHook(() => useGame('ws://test'));
+    expect(result.current.hasGameInProgress).toBe(true);
+
+    act(() => { result.current.handlePlay(); });
+
+    expect(h.ws.queueMatchmaking).not.toHaveBeenCalled();
+    for (const hook of [h.channel, h.session, h.play]) {
+      expect(hook.restoreFromSave).toHaveBeenCalledWith(expect.objectContaining({ gameId: 'room-1', playerNumber: 2 }));
+    }
+    expect(result.current.screen).toBe('game');
+  });
+
+  it('shows the game the client runs: board, result and side come from useGamePlay', () => {
+    const state = { status: 'finished', winner: 'player2' };
+    Object.assign(h.play, { roomId: 'room-9', role: 2, gameState: state, gameOver: { winner: 'player2' }, protocolError: 'bad move' });
+    const { result } = renderHook(() => useGame('ws://test'));
+    expect(result.current.gameState).toBe(state);
+    expect(result.current.gameOver).toEqual({ winner: 'player2' });
+    expect(result.current.playerNumber).toBe(2);
+    expect(result.current.roomId).toBe('room-9');
+    expect(result.current.protocolError).toBe('bad move');
   });
 });
 

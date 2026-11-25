@@ -6,7 +6,7 @@ vi.mock('../../aztec/config', () => ({
   AZTEC_CONFIG: { gameContractAddress: '0xGAME_CONTRACT' },
 }));
 
-import { commitIsStale, hasStake, toPrivateGame, useGameStorage, type PersistedGameState } from '../useGameStorage';
+import { commitIsStale, hasStake, toPrivateGame, transcriptProofs, useGameStorage, type PersistedGameState } from '../useGameStorage';
 import { normalizeField } from '../../aztec/privateGame';
 import { record } from '../../aztec/__tests__/privateGameFixtures';
 import type { MoveProofData } from '../../types';
@@ -30,6 +30,8 @@ function staked(overrides: Partial<PersistedGameState> = {}): PersistedGameState
 
 const BOOK_KEY = 'aztec_tt_game_0xGAME_CONTRACT_games';
 const proof = (n: number) => ({ startStateHash: `s${n}`, endStateHash: `e${n}` }) as MoveProofData;
+/** A transcript link: move n, with its proof. */
+const link = (n: number) => ({ moveNumber: n, cardId: n + 1, slot: 0, row: 0, col: 0, proof: proof(n) });
 
 beforeEach(() => {
   localStorage.clear();
@@ -61,11 +63,11 @@ describe('useGameStorage', () => {
   it('saveGame MERGES: fields written elsewhere (key pair, records) survive a later save', () => {
     const { result } = renderHook(() => useGameStorage());
     result.current.mergeGame('game-1', { gameKey: KEY, record1: record(1), nonce: '0x28' });
-    result.current.saveGame(makeSavedGame({ collectedMoveProofs: [proof(1)] }));
+    result.current.saveGame(makeSavedGame({ moves: [link(0)] }));
     const g = result.current.readGame('game-1')!;
     expect(g.gameKey).toBe(KEY);
     expect(g.record1).toEqual(record(1));
-    expect(g.collectedMoveProofs).toHaveLength(1);
+    expect(g.moves).toHaveLength(1);
   });
 
   it('mergeGame creates a record for a room it has not seen, and never erases with undefined', () => {
@@ -118,19 +120,28 @@ describe('useGameStorage', () => {
       expect(result.current.loadGame()?.gameId).toBe('new');
     });
 
-    it('merges a proof that arrives after the player left the game screen', () => {
+    it('the transcript is the stored moves\' proofs, in move order (and nothing before any move)', () => {
       const { result } = renderHook(() => useGameStorage());
-      result.current.saveGame(staked({ collectedMoveProofs: [proof(1)] }));
-      result.current.mergeMoveProof(proof(2));
-      result.current.mergeMoveProof(proof(2)); // the relay replays its buffer: harmless
-      expect(result.current.readGame('game-1')?.collectedMoveProofs).toHaveLength(2);
+      result.current.saveGame(staked());
+      expect(transcriptProofs(result.current.readGame('game-1')!)).toEqual([]);
+      result.current.mergeGame('game-1', { moves: [link(0), link(1)] });
+      expect(transcriptProofs(result.current.readGame('game-1')!)).toEqual([proof(0), proof(1)]);
     });
 
-    it('does not start a record for a game that staked nothing', () => {
+    it('keeps what a reload needs to rebuild the game: moves, the unchecked inbox, both sides\' open cards', () => {
       const { result } = renderHook(() => useGameStorage());
-      result.current.saveGame(makeSavedGame());
-      result.current.mergeMoveProof(proof(1));
-      expect(result.current.readGame('game-1')?.collectedMoveProofs).toBeUndefined();
+      result.current.saveGame(staked());
+      const open = { cards: [1, 2, 3], proof: 'cA==', publicInputs: ['0x1', '0x1', '0x2', '0x3'] };
+      result.current.mergeGame('game-1', {
+        moves: [link(0)],
+        inbox: [{ moveNumber: 1, iv: 'IV', ciphertext: 'CT' }],
+        ownOpenCards: open,
+        opponentOpenCards: [21, 22, 23],
+      });
+      const g = result.current.readGame('game-1')!;
+      expect(g.inbox).toEqual([{ moveNumber: 1, iv: 'IV', ciphertext: 'CT' }]);
+      expect(g.ownOpenCards).toEqual(open);
+      expect(g.opponentOpenCards).toEqual([21, 22, 23]);
     });
 
     it('a NEW game is not born finished because the last one was', () => {
@@ -145,7 +156,7 @@ describe('useGameStorage', () => {
       const { result } = renderHook(() => useGameStorage());
       result.current.saveGame(staked());
       result.current.markFinished();
-      result.current.saveGame(staked({ collectedMoveProofs: [proof(9)] }));
+      result.current.saveGame(staked({ moves: [link(0)] }));
       expect(result.current.loadGame()).toBeNull();
       expect(result.current.readGame('game-1')?.finishedAt).toBeDefined();
     });

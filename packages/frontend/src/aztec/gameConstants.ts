@@ -19,9 +19,9 @@ export const PXE_SYNC_POLL_INTERVAL = 1000;
  * Timeout for waiting on move proofs before settlement (ms).
  *
  * Three minutes, not thirty seconds. The ninth move proof is generated AFTER
- * the relay declares the game over — the mover proves the position they just
- * created — so the settler is always waiting on work that starts late, and on
- * a party whose client may be queued behind its own proving.
+ * the board fills — the mover proves the position they just created — so a
+ * settler who made the last move is waiting on work that starts late, and that
+ * may be queued behind other proving.
  *
  * Thirty seconds lost a real game on production: the winner reported
  * "Timed out waiting for move proofs: have 8/9", went idle, and nobody

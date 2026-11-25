@@ -187,13 +187,13 @@ function AppInner() {
         />
       )}
 
-      {game.screen === 'game' && game.ws.gameState && game.ws.playerNumber && game.ws.gameId && (
+      {game.screen === 'game' && game.gameState && game.playerNumber && game.roomId && (
         <GameScreen
-          gameState={game.ws.gameState}
-          playerNumber={game.ws.playerNumber}
-          gameId={game.ws.gameId}
-          lastCaptures={game.ws.lastCaptures}
-          gameOver={game.ws.gameOver}
+          gameState={game.gameState}
+          playerNumber={game.playerNumber}
+          gameId={game.roomId}
+          lastCaptures={game.lastCaptures}
+          gameOver={game.gameOver}
           opponentDisconnected={game.ws.opponentDisconnected}
           onPlaceCard={game.handlePlaceCard}
           onBackToLobby={game.handleBackToMenu}
@@ -204,8 +204,8 @@ function AppInner() {
           }}
           canSettle={
             game.canSettle &&
-            game.ws.gameState?.status === 'finished' &&
-            game.ws.gameState?.winner === (game.ws.playerNumber === 1 ? 'player1' : 'player2')
+            game.gameState.status === 'finished' &&
+            game.gameState.winner === (game.playerNumber === 1 ? 'player1' : 'player2')
           }
           onSettle={game.handleSettle}
           settleTxStatus={game.settleTxStatus}
@@ -216,6 +216,10 @@ function AppInner() {
           abandonBarCountdown={game.abandonBarCountdown}
           abandonedDisputeCountdown={game.abandonedDisputeCountdown}
           onClaimAbandoned={game.handleClaimAbandoned}
+          protocolError={game.protocolError}
+          playError={game.playError}
+          myHandHidden={game.myHandHidden}
+          opponentOpenKnown={game.opponentOpenKnown}
           chainView={{
             onChainGameId: game.onChainGameId,
             myHandCommit: game.myHandCommit,
@@ -225,7 +229,7 @@ function AppInner() {
           }}
         />
       )}
-      {game.screen === 'game' && !game.ws.gameState && (
+      {game.screen === 'game' && !game.gameState && (
         <div className="app__waiting">
           <div className="app__waiting-spinner" />
           <p>Finding opponent...</p>

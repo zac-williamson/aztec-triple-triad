@@ -64,7 +64,7 @@ export function AbandonmentBanner({
   }, [serverSeconds]);
 
   // While the claim flow runs, the dispute-window banner takes over even if the
-  // warning has since cleared (a move/GAME_STATE could have raced in).
+  // warning has since cleared (a MOVE could have raced in).
   if (isClaimingAbandoned || abandonedDisputeCountdown !== null) {
     const disputeText = abandonBarCountdown != null && abandonBarCountdown > 0
       ? `Claim opens in ${abandonBarCountdown}s — a game must have run 8 minutes before it can be called abandoned`

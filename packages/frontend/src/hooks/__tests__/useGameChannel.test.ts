@@ -7,10 +7,11 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { webcrypto } from 'node:crypto';
-import { useGameChannel } from '../useGameChannel';
+import { ChannelNotReadyError, useGameChannel } from '../useGameChannel';
 import type { PeerPayload } from '../../aztec/peerChannel';
 import type { ServerMessage } from '../../types';
 import { record } from '../../aztec/__tests__/privateGameFixtures';
+import { normalizeField } from '../../aztec/privateGame';
 
 beforeAll(() => {
   // jsdom's crypto has no `subtle`; the browser's and Node's both do.
@@ -51,7 +52,7 @@ function relay(from: ReturnType<typeof fakeSocket>, to: ReturnType<typeof fakeSo
 }
 
 const matchFound = (n: 1 | 2): ServerMessage =>
-  ({ type: 'MATCH_FOUND', gameId: 'room-1', playerNumber: n, gameState: {} as never });
+  ({ type: 'MATCH_FOUND', gameId: 'room-1', playerNumber: n });
 
 describe('useGameChannel', () => {
   it('two players derive the same game key, and the relay sees only public keys and ciphertext', async () => {
@@ -159,5 +160,33 @@ describe('useGameChannel', () => {
     expect(got).toEqual([]);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('seals a MOVE so only the other player can open it — also from a game rebuilt from storage', async () => {
+    const a = fakeSocket(); const b = fakeSocket();
+    const sb = fakeStorage();
+    const alice = renderHook(() => useGameChannel({ ws: a.ws, storage: fakeStorage() }));
+    const bob = renderHook(() => useGameChannel({ ws: b.ws, storage: sb }));
+    const move = { cardId: 21, slot: 3, row: 1, col: 2, proof: btoa('proof'), publicInputs: Array.from({ length: 8 }, (_, i) => normalizeField(i + 1)) };
+
+    // Before the exchange there is nothing to seal with.
+    await expect(alice.result.current.sealMove('room-1', move)).rejects.toBeInstanceOf(ChannelNotReadyError);
+
+    await act(async () => { a.deliver(matchFound(1)); b.deliver(matchFound(2)); });
+    await waitFor(() => expect(a.sent.length + b.sent.length).toBe(2));
+    await act(async () => { relay(a, b); relay(b, a); });
+    await waitFor(() => expect(alice.result.current.gameKey).not.toBeNull());
+    await waitFor(() => expect(bob.result.current.gameKey).not.toBeNull());
+
+    const sealed = await alice.result.current.sealMove('room-1', move);
+    expect(JSON.stringify(sealed)).not.toContain('"cardId"');
+    expect(await bob.result.current.openMove('room-1', sealed)).toEqual(move);
+    // Tampered: refused.
+    await expect(bob.result.current.openMove('room-1', { ...sealed, ciphertext: btoa('x'.repeat(40)) })).rejects.toThrow();
+
+    // Bob reloads and sits on the menu: no live channel, but his keys are stored.
+    bob.unmount();
+    const bob2 = renderHook(() => useGameChannel({ ws: fakeSocket().ws, storage: sb }));
+    expect(await bob2.result.current.openMove('room-1', sealed)).toEqual(move);
   });
 });

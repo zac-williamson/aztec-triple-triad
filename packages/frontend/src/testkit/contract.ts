@@ -39,17 +39,35 @@ export interface PhaseSnapshot {
     gameId: string | null;
     playerNumber: 1 | 2 | null;
     matchmakingStatus: string;
+    /**
+     * The game's result, once over. Kept here for the harness, but the client
+     * computes it itself: the relay runs no game and never learns a result
+     * (docs/plan/PRIVATE_GAMES.md section 6).
+     */
     gameOver: { winner: PlayerSide | 'draw' } | null;
     opponentDisconnected: boolean;
   };
+  /**
+   * The game as THIS client runs it (useGamePlay), rebuilt from the moves it
+   * made and the opponent moves it checked. Our own move shows here at once;
+   * the opponent sees it only once its proof is made, sent and checked.
+   */
   game: {
     status: string;
     currentTurn: PlayerSide;
     isMyTurn: boolean;
     board: CellSnapshot[][];
     myHandCardIds: number[];
+    /**
+     * The opponent's unplayed cards in hand-slot order; 0 for a card this
+     * player has not been shown (all five until OPEN_CARDS checks out, then
+     * the two hidden slots until they are played).
+     */
+    opponentHandCardIds: number[];
     myScore: number;
     opponentScore: number;
+    /** Why the opponent's move or open cards were refused; null while all checks pass. */
+    protocolError: string | null;
   } | null;
   chain: {
     /**

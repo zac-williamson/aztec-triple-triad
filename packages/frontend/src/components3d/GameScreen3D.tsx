@@ -49,6 +49,14 @@ interface GameScreenProps {
   chainView?: ChainViewData;
   /** Practice mode (local, no chain): suppress the HUD's settlement/result UI. */
   practiceMode?: boolean;
+  /** The opponent sent a move or open cards that did not check out (section 6.3). */
+  protocolError?: string | null;
+  /** A problem on our side: our proof failed, or a check could not run. */
+  playError?: string | null;
+  /** Per card of our hand as shown: true when the opponent cannot see it. */
+  myHandHidden?: boolean[];
+  /** The opponent's open cards are proven (until then their whole hand is face down). */
+  opponentOpenKnown?: boolean;
   // Tutorial optional
   tutorialHighlightCells?: { row: number; col: number }[];
   tutorialPulseHandIndex?: number | null;
@@ -79,6 +87,10 @@ export function GameScreen3D({
   onClaimAbandoned,
   chainView,
   practiceMode,
+  protocolError,
+  playError,
+  myHandHidden,
+  opponentOpenKnown,
   tutorialHighlightCells,
   tutorialPulseHandIndex,
   xochitlRevealCount,
@@ -254,6 +266,7 @@ export function GameScreen3D({
         validPlacements={validPlacements}
         onCellClick={handleCellClick}
         myHand={myHand}
+        myHandHidden={myHandHidden}
         opponentHand={opponentHand}
         myPlayer={myPlayer}
         selectedCardIndex={selectedCardIndex}
@@ -305,6 +318,9 @@ export function GameScreen3D({
         onClaimAbandoned={onClaimAbandoned}
         chainView={chainView}
         practiceMode={practiceMode}
+        protocolError={protocolError}
+        playError={playError}
+        opponentOpenKnown={opponentOpenKnown}
       />
     </div>
   );

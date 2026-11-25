@@ -229,16 +229,13 @@ export function planSettlement(moveProofs: MoveProofData[], selectedCardId: numb
   return { winner, prizeMove, prize: prizeOfMove(ordered, winner, prizeMove) };
 }
 
-/** The move circuit's verification key, from the artifact settlement proves against. */
+/**
+ * The move circuit's verification key, from the artifact settlement proves
+ * against — the same cached key the move checks used during play.
+ */
 async function loadMoveVk(): Promise<Uint8Array> {
-  const [{ loadGameMoveCircuit }, { UltraHonkBackend }, { getBarretenberg }] = await Promise.all([
-    import('./circuitLoader'),
-    import('@aztec-foundation/bb.js'),
-    import('./proofBackend'),
-  ]);
-  const artifact = await loadGameMoveCircuit();
-  const backend = new UltraHonkBackend(artifact.bytecode, await getBarretenberg());
-  return backend.getVerificationKey();
+  const { circuitVerificationKey } = await import('./proofWorker');
+  return circuitVerificationKey('game_move');
 }
 
 /**

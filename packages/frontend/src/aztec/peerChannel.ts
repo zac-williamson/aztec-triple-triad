@@ -17,10 +17,11 @@ import {
   type GameKeyPair,
 } from './gameKeys';
 import { parseRecord, type GameRecord } from './privateGame';
+import { parseMovePayload, parseOpenCardsPayload, type MovePayload, type OpenCardsPayload } from './localGame';
 import { TOTAL_MOVES } from './gameConstants';
 import type { SealedPeerMessage } from '../types';
 
-/** Phase A payloads. */
+/** PEER payloads: Phase A's four, and Phase B's open cards. */
 export type PeerPayload =
   /** A player's committed record: the creator's once create_game mined, the joiner's once join_game did. */
   | { kind: 'RECORD'; record: GameRecord }
@@ -29,7 +30,9 @@ export type PeerPayload =
   /** settle_game mined: import your own notes from this tx. */
   | { kind: 'SETTLED'; txHash: string }
   /** The creator cancelled before anyone joined. */
-  | { kind: 'CANCELLED' };
+  | { kind: 'CANCELLED' }
+  /** The sender's three open cards and the proof they are its committed hand's slots 0..2. */
+  | ({ kind: 'OPEN_CARDS' } & OpenCardsPayload);
 
 /** Validate an opened payload. Throws on anything malformed. */
 export function parsePeerPayload(raw: unknown): PeerPayload {
@@ -53,6 +56,8 @@ export function parsePeerPayload(raw: unknown): PeerPayload {
     }
     case 'CANCELLED':
       return { kind: 'CANCELLED' };
+    case 'OPEN_CARDS':
+      return { kind: 'OPEN_CARDS', ...parseOpenCardsPayload(p) };
     default:
       throw new Error(`unknown peer payload kind: ${String(p.kind)}`);
   }
@@ -119,5 +124,17 @@ export class PeerChannel {
   async open(sealed: SealedPeerMessage): Promise<PeerPayload> {
     const channel = await this.whenReady();
     return parsePeerPayload(await openPeerPayload(channel.channelKey, this.roomId, sealed));
+  }
+
+  /** Seal a MOVE body (section 6.1): the relay sees only the move number. */
+  async sealMove(move: MovePayload): Promise<SealedPeerMessage> {
+    const channel = await this.whenReady();
+    return sealPeerPayload(channel.channelKey, this.roomId, move);
+  }
+
+  /** Open a MOVE body. Throws if it was tampered with or is malformed. */
+  async openMove(sealed: SealedPeerMessage): Promise<MovePayload> {
+    const channel = await this.whenReady();
+    return parseMovePayload(await openPeerPayload(channel.channelKey, this.roomId, sealed));
   }
 }

@@ -39,11 +39,7 @@ vi.mock('../settlementArgs', () => ({
   DISPUTE_SECONDS: 600,
   MIN_ABANDON_SECONDS: 480,
 }));
-vi.mock('../circuitLoader', () => ({ loadGameMoveCircuit: vi.fn(async () => ({ bytecode: 'BC', abi: {} })) }));
-vi.mock('../proofBackend', () => ({ getBarretenberg: vi.fn(async () => ({})) }));
-vi.mock('@aztec-foundation/bb.js', () => ({
-  UltraHonkBackend: class { async getVerificationKey() { return new Uint8Array([7, 7]); } },
-}));
+vi.mock('../proofWorker', () => ({ circuitVerificationKey: vi.fn(async () => new Uint8Array([7, 7])) }));
 
 import {
   announcedResolution,

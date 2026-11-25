@@ -25,7 +25,7 @@ import { chainNowSeconds, type ChainClock } from '../aztec/settlementArgs';
 import { assessStuckGame, type StuckGame, type StuckGameFacts } from '../aztec/stuckGame';
 import { orderTranscript, winnerOf } from '../aztec/privateGame';
 import { TOTAL_MOVES } from '../aztec/gameConstants';
-import { commitIsStale, toPrivateGame, type PersistedGameState, type UseGameStorageReturn } from './useGameStorage';
+import { commitIsStale, toPrivateGame, transcriptProofs, type PersistedGameState, type UseGameStorageReturn } from './useGameStorage';
 import type { PeerPayload } from '../aztec/peerChannel';
 
 /** The chain facts `assessStuckGame` decides on. */
@@ -35,7 +35,7 @@ export async function gatherStuckGameFacts(
   ctx: ActionContext,
 ): Promise<StuckGameFacts> {
   const { state, position } = await readGameState(game, ctx);
-  const moveProofs = saved.collectedMoveProofs ?? [];
+  const moveProofs = transcriptProofs(saved);
   let transcriptComplete = false;
   let weSettle = false;
   if (moveProofs.length >= TOTAL_MOVES) {
@@ -87,8 +87,8 @@ export async function inspectStuckGame(
     switch (assessment.kind) {
       case 'resolved': {
         const result = await importDiscoveredResolution(game, ctx, {
-          moveProofs: saved.collectedMoveProofs,
-          fallback: announcedResolution(saved.collectedMoveProofs, saved.prizeMove),
+          moveProofs: transcriptProofs(saved),
+          fallback: announcedResolution(transcriptProofs(saved), saved.prizeMove),
           label: 'Resolved game',
         });
         if (result) {
@@ -114,8 +114,8 @@ async function finalizeOrImport(game: PrivateGame, ctx: ActionContext, claim: Op
   if (result) return result;
   // Resolved another way while the window ran — a settlement beats a claim.
   return importDiscoveredResolution(game, ctx, {
-    moveProofs: saved.collectedMoveProofs,
-    fallback: announcedResolution(saved.collectedMoveProofs, saved.prizeMove),
+    moveProofs: transcriptProofs(saved),
+    fallback: announcedResolution(transcriptProofs(saved), saved.prizeMove),
   });
 }
 
@@ -133,14 +133,12 @@ export async function recoverStuckGame(
     storage: Pick<UseGameStorageReturn, 'mergeGame'>;
     /** Best effort: tell the other player (sealed), if their key is stored. */
     sendPeerFor?: (roomId: string, payload: PeerPayload) => Promise<boolean>;
-    /** An abandoned game was unwound: the relay may release the room. */
-    onUnwound?: (roomId: string) => void;
   },
 ): Promise<ImportResult | null> {
   const tell = (payload: PeerPayload) => {
     void deps.sendPeerFor?.(game.roomId, payload).catch(() => false);
   };
-  const moveProofs = saved.collectedMoveProofs ?? [];
+  const moveProofs = transcriptProofs(saved);
   switch (stuck.kind) {
     case 'cancellable': {
       const result = await cancelGame(game, ctx);
@@ -166,15 +164,11 @@ export async function recoverStuckGame(
       const claim = await claimAbandonment(game, ctx);
       // Theirs, filed first: the next check offers the contest instead.
       if (claim.claimSide !== game.role) return null;
-      const result = await finalizeOrImport(game, ctx, claim, saved);
-      if (result?.resolution.kind === 'unwound') deps.onUnwound?.(game.roomId);
-      return result;
+      return finalizeOrImport(game, ctx, claim, saved);
     }
     case 'finalizable': {
       if (!stuck.claim) return null;
-      const result = await finalizeOrImport(game, ctx, stuck.claim, saved);
-      if (result?.resolution.kind === 'unwound') deps.onUnwound?.(game.roomId);
-      return result;
+      return finalizeOrImport(game, ctx, stuck.claim, saved);
     }
     default:
       return null;

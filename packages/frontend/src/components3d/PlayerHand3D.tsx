@@ -17,6 +17,12 @@ import { HAND_PLANE_NAME } from '../testkit/names';
 
 interface PlayerHand3DProps {
   cards: Card[];
+  /**
+   * Per card: hidden from the opponent (lock) or open (eye). In a real game
+   * these are the committed slots 3-4, wherever they sit in the hand now.
+   * Absent (tutorial, practice): the last two cards are the hidden ones.
+   */
+  hiddenFlags?: boolean[];
   owner: Player;
   selectedIndex: number | null;
   isMyTurn: boolean;
@@ -26,7 +32,7 @@ interface PlayerHand3DProps {
 }
 
 const LERP_SPEED = 10;
-const HIDDEN_COUNT = 2; // last N cards are hidden from opponent
+const HIDDEN_COUNT = 2; // without hiddenFlags: the last N cards are hidden from the opponent
 
 // ── Eye / Lock icon textures (created once) ───────────────────────────────
 let _eyeTex: CanvasTexture | null = null;
@@ -124,6 +130,7 @@ function hitTestCardIndex(localX: number, cardXPositions: number[]): number | nu
 
 export function PlayerHand3D({
   cards,
+  hiddenFlags,
   owner,
   selectedIndex,
   isMyTurn,
@@ -235,7 +242,7 @@ export function PlayerHand3D({
         const glowColor = locked ? null : selectedIndex === i ? '#ffcc00' : hoveredIndex === i ? '#44ff66' : tutorialPulseIndex === i ? '#cc9900' : null;
         const cardOpacity = locked ? 0.35 : 1;
         const ro = isActive ? 50 + i : 10 + i;
-        const isHidden = i >= cards.length - HIDDEN_COUNT;
+        const isHidden = hiddenFlags?.[i] ?? i >= cards.length - HIDDEN_COUNT;
         const iconTex = isHidden ? getLockTexture() : getEyeTexture();
         const iconY = HAND_CARD_HEIGHT / 2 + 0.14;
 

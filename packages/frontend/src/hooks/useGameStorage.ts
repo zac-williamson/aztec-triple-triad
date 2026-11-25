@@ -2,18 +2,28 @@ import { useCallback, useMemo } from 'react';
 import { AZTEC_CONFIG } from '../aztec/config';
 import type { GameKeyPair } from '../aztec/gameKeys';
 import type { PrivateGame } from '../aztec/gameActions';
+import type { OpenCardsPayload, TranscriptMove } from '../aztec/localGame';
 import { normalizeField, parseRecord } from '../aztec/privateGame';
-import type { MoveProofData } from '../types';
+import type { MoveProofData, SealedPeerMessage } from '../types';
+
+/** A MOVE as the relay delivered it, kept until it is checked (section 6.4). */
+export interface InboundMove extends SealedPeerMessage {
+  moveNumber: number;
+}
 
 /**
  * What a player keeps about one game (docs/plan/PRIVATE_GAMES.md section 5).
  *
  * Everything here is THIS player's: their key pair, the shared game key, their
- * nonce, both records, their role and the transcript. Nothing about the
- * opponent beyond their public key and record is ever learned, so nothing
- * more is stored. The records and the game key are what every later action
- * needs — settle, import, cancel, claim, contest, finalize — and the only copy
- * is here, so a record outlives the game until its notes are imported.
+ * nonce, both records, their role and the transcript. Of the opponent it holds
+ * only what the game shows anyway: their public key, record, proven open cards
+ * and moves. The records and the game key are what every later action needs —
+ * settle, import, cancel, claim, contest, finalize — and the only copy is
+ * here, so a record outlives the game until its notes are imported.
+ *
+ * The transcript is what a reload rebuilds the game from (section 6.4): every
+ * checked move with its proof, the opponent's open cards, and the MOVEs and
+ * OPEN_CARDS the relay delivered that are not checked yet.
  */
 export interface PersistedGameState {
   /** The relay's room id. */
@@ -42,8 +52,18 @@ export interface PersistedGameState {
    * committed; the chain (the `created` / `joined` nullifier) says whether it did.
    */
   commitSentAt?: number;
-  /** The move proofs collected so far — the transcript. */
-  collectedMoveProofs?: MoveProofData[];
+  /** The moves so far, in order, each with its proof — the transcript (ours as sent, theirs as checked). */
+  moves?: TranscriptMove[];
+  /** MOVEs delivered but not yet checked, by move number. */
+  inbox?: InboundMove[];
+  /** The opponent's open cards (hand slots 0..2), once their proof checked out. */
+  opponentOpenCards?: number[];
+  /** The opponent's OPEN_CARDS as delivered, until it is checked. */
+  openCardsClaim?: OpenCardsPayload;
+  /** Our own OPEN_CARDS as sent: resent, never re-proven, after a reconnect. */
+  ownOpenCards?: OpenCardsPayload;
+  /** Why the opponent's last payload was rejected: the game cannot settle and goes the abandonment way. */
+  protocolError?: string;
   /** The prize move a settlement named, once known (null: a draw). */
   prizeMove?: number | null;
   /** The tx that resolved the game, once known. */
@@ -198,23 +218,6 @@ export function useGameStorage() {
   }, [listClaimable]);
 
   /**
-   * Add one move proof to the current game's record, wherever the player
-   * happens to be. The main save effect only runs on the game screen, and the
-   * proof most likely to arrive after the player left is the OPPONENT'S LAST
-   * ONE. Deduped by startStateHash, so replaying the relay's buffer is
-   * harmless.
-   */
-  const mergeMoveProof = useCallback((proof: MoveProofData) => {
-    const book = readBook();
-    const g = book.current ? book.games[book.current] : undefined;
-    if (!g || !hasStake(g)) return;               // nothing was ever at stake
-    const have = g.collectedMoveProofs ?? [];
-    if (have.some(p => p.startStateHash === proof.startStateHash)) return;
-    g.collectedMoveProofs = [...have, proof];
-    writeBook(book);
-  }, [readBook, writeBook]);
-
-  /**
    * Mark the current game over WITHOUT discarding it. A game that never
    * staked anything has nothing to keep and is removed.
    */
@@ -256,7 +259,7 @@ export function useGameStorage() {
 
   return {
     saveGame, mergeGame, readGame, loadGame, loadClaimable, listClaimable,
-    clearGame, leaveCurrentGame, hasGame, markFinished, mergeMoveProof,
+    clearGame, leaveCurrentGame, hasGame, markFinished,
   };
 }
 
@@ -265,6 +268,11 @@ export type UseGameStorageReturn = ReturnType<typeof useGameStorage>;
 /** Drop records of commits that never reached the chain, once nothing sent for them can still land. */
 export function commitIsStale(g: Partial<PersistedGameState>, now = Date.now()): boolean {
   return now - (g.commitSentAt ?? g.savedAt ?? now) > UNCONFIRMED_COMMIT_TTL;
+}
+
+/** The stored transcript's proofs, in move order — what settlement verifies. */
+export function transcriptProofs(saved: Partial<PersistedGameState>): MoveProofData[] {
+  return (saved.moves ?? []).map(m => m.proof);
 }
 
 /** The game as the chain actions see it, or null if this player never committed to it. */

@@ -80,19 +80,16 @@ export interface OnChainGameStatus {
   canSettle: boolean;
 }
 
-// Client -> Server messages
+// Client -> Server messages (docs/plan/PRIVATE_GAMES.md section 6.1).
+//
+// The relay is a pipe: it pairs players, holds rooms, buffers for the offline
+// and times turns. It never sees a card id, a move or a result — every
+// player-to-player payload is sealed with the game's channel key.
 export type ClientMessage =
-  | { type: 'CREATE_GAME'; cardIds: number[] }
-  | { type: 'JOIN_GAME'; gameId: string; cardIds: number[] }
-  | { type: 'PLACE_CARD'; gameId: string; handIndex: number; row: number; col: number; moveNumber: number }
-  | { type: 'LIST_GAMES' }
-  | { type: 'GET_GAME'; gameId: string }
-  | { type: 'SUBMIT_MOVE_PROOF'; gameId: string; handIndex: number; row: number; col: number; moveNumber: number; moveProof: MoveProofData }
   // On-chain lifecycle messages. No tx hash: the relay must not be able to
   // find a game's transactions (docs/plan/PRIVATE_GAMES.md section 7).
   | { type: 'TX_CONFIRMED'; gameId: string; txType: 'create_game' | 'join_game' }
   | { type: 'TX_FAILED'; gameId: string; txType: 'create_game' | 'join_game'; error: string }
-  | { type: 'CANCEL_GAME'; gameId: string }
   /** "I am done with this game" — releases only the sender's binding. */
   | { type: 'LEAVE_GAME'; gameId: string }
   // The per-game key exchange (section 5.1): only public keys cross the relay.
@@ -100,68 +97,51 @@ export type ClientMessage =
   // Every player-to-player payload, sealed with the channel key. The relay
   // forwards and buffers it without being able to read it.
   | { type: 'PEER'; gameId: string; iv: string; ciphertext: string }
-  // An abandoned game was unwound on-chain — the server releases both players'
-  // room bindings on receipt (QA-F3, docs/plan/LANE_4_BACKEND.md)
-  | { type: 'ABANDONED_GAME_SETTLED'; gameId: string }
-  // Matchmaking
-  | { type: 'QUEUE_MATCHMAKING'; cardIds: number[] }
+  /**
+   * A move, sealed: `{cardId, slot, row, col, proof, publicInputs}`. The relay
+   * reads only the move NUMBER — it accepts 0..8 in order, player 1 at even
+   * numbers and player 2 at odd — and forwards the ciphertext.
+   */
+  | { type: 'MOVE'; gameId: string; moveNumber: number; iv: string; ciphertext: string }
+  // Matchmaking. No card ids: the hand is nobody's business but its owner's.
+  | { type: 'QUEUE_MATCHMAKING' }
   | { type: 'CANCEL_MATCHMAKING' }
   | { type: 'PING' }
   // Session resumption
   | { type: 'RESUME'; sessionToken: string };
 
+/** Where a room stands, from the relay's side: sent after a RESUME. */
+export interface RoomState {
+  gameId: string;
+  playerNumber: 1 | 2;
+  /** How many MOVEs the relay has accepted (0..9). */
+  movesMade: number;
+  opponentConnected: boolean;
+}
+
 // Server -> Client messages
 export type ServerMessage =
-  | { type: 'GAME_CREATED'; gameId: string; playerNumber: 1 }
-  | { type: 'GAME_JOINED'; gameId: string; playerNumber: 2; gameState: GameState }
-  | { type: 'GAME_START'; gameId: string; gameState: GameState }
-  | { type: 'GAME_STATE'; gameId: string; gameState: GameState; captures: { row: number; col: number }[] }
-  // No card ids: a game's hands are nobody's business but its players'.
-  | { type: 'GAME_OVER'; gameId: string; gameState: GameState; winner: Player | 'draw' }
-  | { type: 'GAME_LIST'; games: GameListEntry[] }
-  | { type: 'GAME_INFO'; game: GameListEntry | null }
   | { type: 'OPPONENT_DISCONNECTED'; gameId: string }
   // Present-but-idle abandonment warning — broadcast to BOTH players when the
   // player whose turn it is has not moved for >=60s. Re-sent/updated as the
-  // window progresses; cleared client-side when a move/GAME_STATE arrives or
-  // the game ends (docs/plan/ABANDONED_GAMES.md "Message contract").
+  // window progresses; cleared client-side when a move arrives
+  // (docs/plan/ABANDONED_GAMES.md "Message contract").
   | { type: 'GAME_ABANDONMENT_WARNING'; gameId: string; idlePlayer: Player; secondsIdle: number; secondsUntilClaimable: number }
   | { type: 'ERROR'; message: string }
-  | { type: 'MOVE_PROVEN'; gameId: string; gameState: GameState; captures: { row: number; col: number }[]; moveProof: MoveProofData; handIndex: number; row: number; col: number }
-  // On-chain lifecycle messages
+  // On-chain lifecycle: canSettle = both commits confirmed and 9 moves relayed.
   | { type: 'ON_CHAIN_STATUS'; gameId: string; status: OnChainGameStatus }
-  | { type: 'GAME_CANCELLED'; gameId: string; reason: string }
   // The opponent's half of the key exchange, and their sealed payloads.
   | { type: 'OPPONENT_KEY'; gameId: string; publicKey: string }
   | { type: 'PEER'; gameId: string; iv: string; ciphertext: string }
+  | { type: 'MOVE'; gameId: string; moveNumber: number; iv: string; ciphertext: string }
+  | ({ type: 'ROOM_STATE' } & RoomState)
   // Matchmaking
   | { type: 'MATCHMAKING_QUEUED'; position: number }
-  | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState }
+  | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2 }
   | { type: 'MATCHMAKING_CANCELLED' }
   | { type: 'PONG' }
   // Session management
   | { type: 'SESSION_ESTABLISHED'; sessionToken: string; playerId: string; resumed: boolean; gameId: string | null }
   | { type: 'OPPONENT_RECONNECTED'; gameId: string };
 
-export interface GameListEntry {
-  id: string;
-  status: 'waiting' | 'playing' | 'finished';
-  player1Connected: boolean;
-  player2Connected: boolean;
-  currentTurn?: Player;
-  winner?: Player | 'draw' | null;
-}
-
 export type Screen = 'main-menu' | 'card-selector' | 'finding-opponent' | 'game' | 'card-packs' | 'pack-opening';
-
-// Matchmaking message types
-export type MatchmakingClientMessage =
-  | { type: 'QUEUE_MATCHMAKING'; cardIds: number[] }
-  | { type: 'CANCEL_MATCHMAKING' }
-  | { type: 'PING' };
-
-export type MatchmakingServerMessage =
-  | { type: 'MATCHMAKING_QUEUED'; position: number }
-  | { type: 'MATCH_FOUND'; gameId: string; playerNumber: 1 | 2; gameState: GameState }
-  | { type: 'MATCHMAKING_CANCELLED' }
-  | { type: 'PONG' };

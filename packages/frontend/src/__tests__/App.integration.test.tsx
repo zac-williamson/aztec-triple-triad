@@ -45,32 +45,24 @@ vi.mock('../hooks/useAztec', () => ({
   }),
 }));
 
-// Mock useWebSocket (consumed by useGame)
+// Mock useWebSocket (consumed by useGame). The relay runs no game: the socket
+// carries a room, sealed traffic and timing, and nothing else.
 vi.mock('../hooks/useWebSocket', () => ({
   useWebSocket: () => ({
     connected: true,
     gameId: null,
     playerNumber: null,
-    gameState: null,
-    lastCaptures: [],
-    gameList: [],
     error: null,
-    gameOver: null,
     opponentDisconnected: false,
     abandonmentWarning: null,
-    lastMoveProof: null,
+    roomState: null,
     opponentTxConfirmed: false,
     matchmakingStatus: 'idle' as const,
     queuePosition: null,
-    createGame: vi.fn(),
-    joinGame: vi.fn(),
-    placeCard: vi.fn(),
-    submitMoveProof: vi.fn(),
     notifyTxConfirmed: vi.fn(),
-    notifyAbandonedGameSettled: vi.fn(),
     sendKeyExchange: vi.fn(),
     sendPeer: vi.fn(),
-    refreshGameList: vi.fn(),
+    sendMove: vi.fn(),
     leaveGame: vi.fn(),
     disconnect: vi.fn(),
     queueMatchmaking: vi.fn(),
@@ -84,6 +76,7 @@ vi.mock('../hooks/useWebSocket', () => ({
 vi.mock('../hooks/useProofGeneration', () => ({
   useProofGeneration: () => ({
     generateMoveProof: vi.fn().mockResolvedValue(null),
+    generateOpenCardsProof: vi.fn().mockResolvedValue(null),
     reset: vi.fn(),
   }),
 }));

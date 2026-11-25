@@ -5,6 +5,7 @@
  */
 import type { MoveProofData } from '../../types';
 import { normalizeField, type GameChainState, type GameRecord, type GameSecrets, type NullifierHit } from '../privateGame';
+import type { TranscriptMove } from '../localGame';
 
 export const P1_HAND = [11, 12, 13, 14, 15];
 export const P2_HAND = [21, 22, 23, 24, 25];
@@ -57,6 +58,13 @@ export function transcript(opts: {
     });
   }
   return proofs;
+}
+
+/** A transcript as stored: each proof with the move it proves (one cell per move). */
+export function linksOf(proofs: MoveProofData[]): TranscriptMove[] {
+  return proofs.map((proof, i) => ({
+    moveNumber: i, cardId: proof.placedCardId!, slot: proof.placedSlot!, row: Math.floor(i / 3), col: i % 3, proof,
+  }));
 }
 
 /** A record whose fields are distinct, recognisable field elements. */

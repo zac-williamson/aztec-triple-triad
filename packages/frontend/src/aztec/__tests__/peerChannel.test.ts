@@ -22,6 +22,13 @@ describe('peer payload validation', () => {
     expect(parsePeerPayload({ kind: 'CANCELLED' })).toEqual({ kind: 'CANCELLED' });
   });
 
+  it('accepts Phase B\'s open cards, normalising the proof\'s public inputs', () => {
+    const p = parsePeerPayload({ kind: 'OPEN_CARDS', cards: [21, 22, 23], proof: btoa('p'), publicInputs: ['9', '21', '0x16', '23'] });
+    expect(p).toEqual({ kind: 'OPEN_CARDS', cards: [21, 22, 23], proof: btoa('p'), publicInputs: [9, 21, 22, 23].map(normalizeField) });
+    expect(() => parsePeerPayload({ kind: 'OPEN_CARDS', cards: [21, 22], proof: btoa('p'), publicInputs: ['9', '21', '22', '23'] })).toThrow();
+    expect(() => parsePeerPayload({ kind: 'OPEN_CARDS', cards: [21, 22, 23], proof: 7, publicInputs: ['9', '21', '22', '23'] })).toThrow();
+  });
+
   it('normalises a record\'s fields (decimal, short hex) to the canonical form', () => {
     const p = parsePeerPayload({ kind: 'RECORD', record: ['1', '0x2', '3', '4', '5', '6', '7', '8', '9'] });
     expect(p).toEqual({ kind: 'RECORD', record: [1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n].map(normalizeField) });
@@ -71,6 +78,24 @@ describe('PeerChannel', () => {
     await expect(alice.setOpponentKey(bob.publicKey)).resolves.toBeTruthy(); // same key: idempotent
     await expect(alice.setOpponentKey(mallory.publicKey)).rejects.toThrow(/different key/);
     expect(alice.gameKey).toBe(key);
+  });
+
+  it('seals and opens MOVE bodies; a MOVE is never taken for a PEER payload or the other way round', async () => {
+    const alice = new PeerChannel('room-1', await generateGameKeyPair());
+    const bob = new PeerChannel('room-1', await generateGameKeyPair());
+    await alice.setOpponentKey(bob.keyPair.publicKey);
+    await bob.setOpponentKey(alice.keyPair.publicKey);
+    const move = { cardId: 21, slot: 3, row: 0, col: 2, proof: btoa('proof'), publicInputs: Array.from({ length: 8 }, (_, i) => normalizeField(i)) };
+    const sealed = await alice.sealMove(move);
+    expect(sealed.ciphertext).not.toContain('cardId');
+    await expect(bob.openMove(sealed)).resolves.toEqual(move);
+    // The same key seals both, so each opener checks the shape it expects.
+    await expect(bob.open(sealed)).rejects.toThrow(/unknown peer payload/);
+    await expect(bob.openMove(await alice.seal({ kind: 'CANCELLED' }))).rejects.toThrow();
+    // A MOVE sealed for another room does not open here.
+    const otherRoom = new PeerChannel('room-2', alice.keyPair);
+    await otherRoom.setOpponentKey(bob.keyPair.publicKey);
+    await expect(bob.openMove(await otherRoom.sealMove(move))).rejects.toThrow();
   });
 
   it('refuses a payload that opens but is not a valid payload', async () => {

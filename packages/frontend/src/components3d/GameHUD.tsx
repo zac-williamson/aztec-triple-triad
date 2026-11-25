@@ -45,6 +45,12 @@ interface GameHUDProps {
    * practice screen renders its own end overlay instead.
    */
   practiceMode?: boolean;
+  /** The opponent sent a move or open cards that did not check out (section 6.3). */
+  protocolError?: string | null;
+  /** A problem on our side: our proof failed, or a check could not run. */
+  playError?: string | null;
+  /** The opponent's open cards are proven; false shows that their hand is still unknown. */
+  opponentOpenKnown?: boolean;
 }
 
 function getProofStatusLabel(status: string): string {
@@ -104,6 +110,9 @@ export function GameHUD({
   onClaimAbandoned,
   chainView,
   practiceMode = false,
+  protocolError = null,
+  playError = null,
+  opponentOpenKnown,
 }: GameHUDProps) {
   const opponentPlayer: Player = myPlayer === 'player1' ? 'player2' : 'player1';
   const [chainViewOpen, setChainViewOpen] = useState(false);
@@ -135,7 +144,8 @@ export function GameHUD({
   const handLabel = proofStatus ? getCommitStatusLabel(proofStatus.commit) : '';
   const moveLabel = proofStatus ? getProofStatusLabel(proofStatus.move) : '';
   const settleLabel = getSettleTxLabel(settleTxStatus);
-  const showProofStatus = handLabel || moveLabel || settleLabel;
+  const openLabel = opponentOpenKnown === false && !isFinished ? "Waiting for the opponent's open cards..." : '';
+  const showProofStatus = handLabel || moveLabel || settleLabel || openLabel;
 
   return (
     <div className="game-hud-overlay" style={{ pointerEvents: 'none' }}>
@@ -201,6 +211,46 @@ export function GameHUD({
           {handLabel && <div>{handLabel}</div>}
           {moveLabel && <div>{moveLabel}</div>}
           {settleLabel && <div>{settleLabel}</div>}
+          {openLabel && <div>{openLabel}</div>}
+        </div>
+      )}
+
+      {/* The opponent sent something that does not check out: the game is
+          halted and can never settle. The way out is the abandonment claim,
+          which returns both hands. */}
+      {!practiceMode && protocolError && (
+        <div
+          className="game-screen__alert"
+          data-testid="protocol-error"
+          style={{
+            position: 'fixed', top: 76, left: 0, right: 0, zIndex: 12,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
+            pointerEvents: 'auto', textAlign: 'center',
+          }}
+        >
+          <span>
+            <strong>Game halted:</strong> {protocolError}. This game can no longer be settled —
+            claim it as abandoned to get both hands back.
+          </span>
+          {onClaimAbandoned && (
+            <button
+              className="btn btn--small"
+              data-testid="claim-after-protocol-error"
+              disabled={isClaimingAbandoned}
+              onClick={onClaimAbandoned}
+            >
+              Claim abandoned game
+            </button>
+          )}
+        </div>
+      )}
+      {!practiceMode && !protocolError && playError && (
+        <div
+          className="game-screen__alert"
+          data-testid="play-error"
+          style={{ position: 'fixed', top: 76, left: 0, right: 0, zIndex: 12, textAlign: 'center', pointerEvents: 'none' }}
+        >
+          {playError}
         </div>
       )}
 

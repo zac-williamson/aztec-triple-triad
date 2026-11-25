@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { normalizeField } from '../../aztec/privateGame';
-import { chainState, P1_HAND, P2_HAND, record, transcript } from '../../aztec/__tests__/privateGameFixtures';
+import { chainState, linksOf, P1_HAND, P2_HAND, record, transcript } from '../../aztec/__tests__/privateGameFixtures';
 
 const h = vi.hoisted(() => ({
   readGameState: vi.fn(),
@@ -75,7 +75,7 @@ beforeEach(() => {
 
 describe('inspectStuckGame', () => {
   it('imports a game that resolved while we were away, drops its record, and looks at the next', async () => {
-    const done = saved({ gameId: 'old', playerNumber: 2, selectedCardIds: P2_HAND, collectedMoveProofs: transcript({ winner: 1 }), prizeMove: 3 });
+    const done = saved({ gameId: 'old', playerNumber: 2, selectedCardIds: P2_HAND, moves: linksOf(transcript({ winner: 1 })), prizeMove: 3 });
     const pending = saved({ gameId: 'new', record2: undefined });
     h.readGameState
       .mockResolvedValueOnce(withState(chainState({ created: 1, seat2: 2, joined: 2, done: 9 })))
@@ -88,7 +88,7 @@ describe('inspectStuckGame', () => {
 
     // The stored announcement is the fallback if the tx itself cannot be read.
     expect(h.importDiscoveredResolution).toHaveBeenCalledWith(toPrivateGame(done), ctx, expect.objectContaining({
-      moveProofs: done.collectedMoveProofs,
+      moveProofs: transcript({ winner: 1 }),
       fallback: { kind: 'settled', winner: 1, prize: { cardId: P2_HAND[1], slot: 1 } },
     }));
     expect(onImported).toHaveBeenCalledWith(expect.objectContaining({ takenCardId: P2_HAND[1] }));
@@ -124,13 +124,13 @@ describe('inspectStuckGame', () => {
 describe('gatherStuckGameFacts', () => {
   it('knows who settles from the transcript, and reads no clocks for a finished game', async () => {
     h.readGameState.mockResolvedValue(withState(chainState({ created: 1, seat2: 2, joined: 2 })));
-    const s = saved({ collectedMoveProofs: transcript({ winner: 1 }) });
+    const s = saved({ moves: linksOf(transcript({ winner: 1 })) });
     const f = await gatherStuckGameFacts(s, toPrivateGame(s)!, ctx);
     expect(f.transcriptComplete).toBe(true);
     expect(f.weSettle).toBe(true);
     expect(h.chainNowSeconds).not.toHaveBeenCalled();
 
-    const draw = saved({ playerNumber: 2, selectedCardIds: P2_HAND, collectedMoveProofs: transcript({ winner: 3 }) });
+    const draw = saved({ playerNumber: 2, selectedCardIds: P2_HAND, moves: linksOf(transcript({ winner: 3 })) });
     expect((await gatherStuckGameFacts(draw, toPrivateGame(draw)!, ctx)).weSettle).toBe(false);
   });
 });
@@ -149,7 +149,7 @@ describe('recoverStuckGame', () => {
   });
 
   it('settles a finished game with the default prize, announcing it like the live game does', async () => {
-    const s = saved({ playerNumber: 2, selectedCardIds: P2_HAND, collectedMoveProofs: transcript({ winner: 1 }) });
+    const s = saved({ playerNumber: 2, selectedCardIds: P2_HAND, moves: linksOf(transcript({ winner: 1 })) });
     h.settleGame.mockResolvedValue(TX);
     h.importResolution.mockResolvedValue(result({ resolution: { kind: 'settled', winner: 1 } }));
     const sendPeerFor = vi.fn(async () => true);
@@ -165,16 +165,14 @@ describe('recoverStuckGame', () => {
     expect(h.importResolution.mock.calls[0][2]).toMatchObject({ txHash: TX, resolution: { kind: 'settled', winner: 1 } });
   });
 
-  it('claims and finalizes an abandoned game, then lets the relay release the room', async () => {
+  it('claims and finalizes an abandoned game', async () => {
     const s = saved();
     h.claimAbandonment.mockResolvedValue({ claimNo: 1, claimSide: 1, claimBlock: 40 });
     h.finalizeAbandonment.mockResolvedValue(result());
-    const onUnwound = vi.fn();
 
-    const r = await recoverStuckGame({ roomId: 'room-1', kind: 'claimable' }, s, toPrivateGame(s)!, ctx, { storage: storageOf([]), onUnwound });
+    const r = await recoverStuckGame({ roomId: 'room-1', kind: 'claimable' }, s, toPrivateGame(s)!, ctx, { storage: storageOf([]) });
 
     expect(h.finalizeAbandonment).toHaveBeenCalledWith(toPrivateGame(s), ctx, { claimNo: 1, claimSide: 1, claimBlock: 40 });
-    expect(onUnwound).toHaveBeenCalledWith('room-1');
     expect(r!.importedCardIds).toEqual(P1_HAND);
   });
 

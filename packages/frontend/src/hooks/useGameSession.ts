@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { UseWebSocketReturn } from './useWebSocket';
 import type { PersistedGameState, UseGameStorageReturn } from './useGameStorage';
 import type { UseGameChannelReturn } from './useGameChannel';
@@ -61,8 +61,8 @@ export interface UseGameSessionReturn {
   onChainError: string | null;
   /** 'ready' once both records are committed and known. */
   commitStatus: CommitStatus;
-  /** Both hand commitments (from the records), once both are known. */
-  commits: { commit1: string; commit2: string } | null;
+  /** Both hand commitments (from the records), once both are known, and the room they are for. */
+  commits: { commit1: string; commit2: string; roomId: string | null } | null;
   /** This player's hand blinding factor (from compute_game_secrets). */
   blindingFactor: string | null;
 
@@ -135,7 +135,7 @@ export function useGameSession({ ws, screen, cardIds, channel, storage }: UseGam
   // The ws game whose on-chain lifecycle has run to completion. A finished
   // lifecycle ends in 'idle' — which is also exactly where the pipeline below
   // STARTS one. So any later re-render on that same game (an abandonment
-  // warning, a late GAME_STATE) would restart it and commit five cards again.
+  // warning, a late MOVE) would restart it and commit five cards again.
   const lifecycleDoneForRef = useRef<string | null>(null);
   const wsGameIdRef = useRef(ws.gameId);
   wsGameIdRef.current = ws.gameId;
@@ -365,9 +365,8 @@ export function useGameSession({ ws, screen, cardIds, channel, storage }: UseGam
   // The on-chain pipeline: create (player 1) or join (player 2).
   useEffect(() => {
     if (screen === 'main-menu') return; // Never start pipeline during navigation
-    if (!ws.gameId || !ws.gameState || !ws.playerNumber) return;
+    if (!ws.gameId || !ws.playerNumber) return;           // not matched into a room
     if (ws.gameId === lifecycleDoneForRef.current) return; // over on-chain: never again
-    if (ws.gameState.status !== 'playing' && ws.gameState.status !== 'finished') return;
     if (!isContractAvailable) return;
     const gameKey = channel.gameKey;
     if (!gameKey || channel.roomId !== ws.gameId) return; // the key exchange has not finished
@@ -484,13 +483,15 @@ export function useGameSession({ ws, screen, cardIds, channel, storage }: UseGam
         if (!commitSentRef.current) transitionPhase('idle');
       });
     }
-  }, [screen, ws.playerNumber, ws.gameId, ws.gameState, isContractAvailable, cardIds,
+  }, [screen, ws.playerNumber, ws.gameId, isContractAvailable, cardIds,
       channel.gameKey, channel.roomId, record1, ctx, fail, abandoned, announceRecord, acceptRecord,
       becomeActive, transitionPhase, ensureRoom]);
 
   // --- Facade integration ---
 
   const restoreFromSave = useCallback((saved: PersistedGameState): void => {
+    // Another game's blinding must not outlive the switch: ours is re-derived below.
+    if (roomRef.current !== saved.gameId) setBlindingFactor(null);
     roomRef.current = saved.gameId;
     roleRef.current = saved.playerNumber;
     handRef.current = [...saved.selectedCardIds];
@@ -534,9 +535,11 @@ export function useGameSession({ ws, screen, cardIds, channel, storage }: UseGam
     setOnChainError(null);
   }, [resetGameRefs]);
 
-  const commits = record1 && record2
-    ? { commit1: handCommitOf(record1), commit2: handCommitOf(record2) }
-    : null;
+  const commitRoom = roomRef.current;
+  const commits = useMemo(
+    () => (record1 && record2 ? { commit1: handCommitOf(record1), commit2: handCommitOf(record2), roomId: commitRoom } : null),
+    [record1, record2, commitRoom],
+  );
 
   return {
     onChainGameId,

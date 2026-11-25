@@ -25,7 +25,7 @@ import {
 } from '../aztec/gameActions';
 import { orderTranscript, prizeOfMove, winnerOf, type Resolution, type Winner } from '../aztec/privateGame';
 import type { PeerPayload } from '../aztec/peerChannel';
-import type { MoveProofData } from '../types';
+import type { MoveProofData, Player } from '../types';
 
 export type TxStatus = 'idle' | 'preparing' | 'proving' | 'sending' | 'confirmed' | 'error';
 
@@ -60,10 +60,12 @@ export interface SettlementPlayDeps {
    *  auto-settle a draw, where neither player is the winner). Optional so
    *  unit-test mocks that don't exercise the draw path can omit it. */
   canSettle?: boolean;
+  /** Reactive: the result of the game this client ran (useGamePlay), once over. */
+  gameOver?: { winner: Player | 'draw' } | null;
 }
 
 export interface UseGameSettlementParams {
-  ws: UseWebSocketReturn;
+  ws: Pick<UseWebSocketReturn, 'gameId' | 'playerNumber' | 'opponentDisconnected'>;
   session: SettlementSessionDeps;
   play: SettlementPlayDeps;
   channel: Pick<UseGameChannelReturn, 'sendPeer' | 'addPeerListener'>;
@@ -248,12 +250,13 @@ export function useGameSettlement({ ws, session, play, channel, storage }: UseGa
 
   // The game is over and we are not the settler: keep an eye on the chain
   // too, so a settler who never says SETTLED cannot leave our notes unimported.
+  const gameOver = play.gameOver ?? null;
   useEffect(() => {
-    if (!ws.gameOver || !ws.playerNumber) return;
-    const winner = ws.gameOver.winner;
+    if (!gameOver || !ws.playerNumber) return;
+    const winner = gameOver.winner;
     const weSettle = winner === 'draw' ? ws.playerNumber === 1 : winner === (ws.playerNumber === 1 ? 'player1' : 'player2');
     if (!weSettle) startPolling();
-  }, [ws.gameOver, ws.playerNumber, startPolling]);
+  }, [gameOver, ws.playerNumber, startPolling]);
 
   useEffect(() => stopPolling, [stopPolling]);
 
@@ -273,7 +276,8 @@ export function useGameSettlement({ ws, session, play, channel, storage }: UseGa
       // Both records must be committed and known. Waited for OUT HERE, never
       // inside the PXE queue: the join it waits on may be queued behind it.
       if (session.getPhase() !== 'active') await session.waitForActivePhase(AZTEC_SETTLE_TX_TIMEOUT * 1000);
-      // The ninth proof is generated after the relay declares the game over.
+      // The ninth proof is generated after the board fills: when we made the
+      // last move, ours may still be proving.
       await play.waitForMoveProofs(MOVE_PROOF_WAIT_TIMEOUT);
       game = session.getGame();
       if (!game?.record2) throw new Error('Settlement needs both records (the game is not joined)');
@@ -336,7 +340,7 @@ export function useGameSettlement({ ws, session, play, channel, storage }: UseGa
   // same path a loser takes). A second settle would only revert on `done`.
   const drawSettleTriggeredRef = useRef(false);
   useEffect(() => {
-    if (ws.gameOver?.winner !== 'draw') { drawSettleTriggeredRef.current = false; return; }
+    if (gameOver?.winner !== 'draw') { drawSettleTriggeredRef.current = false; return; }
     if (ws.playerNumber !== 1) return;              // single settler: only player 1
     if (drawSettleTriggeredRef.current) return;     // fire once per draw
     if (!play.canSettle) return;                    // need both records and the full transcript
@@ -344,7 +348,7 @@ export function useGameSettlement({ ws, session, play, channel, storage }: UseGa
     drawSettleTriggeredRef.current = true;
     console.log('[useGameSettlement] draw detected — auto-settling (player 1)');
     void handleSettle(0);
-  }, [ws.gameOver, ws.playerNumber, play.canSettle, settleTxStatus, handleSettle]);
+  }, [gameOver, ws.playerNumber, play.canSettle, settleTxStatus, handleSettle]);
 
   // --- Abandoned game handler ---
   const handleAbandonedGame = useCallback(async () => {
@@ -367,7 +371,6 @@ export function useGameSettlement({ ws, session, play, channel, storage }: UseGa
       resetUi();
       return;
     }
-    const roomId = ws.gameId ?? game.roomId;
     try {
       const context = ctx();
       const heldMoves = play.getMoveProofs().length;
@@ -400,9 +403,8 @@ export function useGameSettlement({ ws, session, play, channel, storage }: UseGa
         // Resolved another way meanwhile — a settlement beats a claim.
         await importTheirResolution(null);
       }
-      // QA-F3: report the MINED unwind to the relay — it releases both
-      // players' room bindings and replies with a standard GAME_OVER.
-      ws.notifyAbandonedGameSettled(roomId);
+      // The relay is not told: it never knew the result of anything. Each
+      // player's binding goes when they leave (LEAVE_GAME) or by its sweep.
       session.markLifecycleComplete?.();
       session.transitionPhase('idle');
       resetUi();
@@ -421,7 +423,7 @@ export function useGameSettlement({ ws, session, play, channel, storage }: UseGa
       console.error('[useGameSettlement] Abandoned game flow failed:', err);
       if (session.getPhase() === 'settling') session.transitionPhase('idle');
     }
-  }, [ws.gameId, ws.notifyAbandonedGameSettled, ctx, session.getGame, session.transitionPhase,
+  }, [ctx, session.getGame, session.transitionPhase,
       session.getPhase, session.markLifecycleComplete, play.getMoveProofs, applyImport, importTheirResolution]);
 
   // Auto-trigger the abandoned game flow when the opponent disconnects.
@@ -435,11 +437,11 @@ export function useGameSettlement({ ws, session, play, channel, storage }: UseGa
     if (!ws.opponentDisconnected) return;
     if (autoClaimFiredRef.current || abandonedClaimStartedRef.current) return;
     if (session.getPhase() !== 'active') return;
-    if (ws.gameOver) return; // a finished game settles; it is not abandoned
+    if (gameOver) return; // a finished game settles; it is not abandoned
     console.log('[useGameSettlement] Opponent disconnected mid-game, starting the abandoned game flow...');
     autoClaimFiredRef.current = true;
     void handleAbandonedGame();
-  }, [ws.opponentDisconnected, ws.gameOver, handleAbandonedGame, session.getPhase]);
+  }, [ws.opponentDisconnected, gameOver, handleAbandonedGame, session.getPhase]);
 
   // --- Facade integration ---
 

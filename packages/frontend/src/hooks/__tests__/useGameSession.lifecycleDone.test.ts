@@ -69,8 +69,8 @@ function makeWs(over: Record<string, unknown> = {}) {
   return {
     gameId: 'room-1',
     playerNumber: 1,
-    gameState: { status: 'playing' },
     connected: true,
+    roomState: null,
     notifyTxConfirmed: vi.fn(),
     ...over,
   } as never;
@@ -125,7 +125,7 @@ describe('creator pipeline', () => {
     expect(h.waitForNullifier.mock.calls[1][1]).toBe(NULLIFIERS[NULLIFIER_INDEX.joined]);
     expect(result.current.getPhase()).toBe('active');
     expect(result.current.commitStatus).toBe('ready');
-    expect(result.current.commits).toEqual({ commit1: record(1)[1], commit2: record(2)[1] });
+    expect(result.current.commits).toEqual({ commit1: record(1)[1], commit2: record(2)[1], roomId: 'room-1' });
     expect(result.current.getGame()).toEqual({
       roomId: 'room-1', role: 1, hand: HAND, gameKey: KEY, nonce: '0x28', record1: record(1), record2: record(2),
     });
@@ -160,7 +160,7 @@ describe('creator pipeline', () => {
       { initialProps: { ws: makeWs() } },
     );
     await flush();
-    rerender({ ws: makeWs({ gameState: { status: 'finished' } }) });
+    rerender({ ws: makeWs({ roomState: { gameId: 'room-1', playerNumber: 1, movesMade: 9, opponentConnected: true } }) });
     await flush();
 
     expect(h.createGameOnChain).toHaveBeenCalledTimes(1);
@@ -192,7 +192,7 @@ describe('joiner pipeline', () => {
     expect(ch.channel.sendPeer).toHaveBeenCalledWith({ kind: 'RECORD', record: record(2) });
     expect((ws as any).notifyTxConfirmed).toHaveBeenCalledWith('room-1', 'join_game');
     expect(result.current.getPhase()).toBe('active');
-    expect(result.current.commits).toEqual({ commit1: record(1)[1], commit2: record(2)[1] });
+    expect(result.current.commits).toEqual({ commit1: record(1)[1], commit2: record(2)[1], roomId: 'room-1' });
   });
 
   it('stops when the creator cancels before the join', async () => {
@@ -234,8 +234,10 @@ describe('the on-chain pipeline and a finished game', () => {
       result.current.transitionPhase('idle');
     });
 
-    rerender({ socket: makeWs({ gameState: { status: 'playing' } }) });
-    rerender({ socket: makeWs({ gameState: { status: 'finished' } }) });
+    // The relay keeps updating the dead room (a resume's ROOM_STATE, a reconnect).
+    rerender({ socket: makeWs({ roomState: { gameId: 'room-1', playerNumber: 1, movesMade: 9, opponentConnected: true } }) });
+    rerender({ socket: makeWs({ connected: false }) });
+    rerender({ socket: makeWs() });
 
     expect(h.createGameOnChain, 'restarted on a finished game').toHaveBeenCalledTimes(1);
     expect(result.current.getPhase()).toBe('idle');

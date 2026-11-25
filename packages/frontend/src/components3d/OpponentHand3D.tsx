@@ -129,7 +129,9 @@ export function OpponentHand3D({
             <group scale={[-1, 1, 1]}>
               <Card3D
                 card={card}
-                faceDown={revealCount !== undefined ? i >= revealCount : (card.id === 0 && !isFinished)}
+                // A card this player has not been shown (id 0) has no face to
+                // show, game over or not.
+                faceDown={revealCount !== undefined ? i >= revealCount : card.id === 0}
                 width={HAND_CARD_WIDTH}
                 renderOrder={ro}
                 depthWrite={false}

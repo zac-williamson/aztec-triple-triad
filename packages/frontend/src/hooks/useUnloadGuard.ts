@@ -5,14 +5,14 @@ import { useEffect } from 'react';
  *
  * Two distinct situations, and the first is the non-obvious one:
  *
- * 1. **We owe the opponent a move proof.** The settlement transcript is shared
- *    — 2 hand proofs + 9 move proofs — and the winner cannot settle without
- *    every link. A player who closes the tab still owing one strands the
- *    WINNER's settlement, and both hands stay locked until the abandonment
- *    path resolves them. The exposure is worst at exactly the wrong moment: the
- *    final move's proof is generated AFTER the relay declares the game over, so
- *    the losing player is being asked to sit through a proof for a game they
- *    have already lost. That is precisely when someone closes the tab.
+ * 1. **We owe the opponent a move.** The settlement transcript is shared —
+ *    9 move proofs — and the winner cannot settle without every link. A move
+ *    goes out only with its proof, so a player who closes the tab while one is
+ *    proving strands the game, and both hands stay locked until the
+ *    abandonment path resolves them. The exposure is worst at exactly the
+ *    wrong moment: the final move's proof is generated AFTER the board fills,
+ *    so the losing player is being asked to sit through a proof for a game
+ *    they have already lost. That is precisely when someone closes the tab.
  *
  * 2. **Our own settlement is in flight.** Interrupting that leaves the game
  *    unsettled and our own five cards committed.

@@ -3,7 +3,15 @@ import type { UseWebSocketReturn } from './useWebSocket';
 import type { PersistedGameState, UseGameStorageReturn } from './useGameStorage';
 import { generateGameKeyPair } from '../aztec/gameKeys';
 import { PeerChannel, type PeerPayload } from '../aztec/peerChannel';
+import type { MovePayload } from '../aztec/localGame';
 import type { SealedPeerMessage, ServerMessage } from '../types';
+
+/** No channel for the room yet (the key exchange has not completed, or its keys are not stored). */
+export class ChannelNotReadyError extends Error {
+  constructor(roomId: string) {
+    super(`no game channel for room ${roomId} yet`);
+  }
+}
 
 export interface UseGameChannelParams {
   ws: Pick<UseWebSocketReturn, 'addMessageListener' | 'sendKeyExchange' | 'sendPeer'>;
@@ -28,6 +36,13 @@ export interface UseGameChannelReturn {
   sendPeerFor: (roomId: string, payload: PeerPayload) => Promise<boolean>;
   /** Opened, validated payloads from the opponent, in arrival order. */
   addPeerListener: (cb: PeerListener) => () => void;
+  /**
+   * Seal / open a MOVE body for `roomId` — the live channel, or one rebuilt
+   * from the stored keys. Throw ChannelNotReadyError when there is no
+   * channel; `openMove` throws anything else for a payload that does not open.
+   */
+  sealMove: (roomId: string, move: MovePayload) => Promise<SealedPeerMessage>;
+  openMove: (roomId: string, sealed: SealedPeerMessage) => Promise<MovePayload>;
   /** Re-attach to a saved game's channel (resume after a reload). */
   restoreFromSave: (saved: PersistedGameState) => void;
   resetForMenu: () => void;
@@ -212,6 +227,46 @@ export function useGameChannel({ ws, storage }: UseGameChannelParams): UseGameCh
     return true;
   }, []);
 
+  /** A derived channel for `room`: the live one, or one rebuilt from storage; null if neither. */
+  const readyChannelFor = useCallback(async (room: string): Promise<PeerChannel | null> => {
+    const live = channelRef.current;
+    if (live?.roomId === room) {
+      if (live.isReady) return live;
+      // Their key is in and being derived with (a restore): wait for that
+      // derivation (whenReady would hang forever on one that failed). A
+      // channel that cannot be derived is no channel: nothing is held against
+      // a payload it cannot open.
+      if (!live.opponentPublicKey) return null;
+      try {
+        await live.setOpponentKey(live.opponentPublicKey);
+        return live;
+      } catch {
+        return null;
+      }
+    }
+    const saved = storageRef.current.readGame(room);
+    if (!saved?.keyPair || !saved.opponentPublicKey) return null;
+    const ch = new PeerChannel(room, saved.keyPair);
+    try {
+      await ch.setOpponentKey(saved.opponentPublicKey);
+    } catch {
+      return null;
+    }
+    return ch;
+  }, []);
+
+  const sealMove = useCallback(async (room: string, move: MovePayload): Promise<SealedPeerMessage> => {
+    const ch = await readyChannelFor(room);
+    if (!ch) throw new ChannelNotReadyError(room);
+    return ch.sealMove(move);
+  }, [readyChannelFor]);
+
+  const openMove = useCallback(async (room: string, sealed: SealedPeerMessage): Promise<MovePayload> => {
+    const ch = await readyChannelFor(room);
+    if (!ch) throw new ChannelNotReadyError(room);
+    return ch.openMove(sealed);
+  }, [readyChannelFor]);
+
   const addPeerListener = useCallback((cb: PeerListener) => {
     listenersRef.current.add(cb);
     return () => { listenersRef.current.delete(cb); };
@@ -235,5 +290,5 @@ export function useGameChannel({ ws, storage }: UseGameChannelParams): UseGameCh
     setRoomId(null);
   }, []);
 
-  return { gameKey, roomId, getGameKey, sendPeer, sendPeerFor, addPeerListener, restoreFromSave, resetForMenu };
+  return { gameKey, roomId, getGameKey, sendPeer, sendPeerFor, addPeerListener, sealMove, openMove, restoreFromSave, resetForMenu };
 }

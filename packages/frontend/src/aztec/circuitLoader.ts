@@ -57,11 +57,7 @@ async function load(name: string): Promise<CircuitArtifact> {
   return artifact;
 }
 
-/**
- * Not used by Phase A of private games, which drops hand proofs from the
- * protocol; kept (the bot shares this module) for Phase B's open-cards proof
- * (docs/plan/PRIVATE_GAMES.md section 6).
- */
+/** The open-cards proof (docs/plan/PRIVATE_GAMES.md section 6): proven by each player, checked by the other. */
 export const loadProveHandCircuit = (): Promise<CircuitArtifact> => load('prove_hand');
 export const loadGameMoveCircuit = (): Promise<CircuitArtifact> => load('game_move');
 export const loadDummyMoveCircuit = (): Promise<CircuitArtifact> => load('dummy_move');

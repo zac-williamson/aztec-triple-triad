@@ -1,45 +1,16 @@
-import { useCallback, useRef } from 'react';
+import { useCallback } from 'react';
 import type { MoveProofData, GameState } from '../types';
 import type { PlayerHandData } from '../aztec/proofWorker';
+import type { OpenCardsPayload } from '../aztec/localGame';
+import { encodeBoardState, encodeOriginalOwners } from '../aztec/localGame';
+import { onProver } from '../aztec/proverQueue';
 
 export type { PlayerHandData };
+// The circuit encodings live with the client's game model; re-exported here
+// for the callers that have always found them in this module.
+export { encodeBoardState, encodeOriginalOwners };
 
 export type ProofStatus = 'idle' | 'generating' | 'ready' | 'error';
-
-/**
- * Board state encoded as flat array for the circuit.
- * Each cell = [card_id, owner] where owner 0=empty, 1=player1, 2=player2.
- */
-export function encodeBoardState(board: GameState['board']): string[] {
-  const flat: string[] = [];
-  for (let r = 0; r < 3; r++) {
-    for (let c = 0; c < 3; c++) {
-      const cell = board[r][c];
-      flat.push(cell.card ? String(cell.card.id) : '0');
-      flat.push(
-        cell.owner === 'player1' ? '1' : cell.owner === 'player2' ? '2' : '0',
-      );
-    }
-  }
-  return flat;
-}
-
-/**
- * Per-cell ORIGINAL owner (who first placed the card), flattened in the same
- * cell order as encodeBoardState: 0=empty, 1=player1, 2=player2. This is the
- * publicly-agreed state the game_move circuit hashes for the C2 round-2 replay
- * guard — capture changes a cell's `owner` but never its `originalOwner`.
- */
-export function encodeOriginalOwners(board: GameState['board']): number[] {
-  const owners: number[] = [];
-  for (let r = 0; r < 3; r++) {
-    for (let c = 0; c < 3; c++) {
-      const oo = board[r][c].originalOwner;
-      owners.push(oo === 'player1' ? 1 : oo === 'player2' ? 2 : 0);
-    }
-  }
-  return owners;
-}
 
 export interface UseProofGenerationReturn {
   /** `playerHandData.cardIds` is the mover's hand in COMMITTED order: the
@@ -59,19 +30,19 @@ export interface UseProofGenerationReturn {
     winnerId: number,
     playerHandData: PlayerHandData,
   ) => Promise<MoveProofData>;
+  /** Prove our three open cards (the committed hand's slots 0..2) against our hand commitment. */
+  generateOpenCardsProof: (hand: number[], blindingFactor: string, handCommit: string) => Promise<OpenCardsPayload>;
   reset: () => void;
 }
 
 /**
- * Stateless proof generation hook.
- * Provides sequential move proof queuing (to avoid concurrent WASM usage)
- * but does NOT track proof state — callers own their proof collections.
+ * Stateless proof generation hook. Every proof goes through the page's one
+ * prover line (proverQueue.ts), in the order asked for — no concurrent WASM
+ * use — but this hook does NOT track proof state: callers own their proofs.
  */
 export function useProofGeneration(): UseProofGenerationReturn {
-  const proofQueueRef = useRef<Promise<void>>(Promise.resolve());
-
   const generateMoveProof = useCallback(
-    async (
+    (
       cardId: number,
       row: number,
       col: number,
@@ -86,39 +57,43 @@ export function useProofGeneration(): UseProofGenerationReturn {
       winnerId: number,
       playerHandData: PlayerHandData,
     ): Promise<MoveProofData> => {
-      return new Promise<MoveProofData>((resolve, reject) => {
-        proofQueueRef.current = proofQueueRef.current.then(async () => {
-          try {
-            const boardBeforeEncoded = encodeBoardState(boardBefore);
-            const boardAfterEncoded = encodeBoardState(boardAfter);
-            // Original owners are publicly derivable from each board snapshot —
-            // no chaining, no relay (the C2 round-2 fix).
-            const originalOwnersBefore = encodeOriginalOwners(boardBefore);
-            const originalOwnersAfter = encodeOriginalOwners(boardAfter);
-
-            const { generateGameMoveProof } = await import('../aztec/proofWorker');
-            const proofData = await generateGameMoveProof(
-              cardId, row, col, currentPlayer,
-              boardBeforeEncoded, boardAfterEncoded,
-              scoresBefore, scoresAfter,
-              cardCommit1, cardCommit2,
-              gameEnded, winnerId,
-              playerHandData,
-              originalOwnersBefore, originalOwnersAfter,
-            );
-            resolve(proofData);
-          } catch (err) {
-            reject(err);
-          }
-        });
+      // Encoded at call time: the boards are snapshots of the move as made,
+      // whatever the live board does while this waits its turn.
+      const boardBeforeEncoded = encodeBoardState(boardBefore);
+      const boardAfterEncoded = encodeBoardState(boardAfter);
+      // Original owners are publicly derivable from each board snapshot —
+      // no chaining, no relay (the C2 round-2 fix).
+      const originalOwnersBefore = encodeOriginalOwners(boardBefore);
+      const originalOwnersAfter = encodeOriginalOwners(boardAfter);
+      return onProver(async () => {
+        const { generateGameMoveProof } = await import('../aztec/proofWorker');
+        return generateGameMoveProof(
+          cardId, row, col, currentPlayer,
+          boardBeforeEncoded, boardAfterEncoded,
+          scoresBefore, scoresAfter,
+          cardCommit1, cardCommit2,
+          gameEnded, winnerId,
+          playerHandData,
+          originalOwnersBefore, originalOwnersAfter,
+        );
       });
     },
     [],
   );
 
-  const reset = useCallback(() => {
-    proofQueueRef.current = Promise.resolve();
-  }, []);
+  const generateOpenCardsProof = useCallback(
+    (hand: number[], blindingFactor: string, handCommit: string): Promise<OpenCardsPayload> => {
+      const committed = [...hand];
+      return onProver(async () => {
+        const worker = await import('../aztec/proofWorker');
+        return worker.generateOpenCardsProof(committed, blindingFactor, handCommit);
+      });
+    },
+    [],
+  );
 
-  return { generateMoveProof, reset };
+  // Nothing to reset: proofs already asked for finish on the shared line.
+  const reset = useCallback(() => {}, []);
+
+  return { generateMoveProof, generateOpenCardsProof, reset };
 }
