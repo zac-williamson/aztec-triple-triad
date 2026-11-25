@@ -30,10 +30,38 @@ function logic(): GameLogic {
 export interface BoardCellExpectation {
   cardId: number | null;
   owner: Player | null;
+  originalOwner: Player | null;
+}
+
+/** One move as the transcript records it: the card, its slot in the mover's committed hand, the cell. */
+export interface ExpectedMove {
+  moveNumber: number;
+  player: Player;
+  cardId: number;
+  slot: number;
+  row: number;
+  col: number;
+}
+
+/**
+ * Triple Triad's "three open": hand slots 0..2 are shown to the opponent
+ * (once proven), slots 3 and 4 stay face down until played
+ * (docs/plan/PRIVATE_GAMES.md §6.2).
+ */
+export const OPEN_SLOTS = 3;
+
+export function otherPlayer(player: Player): Player {
+  return player === 'player1' ? 'player2' : 'player1';
 }
 
 export class ExpectedGame {
   state: GameState;
+  /** Each side's five cards, in committed (slot) order. */
+  readonly hands: Readonly<Record<Player, readonly number[]>>;
+  /** Each side's slots not yet played, in slot order: what a hand index indexes. */
+  private readonly unplayed: Record<Player, number[]>;
+  /** The moves so far, in order. */
+  readonly moves: ExpectedMove[] = [];
 
   constructor(p1CardIds: number[], p2CardIds: number[]) {
     const p1Cards = logic().getCardsByIds(p1CardIds);
@@ -42,21 +70,51 @@ export class ExpectedGame {
       throw new Error('ExpectedGame: both hands must resolve to 5 known cards');
     }
     this.state = logic().createGame(p1Cards, p2Cards);
+    this.hands = { player1: [...p1CardIds], player2: [...p2CardIds] };
+    this.unplayed = { player1: [0, 1, 2, 3, 4], player2: [0, 1, 2, 3, 4] };
   }
 
   apply(player: Player, handIndex: number, row: number, col: number): void {
+    const slot = this.unplayed[player][handIndex];
+    if (slot === undefined) throw new Error(`ExpectedGame: ${player} has no card at hand index ${handIndex}`);
     this.state = logic().placeCard(this.state, player, handIndex, row, col).newState;
+    this.unplayed[player].splice(handIndex, 1);
+    this.moves.push({ moveNumber: this.moves.length, player, cardId: this.hands[player][slot], slot, row, col });
   }
 
   get board(): BoardCellExpectation[][] {
     return this.state.board.map(row => row.map(cell => ({
       cardId: cell.card?.id ?? null,
       owner: cell.owner,
+      originalOwner: cell.originalOwner,
     })));
   }
 
   get occupiedCount(): number {
     return this.state.board.flat().filter(c => c.card !== null).length;
+  }
+
+  /** `player`'s unplayed slots, in slot order. */
+  unplayedSlots(player: Player): number[] {
+    return [...this.unplayed[player]];
+  }
+
+  /** `player`'s unplayed cards, in slot order — their hand as they see it. */
+  handOf(player: Player): number[] {
+    return this.unplayed[player].map(slot => this.hands[player][slot]);
+  }
+
+  /** Scores as `player` sees them: their own, then the opponent's. */
+  scoresFor(player: Player): { mine: number; theirs: number } {
+    const p1 = this.state.player1Score;
+    const p2 = this.state.player2Score;
+    return player === 'player1' ? { mine: p1, theirs: p2 } : { mine: p2, theirs: p1 };
+  }
+
+  /** The circuit's `winner_id` for the game's result: 0 while playing, 1/2 a player, 3 a draw. */
+  get winnerId(): number {
+    const w = this.state.winner;
+    return w === 'player1' ? 1 : w === 'player2' ? 2 : w === 'draw' ? 3 : 0;
   }
 
   /**

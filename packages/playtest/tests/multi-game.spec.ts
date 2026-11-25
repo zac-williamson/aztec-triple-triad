@@ -12,6 +12,13 @@
  * Real proofs, real UI clicks (testkit), three-layer validation — same rigor as
  * the C1 ladder. Winner is derived from the live rules mirror (not hardcoded);
  * who queues first (→ P1) alternates each game to vary the win/loss paths.
+ *
+ * Phase B (docs/plan/PRIVATE_GAMES.md §6): each client runs every game itself,
+ * so carryover now also means a client's OWN game state — transcript, open
+ * cards, the opponent's hidden slots — leaking into the next one. Both
+ * clients' games are checked against the mirror after every move, their
+ * transcripts against each other and the records, and each game's relay
+ * traffic for card ids.
  */
 import os from 'os';
 import { test, expect } from '@playwright/test';
@@ -19,7 +26,9 @@ import type { Player } from '@axolotl-arena/game-logic';
 import { PlayerDriver } from '../src/player.js';
 import { ExpectedGame } from '../src/expected.js';
 import { ChainClient, canonicalField, nullifierOf, type GameRef } from '../src/chain.js';
-import { BACKEND_URL, readStackInfo, type ContractAddresses } from '../src/env.js';
+import { playMoves, expectGameOver, expectTranscriptsAgree, storedGames } from '../src/play.js';
+import { expectRelayBlind, expectRelayLogBlind, expectRoomIsPipe, relayRoom } from '../src/relay.js';
+import { BACKEND_URL, readStackInfo } from '../src/env.js';
 
 const STARTER_CARDS = [1, 2, 3, 4, 5];
 const STARTER_TOKENS = 100;
@@ -232,7 +241,7 @@ test.describe.serial('multi-game with packs', () => {
       const first = g % 2 === 1 ? alice : bob;
       const second = first === alice ? bob : alice;
       await withDeadline(`game ${g}`, DEADLINES.game, [alice.dead, bob.dead, backend.dead], () =>
-        playOneGame(g, first, second, chain, addresses, rows, seen));
+        playOneGame(g, first, second, chain, stack.logsDir, rows, seen));
       await logWebgl(`after-game-${g}`, [alice, bob]);
       logMem(`after-game-${g}`);
     }
@@ -258,7 +267,7 @@ async function playOneGame(
   first: PlayerDriver,
   second: PlayerDriver,
   chain: ChainClient,
-  addresses: ContractAddresses,
+  logsDir: string,
   rows: GameRow[],
   seen: { wsGameIds: Set<string>; onChainGameIds: Set<string> },
 ): Promise<void> {
@@ -278,6 +287,8 @@ async function playOneGame(
   // which path delivered a settler's cards, and a draw's settle auto-fires,
   // so a mark taken later could already be past it.
   const gameStartMark = new Map([[alice, alice.consoleMark()], [bob, bob.consoleMark()]]);
+  // This game's relay traffic starts here (queueing included).
+  const relayStartMark = new Map([[alice, alice.relayMark()], [bob, bob.relayMark()]]);
 
   const firstHand = pickHand((first === alice ? aliceBeforeCards : bobBeforeCards));
   const secondHand = pickHand((second === alice ? aliceBeforeCards : bobBeforeCards));
@@ -305,7 +316,7 @@ async function playOneGame(
     const c = ph.chain;
     if (c.canSettle) throw where('no-carryover',
       `${d.name} canSettle=true at game start — leftover records/move proofs from game ${gameNum - 1} ` +
-      `(useGamePlay / useGameSession reset: collectedMoveProofs, the records)`);
+      `(useGamePlay / useGameSession reset: the transcript, the records)`);
     if (c.settleTxStatus !== 'idle') throw where('no-carryover',
       `${d.name} settleTxStatus='${c.settleTxStatus}' at game start (expected idle) — ` +
       `lane-2 useGameSettlement.resetForMenu`);
@@ -330,25 +341,9 @@ async function playOneGame(
   const p1Hand = byNumber.get(1) === first ? firstHand : secondHand;
   const p2Hand = byNumber.get(2) === first ? firstHand : secondHand;
 
-  // ── Play 9 moves via real clicks, board cross-checked each move ────────
+  // ── Play 9 moves via real clicks; both clients' games checked each move ──
   const mirror = new ExpectedGame(p1Hand, p2Hand);
-  for (let m = 0; m < 9; m++) {
-    const player = mirror.state.currentTurn;
-    const mover = driverFor(player);
-    const { handIndex, row, col } = mirror.nextMove();
-    await mover.waitReadyToMove();
-    await mover.selectHandCard(handIndex);
-    await mover.clickCell(row, col);
-    mirror.apply(player, handIndex, row, col);
-    const [mp, op] = await Promise.all([
-      mover.waitBoardCount(mirror.occupiedCount),
-      (mover === alice ? bob : alice).waitBoardCount(mirror.occupiedCount),
-    ]);
-    for (const phase of [mp, op]) {
-      expect(phase.game!.board.map(r => r.map(c => ({ cardId: c.cardId, owner: c.owner }))),
-        `game ${gameNum} board after move ${m}`).toEqual(mirror.board);
-    }
-  }
+  await playMoves(mirror, driverFor, 9, `game ${gameNum} `);
 
   // ── Terminal outcome (board full after 9 moves → decisive winner OR draw) ──
   // BRANCH on the REAL result the rules mirror derived; each branch FULLY
@@ -358,11 +353,8 @@ async function playOneGame(
     throw where('rules', `game ${gameNum} did not finish after 9 moves (mirror winner=null) — ` +
       `hands ${JSON.stringify({ p1Hand, p2Hand })}`);
   }
-  // Both browsers must report game over with the SAME outcome the mirror derived.
-  const [firstOver, secondOver] = await Promise.all([first.waitGameOver(), second.waitGameOver()]);
-  for (const [d, ph] of [[first, firstOver], [second, secondOver]] as const) {
-    expect(ph.ws.gameOver!.winner, `game ${gameNum}: ${d.name} browser outcome`).toBe(outcome);
-  }
+  // Both browsers must reach the SAME outcome the mirror derived, each from its own game.
+  const overViews = await expectGameOver(mirror, driverFor, `game ${gameNum}: `);
 
   // A fresh game must mint a NEW on-chain id — decisive OR draw (Gap 6, matrix):
   // the id is the game's `created` nullifier, derived from a fresh game key and
@@ -384,6 +376,8 @@ async function playOneGame(
   if (!ref.record2) throw where('chain', `${first.name} never learned the joiner's record`);
   expect(await second.gameRef(wsGameId),
     `game ${gameNum}: both players hold the same game key and records`).toEqual(ref);
+  // ...and the same game: this game's nine moves and proofs, nothing of the last one's.
+  expectTranscriptsAgree(mirror, await storedGames(driverFor, wsGameId), `game ${gameNum}: `);
   const committed = await chain.gameState(ref);
   for (const d of [first, second]) {
     const id = (await d.phase()).chain.onChainGameId;
@@ -400,12 +394,11 @@ async function playOneGame(
   // settled outcome below (net-0 cards, +20 each, settled on-chain) — with no
   // failing transaction.
   if (outcome === 'draw') {
-    // Genuine draw, agreed by both browsers: board full, scores tied, no winner.
-    for (const [d, ph] of [[first, firstOver], [second, secondOver]] as const) {
-      const occupied = ph.game!.board.flat().filter(c => c.cardId !== null).length;
-      expect(occupied, `game ${gameNum} draw: ${d.name} board full`).toBe(9);
-      expect(ph.game!.myScore, `game ${gameNum} draw: ${d.name} scores tied`).toBe(ph.game!.opponentScore);
-      expect(ph.ws.gameOver!.winner, `game ${gameNum} draw: ${d.name} winner=draw`).toBe('draw');
+    // Genuine draw, agreed by both browsers (expectGameOver: full board, the
+    // mirror's scores and result) — and tied.
+    for (const me of ['player1', 'player2'] as const) {
+      expect(overViews[me].game!.myScore, `game ${gameNum} draw: ${driverFor(me).name} scores tied`)
+        .toBe(overViews[me].game!.opponentScore);
     }
     // SINGLE SETTLER: player 1 (the creator) sends the ONE settle_game. Player 2
     // sends NO tx and imports its own five + reward from it (the same import a
@@ -431,12 +424,8 @@ async function playOneGame(
     }
     // Public chain: the draw is SETTLED, and both players imported from that tx.
     await assertSettledOnChain(gameNum, chain, ref, [alice, bob], wsGameId, where);
-    // Backend room finished (GAME_OVER released both players for the next game).
-    const drawRes = await fetch(`${BACKEND_URL}/games/${wsGameId}`);
-    if (drawRes.ok) {
-      const room = await drawRes.json() as { status: string };
-      expect(room.status, `game ${gameNum} draw: backend room finished`).toBe('finished');
-    }
+    // The relay saw nine moves (and released both players at the ninth) — no cards, no draw.
+    await assertRelayBlind(gameNum, driverFor, relayStartMark, wsGameId, logsDir);
     // Frontend: both back to a clean menu — the NEXT game's no-carryover checks
     // verify the reset (board empty, canSettle false, settle idle) held.
     await Promise.all([first.returnToMenu(), second.returnToMenu()]);
@@ -533,12 +522,9 @@ async function playOneGame(
   // ── Public chain: settled, and both players imported from that tx ──────
   await assertSettledOnChain(gameNum, chain, ref, [alice, bob], wsGameId, where);
 
-  // ── Backend: room finished/released; both can start the next game ──────
-  const res = await fetch(`${BACKEND_URL}/games/${wsGameId}`);
-  if (res.ok) {
-    const room = await res.json() as { status: string; winner: string };
-    expect(room.status, `game ${gameNum} backend room finished`).toBe('finished');
-  }
+  // ── Relay: nine moves relayed (both players released for the next game),
+  //    and nothing else learned — no card, no winner, no settlement ──────
+  await assertRelayBlind(gameNum, driverFor, relayStartMark, wsGameId, logsDir);
 
   // ── Frontend: both return to a clean menu showing post-game counts ─────
   await Promise.all([winnerD.returnToMenu(), loserD.returnToMenu()]);
@@ -582,6 +568,27 @@ async function assertSettledOnChain(
   }
   expect(settleTx.noteHashes.length, `game ${gameNum}: settle_game releases twelve prepared notes`)
     .toBe(SETTLE_NOTE_HASHES);
+}
+
+/**
+ * The relay layer of one game: its room says only "nine moves" (status
+ * moves-complete), this game's frames from both players since `marks` carry
+ * no card id and only §6.1's fields, and its log of the game is moves 0..8.
+ */
+async function assertRelayBlind(
+  gameNum: number,
+  driverFor: (p: Player) => PlayerDriver,
+  marks: Map<PlayerDriver, number>,
+  wsGameId: string,
+  logsDir: string,
+): Promise<void> {
+  expectRoomIsPipe(await relayRoom(wsGameId), wsGameId, { status: 'moves-complete', movesMade: 9 },
+    `game ${gameNum}: relay`);
+  expectRelayBlind([1, 2].map(seat => {
+    const driver = driverFor(seat === 1 ? 'player1' : 'player2');
+    return { driver, seat: seat as 1 | 2, mark: marks.get(driver)! };
+  }), wsGameId, 9, `game ${gameNum}: relay traffic`);
+  expectRelayLogBlind(logsDir, wsGameId, 9, `game ${gameNum}: relay log`);
 }
 
 function buildRow(

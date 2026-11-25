@@ -134,14 +134,30 @@ brand-new Nulo player. Ends with one `RESULT: pass|fail …` line.
 |-------|------|------|
 | Stack orchestrator | `src/stack.ts`, `global-setup.ts` | Owns sandbox/deploy/backend/frontend lifecycle; per-run logs in `.artifacts/run-*/` |
 | Interaction layer | `packages/frontend/src/testkit/` | `window.__triadTest`: live-camera projection to canvas pixels, state snapshots, PXE reads on the app's serial queue |
-| Player driver | `src/player.ts` | DOM screens via testids, 3D board via real pointer events, state-predicate waits (no sleeps) |
-| Rules mirror | `src/expected.ts` | game-logic replay; board cross-checked on both browsers after every move |
+| Player driver | `src/player.ts` | DOM screens via testids, 3D board via real pointer events, state-predicate waits (no sleeps); taps each page's relay socket |
+| Rules mirror | `src/expected.ts` | game-logic replay of the scripted game: board, scores, each side's hand slots, the transcript |
+| Play + agreement | `src/play.ts` | Plays the scripted moves. Each client runs its own game (docs/plan/PRIVATE_GAMES.md §6), so after every move BOTH clients' games are checked against the mirror: board, turn, scores, own hand, and the opponent's hand showing no hidden card. At the end both stored transcripts must be the same moves and proofs, bound to the on-chain records' hand commitments |
+| Relay checks | `src/relay.ts` | The relay is a pure pipe: every frame a browser sent it has only §6.1's fields (no card id, sealed payloads unreadable), and `GET /games/{id}` and its log say no more than the move count |
 | Chain validator | `src/chain.ts` | Harness-owned node client, independent of both PXEs. A private game has no public status or players, so it reads the game's nullifiers: `game_nullifiers` (the Game contract's utility, run in the harness's own wallet) over the key and records the players stored, then the node's nullifier lookups |
 | Campaign | `tests/full-game.spec.ts` | Phase 1: one full click-driven game + three-layer settlement assertions |
 
 On failure Playwright keeps trace/video/screenshots in `.artifacts/test-output`,
 and each run directory holds sandbox/deploy/backend/frontend logs plus per-player
-browser console logs — everything the triage loop needs.
+browser console logs (`browser-<name>.log`) and relay traffic
+(`relay-<name>.log`, sealed fields as their size) — everything the triage loop
+needs.
+
+Waiting on the opponent takes longer than it used to: a move reaches the other
+browser only once the mover has proven it and the receiver has opened and
+verified it, and player 2's first wait also covers create, join and player 1's
+open-cards proof (`TIMEOUTS.opponentMove`).
+
+Clicks wait for the 3D scene, not just the page. The canvas is a React root of
+its own that react-three-fiber commits a scheduler task after the page, and
+while a create_game is being simulated that gap was measured at up to 8 s. A
+cell clicked inside it does not yet know a card is selected and drops the
+click, so the driver waits for the testkit's `interaction.sceneSelectedCardIndex`
+/ `sceneIsMyTurn` (published from inside the canvas) before it clicks.
 
 ## Stack ownership
 

@@ -32,12 +32,19 @@
  * transaction; it imports its OWN five returns and its reward from that tx,
  * with its own secrets — the same import a loser makes. So the card economy
  * nets to zero and nothing is taken.
+ *
+ * Phase B (docs/plan/PRIVATE_GAMES.md §6): nobody but the two clients knows
+ * it is a draw. Each reaches 5–5 from its own game, both transcripts end in
+ * the same proof saying so (winner_id 3), and the relay — which settles
+ * nothing and sees no card — only ever learns that nine moves went through.
  */
 import { test, expect } from '@playwright/test';
 import type { Player } from '@axolotl-arena/game-logic';
 import { PlayerDriver } from '../src/player.js';
 import { ExpectedGame } from '../src/expected.js';
 import { ChainClient, canonicalField, nullifierOf } from '../src/chain.js';
+import { playMoves, expectGameOver, expectTranscriptsAgree, storedGames } from '../src/play.js';
+import { expectRelayBlind, expectRelayLogBlind, expectRoomIsPipe, relayRoom } from '../src/relay.js';
 import { BACKEND_URL, readStackInfo } from '../src/env.js';
 
 /** Starter cards reordered so the deterministic policy ties. Same five cards. */
@@ -96,30 +103,9 @@ test.describe.serial('draw settlement', () => {
     // already be past the settler's import.
     const marks = new Map([[alice, alice.consoleMark()], [bob, bob.consoleMark()]]);
 
-    // ── Play all 9 moves, cross-checking every board against the mirror ──
+    // ── Play all 9 moves; after each, both clients' own games match the mirror
     const mirror = new ExpectedGame(DRAW_HAND, DRAW_HAND);
-
-    for (let moveNumber = 0; moveNumber < 9; moveNumber++) {
-      const player = mirror.state.currentTurn;
-      const mover = driverFor(player);
-      const { handIndex, row, col } = mirror.nextMove();
-
-      await mover.waitReadyToMove();
-      await mover.selectHandCard(handIndex);
-      await mover.clickCell(row, col);
-
-      mirror.apply(player, handIndex, row, col);
-
-      const [moverPhase, otherPhase] = await Promise.all([
-        mover.waitBoardCount(mirror.occupiedCount),
-        (mover === alice ? bob! : alice!).waitBoardCount(mirror.occupiedCount),
-      ]);
-      for (const phase of [moverPhase, otherPhase]) {
-        expect(phase.game!.board.map(r => r.map(c => ({ cardId: c.cardId, owner: c.owner }))),
-          `board after move ${moveNumber} (${player} → [${row},${col}])`,
-        ).toEqual(mirror.board);
-      }
-    }
+    await playMoves(mirror, driverFor, 9);
 
     // ── The point of the test: this ordering must actually draw ──────────
     expect(mirror.state.status).toBe('finished');
@@ -128,16 +114,13 @@ test.describe.serial('draw settlement', () => {
       'not the assertion relaxing').toBe('draw');
     expect(mirror.state.player1Score).toBe(mirror.state.player2Score);
 
-    // Both browsers must independently agree it is a draw.
-    const [aliceOver, bobOver] = await Promise.all([alice.waitGameOver(), bob.waitGameOver()]);
-    for (const [d, ph] of [[alice, aliceOver], [bob, bobOver]] as const) {
-      const occupied = ph.game!.board.flat().filter(c => c.cardId !== null).length;
-      expect(occupied, `draw: ${d.name} board full`).toBe(9);
-      expect(ph.game!.myScore, `draw: ${d.name} scores tied`).toBe(ph.game!.opponentScore);
-      expect(ph.ws.gameOver!.winner, `draw: ${d.name} winner=draw`).toBe('draw');
+    // Both browsers must independently agree it is a draw: full board, 5–5.
+    const views = await expectGameOver(mirror, driverFor, 'draw: ');
+    for (const me of ['player1', 'player2'] as const) {
+      expect(views[me].game!.myScore, `draw: ${driverFor(me).name} scores tied`).toBe(views[me].game!.opponentScore);
     }
 
-    // ── Both players hold the same game: key and both records ────────────
+    // ── Both players hold the same game: key, both records, the transcript ──
     const settler = driverFor('player1');
     const other = driverFor('player2');
     await Promise.all([settler.waitCanSettle(), other.waitCanSettle()]);
@@ -145,6 +128,7 @@ test.describe.serial('draw settlement', () => {
     expect(ref.record2, 'the joiner\'s record is known').not.toBeNull();
     expect(await other.gameRef(wsGameId),
       'both players hold the same game key and the same two records').toEqual(ref);
+    expectTranscriptsAgree(mirror, await storedGames(driverFor, wsGameId), 'draw: ');
     const chain = await ChainClient.connect(stack.addresses);
     const createdNullifier = nullifierOf(await chain.gameState(ref), 'created');
     for (const driver of [alice, bob]) {
@@ -190,13 +174,14 @@ test.describe.serial('draw settlement', () => {
     expect(settleTx.noteHashes.length, 'draw: settle_game releases ten returns and two rewards')
       .toBe(SETTLE_NOTE_HASHES);
 
-    // ── Layer 3: backend released the room ──────────────────────────────
+    // ── Layer 3: the relay stayed blind — nine moves, and not even the draw ──
     const health = await (await fetch(`${BACKEND_URL}/health`)).json() as { status: string };
     expect(health.status).toBe('ok');
-    const gameRes = await fetch(`${BACKEND_URL}/games/${wsGameId}`);
-    if (gameRes.ok) {
-      const room = await gameRes.json() as { status: string };
-      expect(room.status, 'draw: backend room finished').toBe('finished');
-    }
+    expectRoomIsPipe(await relayRoom(wsGameId), wsGameId, { status: 'moves-complete', movesMade: 9 }, 'draw: relay');
+    expectRelayBlind([
+      { driver: settler, seat: 1, mark: 0 },
+      { driver: other, seat: 2, mark: 0 },
+    ], wsGameId, 9, 'draw: relay traffic');
+    expectRelayLogBlind(stack.logsDir, wsGameId, 9, 'draw: relay log');
   });
 });

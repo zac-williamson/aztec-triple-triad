@@ -1,7 +1,8 @@
 /**
  * Phase 1 campaign: one full click-driven game between two real browser
  * contexts on the local sandbox, with three-layer settlement validation —
- * under the private-games protocol (docs/plan/PRIVATE_GAMES.md).
+ * under the private-games protocol, Phase B (docs/plan/PRIVATE_GAMES.md):
+ * each client runs the game itself and the relay is a pure pipe.
  *
  * Layers asserted (all hard):
  *   1. Private chain state — inside each browser's own PXE: the winner holds
@@ -14,8 +15,14 @@
  *      settlement, + done after, nothing else; the `done` tx is the one both
  *      browsers recorded as the game's resolution, and it releases exactly
  *      twelve note hashes (the count a draw releases too).
- *   3. Backend             — room released / finished via REST.
- * plus a move-by-move board cross-check against @axolotl-arena/game-logic.
+ *   3. Relay               — blind: every frame either browser sent it is a
+ *      Phase B message with only its allowed fields (no card id anywhere,
+ *      sealed payloads unreadable), it relayed the nine moves as numbers, and
+ *      its REST view and its log say no more than that — not even who won.
+ * plus the two clients' own games, after every move: each matches the
+ * @axolotl-arena/game-logic mirror (board, turn, scores, hands — the
+ * opponent's hidden cards face down), and at the end both transcripts are the
+ * same nine moves and proofs, bound to the records the chain committed.
  *
  * Deterministic by construction: fresh per-run accounts mint starter cards
  * 1–5, scripted policy (hand slot 0 → first empty cell). Precomputed outcome:
@@ -28,6 +35,8 @@ import type { Player } from '@axolotl-arena/game-logic';
 import { PlayerDriver } from '../src/player.js';
 import { ExpectedGame } from '../src/expected.js';
 import { ChainClient, canonicalField, nullifierOf } from '../src/chain.js';
+import { playMoves, expectGameOver, expectTranscriptsAgree, storedGames } from '../src/play.js';
+import { expectRelayBlind, expectRelayLogBlind, expectRoomIsPipe, relayRoom } from '../src/relay.js';
 import { BACKEND_URL, readStackInfo } from '../src/env.js';
 
 const STARTER_CARDS = [1, 2, 3, 4, 5];
@@ -96,41 +105,17 @@ test.describe.serial('ladder campaign', () => {
     const driverFor = (player: Player) => byNumber.get(player === 'player1' ? 1 : 2)!;
     expect(byNumber.size, 'server assigned distinct player numbers').toBe(2);
 
-    // ── Play all 9 moves via real canvas clicks, cross-checking every board
+    // ── Play all 9 moves via real canvas clicks. Each client runs the game
+    //    itself: after every move both games are checked against the mirror
+    //    (the opponent sees a move only once it is proven, sent and checked).
     const mirror = new ExpectedGame(STARTER_CARDS, STARTER_CARDS);
+    await playMoves(mirror, driverFor, 9);
 
-    for (let moveNumber = 0; moveNumber < 9; moveNumber++) {
-      const player = mirror.state.currentTurn;
-      const mover = driverFor(player);
-      const { handIndex, row, col } = mirror.nextMove();
-
-      await mover.waitReadyToMove();
-      await mover.selectHandCard(handIndex);
-      await mover.clickCell(row, col);
-
-      mirror.apply(player, handIndex, row, col);
-
-      const [moverPhase, otherPhase] = await Promise.all([
-        mover.waitBoardCount(mirror.occupiedCount),
-        (mover === alice ? bob : alice).waitBoardCount(mirror.occupiedCount),
-      ]);
-      for (const phase of [moverPhase, otherPhase]) {
-        expect(phase.game!.board.map(r => r.map(c => ({ cardId: c.cardId, owner: c.owner }))),
-          `board after move ${moveNumber} (${player} → [${row},${col}])`,
-        ).toEqual(mirror.board);
-      }
-    }
-
-    // ── Game over: both UIs agree with the mirror ────────────────────────
-    expect(mirror.state.status).toBe('finished');
+    // ── Game over: both clients reach the mirror's result on their own ───
     const winner = mirror.state.winner as Player;
     expect(winner === 'player1' || winner === 'player2',
       'scripted game must be decisive (a draw means the rules changed)').toBe(true);
-
-    const [aliceOver, bobOver] = await Promise.all([alice.waitGameOver(), bob.waitGameOver()]);
-    for (const phase of [aliceOver, bobOver]) {
-      expect(phase.ws.gameOver!.winner).toBe(winner);
-    }
+    await expectGameOver(mirror, driverFor);
 
     const winnerDriver = driverFor(winner);
     const loserDriver = winnerDriver === alice ? bob : alice;
@@ -142,6 +127,8 @@ test.describe.serial('ladder campaign', () => {
     expect(ref.record2, 'the joiner\'s record is known').not.toBeNull();
     expect(await loserDriver.gameRef(wsGameId),
       'both players hold the same game key and the same two records').toEqual(ref);
+    // ...and the same game: nine moves, nine proofs, bound to those records.
+    expectTranscriptsAgree(mirror, await storedGames(driverFor, wsGameId));
 
     // ── Layer 2 (before settling): the game is exactly created + joined ──
     const chain = await ChainClient.connect(stack.addresses);
@@ -210,19 +197,16 @@ test.describe.serial('ladder campaign', () => {
     expect(joinTx.nullifiers, 'join closes seat 2 in the same tx').toContain(nullifierOf(settled, 'seat2'));
     expect(new Set([createTx.txHash, joinTx.txHash, settleTx.txHash]).size, 'create, join, settle: three txs').toBe(3);
 
-    // ── Layer 3: backend session state ───────────────────────────────────
+    // ── Layer 3: the relay stayed blind ──────────────────────────────────
     const health = await (await fetch(`${BACKEND_URL}/health`)).json() as { status: string };
     expect(health.status).toBe('ok');
-
-    const gameRes = await fetch(`${BACKEND_URL}/games/${wsGameId}`);
-    if (gameRes.ok) {
-      // Room still present (stale cleanup runs on a timer) — must be finished
-      // with the same winner; players were released from it at GAME_OVER.
-      const room = await gameRes.json() as { status: string; winner: string };
-      expect(room.status).toBe('finished');
-      expect(room.winner).toBe(winner);
-    } else {
-      expect(gameRes.status, 'room either finished or already cleaned up').toBe(404);
-    }
+    // It relayed nine moves and knows nothing else: not the cards, not who
+    // won, not that the game settled (the room outlives the game by 30 min).
+    expectRoomIsPipe(await relayRoom(wsGameId), wsGameId, { status: 'moves-complete', movesMade: 9 }, 'relay');
+    expectRelayBlind([
+      { driver: driverFor('player1'), seat: 1, mark: 0 },
+      { driver: driverFor('player2'), seat: 2, mark: 0 },
+    ], wsGameId, 9, 'relay traffic');
+    expectRelayLogBlind(stack.logsDir, wsGameId, 9, 'relay log');
   });
 });

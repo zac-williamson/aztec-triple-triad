@@ -13,11 +13,24 @@ import { launchIsolatedBrowser } from './browser.js';
 import { registerBrowser, deregisterBrowser, playwrightChromiumLeaders } from './stack.js';
 import { claimNext } from './playtestPool.js';
 import { ensurePoolAccounts, readPool } from './poolTopUp.js';
+import { isRelaySocket, summarizeFrame, type RelayFrame } from './relay.js';
 import type { GameRef } from './chain.js';
+
+/** One link of a stored transcript: the move and its proof's public inputs (the proof body left out). */
+export interface StoredMove {
+  moveNumber: number;
+  cardId: number;
+  slot: number;
+  row: number;
+  col: number;
+  /** The game_move proof's 8 public inputs, as stored. */
+  publicInputs: string[];
+}
 
 /**
  * One stored game as the harness reads it (a structural copy of the fields of
- * useGameStorage's PersistedGameState it uses; the transcript as a count).
+ * useGameStorage's PersistedGameState it uses; proofs reduced to their public
+ * inputs, open-cards payloads to their cards).
  */
 export interface StoredGameSnapshot {
   gameId: string;
@@ -27,7 +40,16 @@ export interface StoredGameSnapshot {
   nonce: string | null;
   record1: string[] | null;
   record2: string[] | null;
-  moveProofCount: number;
+  /** The transcript: our moves as sent, the opponent's as checked, in order. */
+  moves: StoredMove[];
+  /** Move numbers delivered by the relay but not checked yet. */
+  inbox: number[];
+  /** The opponent's open cards (hand slots 0..2), once their proof checked out. */
+  opponentOpenCards: number[] | null;
+  /** The open cards this player proved and sent. */
+  ownOpenCards: number[] | null;
+  /** Why the opponent's payload was refused, if it was. */
+  protocolError: string | null;
   prizeMove: number | null;
   resolutionTxHash: string | null;
   importedAt: number | null;
@@ -112,6 +134,9 @@ export const TIMEOUTS = TESTNET ? {
   match: 300_000,
   selection: 15_000,
   boardUpdate: 240_000,     // off-chain move proofs are real; machine under load
+  // The opponent sees a move only once it is proven, sent and checked; the first
+  // one also waits out create + join on real ~36s slots (docs/plan/PRIVATE_GAMES.md §6).
+  opponentMove: 1_800_000,
   interactionIdle: 240_000,
   canSettle: 1_800_000,     // both records committed + all 9 move proofs, real proving (30 min)
   settleTx: 2_400_000,      // settle_game: 9 recursive verifs + on-chain inclusion/finality (40 min)
@@ -128,6 +153,11 @@ export const TIMEOUTS = TESTNET ? {
   match: 60_000,
   selection: 10_000,
   boardUpdate: 30_000,
+  // Each client runs the game itself (docs/plan/PRIVATE_GAMES.md §6): a move
+  // reaches the opponent only once the mover proved it and the opponent opened
+  // and verified it. Player 1's first move also waits on create + join, both
+  // client-proven, and on the open-cards proof queued ahead of it.
+  opponentMove: 600_000,
   interactionIdle: 60_000,  // capture cascades run ~1s per flip
   canSettle: 1_200_000,     // both records committed + all 9 move proofs (real proving)
   settleTx: 1_800_000,      // settle_game: 9 recursive verifications, client-proved
@@ -202,6 +232,16 @@ export class PlayerDriver {
   /** Every console line the page has printed — so a spec can assert WHICH
    *  code path a flow took, not only its outcome (consoleMark/consoleSince). */
   private readonly consoleLines: string[] = [];
+  /**
+   * Every frame this page exchanged with the relay, as the relay saw it — what
+   * a spec checks to say the relay never received a card id (relay.ts).
+   * Sealed fields are kept only as their length and a scan for plaintext.
+   */
+  private readonly relayFrames: RelayFrame[] = [];
+  private relayLog: WriteStream | null = null;
+  private logsDir: string | null = null;
+  /** The last canvas click: where it went, for a dropped-click diagnosis. */
+  private lastClick: { target: ClickTarget; x: number; y: number } | null = null;
 
   /**
    * Rejects the instant the page is declared dead (renderer crash, or a WebGL
@@ -260,6 +300,7 @@ export class PlayerDriver {
     // A fresh checkout has no artifacts yet: the onboarding spec died here on
     // ENOENT from a worktree before it opened a page.
     mkdirSync(logsDir, { recursive: true });
+    this.logsDir = logsDir;
     this.consoleLog = createWriteStream(resolve(logsDir, `browser-${this.name}.log`));
     this.page.on('console', msg => {
       const line = `[${new Date().toISOString()}] [${msg.type()}] ${msg.text()}`;
@@ -271,6 +312,22 @@ export class PlayerDriver {
     // A renderer crash is an immediate, unambiguous death — fail the run now,
     // don't wait out any budget.
     this.page.on('crash', () => this.declareDead('renderer process crashed (page.on("crash"))'));
+
+    // Tap the relay socket: everything the relay receives from this player,
+    // and everything it says back, summarized as the frame arrives (a sealed
+    // MOVE carries a whole proof — kept as a length, not a copy).
+    this.relayLog = createWriteStream(resolve(logsDir, `relay-${this.name}.log`));
+    this.page.on('websocket', ws => {
+      if (!isRelaySocket(ws.url())) return;
+      const record = (dir: RelayFrame['dir'], payload: string | Buffer) => {
+        const frame = summarizeFrame(dir, payload);
+        this.relayFrames.push(frame);
+        this.relayLog!.write(`[${new Date(frame.at).toISOString()}] ${dir === 'sent' ? '→' : '←'} ` +
+          `${JSON.stringify(frame.fields)}${frame.sealed.length ? ` sealed=${JSON.stringify(frame.sealed)}` : ''}\n`);
+      };
+      ws.on('framesent', f => record('sent', f.payload));
+      ws.on('framereceived', f => record('received', f.payload));
+    });
 
     // Opt-in rpc-probe: tally every JSON-RPC POST to the node (timestamp +
     // method) into rpc-<name>.csv, to attribute request-rate bursts against the
@@ -615,6 +672,9 @@ export class PlayerDriver {
    * Interaction gate: my turn, game playing, no selection, and no fly/capture
    * animation — held over several consecutive polls so the click cannot land
    * in the gap between an incoming board update and its animation kickoff.
+   * The turn and selection must hold in the 3D scene too: the canvas commits a
+   * task after the page (testkit SceneBridgeState), and its hand ignores a
+   * click until it knows the turn is ours.
    */
   async waitReadyToMove(): Promise<void> {
     const deadline = Date.now() + TIMEOUTS.interactionIdle;
@@ -627,7 +687,9 @@ export class PlayerDriver {
         && p.interaction !== null
         && !p.interaction.flying
         && !p.interaction.cascading
-        && p.interaction.selectedCardIndex === null;
+        && p.interaction.selectedCardIndex === null
+        && p.interaction.sceneIsMyTurn === true
+        && p.interaction.sceneSelectedCardIndex === null;
       stable = idle ? stable + 1 : 0;
       if (stable >= 3) return;
       await this.page.waitForTimeout(POLL_MS / 2);
@@ -649,18 +711,72 @@ export class PlayerDriver {
 
   private async clickProjected(target: ClickTarget): Promise<void> {
     const { x, y } = await this.projectTarget(target);
+    this.lastClick = { target, x, y };
+    // Into the browser's own log, between the app's lines: what the page was
+    // doing when the click went in is what a dropped click is diagnosed from.
+    this.consoleLog?.write(`[${new Date().toISOString()}] [harness] click ${JSON.stringify(target)} at ` +
+      `(${x.toFixed(1)}, ${y.toFixed(1)})\n`);
     await this.page.mouse.click(x, y);
   }
 
-  /** Click a hand-fan strip and confirm the app registered that selection. */
+  /**
+   * What was under the last click, for a click that did nothing: the element
+   * at that point (an overlay would take the click from the canvas) and a
+   * screenshot of the page as it stands (is the cell lit as a valid target?
+   * is the card raised?). Best effort — the failure it explains is thrown
+   * either way.
+   */
+  private async diagnoseDroppedClick(): Promise<string> {
+    const click = this.lastClick;
+    if (!click) return 'no click recorded';
+    // The cursor is the 3D scene's own record of the click: entering a cell
+    // sets it to 'pointer' only if the board — as the canvas last rendered
+    // it — treated that cell as a placement target (BoardCell3D's isValid).
+    const at = await this.withTimeout(this.page.evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      const cursor = `cursor=${document.body.style.cursor || '(unset)'}`;
+      if (!el) return `nothing; ${cursor}`;
+      const testId = el.getAttribute('data-testid');
+      return `<${el.tagName.toLowerCase()}${testId ? ` data-testid="${testId}"` : ''}` +
+        `${el.className && typeof el.className === 'string' ? ` class="${el.className}"` : ''}>; ${cursor}`;
+    }, { x: click.x, y: click.y }), TIMEOUTS.evaluate, 'elementFromPoint').catch(e => `unreadable (${e})`);
+    let shot = 'no screenshot';
+    if (this.logsDir) {
+      const path = resolve(this.logsDir, `dropped-click-${this.name}-${Date.now()}.png`);
+      shot = await this.page.screenshot({ path, timeout: TIMEOUTS.evaluate }).then(() => path, e => `screenshot failed (${e})`);
+    }
+    const report = `click ${JSON.stringify(click.target)} at (${click.x.toFixed(1)}, ${click.y.toFixed(1)}) ` +
+      `landed on ${at}; ${shot}`;
+    this.consoleLog?.write(`[${new Date().toISOString()}] [harness] dropped click: ${report}\n`);
+    return report;
+  }
+
+  /**
+   * Click a hand-fan strip and confirm the selection — on the page, then in
+   * the 3D scene, whose cells are what the next click hits. The canvas is a
+   * React root of its own that react-three-fiber commits in a scheduler task
+   * after the page's commit; on a busy main thread (a create_game being
+   * simulated) that gap lasts seconds, and a cell clicked inside it still
+   * thinks no card is selected and drops the click (BoardCell3D isValid).
+   */
   async selectHandCard(index: number): Promise<void> {
     await this.clickProjected({ type: 'hand', index });
-    await this.waitPhase(
+    const onPage = await this.waitPhase(
       `hand card ${index} selected`,
       (p, args) => p.interaction?.selectedCardIndex === args.index,
       TIMEOUTS.selection,
       { index },
     );
+    if (onPage.interaction?.sceneSelectedCardIndex === index) return;
+    const since = Date.now();
+    await this.waitPhase(
+      `hand card ${index} selected in the 3D scene`,
+      (p, args) => p.interaction?.sceneSelectedCardIndex === args.index,
+      TIMEOUTS.selection,
+      { index },
+    );
+    this.consoleLog?.write(`[${new Date().toISOString()}] [harness] the 3D scene took the selection ` +
+      `${Date.now() - since}ms after the page did\n`);
   }
 
   /**
@@ -687,13 +803,15 @@ export class PlayerDriver {
   }
 
   /**
-   * Hold until cell [target] is safe to click: my turn, a card still selected,
-   * NO fly/capture animation in flight, and the cell's projected pixel stable
+   * Hold until cell [target] is safe to click: my turn, a card still selected
+   * — in the 3D scene as well as on the page (see selectHandCard) — NO
+   * fly/capture animation in flight, and the cell's projected pixel stable
    * across consecutive samples (so the click can't land off-cell against a
    * moving scene). Reuses the testkit interaction snapshot + the live
-   * getScreenXY projection — no new app signal needed (the cells are static, so
-   * "no animation + stable projection" fully characterizes a settled target).
-   * Fails loud on timeout — never fires a click into an unsettled scene.
+   * getScreenXY projection: the cells are static, so "no animation, the
+   * scene's selection caught up, stable projection" fully characterizes a
+   * settled target. Fails loud on timeout — never fires a click into an
+   * unsettled scene.
    */
   private async waitCellSettled(target: { type: 'cell'; row: number; col: number }): Promise<void> {
     const deadline = Date.now() + TIMEOUTS.interactionIdle;
@@ -709,7 +827,9 @@ export class PlayerDriver {
         && last.interaction !== null
         && !last.interaction.flying
         && !last.interaction.cascading
-        && last.interaction.selectedCardIndex !== null;
+        && last.interaction.selectedCardIndex !== null
+        // The cells act on the scene's selection, which can lag the page's.
+        && last.interaction.sceneSelectedCardIndex === last.interaction.selectedCardIndex;
       if (idle) {
         const xy = await this.projectTarget(target).then(p => p, (e) => { projErr = String(e); return null; });
         if (xy && prev && Math.abs(xy.x - prev.x) <= SETTLE_EPS_PX && Math.abs(xy.y - prev.y) <= SETTLE_EPS_PX) {
@@ -755,22 +875,25 @@ export class PlayerDriver {
         && !last.interaction.cascading;
       dropStreak = droppedNow ? dropStreak + 1 : 0;
       if (dropStreak >= PLACEMENT_DROP_SAMPLES) {
+        const diagnosis = await this.diagnoseDroppedClick();
         throw new Error(
           `${this.name}: cell [${row},${col}] click did NOT place — card still selected ` +
           `(index ${last!.interaction!.selectedCardIndex}), scene idle, cell empty. The projected click was ` +
           `dropped (handleCellClick early-return) or missed the cell; the settle-wait should prevent this.\n` +
-          `last phase: ${JSON.stringify(last, null, 2)}`,
+          `diagnosis: ${diagnosis}\nlast phase: ${JSON.stringify(last, null, 2)}`,
         );
       }
       await this.page.waitForTimeout(POLL_MS / 2).catch(() => {});
     }
+    const diagnosis = await this.diagnoseDroppedClick();
     throw new Error(
       `${this.name}: cell [${row},${col}] placement not confirmed within ${TIMEOUTS.placementConfirm / 1000}s ` +
       `(cell empty, no fly started — likely an off-cell click that deselected the card)\n` +
-      `last phase: ${JSON.stringify(last, null, 2)}`,
+      `diagnosis: ${diagnosis}\nlast phase: ${JSON.stringify(last, null, 2)}`,
     );
   }
 
+  /** Our own move: it is on our board the moment the click lands. */
   async waitBoardCount(occupied: number): Promise<PhaseSnapshot> {
     return this.waitPhase(
       `board has ${occupied} cards`,
@@ -778,6 +901,31 @@ export class PlayerDriver {
         && p.game.board.flat().filter(c => c.cardId !== null).length === args.occupied,
       TIMEOUTS.boardUpdate,
       { occupied },
+    );
+  }
+
+  /**
+   * The opponent's move, as this client takes it (docs/plan/PRIVATE_GAMES.md
+   * §6.3): proven by the mover, sealed through the relay, opened, checked and
+   * verified here — only then is it on this board. Fails at once on a refused
+   * move (`protocolError`): a game halted that way never shows the card.
+   */
+  async waitOpponentMove(occupied: number): Promise<PhaseSnapshot> {
+    const deadline = Date.now() + TIMEOUTS.opponentMove;
+    let last: PhaseSnapshot | null = null;
+    while (Date.now() < deadline) {
+      if (this.deadReason) throw new Error(`${this.name}: PAGE DEAD waiting for the opponent's move — ${this.deadReason}`);
+      last = await this.phase().catch(() => null);
+      if (last?.game?.protocolError) {
+        throw new Error(`${this.name}: refused the opponent's payload — ${last.game.protocolError}\n` +
+          `last phase: ${JSON.stringify(last, null, 2)}`);
+      }
+      if (last?.game && last.game.board.flat().filter(c => c.cardId !== null).length === occupied) return last;
+      await this.page.waitForTimeout(POLL_MS).catch(() => {});
+    }
+    throw new Error(
+      `${this.name}: the opponent's move ${occupied - 1} never reached this board within ` +
+      `${TIMEOUTS.opponentMove / 1000}s (proven, sent, opened and checked)\nlast phase: ${JSON.stringify(last, null, 2)}`,
     );
   }
 
@@ -990,7 +1138,11 @@ export class PlayerDriver {
       if (!raw) return null;
       const g = (JSON.parse(raw) as { games?: Record<string, Record<string, unknown>> }).games?.[roomId];
       if (!g) return null;
-      const proofs = g.collectedMoveProofs;
+      type Link = { moveNumber: number; cardId: number; slot: number; row: number; col: number;
+        proof?: { publicInputs?: string[] } };
+      type Inbound = { moveNumber: number };
+      const cardsOf = (p: unknown) => (p && Array.isArray((p as { cards?: unknown }).cards)
+        ? [...(p as { cards: number[] }).cards] : null);
       return {
         gameId: String(g.gameId),
         playerNumber: (g.playerNumber ?? null) as 1 | 2 | null,
@@ -999,13 +1151,32 @@ export class PlayerDriver {
         nonce: (g.nonce ?? null) as string | null,
         record1: (g.record1 ?? null) as string[] | null,
         record2: (g.record2 ?? null) as string[] | null,
-        moveProofCount: Array.isArray(proofs) ? proofs.length : 0,
+        moves: ((g.moves ?? []) as Link[]).map(m => ({
+          moveNumber: m.moveNumber, cardId: m.cardId, slot: m.slot, row: m.row, col: m.col,
+          publicInputs: [...(m.proof?.publicInputs ?? [])],
+        })),
+        inbox: ((g.inbox ?? []) as Inbound[]).map(e => e.moveNumber),
+        opponentOpenCards: Array.isArray(g.opponentOpenCards) ? [...(g.opponentOpenCards as number[])] : null,
+        ownOpenCards: cardsOf(g.ownOpenCards),
+        protocolError: (g.protocolError ?? null) as string | null,
         prizeMove: (g.prizeMove ?? null) as number | null,
         resolutionTxHash: (g.resolutionTxHash ?? null) as string | null,
         importedAt: (g.importedAt ?? null) as number | null,
         finishedAt: (g.finishedAt ?? null) as number | null,
       };
     }, { key, roomId }), TIMEOUTS.evaluate, 'storedGame');
+  }
+
+  // ── The relay socket (relay.ts) ─────────────────────────────────────────
+
+  /** A position in this page's relay traffic; pass it to relayFramesSince. */
+  relayMark(): number {
+    return this.relayFrames.length;
+  }
+
+  /** The relay frames since `mark` (from relayMark), both directions, in order. */
+  relayFramesSince(mark: number): RelayFrame[] {
+    return this.relayFrames.slice(mark);
   }
 
   /** The key and records the chain client needs, from this player's stored game; fails loud if absent. */

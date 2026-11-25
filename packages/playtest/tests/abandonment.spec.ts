@@ -31,13 +31,19 @@
  * 10-minute dispute windows on chain time, the real menu contest, and the
  * independent ChainClient (third pair of eyes) reading the game's nullifiers.
  * About 35 minutes, most of it those waits.
+ *
+ * Phase B (docs/plan/PRIVATE_GAMES.md §6): the relay times the idle turn from
+ * its move COUNT alone, and is told nothing of what follows — no claim, no
+ * contest, no unwind. Its room still says "active, four moves" at the end.
  */
 import { test, expect } from '@playwright/test';
 import type { Player } from '@axolotl-arena/game-logic';
 import { PlayerDriver, TIMEOUTS } from '../src/player.js';
 import { ExpectedGame } from '../src/expected.js';
 import { ChainClient, canonicalField, nullifierOf, type GameNullifierName } from '../src/chain.js';
-import { BACKEND_URL, readStackInfo } from '../src/env.js';
+import { playMoves, expectTranscriptsAgree, storedGames } from '../src/play.js';
+import { expectRelayBlind, expectRelayLogBlind, expectRoomIsPipe, relayRoom } from '../src/relay.js';
+import { readStackInfo } from '../src/env.js';
 
 const STARTER_CARDS = [1, 2, 3, 4, 5];
 const STARTER_TOKENS = 100;
@@ -87,25 +93,9 @@ test.describe.serial('present-but-idle abandonment', () => {
     const byNumber = new Map<number, PlayerDriver>([[1, p1d], [2, p2d]]);
     const driverFor = (p: Player) => byNumber.get(p === 'player1' ? 1 : 2)!;
 
-    // ── Play 4 moves (P1,P2,P1,P2), board cross-checked, stop on P1's turn ───
+    // ── Play 4 moves (P1,P2,P1,P2), both games checked, stop on P1's turn ───
     const mirror = new ExpectedGame(STARTER_CARDS, STARTER_CARDS);
-    for (let m = 0; m < PRE_MOVES; m++) {
-      const player = mirror.state.currentTurn;
-      const mover = driverFor(player);
-      const { handIndex, row, col } = mirror.nextMove();
-      await mover.waitReadyToMove();
-      await mover.selectHandCard(handIndex);
-      await mover.clickCell(row, col);
-      mirror.apply(player, handIndex, row, col);
-      const [mp, op] = await Promise.all([
-        mover.waitBoardCount(mirror.occupiedCount),
-        (mover === p1d ? p2d : p1d).waitBoardCount(mirror.occupiedCount),
-      ]);
-      for (const ph of [mp, op]) {
-        expect(ph.game!.board.map(r => r.map(c => ({ cardId: c.cardId, owner: c.owner }))),
-          `board after move ${m}`).toEqual(mirror.board);
-      }
-    }
+    await playMoves(mirror, driverFor, PRE_MOVES);
     // It must now be P1's turn (the abandoner owes the next move) — on both UIs.
     expect(mirror.state.currentTurn, 'after 4 moves it is player1 (abandoner) turn').toBe('player1');
     for (const d of [p1d, p2d]) {
@@ -146,6 +136,10 @@ test.describe.serial('present-but-idle abandonment', () => {
       expect(id ? canonicalField(id) : null, `${d.name}'s on-chain game id is the created nullifier`)
         .toBe(nullifierOf(committed, 'created'));
     }
+    // Both hold the same four moves and proofs — the game a claim abandons.
+    expectTranscriptsAgree(mirror, await storedGames(driverFor, wsGameId), 'before the claim: ');
+    // The relay times the idle turn from its move count, and knows no more.
+    expectRoomIsPipe(await relayRoom(wsGameId), wsGameId, { status: 'active', movesMade: PRE_MOVES }, 'relay, P1 idle');
 
     // ═══ 1. CLAIM 1 ═══════════════════════════════════════════════════════════
     const claimMark = p2d.consoleMark();
@@ -207,18 +201,23 @@ test.describe.serial('present-but-idle abandonment', () => {
     expect(p2Stored?.resolutionTxHash ? canonicalField(p2Stored.resolutionTxHash) : null,
       'P2 imported from the tx that pushed done').toBe(unwindTx.txHash);
 
-    // ── Backend: P2 reported the mined unwind; the room is finished ────────
-    const roomRes = await fetch(`${BACKEND_URL}/games/${wsGameId}`);
-    if (roomRes.ok) {
-      const room = await roomRes.json() as { status: string };
-      expect(room.status, 'backend room finished after the unwind').toBe('finished');
-    }
+    // ── The relay was told nothing of the claims or the unwind ─────────────
+    // Its room — if it still holds it: rooms are swept 30 minutes after the
+    // last move, and the claims alone take longer — says just what it said
+    // while P1 idled: active, four moves.
+    const room = await relayRoom(wsGameId);
+    if (room) expectRoomIsPipe(room, wsGameId, { status: 'active', movesMade: PRE_MOVES }, 'relay after the unwind');
+    expectRelayBlind([
+      { driver: p1d, seat: 1, mark: 0 },
+      { driver: p2d, seat: 2, mark: 0 },
+    ], wsGameId, PRE_MOVES, 'relay traffic');
+    expectRelayLogBlind(stack.logsDir, wsGameId, PRE_MOVES, 'relay log');
 
     // ...and the game stays over. A finished lifecycle ends in 'idle', which is
-    // also where the create/join pipeline starts, and the relay's follow-up
-    // GAME_OVER once restarted it on a dead game. Nothing in a correct flow
-    // goes idle → creating/awaiting_create after the claim, so give the relay's
-    // messages a window and check that nothing did.
+    // also where the create/join pipeline starts, and a late relay message
+    // (Phase A's GAME_OVER) once restarted it on a dead game. Nothing in a
+    // correct flow goes idle → creating/awaiting_create after the claim, so
+    // give the relay's messages a window and check that nothing did.
     await p2d.page.waitForTimeout(15_000);
     expect(p2d.consoleSince(claimMark).filter(l => /Phase: idle → (creating|awaiting_create)/.test(l)),
       'the on-chain pipeline restarted on a finished game').toEqual([]);
