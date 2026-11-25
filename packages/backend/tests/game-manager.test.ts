@@ -1,465 +1,334 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { GameManager, MOVE_INACTIVITY_MS } from '../src/GameManager.js';
+import { GameManager, MOVE_INACTIVITY_MS, MOVES_PER_GAME, moverOf } from '../src/GameManager.js';
 import { MemoryGameStore } from '../src/store/MemoryGameStore.js';
+import type { StoredGameRoom } from '../src/store/GameStore.js';
 
-// Valid card IDs from the card database (Level 1 cards)
-const PLAYER1_CARDS = [1, 2, 3, 4, 5];
-const PLAYER2_CARDS = [6, 7, 8, 9, 10];
+/** Who makes move `n` in a room opened by `openRoom`. */
+const moverId = (n: number): string => (moverOf(n) === 1 ? 'player-1' : 'player-2');
 
 describe('GameManager', () => {
+  let store: MemoryGameStore;
   let manager: GameManager;
 
   beforeEach(() => {
-    manager = new GameManager(new MemoryGameStore());
+    store = new MemoryGameStore();
+    manager = new GameManager(store);
   });
 
-  describe('createGame', () => {
-    it('should create a game and return a room', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      expect(room.id).toBeDefined();
-      expect(room.player1Id).toBe('player-1');
-      expect(room.player2Id).toBeNull();
-      expect(room.player1CardIds).toEqual(PLAYER1_CARDS);
-      expect(room.player2CardIds).toEqual([]);
+  /** Queue two players and match them; the first is player 1. Returns the room id. */
+  async function openRoom(p1 = 'player-1', p2 = 'player-2'): Promise<string> {
+    await manager.queuePlayer(p1);
+    await manager.queuePlayer(p2);
+    const match = await manager.tryMatch(new Set([p1, p2]));
+    return match!.room.id;
+  }
+
+  /** Record moves `from` up to (not including) `to`, each from its rightful player. */
+  async function play(gameId: string, from: number, to: number): Promise<void> {
+    for (let n = from; n < to; n++) await manager.recordMove(gameId, moverId(n), n);
+  }
+
+  async function confirmBoth(gameId: string): Promise<void> {
+    await manager.updateTxStatus(gameId, 'player-1', 'confirmed');
+    await manager.updateTxStatus(gameId, 'player-2', 'confirmed');
+  }
+
+  async function room(gameId: string): Promise<StoredGameRoom> {
+    return (await manager.getGame(gameId))!;
+  }
+
+  /** Back-date the room's turn clock by `ms` so it appears idle. */
+  async function backdateLastMove(gameId: string, ms: number): Promise<void> {
+    const r = await room(gameId);
+    r.lastMoveTimestamp = Date.now() - ms;
+    await store.setGame(gameId, r);
+  }
+
+  describe('rooms', () => {
+    it('opens a room for a matched pair holding nothing about their game', async () => {
+      const id = await openRoom();
+      const r = await room(id);
+      // No hand, board, score or winner: the relay never sees one.
+      expect(Object.keys(r).sort()).toEqual([
+        'createdAt', 'id', 'lastActivity', 'lastMoveTimestamp', 'movesMade', 'onChainStatus', 'player1Id', 'player2Id',
+      ]);
+      expect(r).toMatchObject({
+        id,
+        player1Id: 'player-1',
+        player2Id: 'player-2',
+        movesMade: 0,
+        onChainStatus: { player1Tx: 'idle', player2Tx: 'idle', canSettle: false },
+      });
     });
 
-    it('should increment game count', async () => {
+    it('binds both players to it', async () => {
+      const id = await openRoom();
+      expect(await manager.getPlayerGame('player-1')).toBe(id);
+      expect(await manager.getPlayerGame('player-2')).toBe(id);
+    });
+
+    it('counts rooms', async () => {
       expect(await manager.getGameCount()).toBe(0);
-      await manager.createGame('player-1', PLAYER1_CARDS);
-      expect(await manager.getGameCount()).toBe(1);
-      await manager.createGame('player-2', PLAYER2_CARDS);
+      await openRoom();
+      await openRoom('player-3', 'player-4');
       expect(await manager.getGameCount()).toBe(2);
     });
-
-    it('should throw if not exactly 5 cards', async () => {
-      await expect(manager.createGame('p1', [1, 2, 3])).rejects.toThrow('Must provide exactly 5 card IDs');
-      await expect(manager.createGame('p1', [1, 2, 3, 4, 5, 6])).rejects.toThrow('Must provide exactly 5 card IDs');
-    });
-
-    it('should throw if invalid card IDs', async () => {
-      await expect(manager.createGame('p1', [999, 998, 997, 996, 995])).rejects.toThrow();
-    });
-
-    it('should track player to game mapping', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      expect(await manager.getPlayerGame('player-1')).toBe(room.id);
-    });
   });
 
-  describe('joinGame', () => {
-    it('should allow a second player to join', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      const joined = await manager.joinGame(room.id, 'player-2', PLAYER2_CARDS);
-      expect(joined.player2Id).toBe('player-2');
-      expect(joined.player2CardIds).toEqual(PLAYER2_CARDS);
-      expect(joined.state).toBeDefined();
-      expect(joined.state.status).toBe('playing');
-    });
-
-    it('should initialize game state with correct hands', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      const joined = await manager.joinGame(room.id, 'player-2', PLAYER2_CARDS);
-      expect(joined.state.player1Hand).toHaveLength(5);
-      expect(joined.state.player2Hand).toHaveLength(5);
-      expect(joined.state.currentTurn).toBe('player1');
-    });
-
-    it('should throw if game not found', async () => {
-      await expect(manager.joinGame('nonexistent', 'p2', PLAYER2_CARDS)).rejects.toThrow('Game not found');
-    });
-
-    it('should throw if game is full', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      await manager.joinGame(room.id, 'player-2', PLAYER2_CARDS);
-      await expect(manager.joinGame(room.id, 'player-3', [11, 12, 13, 14, 15])).rejects.toThrow('Game is full');
-    });
-
-    it('should throw if player tries to join own game', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      await expect(manager.joinGame(room.id, 'player-1', PLAYER2_CARDS)).rejects.toThrow('Cannot join your own game');
-    });
-
-    it('should throw if not exactly 5 cards', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      await expect(manager.joinGame(room.id, 'player-2', [6, 7])).rejects.toThrow('Must provide exactly 5 card IDs');
-    });
-
-    it('should track player 2 to game mapping', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      await manager.joinGame(room.id, 'player-2', PLAYER2_CARDS);
-      expect(await manager.getPlayerGame('player-2')).toBe(room.id);
-    });
-  });
-
-  describe('placeCard', () => {
-    let gameId: string;
-
-    beforeEach(async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      gameId = room.id;
-      await manager.joinGame(gameId, 'player-2', PLAYER2_CARDS);
-    });
-
-    it('should place a card and return result', async () => {
-      const result = await manager.placeCard(gameId, 'player-1', 0, 0, 0);
-      expect(result.newState).toBeDefined();
-      expect(result.newState.board[0][0].card).not.toBeNull();
-      expect(result.newState.board[0][0].owner).toBe('player1');
-      expect(result.captures).toBeDefined();
-    });
-
-    it('should switch turns after placement', async () => {
-      const result = await manager.placeCard(gameId, 'player-1', 0, 0, 0);
-      expect(result.newState.currentTurn).toBe('player2');
-    });
-
-    it('should update internal game state', async () => {
-      await manager.placeCard(gameId, 'player-1', 0, 0, 0);
-      const room = await manager.getGame(gameId);
-      expect(room!.state.board[0][0].card).not.toBeNull();
-    });
-
-    it('should throw if wrong player tries to move', async () => {
-      await expect(manager.placeCard(gameId, 'player-2', 0, 0, 0)).rejects.toThrow('Not your turn');
-    });
-
-    it('should throw if player not in game', async () => {
-      await expect(manager.placeCard(gameId, 'player-3', 0, 0, 0)).rejects.toThrow('Player not in this game');
-    });
-
-    it('should throw if game not found', async () => {
-      await expect(manager.placeCard('fake', 'player-1', 0, 0, 0)).rejects.toThrow('Game not found');
-    });
-
-    it('should throw if cell is occupied', async () => {
-      await manager.placeCard(gameId, 'player-1', 0, 0, 0);
-      await expect(manager.placeCard(gameId, 'player-2', 0, 0, 0)).rejects.toThrow();
-    });
-
-    it('should handle captures correctly', async () => {
-      await manager.placeCard(gameId, 'player-1', 0, 1, 1);
-      await manager.placeCard(gameId, 'player-2', 0, 0, 1);
-      const room = await manager.getGame(gameId);
-      expect(room!.state.board[1][1].card).not.toBeNull();
-      expect(room!.state.board[0][1].card).not.toBeNull();
-    });
-
-    it('should play a full game to completion', async () => {
-      const positions: [number, number][] = [
-        [0, 0], [0, 1], [0, 2],
-        [1, 0], [1, 1], [1, 2],
-        [2, 0], [2, 1], [2, 2],
-      ];
-
-      for (let i = 0; i < 9; i++) {
-        const player = i % 2 === 0 ? 'player-1' : 'player-2';
-        const [row, col] = positions[i];
-        const result = await manager.placeCard(gameId, player, 0, row, col);
-        if (i === 8) {
-          expect(result.newState.status).toBe('finished');
-          expect(result.newState.winner).toBeDefined();
-        }
+  describe('recordMove', () => {
+    it('accepts the nine moves in order, player 1 at even numbers and player 2 at odd', async () => {
+      const id = await openRoom();
+      for (let n = 0; n < MOVES_PER_GAME; n++) {
+        const recorded = await manager.recordMove(id, moverId(n), n);
+        expect(recorded.opponentId).toBe(n % 2 === 0 ? 'player-2' : 'player-1');
+        expect(recorded.room.movesMade).toBe(n + 1);
+        expect(recorded.movesComplete).toBe(n === MOVES_PER_GAME - 1);
       }
-    });
-  });
-
-  describe('getPlayerRole', () => {
-    it('should return player1 for game creator', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      expect(await manager.getPlayerRole(room.id, 'player-1')).toBe('player1');
+      expect((await room(id)).movesMade).toBe(9);
     });
 
-    it('should return player2 for joiner', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      await manager.joinGame(room.id, 'player-2', PLAYER2_CARDS);
-      expect(await manager.getPlayerRole(room.id, 'player-2')).toBe('player2');
+    it('refuses move numbers out of order: no skipping ahead, no replays', async () => {
+      const id = await openRoom();
+      await expect(manager.recordMove(id, 'player-1', 1)).rejects.toThrow('Invalid move number: expected 0, got 1');
+      await manager.recordMove(id, 'player-1', 0);
+      await expect(manager.recordMove(id, 'player-2', 0)).rejects.toThrow('Invalid move number: expected 1, got 0');
+      await expect(manager.recordMove(id, 'player-2', 2)).rejects.toThrow('Invalid move number: expected 1, got 2');
+      await manager.recordMove(id, 'player-2', 1);
+      expect((await room(id)).movesMade).toBe(2);
     });
 
-    it('should return null for unknown player', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      expect(await manager.getPlayerRole(room.id, 'player-3')).toBeNull();
+    it('refuses a move from the player whose turn it is not', async () => {
+      const id = await openRoom();
+      await expect(manager.recordMove(id, 'player-2', 0)).rejects.toThrow('Not your turn');
+      await manager.recordMove(id, 'player-1', 0);
+      await expect(manager.recordMove(id, 'player-1', 1)).rejects.toThrow('Not your turn');
     });
 
-    it('should return null for unknown game', async () => {
-      expect(await manager.getPlayerRole('fake', 'player-1')).toBeNull();
-    });
-  });
-
-  describe('listGames', () => {
-    it('should return empty list initially', async () => {
-      expect(await manager.listGames()).toEqual([]);
+    it('refuses players not in the room, and rooms that do not exist', async () => {
+      const id = await openRoom();
+      await expect(manager.recordMove(id, 'player-3', 0)).rejects.toThrow('Not in this game');
+      await expect(manager.recordMove('no-such-room', 'player-1', 0)).rejects.toThrow('Game not found');
     });
 
-    it('should list waiting games', async () => {
-      await manager.createGame('player-1', PLAYER1_CARDS);
-      const list = await manager.listGames();
-      expect(list).toHaveLength(1);
-      expect(list[0].status).toBe('waiting');
-      expect(list[0].player1Connected).toBe(true);
-      expect(list[0].player2Connected).toBe(false);
+    it('takes nothing after the ninth move', async () => {
+      const id = await openRoom();
+      await play(id, 0, 9);
+      await expect(manager.recordMove(id, 'player-1', 8)).rejects.toThrow('All nine moves are already in');
+      await expect(manager.recordMove(id, 'player-2', 9)).rejects.toThrow('All nine moves are already in');
+      expect((await room(id)).movesMade).toBe(9);
     });
 
-    it('should list playing games', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      await manager.joinGame(room.id, 'player-2', PLAYER2_CARDS);
-      const list = await manager.listGames();
-      expect(list).toHaveLength(1);
-      expect(list[0].status).toBe('playing');
-      expect(list[0].player2Connected).toBe(true);
+    it('changes nothing when it refuses a move', async () => {
+      const id = await openRoom();
+      await backdateLastMove(id, 5000);
+      const before = structuredClone(await room(id));
+      await expect(manager.recordMove(id, 'player-2', 0)).rejects.toThrow();
+      await expect(manager.recordMove(id, 'player-1', 3)).rejects.toThrow();
+      expect(await room(id)).toEqual(before);
     });
 
-    it('should list multiple games', async () => {
-      await manager.createGame('player-1', PLAYER1_CARDS);
-      await manager.createGame('player-2', PLAYER2_CARDS);
-      expect(await manager.listGames()).toHaveLength(2);
-    });
-  });
-
-  describe('removePlayer', () => {
-    it('should remove game if creator leaves before game starts', async () => {
-      await manager.createGame('player-1', PLAYER1_CARDS);
-      const result = await manager.removePlayer('player-1');
-      expect(result).toBeNull();
-      expect(await manager.getGameCount()).toBe(0);
+    it('restarts the turn clock with each move', async () => {
+      const id = await openRoom();
+      await backdateLastMove(id, 50_000);
+      const before = Date.now();
+      await manager.recordMove(id, 'player-1', 0);
+      expect((await room(id)).lastMoveTimestamp).toBeGreaterThanOrEqual(before);
     });
 
-    it('should notify when player leaves active game', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      await manager.joinGame(room.id, 'player-2', PLAYER2_CARDS);
-      const result = await manager.removePlayer('player-1');
-      expect(result).not.toBeNull();
-      expect(result!.gameId).toBe(room.id);
-    });
-
-    it('should return null for unknown player', async () => {
-      expect(await manager.removePlayer('unknown')).toBeNull();
-    });
-
-    it('should clean up player-to-game mapping', async () => {
-      await manager.createGame('player-1', PLAYER1_CARDS);
-      await manager.removePlayer('player-1');
-      expect(await manager.getPlayerGame('player-1')).toBeNull();
-    });
-  });
-
-  describe('removeGame', () => {
-    it('should remove game and clean up mappings', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      await manager.joinGame(room.id, 'player-2', PLAYER2_CARDS);
-      await manager.removeGame(room.id);
-      expect(await manager.getGameCount()).toBe(0);
+    it('releases both players once the moves are complete, so either can queue again', async () => {
+      const id = await openRoom();
+      await play(id, 0, 8);
+      expect(await manager.getPlayerGame('player-1')).toBe(id);
+      await manager.recordMove(id, 'player-1', 8);
       expect(await manager.getPlayerGame('player-1')).toBeNull();
       expect(await manager.getPlayerGame('player-2')).toBeNull();
-    });
-  });
-
-  describe('duplicate card ID validation (Fix 4.1)', () => {
-    it('should reject duplicate card IDs in createGame', async () => {
-      await expect(manager.createGame('p1', [1, 1, 3, 4, 5])).rejects.toThrow('Duplicate card IDs not allowed');
+      // The room itself stays: the settlement notices still travel through it.
+      expect(await manager.getGame(id)).not.toBeNull();
+      await manager.queuePlayer('player-1');
     });
 
-    it('should reject all-same card IDs in createGame', async () => {
-      await expect(manager.createGame('p1', [1, 1, 1, 1, 1])).rejects.toThrow('Duplicate card IDs not allowed');
+    it('does not release a player who has already moved on to another room', async () => {
+      const first = await openRoom();
+      await play(first, 0, 8);
+      // Player 2 has made its last move, leaves, and is matched again.
+      await manager.releasePlayer('player-2');
+      const second = await openRoom('player-2', 'player-3');
+
+      await manager.recordMove(first, 'player-1', 8);
+      expect(await manager.getPlayerGame('player-2')).toBe(second);
     });
 
-    it('should reject duplicate card IDs in joinGame', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      await expect(manager.joinGame(room.id, 'player-2', [6, 6, 8, 9, 10])).rejects.toThrow('Duplicate card IDs not allowed');
-    });
-
-    it('should accept valid unique card IDs', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      expect(room.player1CardIds).toEqual(PLAYER1_CARDS);
-    });
-  });
-
-  describe('game overwrite prevention (Fix 4.2)', () => {
-    it('should reject creating a new game while in an active game', async () => {
-      await manager.createGame('player-1', PLAYER1_CARDS);
-      await expect(manager.createGame('player-1', PLAYER2_CARDS)).rejects.toThrow('already in an active game');
-    });
-
-    it('should allow creating a game after previous game is removed', async () => {
-      await manager.createGame('player-1', PLAYER1_CARDS);
-      await manager.removePlayer('player-1');
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      expect(room.player1Id).toBe('player-1');
-    });
-
-    it('should reject joining a game while in an active game', async () => {
-      const room1 = await manager.createGame('player-1', PLAYER1_CARDS);
-      await manager.joinGame(room1.id, 'player-2', PLAYER2_CARDS);
-      const room2 = await manager.createGame('player-3', [11, 12, 13, 14, 15]);
-      await expect(manager.joinGame(room2.id, 'player-2', PLAYER2_CARDS)).rejects.toThrow('already in an active game');
-    });
-  });
-
-  describe('move nonce validation (V7 Fix 4.1)', () => {
-    let gameId: string;
-
-    beforeEach(async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      gameId = room.id;
-      await manager.joinGame(gameId, 'player-2', PLAYER2_CARDS);
-    });
-
-    it('should accept moves with correct move number', async () => {
-      const result = await manager.placeCard(gameId, 'player-1', 0, 0, 0, 0);
-      expect(result.newState).toBeDefined();
-      expect(result.newState.board[0][0].card).not.toBeNull();
-    });
-
-    it('should reject moves with wrong move number', async () => {
-      await expect(manager.placeCard(gameId, 'player-1', 0, 0, 0, 1)).rejects.toThrow('Invalid move number: expected 0, got 1');
-    });
-
-    it('should increment expected move number after each move', async () => {
-      await manager.placeCard(gameId, 'player-1', 0, 0, 0, 0);
-      await manager.placeCard(gameId, 'player-2', 0, 0, 1, 1);
-      await manager.placeCard(gameId, 'player-1', 0, 0, 2, 2);
-      await expect(manager.placeCard(gameId, 'player-2', 0, 1, 0, 2)).rejects.toThrow('Invalid move number: expected 3, got 2');
-      const result = await manager.placeCard(gameId, 'player-2', 0, 1, 0, 3);
-      expect(result.newState).toBeDefined();
-    });
-
-    it('should prevent replay of previous move number', async () => {
-      await manager.placeCard(gameId, 'player-1', 0, 0, 0, 0);
-      await expect(manager.placeCard(gameId, 'player-2', 0, 0, 1, 0)).rejects.toThrow('Invalid move number: expected 1, got 0');
-    });
-
-    it('should allow moves without moveNumber for backward compatibility', async () => {
-      const result = await manager.placeCard(gameId, 'player-1', 0, 0, 0);
-      expect(result.newState).toBeDefined();
-    });
-
-    it('should track move numbers through a full game', async () => {
-      const positions: [number, number][] = [
-        [0, 0], [0, 1], [0, 2],
-        [1, 0], [1, 1], [1, 2],
-        [2, 0], [2, 1], [2, 2],
-      ];
-      for (let i = 0; i < 9; i++) {
-        const player = i % 2 === 0 ? 'player-1' : 'player-2';
-        const [row, col] = positions[i];
-        const result = await manager.placeCard(gameId, player, 0, row, col, i);
-        if (i === 8) {
-          expect(result.newState.status).toBe('finished');
+    it('never loses a move count to a concurrent tx report', async () => {
+      // Like Redis, this store hands out copies. Two handlers that each read
+      // the room and write their copy back would lose one of the changes —
+      // and a lost move count wedges the game, since the relay would then
+      // refuse the next move as out of order.
+      class CopyingStore extends MemoryGameStore {
+        override async getGame(gameId: string): Promise<StoredGameRoom | null> {
+          const found = await super.getGame(gameId);
+          return found && structuredClone(found);
+        }
+        override async setGame(gameId: string, r: StoredGameRoom): Promise<void> {
+          await super.setGame(gameId, structuredClone(r));
         }
       }
+      store = new CopyingStore();
+      manager = new GameManager(store);
+      const id = await openRoom();
+
+      await Promise.all([
+        manager.recordMove(id, 'player-1', 0),
+        manager.updateTxStatus(id, 'player-2', 'confirmed'),
+      ]);
+      await Promise.all([
+        manager.updateTxStatus(id, 'player-1', 'confirmed'),
+        manager.recordMove(id, 'player-2', 1),
+      ]);
+
+      const r = await room(id);
+      expect(r.movesMade).toBe(2);
+      expect(r.onChainStatus).toMatchObject({ player1Tx: 'confirmed', player2Tx: 'confirmed' });
     });
   });
 
-  describe('game lock (replaces processing flag)', () => {
-    let gameId: string;
-
-    beforeEach(async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      gameId = room.id;
-      await manager.joinGame(gameId, 'player-2', PLAYER2_CARDS);
+  describe('updateTxStatus', () => {
+    it('says canSettle only with both commits confirmed AND all nine moves in', async () => {
+      const id = await openRoom();
+      expect(await manager.updateTxStatus(id, 'player-1', 'confirmed'))
+        .toEqual({ player1Tx: 'confirmed', player2Tx: 'idle', canSettle: false });
+      expect(await manager.updateTxStatus(id, 'player-2', 'confirmed'))
+        .toEqual({ player1Tx: 'confirmed', player2Tx: 'confirmed', canSettle: false });
+      await play(id, 0, 8);
+      expect((await room(id)).onChainStatus.canSettle).toBe(false);
+      const last = await manager.recordMove(id, 'player-1', 8);
+      expect(last.room.onChainStatus.canSettle).toBe(true);
     });
 
-    it('should initialize expectedMoveNumber to 0', async () => {
-      const room = await manager.getGame(gameId);
-      expect(room!.expectedMoveNumber).toBe(0);
+    it('also gets to canSettle when the moves finish before the last commit is reported', async () => {
+      const id = await openRoom();
+      await play(id, 0, 9);
+      expect((await manager.updateTxStatus(id, 'player-2', 'confirmed'))!.canSettle).toBe(false);
+      expect((await manager.updateTxStatus(id, 'player-1', 'confirmed'))!.canSettle).toBe(true);
     });
 
-    it('should release lock after successful move', async () => {
-      await manager.placeCard(gameId, 'player-1', 0, 0, 0);
-      // A second move should succeed (lock released)
-      await manager.placeCard(gameId, 'player-2', 0, 0, 1);
+    it('records a failure', async () => {
+      const id = await openRoom();
+      expect(await manager.updateTxStatus(id, 'player-2', 'failed'))
+        .toEqual({ player1Tx: 'idle', player2Tx: 'failed', canSettle: false });
     });
 
-    it('should release lock after failed move', async () => {
-      try {
-        await manager.placeCard(gameId, 'player-2', 0, 0, 0); // wrong turn
-      } catch { /* expected */ }
-      // Lock should be released, next valid move works
-      await manager.placeCard(gameId, 'player-1', 0, 0, 0);
+    it('returns null for a player not in the room, or a room that does not exist', async () => {
+      const id = await openRoom();
+      expect(await manager.updateTxStatus(id, 'player-3', 'confirmed')).toBeNull();
+      expect(await manager.updateTxStatus('no-such-room', 'player-1', 'confirmed')).toBeNull();
+    });
+
+    it('starts the first turn when the second commit lands', async () => {
+      const id = await openRoom();
+      await backdateLastMove(id, 10 * 60_000);
+      const stale = (await room(id)).lastMoveTimestamp;
+
+      await manager.updateTxStatus(id, 'player-1', 'confirmed');
+      expect((await room(id)).lastMoveTimestamp).toBe(stale);
+
+      const before = Date.now();
+      await manager.updateTxStatus(id, 'player-2', 'confirmed');
+      expect((await room(id)).lastMoveTimestamp).toBeGreaterThanOrEqual(before);
+    });
+
+    it('does not restart a turn that is already running', async () => {
+      const id = await openRoom();
+      await manager.recordMove(id, 'player-1', 0);
+      await backdateLastMove(id, 40_000);
+      const turnStart = (await room(id)).lastMoveTimestamp;
+
+      await confirmBoth(id);
+      await manager.updateTxStatus(id, 'player-1', 'confirmed');
+      expect((await room(id)).lastMoveTimestamp).toBe(turnStart);
     });
   });
 
-  describe('settleAbandonedGame', () => {
-    let gameId: string;
-
-    beforeEach(async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      gameId = room.id;
-      await manager.joinGame(gameId, 'player-2', PLAYER2_CARDS);
-      // Partial game: P1 m0, P2 m1, P1 m2 — then P2 abandons
-      await manager.placeCard(gameId, 'player-1', 0, 0, 0, 0);
-      await manager.placeCard(gameId, 'player-2', 0, 1, 1, 1);
-      await manager.placeCard(gameId, 'player-1', 0, 2, 2, 2);
+  describe('roomInfo', () => {
+    it('says only what a pipe knows: status, move count, who is connected', async () => {
+      const id = await openRoom();
+      const info = await manager.roomInfo(id, playerId => playerId === 'player-1');
+      expect(info).toEqual({ id, status: 'waiting', movesMade: 0, player1Connected: true, player2Connected: false });
     });
 
-    it('marks the game finished with the reporter as winner', async () => {
-      const room = await manager.settleAbandonedGame(gameId, 'player-1');
-      expect(room.state.status).toBe('finished');
-      expect(room.state.winner).toBe('player1');
-      // Persisted, not just returned
-      const stored = (await manager.getGame(gameId))!;
-      expect(stored.state.status).toBe('finished');
-      expect(stored.state.winner).toBe('player1');
+    it('goes waiting → active → moves-complete', async () => {
+      const id = await openRoom();
+      const status = async () => (await manager.roomInfo(id, () => true))!.status;
+      expect(await status()).toBe('waiting');
+      await manager.updateTxStatus(id, 'player-1', 'confirmed');
+      expect(await status()).toBe('waiting');
+      await manager.updateTxStatus(id, 'player-2', 'confirmed');
+      expect(await status()).toBe('active');
+      await play(id, 0, 8);
+      expect(await status()).toBe('active');
+      await play(id, 8, 9);
+      expect(await status()).toBe('moves-complete');
     });
 
-    it('releases both players so they can start new games immediately', async () => {
-      await manager.settleAbandonedGame(gameId, 'player-1');
+    it('is active from the first move even if no commit was reported', async () => {
+      const id = await openRoom();
+      await play(id, 0, 1);
+      expect(await manager.roomInfo(id, () => true)).toMatchObject({ status: 'active', movesMade: 1 });
+    });
+
+    it('returns null for a room that does not exist', async () => {
+      expect(await manager.roomInfo('no-such-room', () => true)).toBeNull();
+    });
+  });
+
+  describe('queuePlayer', () => {
+    it('queues a player and nothing about their hand', async () => {
+      expect(await manager.queuePlayer('player-1')).toBe(1);
+      const entries = await store.listQueue();
+      expect(entries).toHaveLength(1);
+      expect(Object.keys(entries[0]).sort()).toEqual(['lastPing', 'playerId', 'queuedAt']);
+    });
+
+    it('refuses a player still bound to a room', async () => {
+      await openRoom();
+      await expect(manager.queuePlayer('player-1')).rejects.toThrow('You are already in an active game');
+    });
+
+    it('refuses a player already queued', async () => {
+      await manager.queuePlayer('player-1');
+      await expect(manager.queuePlayer('player-1')).rejects.toThrow('already in the matchmaking queue');
+    });
+
+    it('lets a player whose binding points at a vanished room queue, cleaning the binding up', async () => {
+      await store.setPlayerGame('player-1', 'no-such-room');
+      await manager.queuePlayer('player-1');
       expect(await manager.getPlayerGame('player-1')).toBeNull();
+    });
+  });
+
+  describe('releasePlayer', () => {
+    it('releases one binding and leaves the room alone', async () => {
+      const id = await openRoom();
+      await manager.releasePlayer('player-2');
       expect(await manager.getPlayerGame('player-2')).toBeNull();
-      // The QA-F3 symptom: this used to throw 'already in an active game'
-      const fresh = await manager.createGame('player-1', PLAYER1_CARDS);
-      expect(fresh.id).not.toBe(gameId);
-    });
-
-    it('throws for an unknown game', async () => {
-      await expect(manager.settleAbandonedGame('nonexistent', 'player-1')).rejects.toThrow('Game not found');
-    });
-
-    it('throws for a player not in the game', async () => {
-      await expect(manager.settleAbandonedGame(gameId, 'intruder')).rejects.toThrow('Player not in this game');
-    });
-
-    it('throws for a game that has not started', async () => {
-      const waiting = await manager.createGame('player-3', [11, 12, 13, 14, 15]);
-      await expect(manager.settleAbandonedGame(waiting.id, 'player-3')).rejects.toThrow('Game has not started');
-    });
-
-    it('is idempotent and keeps the first reporter as winner', async () => {
-      await manager.settleAbandonedGame(gameId, 'player-1');
-      const again = await manager.settleAbandonedGame(gameId, 'player-2');
-      expect(again.state.status).toBe('finished');
-      expect(again.state.winner).toBe('player1');
-    });
-
-    it('rejects further moves after settlement', async () => {
-      await manager.settleAbandonedGame(gameId, 'player-1');
-      await expect(manager.placeCard(gameId, 'player-2', 0, 0, 1, 3)).rejects.toThrow();
-    });
-
-    it('releases the game lock so subsequent calls are not blocked', async () => {
-      await manager.settleAbandonedGame(gameId, 'player-1');
-      // Would throw 'Game is currently processing another move' if the lock leaked
-      const again = await manager.settleAbandonedGame(gameId, 'player-1');
-      expect(again.state.status).toBe('finished');
+      expect(await manager.getPlayerGame('player-1')).toBe(id);
+      expect(await manager.getGame(id)).not.toBeNull();
     });
   });
 
   describe('cleanupStaleGames', () => {
     it('should remove games past timeout', async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      // Manually set lastActivity to past
-      const gameRoom = (await manager.getGame(room.id))!;
-      gameRoom.lastActivity = Date.now() - 31 * 60 * 1000;
-      // Write the modified room back to the store
-      await (manager as any).store.setGame(room.id, gameRoom);
-      const cleaned = await manager.cleanupStaleGames();
-      expect(cleaned).toBe(1);
+      const id = await openRoom();
+      const r = await room(id);
+      r.lastActivity = Date.now() - 31 * 60 * 1000;
+      await store.setGame(id, r);
+      expect(await manager.cleanupStaleGames()).toBe(1);
       expect(await manager.getGameCount()).toBe(0);
+      expect(await manager.getPlayerGame('player-1')).toBeNull();
     });
 
     it('should not remove active games', async () => {
-      await manager.createGame('player-1', PLAYER1_CARDS);
-      const cleaned = await manager.cleanupStaleGames();
-      expect(cleaned).toBe(0);
+      await openRoom();
+      expect(await manager.cleanupStaleGames()).toBe(0);
       expect(await manager.getGameCount()).toBe(1);
     });
   });
@@ -468,20 +337,12 @@ describe('GameManager', () => {
     let gameId: string;
 
     beforeEach(async () => {
-      const room = await manager.createGame('player-1', PLAYER1_CARDS);
-      gameId = room.id;
-      await manager.joinGame(gameId, 'player-2', PLAYER2_CARDS);
+      gameId = await openRoom();
+      // Both records on-chain: the game has started and the turn clock runs.
+      await confirmBoth(gameId);
     });
 
-    /** Back-date the room's last-move clock by `ms` so it appears idle. */
-    async function backdateLastMove(id: string, ms: number): Promise<void> {
-      const room = (await manager.getGame(id))!;
-      room.lastMoveTimestamp = Date.now() - ms;
-      await (manager as any).store.setGame(id, room);
-    }
-
-    it('does NOT report a game whose current player just moved', async () => {
-      // Fresh game (joinGame set lastMoveTimestamp = now): no one is idle yet.
+    it('does NOT report a game whose turn just started', async () => {
       expect(await manager.findIdleGames()).toEqual([]);
     });
 
@@ -505,71 +366,62 @@ describe('GameManager', () => {
       expect(idle[0].player2Id).toBe('player-2');
     });
 
-    it('idlePlayer is whoever it is to move (player1 at game start)', async () => {
-      // No moves yet → player1's turn → player1 is the idle one.
+    it('idlePlayer is whoever owes the next move: player1 before any move', async () => {
       await backdateLastMove(gameId, MOVE_INACTIVITY_MS + 1000);
       const idle = await manager.findIdleGames();
       expect(idle[0].idlePlayer).toBe('player1');
     });
 
-    it('idlePlayer follows the turn: after player1 moves, player2 is the idle one', async () => {
-      await manager.placeCard(gameId, 'player-1', 0, 0, 0, 0); // now player2's turn
+    it('idlePlayer follows the move count: after move 0, player2 is the idle one', async () => {
+      await manager.recordMove(gameId, 'player-1', 0);
       await backdateLastMove(gameId, MOVE_INACTIVITY_MS + 1000);
-      const idle = await manager.findIdleGames();
-      expect(idle).toHaveLength(1);
-      expect(idle[0].idlePlayer).toBe('player2');
+      expect((await manager.findIdleGames())[0].idlePlayer).toBe('player2');
+
+      await manager.recordMove(gameId, 'player-2', 1);
+      await backdateLastMove(gameId, MOVE_INACTIVITY_MS + 1000);
+      expect((await manager.findIdleGames())[0].idlePlayer).toBe('player1');
     });
 
     it("names no cards: recovering an abandoned game needs nobody's hand", async () => {
-      // This used to carry the idle player's committed hand, which the relay then
-      // broadcast to both players in the abandonment warning. Recovery now
-      // releases notes each player prepared at commit time, so the claimant
-      // needs no card ids at all.
       await backdateLastMove(gameId, MOVE_INACTIVITY_MS + 1000);
       const [idle] = await manager.findIdleGames();
       expect(Object.keys(idle).sort()).toEqual(['gameId', 'idlePlayer', 'player1Id', 'player2Id', 'secondsIdle']);
-      expect(JSON.stringify(idle)).not.toContain('cardIds');
     });
 
     it('clears once a move arrives (the idle clock resets)', async () => {
       await backdateLastMove(gameId, MOVE_INACTIVITY_MS + 1000);
       expect(await manager.findIdleGames()).toHaveLength(1);
 
-      // player1 (whose turn it is) finally moves → game no longer idle.
-      await manager.placeCard(gameId, 'player-1', 0, 0, 0, 0);
+      await manager.recordMove(gameId, 'player-1', 0);
       expect(await manager.findIdleGames()).toEqual([]);
     });
 
-    it('does NOT report a waiting game (no second player yet)', async () => {
-      const waiting = await manager.createGame('player-3', [11, 12, 13, 14, 15]);
-      // Even far past the threshold, a not-yet-started game is never "idle".
-      await backdateLastMove(waiting.id, MOVE_INACTIVITY_MS + 10_000);
+    it('does NOT report a room whose game is not on-chain yet: no turn has started', async () => {
+      // Nobody can move before both commits are on-chain, since every move
+      // carries a proof over both hand commitments.
+      const waiting = await openRoom('player-3', 'player-4');
+      await manager.updateTxStatus(waiting, 'player-3', 'confirmed');
+      await backdateLastMove(waiting, MOVE_INACTIVITY_MS + 10_000);
       const idle = await manager.findIdleGames();
-      expect(idle.some(g => g.gameId === waiting.id)).toBe(false);
+      expect(idle.some(g => g.gameId === waiting)).toBe(false);
     });
 
-    it("does NOT report a finished game", async () => {
-      // Play to completion, then back-date — a finished game is never idle.
-      const positions: [number, number][] = [
-        [0, 0], [0, 1], [0, 2],
-        [1, 0], [1, 1], [1, 2],
-        [2, 0], [2, 1], [2, 2],
-      ];
-      for (let i = 0; i < 9; i++) {
-        const player = i % 2 === 0 ? 'player-1' : 'player-2';
-        const [row, col] = positions[i];
-        await manager.placeCard(gameId, player, 0, row, col, i);
-      }
-      const finished = (await manager.getGame(gameId))!;
-      expect(finished.state.status).toBe('finished');
+    it('reports a room whose moves have started even if no commit was reported', async () => {
+      const unreported = await openRoom('player-3', 'player-4');
+      await manager.recordMove(unreported, 'player-3', 0);
+      await backdateLastMove(unreported, MOVE_INACTIVITY_MS + 1000);
+      const idle = (await manager.findIdleGames()).find(g => g.gameId === unreported);
+      expect(idle?.idlePlayer).toBe('player2');
+    });
 
+    it('does NOT report a room whose nine moves are all in', async () => {
+      await play(gameId, 0, 9);
       await backdateLastMove(gameId, MOVE_INACTIVITY_MS + 10_000);
       expect(await manager.findIdleGames()).toEqual([]);
     });
 
     it('honors a custom threshold and a custom now', async () => {
-      const room = (await manager.getGame(gameId))!;
-      const base = room.lastMoveTimestamp;
+      const base = (await room(gameId)).lastMoveTimestamp;
       // 30s threshold, evaluated 40s after the last move → idle.
       expect(await manager.findIdleGames(30_000, base + 40_000)).toHaveLength(1);
       // Same instant, 60s threshold → not yet idle.

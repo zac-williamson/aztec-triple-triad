@@ -3,13 +3,14 @@
  *
  * Spins up the REAL relay (createServer, in-memory store) over loopback with the
  * production abandonment code and tuned-fast timing, then drives the ws protocol
- * (CREATE -> JOIN -> PLACE -> idle) and asserts the IMPENDING-abandonment
- * behaviour end-to-end at the relay protocol level:
+ * (QUEUE -> MATCH -> both commits confirmed -> MOVE 0 -> idle) and asserts the
+ * IMPENDING-abandonment behaviour end-to-end at the relay protocol level:
  *   - BOTH players are warned BEFORE the deadline (impending), with a live
  *     secondsUntilClaimable countdown that is > 0 (not yet claimable);
  *   - the countdown reaches 0 at the deadline (claimable);
- *   - idlePlayer is the player who owes the move, and the warning names no
- *     cards (it used to broadcast the abandoner's whole hand to both players).
+ *   - idlePlayer is the player who owes the move by the relay's move count,
+ *     and the warning names no cards (it used to broadcast the abandoner's
+ *     whole hand to both players).
  *
  * This runs against a local in-process server (identical code to the deployed
  * box relay) so it never depends on remote networking — the remote ws connect is
@@ -22,8 +23,8 @@ import { createServer } from '../dist/server.js';
 const DEADLINE_MS = 12_000; // abandonment deadline
 const LEAD_MS = 10_000;     // warn 10s before it -> first warning at ~2s idle
 const PORT = 5599;
-const P1 = [1, 2, 3, 4, 5];
-const P2 = [6, 7, 8, 9, 10];
+// A sealed MOVE as the relay sees it: base64 it never reads.
+const SEALED = { iv: Buffer.alloc(12, 1).toString('base64'), ciphertext: Buffer.alloc(300, 2).toString('base64') };
 
 const send = (c, o) => c.ws.send(JSON.stringify(o));
 function connect(name, t0) {
@@ -74,12 +75,16 @@ setTimeout(() => { console.error('HARD TIMEOUT — exiting'); process.exit(2); }
   await waitOpen(A); await waitFor(A, 'SESSION_ESTABLISHED');
   await waitOpen(B); await waitFor(B, 'SESSION_ESTABLISHED');
 
-  send(A, { type: 'CREATE_GAME', cardIds: P1 });
-  const gameId = (await waitFor(A, 'GAME_CREATED')).gameId;
-  send(B, { type: 'JOIN_GAME', gameId, cardIds: P2 });
-  await waitFor(B, 'GAME_JOINED'); await waitFor(A, 'GAME_START');
-  send(A, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0, moveNumber: 0 });
-  await waitFor(A, 'GAME_STATE'); await waitFor(B, 'GAME_STATE');
+  send(A, { type: 'QUEUE_MATCHMAKING' });
+  await waitFor(A, 'MATCHMAKING_QUEUED');
+  send(B, { type: 'QUEUE_MATCHMAKING' });
+  const gameId = (await waitFor(A, 'MATCH_FOUND')).gameId;
+  await waitFor(B, 'MATCH_FOUND');
+  // Both commits mined: the game is on-chain and the turn clock starts.
+  send(A, { type: 'TX_CONFIRMED', gameId, txType: 'create_game' });
+  send(B, { type: 'TX_CONFIRMED', gameId, txType: 'join_game' });
+  send(A, { type: 'MOVE', gameId, moveNumber: 0, ...SEALED });
+  await waitFor(B, 'MOVE');
   t0.v = Date.now(); // start the idle clock at the move
   console.log(`deadline=${DEADLINE_MS / 1000}s lead=${LEAD_MS / 1000}s -> warn at ~${(DEADLINE_MS - LEAD_MS) / 1000}s. A(p1) placed; B(p2) owes a move. Idling...\n`);
 

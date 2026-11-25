@@ -10,9 +10,6 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { GameManager } from '../src/GameManager.js';
 import { MemoryGameStore } from '../src/store/MemoryGameStore.js';
 
-const CARDS_A = [1, 2, 3, 4, 5];
-const CARDS_B = [6, 7, 8, 9, 10];
-
 describe('GameManager.tryMatch', () => {
   let manager: GameManager;
   const bots = new Set<string>();
@@ -24,7 +21,7 @@ describe('GameManager.tryMatch', () => {
   });
 
   async function queue(...ids: string[]) {
-    for (const id of ids) await manager.queuePlayer(id, id.startsWith('bot') ? CARDS_B : CARDS_A);
+    for (const id of ids) await manager.queuePlayer(id);
   }
   const live = (...ids: string[]) => new Set(ids);
 
@@ -120,8 +117,8 @@ describe('server declines a redundant bot offer', () => {
   it('reports botsQueued and humansWaiting, counting oldestWaitMs over humans only', async () => {
     const manager = new GameManager(new MemoryGameStore());
     const bots = new Set(['bot-0']);
-    await manager.queuePlayer('bot-0', CARDS_B);
-    await manager.queuePlayer('human-1', CARDS_A);
+    await manager.queuePlayer('bot-0');
+    await manager.queuePlayer('human-1');
     // Read from 10s in the future: waitMs clamps at 0, so a `now` in the past
     // would make every wait zero and the assertion vacuous.
     const now = Date.now() + 10_000;
@@ -142,7 +139,7 @@ describe('server declines a redundant bot offer', () => {
 
   it('reports zero wait when only bots are queued', async () => {
     const manager = new GameManager(new MemoryGameStore());
-    await manager.queuePlayer('bot-0', CARDS_B);
+    await manager.queuePlayer('bot-0');
     const snap = await manager.queueSnapshot(Date.now(), () => true);
     expect(snap.oldestWaitMs).toBe(0);
     expect(snap.humansWaiting).toBe(0);

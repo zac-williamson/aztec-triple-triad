@@ -2,10 +2,14 @@
  * Process-local counters for the /metrics endpoint.
  *
  * Deliberately dependency-free and in-memory: this is operational visibility for
- * "is the arena bot working, and if not which way is it broken", not analytics.
- * Counters reset on restart, which is fine — the questions they answer
- * ("are matches forming?", "is the bot losing every game?", "are settlements
- * failing?") are about the current process's health.
+ * "is the arena working, and if not which way is it broken", not analytics.
+ * Counters reset on restart, which is fine — the questions they answer ("are
+ * matches forming?", "are games getting all the way through?") are about the
+ * current process's health.
+ *
+ * Nothing here says who won. The relay cannot know: it forwards sealed moves
+ * and never sees a card (docs/plan/PRIVATE_GAMES.md §6). The bot reports its
+ * own results, on its own /health.
  *
  * Anything that needs history should scrape this endpoint on an interval.
  */
@@ -13,24 +17,22 @@
 export interface MetricsSnapshot {
   startedAt: number;
   uptimeMs: number;
-  /** Games created, by how the opponent was found. */
+  /** Rooms opened. Matchmaking is the only way a room opens. */
   gamesCreated: number;
+  /** Rooms whose ninth MOVE was relayed: every move went through. */
   gamesCompleted: number;
   /** Matches formed from the queue (both human, or human+bot). */
   matchesFormed: number;
   /** Matches where one side was the arena bot. */
   botMatchesFormed: number;
-  /** Bot game outcomes, from the bot's point of view. */
-  botWins: number;
-  botLosses: number;
-  botDraws: number;
   /**
    * Net cards the bot has gained (+) or lost (-) through settlement.
    *
-   * NOT YET WIRED — settlement is on-chain (phase 3), so the relay cannot see
-   * it. Reads 0 until then. Called out explicitly because this is the counter
-   * that answers "is the bot being farmed?", and a silent zero would read as
-   * "healthy" rather than "not measured".
+   * NOT MEASURABLE HERE: settlement is on-chain and the relay sees no card at
+   * all, so this always reads 0. Called out explicitly because this is the
+   * counter that answers "is the bot being farmed?", and a silent zero would
+   * read as "healthy" rather than "not measured". The bot's own /health is
+   * where card flow can be seen.
    */
   botCardNetFlow: number;
   /** Failures, split so a spike points at the right subsystem. */
@@ -48,9 +50,6 @@ const counters = {
   gamesCompleted: 0,
   matchesFormed: 0,
   botMatchesFormed: 0,
-  botWins: 0,
-  botLosses: 0,
-  botDraws: 0,
   botCardNetFlow: 0,
   botJoinFailures: 0,
   botMoveFailures: 0,

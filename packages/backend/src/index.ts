@@ -4,8 +4,8 @@ export { createServer } from './server.js';
 export type {
   ClientMessage,
   ServerMessage,
-  GameListEntry,
-  GameRoom,
+  RoomInfo,
+  RoomStatus,
 } from './types.js';
 export type { ServerOptions, CardGameServer } from './server.js';
 export type { GameStore, StoredGameRoom, SessionData, QueueEntryData } from './store/GameStore.js';

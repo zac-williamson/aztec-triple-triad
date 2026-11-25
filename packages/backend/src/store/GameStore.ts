@@ -1,5 +1,4 @@
-import type { GameState, Player } from '@axolotl-arena/game-logic';
-import type { OnChainGameStatus, TxStatus } from '../types.js';
+import type { OnChainGameStatus } from '../types.js';
 
 /**
  * How long a session may sit idle (no create/RESUME/PING refresh) before it
@@ -10,28 +9,30 @@ import type { OnChainGameStatus, TxStatus } from '../types.js';
 export const SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 /**
- * Serializable game room — everything except the transient `processing` lock.
+ * A room, as the relay keeps it: who is in it, how many moves have gone
+ * through, and when. No hand, board, score or result — the relay never sees
+ * one (docs/plan/PRIVATE_GAMES.md §6).
  */
 export interface StoredGameRoom {
   id: string;
-  state: GameState;
+  /** Matchmaking opens a room with both players in it; nobody joins later. */
   player1Id: string;
-  player2Id: string | null;
-  player1CardIds: number[];
-  player2CardIds: number[];
+  player2Id: string;
   createdAt: number;
   lastActivity: number;
   /**
-   * Timestamp of the most recent PLACE_CARD move, used solely for
-   * present-but-idle abandonment detection. Distinct from `lastActivity`,
-   * which any client message (proof relay, tx status, reconnect, etc.)
-   * refreshes — those keep the room alive but do NOT reset the per-move
-   * inactivity window. Set when the game starts (second player joins) and
-   * updated on every move; the detector compares `now - lastMoveTimestamp`
-   * against the 60s threshold while `state.status === 'playing'`.
+   * When the current turn began, used solely for present-but-idle abandonment
+   * detection: the last relayed MOVE, or — before the first — the moment the
+   * game went on-chain (both commits confirmed). Distinct from `lastActivity`,
+   * which tx status reports also refresh: those keep the room alive but do not
+   * restart a turn.
    */
   lastMoveTimestamp: number;
-  expectedMoveNumber: number;
+  /**
+   * MOVEs relayed so far, 0..9. The next MOVE accepted is number `movesMade`,
+   * and at nine the room's moves are complete.
+   */
+  movesMade: number;
   onChainStatus: OnChainGameStatus;
 }
 
@@ -41,9 +42,9 @@ export interface SessionData {
   lastSeen: number;
 }
 
+/** A waiting player. Deliberately nothing about their hand. */
 export interface QueueEntryData {
   playerId: string;
-  cardIds: number[];
   queuedAt: number;
   lastPing: number;
 }

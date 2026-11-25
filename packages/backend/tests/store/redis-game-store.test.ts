@@ -14,15 +14,12 @@ const REDIS_URL = process.env.REDIS_URL;
 function makeRoom(overrides: Partial<StoredGameRoom> = {}): StoredGameRoom {
   return {
     id: '0x' + 'ab'.repeat(31),
-    state: null as any,
     player1Id: 'p1',
-    player2Id: null,
-    player1CardIds: [1, 2, 3, 4, 5],
-    player2CardIds: [],
+    player2Id: 'p2',
     createdAt: Date.now(),
     lastActivity: Date.now(),
     lastMoveTimestamp: Date.now(),
-    expectedMoveNumber: 0,
+    movesMade: 0,
     onChainStatus: { player1Tx: 'idle', player2Tx: 'idle', canSettle: false },
     ...overrides,
   };
@@ -63,9 +60,9 @@ describe.skipIf(!REDIS_URL)('RedisGameStore', () => {
     it('overwrites an existing game', async () => {
       const room = makeRoom();
       await store.setGame(room.id, room);
-      const updated = { ...room, expectedMoveNumber: 3 };
+      const updated = { ...room, movesMade: 3 };
       await store.setGame(room.id, updated);
-      expect((await store.getGame(room.id))!.expectedMoveNumber).toBe(3);
+      expect((await store.getGame(room.id))!.movesMade).toBe(3);
     });
 
     it('deletes a game', async () => {
@@ -205,8 +202,8 @@ describe.skipIf(!REDIS_URL)('RedisGameStore', () => {
   // --- Matchmaking queue ---
 
   describe('matchmaking queue', () => {
-    const entry1: QueueEntryData = { playerId: 'p1', cardIds: [1, 2, 3, 4, 5], queuedAt: Date.now(), lastPing: Date.now() };
-    const entry2: QueueEntryData = { playerId: 'p2', cardIds: [6, 7, 8, 9, 10], queuedAt: Date.now(), lastPing: Date.now() };
+    const entry1: QueueEntryData = { playerId: 'p1', queuedAt: Date.now(), lastPing: Date.now() };
+    const entry2: QueueEntryData = { playerId: 'p2', queuedAt: Date.now(), lastPing: Date.now() };
 
     it('starts empty', async () => {
       expect(await store.getQueueLength()).toBe(0);
@@ -263,8 +260,8 @@ describe.skipIf(!REDIS_URL)('RedisGameStore', () => {
 
   describe('cleanupStaleGames', () => {
     it('removes games older than timeout', async () => {
-      const stale = makeRoom({ id: 'old', player1Id: 'p-old', lastActivity: Date.now() - 60_000 });
-      const fresh = makeRoom({ id: 'new', player1Id: 'p-new', lastActivity: Date.now() });
+      const stale = makeRoom({ id: 'old', player1Id: 'p-old', player2Id: 'p-old-2', lastActivity: Date.now() - 60_000 });
+      const fresh = makeRoom({ id: 'new', player1Id: 'p-new', player2Id: 'p-new-2', lastActivity: Date.now() });
       await store.setGame('old', stale);
       await store.setGame('new', fresh);
       await store.setPlayerGame('p-old', 'old');
