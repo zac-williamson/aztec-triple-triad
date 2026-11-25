@@ -12,32 +12,14 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { TxNotificationCenter } from './TxNotificationCenter';
 import { txProgress, type TxProgressEvent } from '../aztec/txProgress';
+import { pointerEventsBySelector, readStylesheet } from '../__tests__/cssPolicy';
 
 // ── bug 1: pointer-events policy (the toast must not intercept game clicks) ──
 
-/** Map every selector → its declared `pointer-events` value (comments stripped,
- *  grouped selectors expanded, last declaration wins). */
-function pointerEventsBySelector(css: string): Record<string, string> {
-  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
-  const map: Record<string, string> = {};
-  const ruleRe = /([^{}]+)\{([^}]*)\}/g;
-  let m: RegExpExecArray | null;
-  while ((m = ruleRe.exec(stripped))) {
-    const pe = m[2].match(/pointer-events\s*:\s*([a-z-]+)/);
-    if (!pe) continue;
-    for (const sel of m[1].split(',')) map[sel.trim()] = pe[1];
-  }
-  return map;
-}
-
 describe('TxNotificationCenter pointer-events policy (bug 1)', () => {
-  // vitest runs with cwd = packages/frontend.
-  const css = readFileSync(join(process.cwd(), 'src/components/TxNotificationCenter.css'), 'utf8');
-  const pe = pointerEventsBySelector(css);
+  const pe = pointerEventsBySelector(readStylesheet('components/TxNotificationCenter.css'));
 
   it('the container and the toast CARD are pass-through (do not intercept clicks)', () => {
     expect(pe['.txnc-root']).toBe('none');

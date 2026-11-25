@@ -8,6 +8,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MainMenu, connectionBadge } from './MainMenu';
+import { pointerEventsBySelector, readStylesheet } from '../__tests__/cssPolicy';
 
 function props(overrides: Partial<Parameters<typeof MainMenu>[0]> = {}): Parameters<typeof MainMenu>[0] {
   return {
@@ -93,5 +94,24 @@ describe('MainMenu when the Aztec node is unreachable', () => {
     render(<MainMenu {...props()} />);
     expect(screen.getByTestId('connection-status').textContent).toBe('Connected');
     expect(screen.queryByTestId('aztec-error')).toBeNull();
+  });
+});
+
+describe('MainMenu pointer-events policy', () => {
+  // The menu sits over the 3D scene and is pass-through; each part that takes
+  // clicks opts back in. The stuck-game panel did not, so every button in it —
+  // Recover My Cards, Settle Game, Cancel Game, "I'm Still Here — Contest" —
+  // drew but could not be clicked: the click fell through to the app behind
+  // it (found by the playtest harness, whose contest click timed out on
+  // "<div class="app"> intercepts pointer events"). jsdom does no hit-testing,
+  // so the declared policy is what this pins.
+  const pe = pointerEventsBySelector(readStylesheet('components/MainMenu.css'));
+
+  it('the menu itself is pass-through', () => {
+    expect(pe['.main-menu']).toBe('none');
+  });
+
+  it('the stuck-game panel — and so its recover and contest buttons — takes clicks', () => {
+    expect(pe['.main-menu__stuck']).toBe('auto');
   });
 });

@@ -163,7 +163,10 @@ export function useGame(wsUrl: string): UseGameReturn {
   // keep looking while one is there: claim windows close, settlements land.
   const [stuckCheckTick, setStuckCheckTick] = useState(0);
   useEffect(() => {
-    if (screen !== 'main-menu' || !aztec.accountAddress) return;
+    // Not before the wallet is connected: a restore knows the address from its
+    // first phase, but the PXE door and the node are bound only as it ends —
+    // and a look before that fails and is not retried for a minute.
+    if (screen !== 'main-menu' || !aztec.accountAddress || !aztec.isAvailable) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     void (async () => {
@@ -189,7 +192,7 @@ export function useGame(wsUrl: string): UseGameReturn {
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
     // `storage.listClaimable` etc. are stable; depending on the hook's object
     // would re-run this on every render, and the setState inside makes a loop.
-  }, [screen, aztec.accountAddress, stuckCheckTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [screen, aztec.accountAddress, aztec.isAvailable, stuckCheckTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Act on the stuck game: whatever the chain allows for it right now. */
   const handleRecoverStuckGame = useCallback(async () => {

@@ -303,6 +303,9 @@
   border-radius: 6px;
   background: rgba(26, 46, 26, 0.75);
   text-align: center;
+  /* .main-menu is pass-through: without this the recover and contest
+     buttons draw but every click falls through to the scene behind. */
+  pointer-events: auto;
 }
 
 .main-menu__stuck-text {

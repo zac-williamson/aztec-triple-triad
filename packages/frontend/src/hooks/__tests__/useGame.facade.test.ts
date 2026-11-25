@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
   updateOwnedCards: vi.fn(),
   refreshOwnedCards: vi.fn(),
   refreshTokenBalance: vi.fn(),
+  aztec: {} as Record<string, any>,
 }));
 
 vi.mock('../useWebSocket', () => ({ useWebSocket: () => h.ws }));
@@ -40,12 +41,7 @@ vi.mock('../useGameSettlement', () => ({ useGameSettlement: () => h.settlement }
 vi.mock('../stuckGameCheck', () => ({ inspectStuckGame: h.inspectStuckGame, recoverStuckGame: h.recoverStuckGame }));
 vi.mock('../../aztec/gameActions', () => ({ contestClaim: h.contestClaim }));
 vi.mock('../../aztec/config', () => ({ AZTEC_CONFIG: { gameContractAddress: '0xGAME', enabled: true } }));
-vi.mock('../../aztec/AztecContext', () => ({
-  useAztecContext: () => ({
-    wallet: {}, accountAddress: '0xME', nodeClient: { node: true }, isAvailable: true, ownedCardIds: [],
-    updateOwnedCards: h.updateOwnedCards, refreshOwnedCards: h.refreshOwnedCards, refreshTokenBalance: h.refreshTokenBalance,
-  }),
-}));
+vi.mock('../../aztec/AztecContext', () => ({ useAztecContext: () => h.aztec }));
 
 import { useGame } from '../useGame';
 import { useGameStorage } from '../useGameStorage';
@@ -57,6 +53,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   phase = 'idle';
+  Object.assign(h.aztec, {
+    wallet: {}, accountAddress: '0xME', nodeClient: { node: true }, isAvailable: true, ownedCardIds: [],
+    updateOwnedCards: h.updateOwnedCards, refreshOwnedCards: h.refreshOwnedCards, refreshTokenBalance: h.refreshTokenBalance,
+  });
   Object.assign(h.ws, {
     connected: true, gameId: null, playerNumber: null, gameState: null, gameOver: null, lastMoveProof: null,
     matchmakingStatus: 'idle', opponentDisconnected: false, abandonmentWarning: null,
@@ -131,6 +131,20 @@ describe('the menu and a game that still holds cards', () => {
     await act(async () => { await result.current.handleContestClaim(); });
 
     expect(h.contestClaim).toHaveBeenCalledWith(expect.objectContaining({ roomId: 'room-1', role: 1 }), expect.anything(), claim);
+  });
+
+  it('waits for the wallet before looking: a restore knows the address before the PXE is bound', async () => {
+    storeStakedGame();
+    h.aztec.isAvailable = false;
+    const { rerender } = renderHook(() => useGame('ws://test'));
+    await new Promise(r => setTimeout(r, 20));
+    // Looking now fails ("PXE wallet not set") and is not retried for a
+    // minute — a minute of a returning player's dispute window.
+    expect(h.inspectStuckGame).not.toHaveBeenCalled();
+
+    h.aztec.isAvailable = true;
+    rerender();
+    await waitFor(() => expect(h.inspectStuckGame).toHaveBeenCalledTimes(1));
   });
 
   it('a read failure leaves whatever we last knew', async () => {
