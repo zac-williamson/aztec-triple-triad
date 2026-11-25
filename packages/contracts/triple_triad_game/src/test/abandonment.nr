@@ -73,7 +73,7 @@ unconstrained fn a_claim_cannot_be_finalized_inside_its_window() {
     finalize(env, p2, game, r1, r2, 1, 2, claimed_at);
 }
 
-#[test(should_fail)]
+#[test(should_fail_with = "duplicate nullifiers")]
 unconstrained fn a_contested_claim_cannot_be_finalized() {
     let (env, game, _nft, p1, p2, r1, r2, joined_at) = joined();
     wait(env, MIN_ABANDON_SECONDS);
@@ -136,7 +136,7 @@ unconstrained fn a_second_claim_too_soon_after_a_contest_is_refused() {
     let _ = claim(env, p2, game, r1, r2, 2, 2, contested_at);
 }
 
-#[test(should_fail)]
+#[test(should_fail_with = "duplicate nullifiers")]
 unconstrained fn each_side_contests_once() {
     let (env, game, _nft, p1, p2, r1, r2, joined_at) = joined();
     wait(env, MIN_ABANDON_SECONDS);
@@ -147,7 +147,7 @@ unconstrained fn each_side_contests_once() {
     let _ = contest(env, p1, game, r1, r2, 1, 2, 2, second);
 }
 
-#[test(should_fail)]
+#[test(should_fail_with = "duplicate nullifiers")]
 unconstrained fn a_claim_number_is_used_once() {
     let (env, game, _nft, p1, p2, r1, r2, joined_at) = joined();
     wait(env, MIN_ABANDON_SECONDS);
@@ -164,7 +164,7 @@ unconstrained fn a_full_transcript_outranks_a_standing_claim() {
     utils::settle(env, p1, game, r1, r2, utils::transcript(r1[1], r2[1], 1), 1);
 }
 
-#[test(should_fail)]
+#[test(should_fail_with = "duplicate nullifiers")]
 unconstrained fn a_settled_game_cannot_be_unwound() {
     let (env, game, _nft, p1, p2, r1, r2, joined_at) = joined();
     wait(env, MIN_ABANDON_SECONDS);

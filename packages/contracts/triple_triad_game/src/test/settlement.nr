@@ -104,7 +104,7 @@ unconstrained fn anyone_holding_the_records_and_transcript_can_settle() {
     utils::assert_cards(env, nft, p1, [6]);
 }
 
-#[test(should_fail)]
+#[test(should_fail_with = "duplicate nullifiers")]
 unconstrained fn a_game_settles_once() {
     let (env, game, _nft, _token, p1, _p2, r1, r2) = joined();
     let moves = utils::transcript(r1[1], r2[1], 1);
@@ -125,7 +125,7 @@ unconstrained fn moves_must_be_bound_to_this_games_hands() {
     utils::settle(env, p1, game, r1, r2, utils::transcript(r1[1], 777, 1), 1);
 }
 
-#[test(should_fail)]
+#[test(should_fail_with = "reading an unknown nullifier")]
 unconstrained fn settlement_needs_the_joiners_real_record() {
     let (env, game, _nft, _token, p1, _p2, r1, r2) = joined();
     let mut forged = r2;

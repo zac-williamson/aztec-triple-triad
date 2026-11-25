@@ -32,7 +32,7 @@ unconstrained fn a_second_player_joins_with_the_key_and_the_record() {
     assert(record_2[0] != record_1[0], "two players have two seats");
 }
 
-#[test(should_fail)]
+#[test(should_fail_with = "reading an unknown nullifier")]
 unconstrained fn joining_needs_the_shared_key() {
     let (env, game, _nft, _token, player1, player2) = utils::setup_game();
     let record_1 = utils::create(env, game, player1);
@@ -41,7 +41,7 @@ unconstrained fn joining_needs_the_shared_key() {
         env.call_private(player2, TripleTriadGame::at(game).join_game(KEY + 1, record_1, P2_HAND));
 }
 
-#[test(should_fail)]
+#[test(should_fail_with = "reading an unknown nullifier")]
 unconstrained fn joining_needs_the_creators_real_record() {
     let (env, game, _nft, _token, player1, player2) = utils::setup_game();
     let mut record_1 = utils::create(env, game, player1);
@@ -61,7 +61,7 @@ unconstrained fn a_player_cannot_join_their_own_game() {
     let _: [Field; 9] = env.call_private(player1, TripleTriadGame::at(game).join_game(KEY, record_1, second));
 }
 
-#[test(should_fail)]
+#[test(should_fail_with = "duplicate nullifiers")]
 unconstrained fn a_game_is_joined_once() {
     let (mut env, game, nft, _token, player1, player2, admin) = utils::setup_game_with_admin();
     let record_1 = utils::create(env, game, player1);
@@ -92,7 +92,7 @@ unconstrained fn only_the_creator_can_cancel() {
     env.call_private(player2, TripleTriadGame::at(game).cancel_game(KEY, record_1));
 }
 
-#[test(should_fail)]
+#[test(should_fail_with = "reading an unknown nullifier")]
 unconstrained fn a_cancel_cannot_name_other_cards() {
     // The old cancel minted whatever ids the caller passed. Now the only thing
     // a creator can pass is a record, and a record with different return notes
@@ -103,7 +103,7 @@ unconstrained fn a_cancel_cannot_name_other_cards() {
     env.call_private(player1, TripleTriadGame::at(game).cancel_game(KEY, record_1));
 }
 
-#[test(should_fail)]
+#[test(should_fail_with = "duplicate nullifiers")]
 unconstrained fn a_joined_game_cannot_be_cancelled() {
     let (env, game, _nft, _token, player1, player2) = utils::setup_game();
     let record_1 = utils::create(env, game, player1);
@@ -111,7 +111,7 @@ unconstrained fn a_joined_game_cannot_be_cancelled() {
     env.call_private(player1, TripleTriadGame::at(game).cancel_game(KEY, record_1));
 }
 
-#[test(should_fail)]
+#[test(should_fail_with = "duplicate nullifiers")]
 unconstrained fn a_cancelled_game_cannot_be_joined() {
     let (env, game, _nft, _token, player1, player2) = utils::setup_game();
     let record_1 = utils::create(env, game, player1);
@@ -119,7 +119,7 @@ unconstrained fn a_cancelled_game_cannot_be_joined() {
     let _ = utils::join(env, game, player2, record_1);
 }
 
-#[test(should_fail)]
+#[test(should_fail_with = "duplicate nullifiers")]
 unconstrained fn a_game_is_cancelled_once() {
     let (env, game, _nft, _token, player1, _player2) = utils::setup_game();
     let record_1 = utils::create(env, game, player1);
