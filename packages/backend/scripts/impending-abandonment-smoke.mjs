@@ -8,8 +8,8 @@
  *   - BOTH players are warned BEFORE the deadline (impending), with a live
  *     secondsUntilClaimable countdown that is > 0 (not yet claimable);
  *   - the countdown reaches 0 at the deadline (claimable);
- *   - idlePlayer is the player who owes the move, and idlePlayerCardIds carries
- *     the abandoner's hand to the claimant.
+ *   - idlePlayer is the player who owes the move, and the warning names no
+ *     cards (it used to broadcast the abandoner's whole hand to both players).
  *
  * This runs against a local in-process server (identical code to the deployed
  * box relay) so it never depends on remote networking — the remote ws connect is
@@ -40,8 +40,8 @@ function connect(name, t0) {
     if (m.type === 'ERROR') console.log(`[${name}] ERROR: ${m.message}`);
     if (m.type === 'GAME_ABANDONMENT_WARNING') {
       const at = ((Date.now() - t0.v) / 1000).toFixed(1);
-      c.warnings.push({ at, secondsIdle: m.secondsIdle, secondsUntilClaimable: m.secondsUntilClaimable, idlePlayer: m.idlePlayer, idlePlayerCardIds: m.idlePlayerCardIds });
-      console.log(`[${name}] +${at}s  secondsIdle=${m.secondsIdle}  secondsUntilClaimable=${m.secondsUntilClaimable}  idlePlayer=${m.idlePlayer}  idleCards=${JSON.stringify(m.idlePlayerCardIds)}`);
+      c.warnings.push({ at, secondsIdle: m.secondsIdle, secondsUntilClaimable: m.secondsUntilClaimable, idlePlayer: m.idlePlayer, namesCards: 'idlePlayerCardIds' in m });
+      console.log(`[${name}] +${at}s  secondsIdle=${m.secondsIdle}  secondsUntilClaimable=${m.secondsUntilClaimable}  idlePlayer=${m.idlePlayer}`);
     }
   });
   return c;
@@ -61,8 +61,6 @@ function waitFor(c, type, ms = 5000) {
     const to = setTimeout(() => { clearInterval(t); reject(new Error(`${c.name}: timeout waiting for ${type}`)); }, ms);
   });
 }
-const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-
 const srv = createServer({
   port: PORT, sessionHandshakeMs: 50,
   moveInactivityMs: DEADLINE_MS, abandonmentWarnLeadMs: LEAD_MS, abandonmentCheckIntervalMs: 250,
@@ -97,14 +95,16 @@ setTimeout(() => { console.error('HARD TIMEOUT — exiting'); process.exit(2); }
   const claimable = all.find(w => w.secondsUntilClaimable === 0);
   const bothWarned = A.warnings.length > 0 && B.warnings.length > 0;
   const impending = !!first && first.secondsUntilClaimable > 0 && first.secondsIdle < DEADLINE_MS / 1000;
-  const correctIdle = !!first && first.idlePlayer === 'player2' && eq(first.idlePlayerCardIds, P2);
+  const correctIdle = !!first && first.idlePlayer === 'player2';
+  const noCards = all.length > 0 && all.every(w => !w.namesCards);
 
   console.log('\n=== RESULT ===');
   console.log(`both players warned:          ${bothWarned}`);
   console.log(`first warning IMPENDING:      ${impending}` + (first ? ` (secondsIdle=${first.secondsIdle}, secondsUntilClaimable=${first.secondsUntilClaimable})` : ' (NO warning)'));
   console.log(`countdown reached 0:          ${!!claimable}` + (claimable ? ` (at +${claimable.at}s)` : ''));
-  console.log(`idlePlayer + hand relayed:    ${correctIdle}` + (first ? ` (idlePlayer=${first.idlePlayer}, idleCards=${JSON.stringify(first.idlePlayerCardIds)})` : ''));
-  const pass = bothWarned && impending && !!claimable && correctIdle;
+  console.log(`idlePlayer owes the move:     ${correctIdle}` + (first ? ` (idlePlayer=${first.idlePlayer})` : ''));
+  console.log(`warnings name no cards:      ${noCards}`);
+  const pass = bothWarned && impending && !!claimable && correctIdle && noCards;
   console.log(pass ? '\nIMPENDING-ABANDONMENT SMOKE: PASS' : '\nIMPENDING-ABANDONMENT SMOKE: FAIL');
 
   A.ws.close(); B.ws.close();

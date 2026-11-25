@@ -4,9 +4,9 @@ import { execFileSync } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { GameManager, MOVE_INACTIVITY_MS, ABANDONMENT_WARN_LEAD_MS } from './GameManager.js';
 import type { ClientMessage, ServerMessage } from './types.js';
-import type { GameState } from '@axolotl-arena/game-logic';
+import type { Card, GameState } from '@axolotl-arena/game-logic';
 import { SESSION_TTL_MS } from './store/GameStore.js';
-import type { GameStore } from './store/GameStore.js';
+import type { GameStore, StoredGameRoom } from './store/GameStore.js';
 import * as metrics from './metrics.js';
 import { MemoryGameStore } from './store/MemoryGameStore.js';
 import { RedisGameStore } from './store/RedisGameStore.js';
@@ -24,8 +24,8 @@ const MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
  * else, because a non-browser client simply sends no Origin header.
  *
  * The message rate is a token bucket rather than a hard per-second cap: real
- * play is bursty — a settlement fans out a hand proof and nine move proofs —
- * and a flat cap would drop legitimate traffic at exactly the wrong moment.
+ * play is bursty — a settlement fans out nine move proofs — and a flat cap
+ * would drop legitimate traffic at exactly the wrong moment.
  */
 const MAX_CONNECTIONS_PER_IP = Number(process.env.WS_MAX_CONNECTIONS_PER_IP ?? '20');
 const MSG_BURST = Number(process.env.WS_MSG_BURST ?? '60');
@@ -47,12 +47,9 @@ const SESSION_STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
 // Known client message types
 const VALID_MESSAGE_TYPES = new Set([
   'CREATE_GAME', 'JOIN_GAME', 'PLACE_CARD', 'LIST_GAMES', 'GET_GAME',
-  'SUBMIT_HAND_PROOF', 'SUBMIT_MOVE_PROOF',
+  'SUBMIT_MOVE_PROOF',
   'TX_CONFIRMED', 'TX_FAILED', 'CANCEL_GAME', 'LEAVE_GAME',
-  'SHARE_AZTEC_INFO',
-  'SHARE_BLINDING',
-  'RELAY_NOTE_DATA',
-  'SETTLE_STARTED',
+  'KEY_EXCHANGE', 'PEER',
   'ABANDONED_GAME_SETTLED',
   'QUEUE_MATCHMAKING', 'CANCEL_MATCHMAKING', 'PING',
   'REGISTER_BOT',
@@ -61,15 +58,69 @@ const VALID_MESSAGE_TYPES = new Set([
 
 // Messages that are buffered to the inbox when recipient is offline
 const BUFFERED_MESSAGE_TYPES = new Set([
-  'HAND_PROOF',
   'MOVE_PROVEN',
-  'OPPONENT_AZTEC_INFO',
-  'NOTE_DATA',
-  'OPPONENT_SETTLING',
+  'OPPONENT_KEY',
+  'PEER',
   // So an offline (disconnected-but-recoverable) player still learns on
   // reconnect that they were flagged idle / may forfeit.
   'GAME_ABANDONMENT_WARNING',
 ]);
+
+/**
+ * Size caps for the sealed player-to-player traffic, in base64 characters.
+ * An uncompressed P-256 public key is 88 characters and an AES-GCM IV 16; a
+ * PEER payload (a record, a settlement notice) is a few hundred bytes. The caps
+ * leave headroom without letting one message fill a player's inbox.
+ */
+const MAX_PUBLIC_KEY_LENGTH = 256;
+const MAX_IV_LENGTH = 64;
+const MAX_CIPHERTEXT_LENGTH = 64 * 1024;
+
+/** Standard padded base64 (RFC 4648 §4), which is what `btoa` produces. */
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/** A non-empty base64 string of at most `maxLength` characters. */
+function isBase64(value: unknown, maxLength: number): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= maxLength && BASE64.test(value);
+}
+
+/** What a player sees in place of a card they may not see. */
+const hiddenCard = (): Card => ({ id: 0, name: 'Hidden', ranks: { top: 0, right: 0, bottom: 0, left: 0 } });
+
+/** How many of the opponent's hand slots stay hidden while a game is played. */
+const HIDDEN_COUNT = 2;
+
+/**
+ * The game state as one of its players may see it: their own hand in full, the
+ * opponent's masked.
+ *
+ * While the game is being played, the last two of the opponent's hand slots are
+ * hidden and the rest are open: the "three open cards" rule, which is intended
+ * design (QA-A1 in docs/plan/LANE_5_QA.md). Once the game is over, everything
+ * left in the opponent's hand is hidden. The only opponent cards a player ever
+ * sees are those placed on the board. Player 2 always ends a full game holding
+ * one card it never played, and an abandoned game leaves cards in both hands.
+ */
+function sanitizeGameStateForPlayer(state: GameState, playerId: string, room: { player1Id: string }): GameState {
+  // Only a game in progress shows any of the opponent's hand.
+  const mask = (hand: Card[]): Card[] => {
+    const firstHidden = state.status === 'playing' ? hand.length - HIDDEN_COUNT : 0;
+    return hand.map((card, i) => (i >= firstHidden ? hiddenCard() : card));
+  };
+  return playerId === room.player1Id
+    ? { ...state, player2Hand: mask(state.player2Hand) }
+    : { ...state, player1Hand: mask(state.player1Hand) };
+}
+
+/** GAME_OVER for one player: their own view of the final state, and no card ids. */
+function gameOverFor(room: StoredGameRoom, state: GameState, playerId: string): ServerMessage {
+  return {
+    type: 'GAME_OVER',
+    gameId: room.id,
+    gameState: sanitizeGameStateForPlayer(state, playerId, room),
+    winner: state.winner!,
+  };
+}
 
 export interface ServerOptions {
   port?: number;
@@ -413,14 +464,21 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
 
   const QUIET_TYPES = new Set(['PING', 'PONG']);
 
+  /**
+   * One line per message, built from an allowlist of fields and never from the
+   * message itself. KEY_EXCHANGE and PEER carry keys and sealed payloads, so
+   * the log gets their type and room, and nothing a client sent beyond that.
+   */
   function logMsg(direction: 'IN' | 'OUT', playerId: string, msg: { type: string; [k: string]: any }): void {
     if (QUIET_TYPES.has(msg.type)) return;
     const summary: Record<string, any> = { type: msg.type };
-    if (msg.gameId) summary.gameId = (msg.gameId as string).slice(0, 12) + '...';
-    if (msg.playerNumber != null) summary.playerNumber = msg.playerNumber;
-    if (msg.winner != null) summary.winner = msg.winner;
-    if (msg.message) summary.message = msg.message;
-    if (msg.resumed != null) summary.resumed = msg.resumed;
+    if (typeof msg.gameId === 'string' && msg.gameId) summary.gameId = msg.gameId.slice(0, 12) + '...';
+    if (direction === 'OUT') {
+      if (msg.playerNumber != null) summary.playerNumber = msg.playerNumber;
+      if (msg.winner != null) summary.winner = msg.winner;
+      if (msg.type === 'ERROR') summary.message = msg.message;
+      if (msg.resumed != null) summary.resumed = msg.resumed;
+    }
     console.log(`[WS ${direction}] player=${playerId.slice(0, 8)}  ${JSON.stringify(summary)}`);
   }
 
@@ -452,21 +510,30 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
     return null;
   }
 
-  function sanitizeGameStateForPlayer(state: GameState, playerId: string, room: { player1Id: string }): GameState {
-    const isPlayer1 = playerId === room.player1Id;
-
-    if (state.status === 'playing') {
-      const sanitized = { ...state };
-      const hiddenCard = { id: 0, name: 'Hidden', ranks: { top: 0, right: 0, bottom: 0, left: 0 } };
-      const HIDDEN_COUNT = 2;
-      if (isPlayer1) {
-        sanitized.player2Hand = state.player2Hand.map((card, i) => i >= state.player2Hand.length - HIDDEN_COUNT ? { ...hiddenCard } : card);
-      } else {
-        sanitized.player1Hand = state.player1Hand.map((card, i) => i >= state.player1Hand.length - HIDDEN_COUNT ? { ...hiddenCard } : card);
-      }
-      return sanitized;
+  /**
+   * Forward `msg` to the sender's opponent in `gameId`, buffering it in their
+   * inbox while they are offline. Only one of the game's two players may send,
+   * and only once the other has joined.
+   */
+  async function forwardToOpponent(ws: WebSocket, playerId: string, gameId: string, msg: ServerMessage): Promise<void> {
+    const room = await gameManager.getGame(gameId);
+    if (!room) {
+      send(ws, { type: 'ERROR', message: 'Game not found' }, playerId);
+      return;
     }
-    return state;
+    const opponentId =
+      room.player1Id === playerId ? room.player2Id
+        : room.player2Id === playerId ? room.player1Id
+          : undefined;
+    if (opponentId === undefined) {
+      send(ws, { type: 'ERROR', message: 'Not in this game' }, playerId);
+      return;
+    }
+    if (opponentId === null) {
+      send(ws, { type: 'ERROR', message: 'Opponent has not joined yet' }, playerId);
+      return;
+    }
+    await sendToPlayer(opponentId, msg);
   }
 
   function validateMessage(msg: any): string | null {
@@ -506,10 +573,6 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       case 'GET_GAME':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
         break;
-      case 'SUBMIT_HAND_PROOF':
-        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
-        if (!msg.handProof || typeof msg.handProof !== 'object') return 'handProof is required';
-        break;
       case 'SUBMIT_MOVE_PROOF':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
         if (typeof msg.handIndex !== 'number') return 'handIndex must be a number';
@@ -521,9 +584,9 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         if (!msg.moveProof || typeof msg.moveProof !== 'object') return 'moveProof is required';
         break;
       case 'TX_CONFIRMED':
+        // A `txHash` from an older client is ignored: never read, stored or forwarded.
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
         if (msg.txType !== 'create_game' && msg.txType !== 'join_game') return 'txType must be create_game or join_game';
-        if (!msg.txHash || typeof msg.txHash !== 'string') return 'txHash is required';
         break;
       case 'TX_FAILED':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
@@ -534,22 +597,22 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       case 'CANCEL_GAME':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
         break;
-      case 'SHARE_AZTEC_INFO':
+      // The error texts below never quote the offending value: these fields are
+      // keys and sealed payloads.
+      case 'KEY_EXCHANGE':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
-        if (!msg.aztecAddress || typeof msg.aztecAddress !== 'string') return 'aztecAddress is required';
+        if (!isBase64(msg.publicKey, MAX_PUBLIC_KEY_LENGTH)) {
+          return `publicKey must be a base64 string of at most ${MAX_PUBLIC_KEY_LENGTH} characters`;
+        }
         break;
-      case 'SHARE_BLINDING':
+      case 'PEER':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
-        if (!msg.blindingFactor || typeof msg.blindingFactor !== 'string') return 'blindingFactor is required';
-        break;
-      case 'RELAY_NOTE_DATA':
-        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
-        if (!msg.txHash || typeof msg.txHash !== 'string') return 'txHash is required';
-        if (!Array.isArray(msg.notes)) return 'notes must be an array';
-        break;
-      case 'SETTLE_STARTED':
-        if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
-        if (typeof msg.selectedCardId !== 'number') return 'selectedCardId must be a number';
+        if (!isBase64(msg.iv, MAX_IV_LENGTH)) {
+          return `iv must be a base64 string of at most ${MAX_IV_LENGTH} characters`;
+        }
+        if (!isBase64(msg.ciphertext, MAX_CIPHERTEXT_LENGTH)) {
+          return `ciphertext must be a base64 string of at most ${MAX_CIPHERTEXT_LENGTH} characters`;
+        }
         break;
       case 'ABANDONED_GAME_SETTLED':
         if (!msg.gameId || typeof msg.gameId !== 'string') return 'gameId is required';
@@ -691,15 +754,14 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
                     captures: [],
                   }, playerId);
                   // Also send playerNumber and gameId context
-                  send(ws, {
-                    type: room.state.status === 'finished'
-                      ? 'GAME_OVER'
-                      : (playerNum === 1 ? 'GAME_START' : 'GAME_JOINED'),
-                    gameId,
-                    ...(room.state.status === 'finished'
-                      ? { gameState: room.state, winner: room.state.winner!, player1CardIds: room.player1CardIds, player2CardIds: room.player2CardIds }
-                      : { gameState: sanitizeGameStateForPlayer(room.state, playerId, room), playerNumber: playerNum }),
-                  } as ServerMessage, playerId);
+                  send(ws, room.state.status === 'finished'
+                    ? gameOverFor(room, room.state, playerId)
+                    : {
+                      type: playerNum === 1 ? 'GAME_START' : 'GAME_JOINED',
+                      gameId,
+                      gameState: sanitizeGameStateForPlayer(room.state, playerId, room),
+                      playerNumber: playerNum,
+                    } as ServerMessage, playerId);
                 }
 
                 // Notify opponent of reconnection
@@ -832,16 +894,20 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         try {
           const result = await gameManager.placeCard(msg.gameId, playerId, msg.handIndex, msg.row, msg.col, msg.moveNumber);
           const room = await gameManager.getGame(msg.gameId);
+          // placeCard has just written the room, so it can only be missing if
+          // the stale sweep raced it. Without it neither view can be masked,
+          // and an unmasked state shows the opponent's hand.
+          if (!room) throw new Error('Game not found');
 
           send(ws, {
             type: 'GAME_STATE',
             gameId: msg.gameId,
-            gameState: room ? sanitizeGameStateForPlayer(result.newState, playerId, room) : result.newState,
+            gameState: sanitizeGameStateForPlayer(result.newState, playerId, room),
             captures: result.captures,
           }, playerId);
 
           const opponentId = await getOpponentId(msg.gameId, playerId);
-          if (opponentId && room) {
+          if (opponentId) {
             await sendToPlayer(opponentId, {
               type: 'GAME_STATE',
               gameId: msg.gameId,
@@ -856,27 +922,18 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
             // server-side so /metrics stays truthful even if the bot process is
             // restarted or replaced — a monitoring counter that silently reads
             // zero is worse than no counter at all.
-            if (room) {
-              const botIsP1 = isBotPlayerId(room.player1Id);
-              const botIsP2 = room.player2Id ? isBotPlayerId(room.player2Id) : false;
-              if (botIsP1 || botIsP2) {
-                const botSide = botIsP1 ? 'player1' : 'player2';
-                const w = result.newState.winner;
-                if (w === 'draw') metrics.increment('botDraws');
-                else if (w === botSide) metrics.increment('botWins');
-                else metrics.increment('botLosses');
-              }
+            const botIsP1 = isBotPlayerId(room.player1Id);
+            const botIsP2 = room.player2Id ? isBotPlayerId(room.player2Id) : false;
+            if (botIsP1 || botIsP2) {
+              const botSide = botIsP1 ? 'player1' : 'player2';
+              const w = result.newState.winner;
+              if (w === 'draw') metrics.increment('botDraws');
+              else if (w === botSide) metrics.increment('botWins');
+              else metrics.increment('botLosses');
             }
-            const overMsg: ServerMessage = {
-              type: 'GAME_OVER',
-              gameId: msg.gameId,
-              gameState: result.newState,
-              winner: result.newState.winner!,
-              player1CardIds: room?.player1CardIds ?? [],
-              player2CardIds: room?.player2CardIds ?? [],
-            };
-            send(ws, overMsg, playerId);
-            if (opponentId) await sendToPlayer(opponentId, overMsg);
+            // One per player: each gets their own view of the final state.
+            send(ws, gameOverFor(room, result.newState, playerId), playerId);
+            if (opponentId) await sendToPlayer(opponentId, gameOverFor(room, result.newState, opponentId));
             await gameManager.releasePlayersFromGame(msg.gameId);
           }
         } catch (err: any) {
@@ -907,34 +964,6 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
           }, playerId);
         } else {
           send(ws, { type: 'GAME_INFO', game: null }, playerId);
-        }
-        break;
-      }
-
-      case 'SUBMIT_HAND_PROOF': {
-        try {
-          const room = await gameManager.getGame(msg.gameId);
-          if (!room) {
-            send(ws, { type: 'ERROR', message: 'Game not found' }, playerId);
-            break;
-          }
-          const playerRole = await gameManager.getPlayerRole(msg.gameId, playerId);
-          if (!playerRole) {
-            send(ws, { type: 'ERROR', message: 'Not in this game' }, playerId);
-            break;
-          }
-          const fromPlayer = playerRole === 'player1' ? 1 : 2;
-          const opponentId = await getOpponentId(msg.gameId, playerId);
-          if (opponentId) {
-            await sendToPlayer(opponentId, {
-              type: 'HAND_PROOF',
-              gameId: msg.gameId,
-              handProof: msg.handProof,
-              fromPlayer: fromPlayer as 1 | 2,
-            });
-          }
-        } catch (err: any) {
-          send(ws, { type: 'ERROR', message: err.message }, playerId);
         }
         break;
       }
@@ -1015,59 +1044,33 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         break;
       }
 
-      case 'SHARE_BLINDING': {
-        // Sent at GAME OVER, never before. Settlement has to prove that the card
-        // ids it mints are the ones each player committed, and the only value
-        // that binds them is the blinding factor — secret during play, harmless
-        // once the hands are on their way to being public. Relayed BEFORE the
-        // game is over and it would let the opponent brute-force a hand from the
-        // on-chain commitment mid-game.
-        const blindOpponentId = await getOpponentId(msg.gameId, playerId);
-        if (blindOpponentId) {
-          await sendToPlayer(blindOpponentId, {
-            type: 'OPPONENT_BLINDING',
+      // KEY_EXCHANGE and PEER are forwarded and nothing more. The relay must
+      // never hold the game key or read a payload, so it does not look inside
+      // either. Each is rebuilt from its validated fields, so nothing else a
+      // client attaches rides along to the opponent.
+      case 'KEY_EXCHANGE': {
+        try {
+          await forwardToOpponent(ws, playerId, msg.gameId, {
+            type: 'OPPONENT_KEY',
             gameId: msg.gameId,
-            blindingFactor: msg.blindingFactor,
+            publicKey: msg.publicKey,
           });
+        } catch (err: any) {
+          send(ws, { type: 'ERROR', message: err.message }, playerId);
         }
         break;
       }
 
-      case 'SHARE_AZTEC_INFO': {
-        const opponentId = await getOpponentId(msg.gameId, playerId);
-        if (opponentId) {
-          await sendToPlayer(opponentId, {
-            type: 'OPPONENT_AZTEC_INFO',
+      case 'PEER': {
+        try {
+          await forwardToOpponent(ws, playerId, msg.gameId, {
+            type: 'PEER',
             gameId: msg.gameId,
-            aztecAddress: msg.aztecAddress,
-            onChainGameId: msg.onChainGameId,
-            gameRandomness: msg.gameRandomness,
+            iv: msg.iv,
+            ciphertext: msg.ciphertext,
           });
-        }
-        break;
-      }
-
-      case 'RELAY_NOTE_DATA': {
-        const opponentId = await getOpponentId(msg.gameId, playerId);
-        if (opponentId) {
-          await sendToPlayer(opponentId, {
-            type: 'NOTE_DATA',
-            gameId: msg.gameId,
-            txHash: msg.txHash,
-            notes: msg.notes,
-          });
-        }
-        break;
-      }
-
-      case 'SETTLE_STARTED': {
-        const opponentId = await getOpponentId(msg.gameId, playerId);
-        if (opponentId) {
-          await sendToPlayer(opponentId, {
-            type: 'OPPONENT_SETTLING',
-            gameId: msg.gameId,
-            selectedCardId: msg.selectedCardId,
-          });
+        } catch (err: any) {
+          send(ws, { type: 'ERROR', message: err.message }, playerId);
         }
         break;
       }
@@ -1076,18 +1079,10 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         try {
           const room = await gameManager.settleAbandonedGame(msg.gameId, playerId);
           const opponentId = await getOpponentId(msg.gameId, playerId);
-          const overMsg: ServerMessage = {
-            type: 'GAME_OVER',
-            gameId: msg.gameId,
-            gameState: room.state,
-            winner: room.state.winner!,
-            player1CardIds: room.player1CardIds,
-            player2CardIds: room.player2CardIds,
-          };
-          send(ws, overMsg, playerId);
+          send(ws, gameOverFor(room, room.state, playerId), playerId);
           // Usually offline in this flow; GAME_OVER is not inbox-buffered, so
           // an offline opponent learns the outcome from the chain instead.
-          if (opponentId) await sendToPlayer(opponentId, overMsg);
+          if (opponentId) await sendToPlayer(opponentId, gameOverFor(room, room.state, opponentId));
         } catch (err: any) {
           send(ws, { type: 'ERROR', message: err.message }, playerId);
         }
@@ -1261,7 +1256,6 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
         idlePlayer: game.idlePlayer,
         secondsIdle: game.secondsIdle,
         secondsUntilClaimable,
-        idlePlayerCardIds: game.idlePlayerCardIds,
       };
       await sendToPlayer(game.player1Id, warning);
       await sendToPlayer(game.player2Id, warning);

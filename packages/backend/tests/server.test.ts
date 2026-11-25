@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import WebSocket from 'ws';
 import http from 'http';
+import crypto from 'crypto';
 import { createServer, type CardGameServer } from '../src/server.js';
 import type { ServerMessage, ClientMessage } from '../src/types.js';
 
@@ -89,6 +90,88 @@ class MessageCollector {
       const timeout = setTimeout(() => reject(new Error('Timeout waiting for message')), 5000);
       this.waiters.push({ filter, resolve, reject, timeout });
     });
+  }
+
+  /** Whether a matching message arrived and is still unconsumed. Does not consume it. */
+  has(filter: (msg: ServerMessage) => boolean): boolean {
+    return this.buffer.some(filter);
+  }
+}
+
+/** True if nothing matching `filter` reaches `c` within `ms` (no waiter may be pending on it). */
+async function staysQuiet(c: MessageCollector, filter: (msg: ServerMessage) => boolean, ms = 200): Promise<boolean> {
+  await new Promise(r => setTimeout(r, ms));
+  return !c.has(filter);
+}
+
+/** Two connected players seated in one started game, each with a collector. */
+async function seatTwoPlayers() {
+  const p1 = await createClientWithSession();
+  const p2 = await createClientWithSession();
+  const c1 = new MessageCollector(p1.ws);
+  const c2 = new MessageCollector(p2.ws);
+  sendMessage(p1.ws, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+  const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
+  const gameId: string = created.gameId;
+  sendMessage(p2.ws, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
+  await c2.wait((m) => m.type === 'GAME_JOINED');
+  await c1.wait((m) => m.type === 'GAME_START');
+  return { p1, p2, c1, c2, gameId };
+}
+
+/**
+ * Play all nine moves, each player always placing hand slot 0, and drain both
+ * GAME_STATEs per move. Player 1 places cards 1-5 and player 2 places 6-9, so
+ * player 2 ends the game still holding card 10, which it never played.
+ * Returns the final GAME_STATE and GAME_OVER each player received.
+ */
+async function playAllNineMoves(
+  seated: Awaited<ReturnType<typeof seatTwoPlayers>>,
+): Promise<{ state1: any; state2: any; over1: any; over2: any }> {
+  const { p1, p2, c1, c2, gameId } = seated;
+  const cells: [number, number][] = [
+    [0, 0], [0, 1], [0, 2],
+    [1, 0], [1, 1], [1, 2],
+    [2, 0], [2, 1], [2, 2],
+  ];
+  let state1: any;
+  let state2: any;
+  for (let i = 0; i < 9; i++) {
+    const [row, col] = cells[i];
+    sendMessage(i % 2 === 0 ? p1.ws : p2.ws, { type: 'PLACE_CARD', gameId, handIndex: 0, row, col, moveNumber: i });
+    state1 = await c1.wait((m) => m.type === 'GAME_STATE');
+    state2 = await c2.wait((m) => m.type === 'GAME_STATE');
+  }
+  const over1 = await c1.wait((m) => m.type === 'GAME_OVER');
+  const over2 = await c2.wait((m) => m.type === 'GAME_OVER');
+  return { state1, state2, over1, over2 };
+}
+
+/**
+ * Reconnect with a session token. The collector is attached before the
+ * handshake, so it sees everything the server replays on resume.
+ */
+async function resumeSession(sessionToken: string): Promise<{ ws: WebSocket; c: MessageCollector; resumed: boolean }> {
+  const ws = new WebSocket(getUrl());
+  const c = new MessageCollector(ws);
+  const resumed = await new Promise<boolean>((resolve, reject) => {
+    ws.on('error', reject);
+    ws.on('open', () => ws.send(JSON.stringify({ type: 'RESUME', sessionToken })));
+    ws.on('message', function onMsg(data: WebSocket.Data) {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === 'SESSION_ESTABLISHED') {
+        ws.removeListener('message', onMsg);
+        resolve(msg.resumed);
+      }
+    });
+  });
+  return { ws, c, resumed };
+}
+
+/** A hand as the other player sees it once the game is over: every card hidden. */
+function expectAllHidden(hand: any[]): void {
+  for (const card of hand) {
+    expect(card).toEqual({ id: 0, name: 'Hidden', ranks: { top: 0, right: 0, bottom: 0, left: 0 } });
   }
 }
 
@@ -609,46 +692,6 @@ describe('Disconnection handling', () => {
 });
 
 describe('Proof exchange', () => {
-  it('should relay hand proofs between players', async () => {
-    const ws1 = await createClient();
-    const ws2 = await createClient();
-    const c1 = new MessageCollector(ws1);
-    const c2 = new MessageCollector(ws2);
-
-    // Setup game
-    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
-    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
-    const gameId = created.gameId;
-
-    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
-    await c2.wait((m) => m.type === 'GAME_JOINED');
-    await c1.wait((m) => m.type === 'GAME_START');
-
-    // Player 1 submits hand proof
-    sendMessage(ws1, {
-      type: 'SUBMIT_HAND_PROOF',
-      gameId,
-      handProof: {
-        proof: 'base64proofdata1',
-        publicInputs: ['0xcommit1', '0xaddr1', gameId],
-        cardCommit: '0xcommit1',
-        playerAddress: '0xaddr1',
-        gameId,
-      },
-    });
-
-    // Player 2 receives hand proof
-    const handProofMsg = await c2.wait((m) => m.type === 'HAND_PROOF');
-    expect(handProofMsg.type).toBe('HAND_PROOF');
-    if (handProofMsg.type === 'HAND_PROOF') {
-      expect(handProofMsg.handProof.cardCommit).toBe('0xcommit1');
-      expect(handProofMsg.fromPlayer).toBe(1);
-    }
-
-    ws1.close();
-    ws2.close();
-  });
-
   it('should handle move with proof', async () => {
     const ws1 = await createClient();
     const ws2 = await createClient();
@@ -826,50 +869,145 @@ describe('Hand sanitization (S3 fix)', () => {
     ws2.close();
   });
 
-  it('should reveal both hands in GAME_OVER messages', async () => {
-    const ws1 = await createClient();
-    const ws2 = await createClient();
-    const c1 = new MessageCollector(ws1);
-    const c2 = new MessageCollector(ws2);
+});
 
-    sendMessage(ws1, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
-    const created = await c1.wait((m) => m.type === 'GAME_CREATED') as any;
-    const gameId = created.gameId;
+/**
+ * Once the game is over, the only opponent cards a player may see are the ones
+ * placed on the board. The relay used to stop masking at 'finished', so the
+ * final GAME_STATE, GAME_OVER, a late MOVE_PROVEN and the RESUME replay all
+ * showed player 2's unplayed card to player 1, and an abandoned game's GAME_OVER
+ * showed both remaining hands to both players.
+ */
+describe('Hand masking after the game', () => {
+  it("hides player 2's unplayed card from player 1 in the final GAME_STATE and GAME_OVER", async () => {
+    const seated = await seatTwoPlayers();
+    const { state1, state2, over1, over2 } = await playAllNineMoves(seated);
 
-    sendMessage(ws2, { type: 'JOIN_GAME', gameId, cardIds: PLAYER2_CARDS });
-    await c2.wait((m) => m.type === 'GAME_JOINED');
-    await c1.wait((m) => m.type === 'GAME_START');
-
-    // Play a full game
-    const positions: [number, number][] = [
-      [0, 0], [0, 1], [0, 2],
-      [1, 0], [1, 1], [1, 2],
-      [2, 0], [2, 1], [2, 2],
-    ];
-
-    for (let i = 0; i < 9; i++) {
-      const currentWs = i % 2 === 0 ? ws1 : ws2;
-      const [row, col] = positions[i];
-      sendMessage(currentWs, { type: 'PLACE_CARD', gameId, handIndex: 0, row, col, moveNumber: i });
-
-      // Consume GAME_STATE messages
-      await c1.wait((m) => m.type === 'GAME_STATE');
-      await c2.wait((m) => m.type === 'GAME_STATE');
-
-      if (i === 8) {
-        // On last move, get GAME_OVER messages
-        const over1 = await c1.wait((m) => m.type === 'GAME_OVER') as any;
-        const over2 = await c2.wait((m) => m.type === 'GAME_OVER') as any;
-
-        // GAME_OVER should reveal all hands (status is 'finished' so no sanitization)
-        // Both hands should be empty (all cards played) but the gameState is unsanitized
-        expect(over1.gameState.status).toBe('finished');
-        expect(over2.gameState.status).toBe('finished');
-      }
+    for (const msg of [state1, over1]) {
+      expect(msg.gameState.status).toBe('finished');
+      expect(msg.gameState.player1Hand).toEqual([]);
+      expect(msg.gameState.player2Hand).toHaveLength(1);
+      expectAllHidden(msg.gameState.player2Hand);
+      // Card 10 was never placed, so nothing player 1 receives may name it.
+      expect(JSON.stringify(msg)).not.toMatch(/"id":10\b/);
     }
 
-    ws1.close();
-    ws2.close();
+    // Player 2 still sees its own card.
+    for (const msg of [state2, over2]) {
+      expect(msg.gameState.player2Hand.map((c: any) => c.id)).toEqual([10]);
+    }
+
+    // The board, which both players watched being filled, stays fully visible.
+    for (const row of over1.gameState.board) {
+      for (const cell of row) expect(cell.card.id).toBeGreaterThan(0);
+    }
+
+    seated.p1.ws.close();
+    seated.p2.ws.close();
+  });
+
+  it('carries no card ids in GAME_OVER', async () => {
+    const seated = await seatTwoPlayers();
+    const { over1, over2 } = await playAllNineMoves(seated);
+
+    for (const over of [over1, over2]) {
+      expect(Object.keys(over).sort()).toEqual(['gameId', 'gameState', 'type', 'winner']);
+    }
+
+    seated.p1.ws.close();
+    seated.p2.ws.close();
+  });
+
+  it('masks a move proof that arrives after the game is over', async () => {
+    const seated = await seatTwoPlayers();
+    await playAllNineMoves(seated);
+
+    // Player 2's proof of its last move lands after the final move was placed.
+    sendMessage(seated.p2.ws, {
+      type: 'SUBMIT_MOVE_PROOF',
+      gameId: seated.gameId,
+      handIndex: 0,
+      row: 2,
+      col: 1,
+      moveNumber: 7,
+      moveProof: {
+        proof: 'late-proof',
+        publicInputs: [],
+        cardCommit1: '0x1',
+        cardCommit2: '0x2',
+        startStateHash: '0x3',
+        endStateHash: '0x4',
+        gameEnded: false,
+        winnerId: 0,
+      },
+    });
+    const proven = await seated.c1.wait((m) => m.type === 'MOVE_PROVEN') as any;
+    expect(proven.gameState.status).toBe('finished');
+    expect(proven.gameState.player2Hand).toHaveLength(1);
+    expectAllHidden(proven.gameState.player2Hand);
+
+    seated.p1.ws.close();
+    seated.p2.ws.close();
+  });
+
+  it("hides both players' remaining cards when an abandoned game is settled", async () => {
+    const seated = await seatTwoPlayers();
+    const { p1, p2, c1, c2, gameId } = seated;
+
+    // Player 1 places card 1. During play player 2 sees two of player 1's
+    // remaining four cards open; once the game is over it must see none.
+    sendMessage(p1.ws, { type: 'PLACE_CARD', gameId, handIndex: 0, row: 0, col: 0, moveNumber: 0 });
+    const during = await c2.wait((m) => m.type === 'GAME_STATE') as any;
+    await c1.wait((m) => m.type === 'GAME_STATE');
+    expect(during.gameState.player1Hand.slice(0, 2).map((c: any) => c.id)).toEqual([2, 3]);
+
+    sendMessage(p1.ws, { type: 'ABANDONED_GAME_SETTLED', gameId });
+    const over1 = await c1.wait((m) => m.type === 'GAME_OVER') as any;
+    const over2 = await c2.wait((m) => m.type === 'GAME_OVER') as any;
+
+    expect(over1.gameState.player1Hand.map((c: any) => c.id)).toEqual([2, 3, 4, 5]);
+    expect(over1.gameState.player2Hand).toHaveLength(5);
+    expectAllHidden(over1.gameState.player2Hand);
+
+    expect(over2.gameState.player2Hand.map((c: any) => c.id)).toEqual([6, 7, 8, 9, 10]);
+    expect(over2.gameState.player1Hand).toHaveLength(4);
+    expectAllHidden(over2.gameState.player1Hand);
+
+    for (const over of [over1, over2]) {
+      expect(over).not.toHaveProperty('player1CardIds');
+      expect(over).not.toHaveProperty('player2CardIds');
+    }
+
+    p1.ws.close();
+    p2.ws.close();
+  });
+
+  it('keeps the hand masked when a player resumes into a finished game', async () => {
+    const seated = await seatTwoPlayers();
+    const { p1, p2, c2, gameId } = seated;
+    await playAllNineMoves(seated);
+
+    // GAME_OVER releases both players, so a finished game is only replayed on
+    // RESUME if the binding survived (e.g. a crash between the two writes).
+    await server.store.setPlayerGame(p1.playerId, gameId);
+    p1.ws.close();
+    await c2.wait((m) => m.type === 'OPPONENT_DISCONNECTED');
+
+    const { ws, c, resumed } = await resumeSession(p1.sessionToken);
+    expect(resumed).toBe(true);
+    const state = await c.wait((m) => m.type === 'GAME_STATE') as any;
+    const over = await c.wait((m) => m.type === 'GAME_OVER') as any;
+
+    for (const msg of [state, over]) {
+      expect(msg.gameState.status).toBe('finished');
+      expect(msg.gameState.player2Hand).toHaveLength(1);
+      expectAllHidden(msg.gameState.player2Hand);
+      expect(JSON.stringify(msg)).not.toMatch(/"id":10\b/);
+    }
+    expect(Object.keys(over).sort()).toEqual(['gameId', 'gameState', 'type', 'winner']);
+
+    ws.close();
+    p2.ws.close();
   });
 });
 
@@ -1365,7 +1503,7 @@ describe('Session management', () => {
 });
 
 describe('Message inbox replay', () => {
-  it('should buffer and replay HAND_PROOF when recipient is offline', async () => {
+  it('should buffer and replay a PEER payload when recipient is offline', async () => {
     const { ws: ws1 } = await createClientWithSession();
     const { ws: ws2, sessionToken: p2Token } = await createClientWithSession();
     const c1 = new MessageCollector(ws1);
@@ -1384,16 +1522,8 @@ describe('Message inbox replay', () => {
     ws2.close();
     await new Promise(r => setTimeout(r, 100));
 
-    // Player 1 submits hand proof while player 2 is offline
-    sendMessage(ws1, {
-      type: 'SUBMIT_HAND_PROOF',
-      gameId,
-      handProof: {
-        proof: 'buffered-proof',
-        publicInputs: ['0xcommit'],
-        cardCommit: '0xcommit',
-      },
-    } as any);
+    // Player 1 sends a sealed payload while player 2 is offline
+    sendMessage(ws1, { type: 'PEER', gameId, iv: 'YnVmZmVyZWQtaXY=', ciphertext: 'YnVmZmVyZWQ=' });
 
     // Give the server time to buffer the message
     await new Promise(r => setTimeout(r, 100));
@@ -1415,12 +1545,9 @@ describe('Message inbox replay', () => {
       });
     });
 
-    // Player 2 should receive the buffered HAND_PROOF
-    const handProof = await c2b.wait((m) => m.type === 'HAND_PROOF');
-    expect(handProof.type).toBe('HAND_PROOF');
-    if (handProof.type === 'HAND_PROOF') {
-      expect(handProof.handProof.proof).toBe('buffered-proof');
-    }
+    // Player 2 should receive the buffered PEER payload
+    const peer = await c2b.wait((m) => m.type === 'PEER');
+    expect(peer).toEqual({ type: 'PEER', gameId, iv: 'YnVmZmVyZWQtaXY=', ciphertext: 'YnVmZmVyZWQ=' });
 
     ws1.close();
     ws2b.close();
@@ -2080,6 +2207,8 @@ describe('Present-but-idle abandonment warning', () => {
         expect(typeof w.secondsIdle).toBe('number');
         expect(w.secondsIdle).toBeGreaterThanOrEqual(0);
         expect(typeof w.secondsUntilClaimable).toBe('number');
+        // It used to carry the idle player's whole hand, to both players.
+        expect(Object.keys(w).sort()).toEqual(['gameId', 'idlePlayer', 'secondsIdle', 'secondsUntilClaimable', 'type']);
       }
 
       a.ws.close();
@@ -2231,6 +2360,322 @@ describe('Present-but-idle abandonment warning', () => {
       ws2b.close();
     } finally {
       await srv.close();
+    }
+  });
+});
+
+// ── Private games, Phase A (docs/plan/PRIVATE_GAMES.md §5.1, §7) ─────────────
+
+/** A fresh uncompressed P-256 public key in base64, exactly as the clients send it. */
+async function realPublicKey(): Promise<string> {
+  const { subtle } = crypto.webcrypto;
+  const pair = await subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  return Buffer.from(await subtle.exportKey('raw', pair.publicKey)).toString('base64');
+}
+
+/** A sealed payload of realistic shape: a 12-byte IV and a few hundred bytes of ciphertext. */
+function sealed(): { iv: string; ciphertext: string } {
+  return { iv: crypto.randomBytes(12).toString('base64'), ciphertext: crypto.randomBytes(300).toString('base64') };
+}
+
+async function until(check: () => Promise<boolean> | boolean, ms = 2000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!(await check())) {
+    if (Date.now() > deadline) throw new Error('Condition not met in time');
+    await new Promise(r => setTimeout(r, 10));
+  }
+}
+
+/** Capture (and silence) everything the server writes to the console. */
+function captureConsole(): { lines: string[]; restore: () => void } {
+  const lines: string[] = [];
+  const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map(method =>
+    vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
+    }),
+  );
+  return { lines, restore: () => spies.forEach(s => s.mockRestore()) };
+}
+
+const isRelayed = (m: ServerMessage) => m.type === 'OPPONENT_KEY' || m.type === 'PEER';
+
+describe('Key exchange and sealed PEER payloads', () => {
+  it('forwards KEY_EXCHANGE to the other player as OPPONENT_KEY, never back to the sender', async () => {
+    const { p1, p2, c1, c2, gameId } = await seatTwoPlayers();
+    const key1 = await realPublicKey();
+    const key2 = await realPublicKey();
+    expect(key1).toHaveLength(88);
+
+    sendMessage(p1.ws, { type: 'KEY_EXCHANGE', gameId, publicKey: key1 });
+    sendMessage(p2.ws, { type: 'KEY_EXCHANGE', gameId, publicKey: key2 });
+
+    expect(await c2.wait((m) => m.type === 'OPPONENT_KEY')).toEqual({ type: 'OPPONENT_KEY', gameId, publicKey: key1 });
+    expect(await c1.wait((m) => m.type === 'OPPONENT_KEY')).toEqual({ type: 'OPPONENT_KEY', gameId, publicKey: key2 });
+    for (const c of [c1, c2]) {
+      expect(await staysQuiet(c, (m) => isRelayed(m) || m.type === 'ERROR')).toBe(true);
+    }
+
+    p1.ws.close();
+    p2.ws.close();
+  });
+
+  it('forwards PEER both ways exactly as sealed, and nothing else a client attaches', async () => {
+    const { p1, p2, c1, c2, gameId } = await seatTwoPlayers();
+    const fromP1 = sealed();
+    const fromP2 = sealed();
+
+    // Plaintext riding next to the sealed fields must not reach the opponent.
+    p1.ws.send(JSON.stringify({ type: 'PEER', gameId, ...fromP1, kind: 'RECORD', record: ['0x1'], fromPlayer: 1 }));
+    sendMessage(p2.ws, { type: 'PEER', gameId, ...fromP2 });
+
+    expect(await c2.wait((m) => m.type === 'PEER')).toEqual({ type: 'PEER', gameId, ...fromP1 });
+    expect(await c1.wait((m) => m.type === 'PEER')).toEqual({ type: 'PEER', gameId, ...fromP2 });
+    for (const c of [c1, c2]) {
+      expect(await staysQuiet(c, (m) => isRelayed(m) || m.type === 'ERROR')).toBe(true);
+    }
+
+    p1.ws.close();
+    p2.ws.close();
+  });
+
+  it('buffers KEY_EXCHANGE and PEER for an offline opponent and replays them in order on RESUME', async () => {
+    const { p1, p2, c1, gameId } = await seatTwoPlayers();
+    p2.ws.close();
+    await c1.wait((m) => m.type === 'OPPONENT_DISCONNECTED');
+
+    const key = await realPublicKey();
+    const first = sealed();
+    const second = sealed();
+    sendMessage(p1.ws, { type: 'KEY_EXCHANGE', gameId, publicKey: key });
+    sendMessage(p1.ws, { type: 'PEER', gameId, ...first });
+    sendMessage(p1.ws, { type: 'PEER', gameId, ...second });
+
+    const expected = [
+      { type: 'OPPONENT_KEY', gameId, publicKey: key },
+      { type: 'PEER', gameId, ...first },
+      { type: 'PEER', gameId, ...second },
+    ];
+    await until(async () => (await server.store.getInbox(p2.playerId)).length === 3);
+    expect(await server.store.getInbox(p2.playerId)).toEqual(expected);
+    expect(c1.has((m) => m.type === 'ERROR')).toBe(false);
+
+    const back = await resumeSession(p2.sessionToken);
+    expect(back.resumed).toBe(true);
+    const replayed = [];
+    for (let i = 0; i < 3; i++) replayed.push(await back.c.wait(isRelayed));
+    expect(replayed).toEqual(expected);
+    await until(async () => (await server.store.getInbox(p2.playerId)).length === 0);
+
+    back.ws.close();
+    p1.ws.close();
+  });
+
+  it('refuses a sender who is not in the game, and delivers nothing', async () => {
+    const { p1, p2, c1, c2, gameId } = await seatTwoPlayers();
+    const outsider = await createClient();
+    const co = new MessageCollector(outsider);
+
+    sendMessage(outsider, { type: 'KEY_EXCHANGE', gameId, publicKey: await realPublicKey() });
+    expect((await co.wait((m) => m.type === 'ERROR') as any).message).toBe('Not in this game');
+    sendMessage(outsider, { type: 'PEER', gameId, ...sealed() });
+    expect((await co.wait((m) => m.type === 'ERROR') as any).message).toBe('Not in this game');
+
+    for (const c of [c1, c2]) expect(await staysQuiet(c, isRelayed)).toBe(true);
+    const room = (await server.store.getGame(gameId))!;
+    expect(await server.store.getInbox(room.player1Id)).toEqual([]);
+    expect(await server.store.getInbox(room.player2Id!)).toEqual([]);
+
+    outsider.close();
+    p1.ws.close();
+    p2.ws.close();
+  });
+
+  it('refuses unknown games, and games nobody has joined yet', async () => {
+    const ws = await createClient();
+    const c = new MessageCollector(ws);
+
+    sendMessage(ws, { type: 'PEER', gameId: 'no-such-game', ...sealed() });
+    expect((await c.wait((m) => m.type === 'ERROR') as any).message).toBe('Game not found');
+
+    sendMessage(ws, { type: 'CREATE_GAME', cardIds: PLAYER1_CARDS });
+    const { gameId } = await c.wait((m) => m.type === 'GAME_CREATED') as any;
+    sendMessage(ws, { type: 'KEY_EXCHANGE', gameId, publicKey: await realPublicKey() });
+    expect((await c.wait((m) => m.type === 'ERROR') as any).message).toBe('Opponent has not joined yet');
+    sendMessage(ws, { type: 'PEER', gameId, ...sealed() });
+    expect((await c.wait((m) => m.type === 'ERROR') as any).message).toBe('Opponent has not joined yet');
+
+    ws.close();
+  });
+
+  it('still carries PEER after GAME_OVER, when the settlement notices travel', async () => {
+    const seated = await seatTwoPlayers();
+    await playAllNineMoves(seated);
+    const notice = sealed();
+
+    sendMessage(seated.p1.ws, { type: 'PEER', gameId: seated.gameId, ...notice });
+    expect(await seated.c2.wait((m) => m.type === 'PEER')).toEqual({ type: 'PEER', gameId: seated.gameId, ...notice });
+
+    seated.p1.ws.close();
+    seated.p2.ws.close();
+  });
+
+  it('enforces encoding and size limits, delivering nothing it refuses', async () => {
+    const { p1, p2, c1, c2, gameId } = await seatTwoPlayers();
+    const b64 = (n: number) => 'A'.repeat(n); // valid base64 whenever n % 4 === 0
+
+    const refused: [Record<string, unknown>, RegExp][] = [
+      [{ type: 'KEY_EXCHANGE', gameId }, /publicKey/],
+      [{ type: 'KEY_EXCHANGE', gameId, publicKey: '' }, /publicKey/],
+      [{ type: 'KEY_EXCHANGE', gameId, publicKey: 42 }, /publicKey/],
+      [{ type: 'KEY_EXCHANGE', gameId, publicKey: b64(260) }, /publicKey/],
+      [{ type: 'KEY_EXCHANGE', gameId, publicKey: 'not base64!' }, /publicKey/],
+      [{ type: 'KEY_EXCHANGE', gameId, publicKey: 'ab-_' }, /publicKey/], // base64url
+      [{ type: 'KEY_EXCHANGE', publicKey: b64(88) }, /gameId/],
+      [{ type: 'PEER', gameId, iv: b64(68), ciphertext: b64(8) }, /iv/],
+      [{ type: 'PEER', gameId, iv: 'AAA', ciphertext: b64(8) }, /iv/], // unpadded
+      [{ type: 'PEER', gameId, ciphertext: b64(8) }, /iv/],
+      [{ type: 'PEER', gameId, iv: b64(16), ciphertext: b64(64 * 1024 + 4) }, /ciphertext/],
+      [{ type: 'PEER', gameId, iv: b64(16), ciphertext: '' }, /ciphertext/],
+      [{ type: 'PEER', gameId, iv: b64(16), ciphertext: { sealed: true } }, /ciphertext/],
+      [{ type: 'PEER', gameId, iv: b64(16) }, /ciphertext/],
+      [{ type: 'PEER', iv: b64(16), ciphertext: b64(8) }, /gameId/],
+    ];
+    for (const [msg, field] of refused) {
+      p1.ws.send(JSON.stringify(msg));
+      const err = await c1.wait((m) => m.type === 'ERROR') as any;
+      expect(err.message).toMatch(field);
+    }
+    expect(await staysQuiet(c2, isRelayed)).toBe(true);
+
+    // Exactly at each cap is accepted.
+    const atCaps = { iv: b64(64), ciphertext: b64(64 * 1024) };
+    sendMessage(p1.ws, { type: 'KEY_EXCHANGE', gameId, publicKey: b64(256) });
+    sendMessage(p1.ws, { type: 'PEER', gameId, ...atCaps });
+    expect(await c2.wait((m) => m.type === 'OPPONENT_KEY')).toEqual({ type: 'OPPONENT_KEY', gameId, publicKey: b64(256) });
+    expect(await c2.wait((m) => m.type === 'PEER')).toEqual({ type: 'PEER', gameId, ...atCaps });
+
+    p1.ws.close();
+    p2.ws.close();
+  });
+
+  it('never logs a public key or a sealed payload, only the message types', async () => {
+    const captured = captureConsole();
+    try {
+      const { p1, p2, c1, c2, gameId } = await seatTwoPlayers();
+      const key = await realPublicKey();
+      const live = sealed();
+      const smuggled = sealed();
+      const buffered = sealed();
+
+      sendMessage(p1.ws, { type: 'KEY_EXCHANGE', gameId, publicKey: key });
+      await c2.wait((m) => m.type === 'OPPONENT_KEY');
+      sendMessage(p1.ws, { type: 'PEER', gameId, ...live });
+      await c2.wait((m) => m.type === 'PEER');
+      // A valid PEER with a stray free-text field: the old logger printed any
+      // `message` a client attached.
+      p1.ws.send(JSON.stringify({ type: 'PEER', gameId, ...sealed(), message: smuggled.ciphertext }));
+      await c2.wait((m) => m.type === 'PEER');
+      // A refused payload.
+      p1.ws.send(JSON.stringify({ type: 'PEER', gameId, iv: smuggled.iv, ciphertext: `${live.ciphertext}!` }));
+      await c1.wait((m) => m.type === 'ERROR');
+
+      // Through the inbox: buffered while the opponent is offline, replayed on RESUME.
+      p2.ws.close();
+      await c1.wait((m) => m.type === 'OPPONENT_DISCONNECTED');
+      sendMessage(p1.ws, { type: 'PEER', gameId, ...buffered });
+      await until(async () => (await server.store.getInbox(p2.playerId)).length === 1);
+      const back = await resumeSession(p2.sessionToken);
+      await back.c.wait((m) => m.type === 'PEER');
+
+      for (const secret of [key, live.iv, live.ciphertext, smuggled.iv, smuggled.ciphertext, buffered.iv, buffered.ciphertext]) {
+        // A 12-character prefix catches a truncated dump as well as a whole one.
+        const needle = secret.slice(0, 12);
+        expect(captured.lines.filter(l => l.includes(needle))).toEqual([]);
+      }
+      // The per-message type lines are still written.
+      for (const type of ['KEY_EXCHANGE', 'OPPONENT_KEY', 'PEER']) {
+        expect(captured.lines.some(l => l.includes(`"type":"${type}"`))).toBe(true);
+      }
+
+      back.ws.close();
+      p1.ws.close();
+    } finally {
+      captured.restore();
+    }
+  });
+});
+
+describe('Removed relay messages', () => {
+  // Each carried identifying data in plaintext: an Aztec address and per-game
+  // randomness, a blinding factor, note preimages, the prize card, a hand proof.
+  const REMOVED: Record<string, unknown>[] = [
+    { type: 'SHARE_AZTEC_INFO', aztecAddress: '0x1234', onChainGameId: '0x5678', gameRandomness: ['0x1'] },
+    { type: 'SHARE_BLINDING', blindingFactor: '0x99' },
+    { type: 'RELAY_NOTE_DATA', txHash: '0xabc', notes: [{ tokenId: 3, randomness: '0x1' }] },
+    { type: 'SETTLE_STARTED', selectedCardId: 3 },
+    { type: 'SUBMIT_HAND_PROOF', handProof: { proof: 'p', publicInputs: [], cardCommit: '0x1' } },
+  ];
+
+  for (const removed of REMOVED) {
+    it(`rejects ${removed.type} as an unknown type and forwards nothing`, async () => {
+      const { p1, p2, c1, c2, gameId } = await seatTwoPlayers();
+
+      p1.ws.send(JSON.stringify({ ...removed, gameId }));
+      expect((await c1.wait((m) => m.type === 'ERROR') as any).message).toBe('Unknown or missing message type');
+      expect(await staysQuiet(c2, () => true)).toBe(true);
+
+      p1.ws.close();
+      p2.ws.close();
+    });
+  }
+});
+
+describe('TX status carries no tx hash', () => {
+  it('accepts TX_CONFIRMED without one', async () => {
+    const { p1, p2, c1, c2, gameId } = await seatTwoPlayers();
+
+    sendMessage(p1.ws, { type: 'TX_CONFIRMED', gameId, txType: 'create_game' });
+    for (const c of [c1, c2]) {
+      const status = await c.wait((m) => m.type === 'ON_CHAIN_STATUS') as any;
+      expect(status.status).toEqual({ player1Tx: 'confirmed', player2Tx: 'idle', canSettle: false });
+    }
+
+    p1.ws.close();
+    p2.ws.close();
+  });
+
+  it('ignores one an older client still sends: never stored, forwarded or logged', async () => {
+    const captured = captureConsole();
+    try {
+      const { p1, p2, c1, c2, gameId } = await seatTwoPlayers();
+      const hash = (): string => '0x' + crypto.randomBytes(32).toString('hex');
+      const confirmed = hash();
+      const failed = hash();
+
+      p1.ws.send(JSON.stringify({ type: 'TX_CONFIRMED', gameId, txType: 'create_game', txHash: confirmed }));
+      const statuses = [
+        await c1.wait((m) => m.type === 'ON_CHAIN_STATUS'),
+        await c2.wait((m) => m.type === 'ON_CHAIN_STATUS'),
+      ];
+      p2.ws.send(JSON.stringify({ type: 'TX_FAILED', gameId, txType: 'join_game', error: 'reverted', txHash: failed }));
+      statuses.push(
+        await c1.wait((m) => m.type === 'ON_CHAIN_STATUS'),
+        await c2.wait((m) => m.type === 'ON_CHAIN_STATUS'),
+      );
+      expect((statuses[3] as any).status).toEqual({ player1Tx: 'confirmed', player2Tx: 'failed', canSettle: false });
+
+      const stored = JSON.stringify(await server.store.getGame(gameId));
+      for (const txHash of [confirmed, failed]) {
+        const needle = txHash.slice(2, 14);
+        for (const s of statuses) expect(JSON.stringify(s)).not.toContain(needle);
+        expect(stored).not.toContain(needle);
+        expect(captured.lines.filter(l => l.includes(needle))).toEqual([]);
+      }
+
+      p1.ws.close();
+      p2.ws.close();
+    } finally {
+      captured.restore();
     }
   });
 });
