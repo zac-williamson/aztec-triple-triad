@@ -465,8 +465,10 @@ its timing. It sees no cards, moves, results, records or keys.
 - **Bot.**
   - Same flow as a human joiner: key exchange, `RECORD`, join, play.
   - It settles when it wins, and imports from the settle transaction otherwise.
-  - Its journal keeps records, the transcript and its own secrets, and no
-    opponent data.
+  - Its journal keeps both records, the transcript (both sides' moves and
+    proofs) and its own secrets. Of the human it keeps only what the game
+    shows it anyway: the cards they placed or opened. No address, no hidden
+    card.
   - The abandonment sweep works from nullifiers.
 - **Relay (Phase A).**
   - Add `KEY_EXCHANGE` and `PEER`.
