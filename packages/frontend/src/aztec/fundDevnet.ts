@@ -20,10 +20,20 @@ export interface FeeJuiceClaim {
   messageLeafIndex: bigint;
 }
 
+/** Anvil's default port, where `aztec start --local-network` puts its L1. */
+export const DEFAULT_DEVNET_L1_RPC = 'http://localhost:8545';
+/** The local network's default node port, where the block nudge goes. */
+export const DEFAULT_DEVNET_NODE_RPC = 'http://localhost:8080';
+
 export async function fundAccountOnDevnet(
   node: any,
   accountAddress: string,
   log: LogFn,
+  // A second local network (ANVIL_PORT=…, --port …) has its L1 and its node
+  // elsewhere. Bridging against the wrong anvil, or nudging the wrong node,
+  // works on someone else's chain while this one never mines the message.
+  l1RpcUrl: string = DEFAULT_DEVNET_L1_RPC,
+  nodeRpcUrl: string = DEFAULT_DEVNET_NODE_RPC,
 ): Promise<FeeJuiceClaim> {
   const [{ L1FeeJuicePortalManager }, { AztecAddress }, { createExtendedL1Client }, { Fr }] = await Promise.all([
     import('@aztec-labs/aztec.js/ethereum'),
@@ -35,7 +45,7 @@ export async function fundAccountOnDevnet(
   const l2Address = AztecAddress.fromStringUnsafe(accountAddress);
 
   const l1Client = createExtendedL1Client(
-    ['http://localhost:8545'],
+    [l1RpcUrl],
     ANVIL_MNEMONIC,
   );
 
@@ -76,7 +86,7 @@ export async function fundAccountOnDevnet(
   // can be empty. No-op/ignored if the debug endpoint is absent.
   const mineBlock = async () => {
     try {
-      await fetch('http://localhost:8080', {
+      await fetch(nodeRpcUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', method: 'aztecDebug_mineBlock', params: [], id: 1 }),

@@ -1,13 +1,14 @@
 # Architecture — Axolotl Arena on Aztec
 
-How a hidden-information card game runs on Aztec with three on-chain transactions
-per game. This document covers the **contract and protocol layer**: the Noir
-contracts, the standalone proof circuits, and the note lifecycle that moves cards
-between players. Every claim carries a `file:line` anchor into the source.
+How a hidden-information card game runs on Aztec with three on-chain
+transactions per game and **no public game state**. This document covers the
+**contract and protocol layer**: the Noir contracts, the standalone proof
+circuits, and the note lifecycle that moves cards between players. Every claim
+carries a `file:line` anchor into the source. The design rationale and threat
+model are in [docs/plan/PRIVATE_GAMES.md](plan/PRIVATE_GAMES.md).
 
-> **Scope note:** [§12](#12-frontend-layer) documents the frontend against the
-> post-decomposition hook structure (revival work item B). Sections 1–11 cover
-> the contract/protocol layer.
+> **Scope note:** [§12](#12-frontend-layer) documents the frontend. Sections
+> 1–11 cover the contract/protocol layer.
 
 ## 1. Design at a glance
 
@@ -15,472 +16,301 @@ A full game costs exactly three transactions, regardless of how the match goes:
 
 | Tx | Who | What |
 |----|-----|------|
-| 1 | Player 1 | `create_game` — burn 5 card notes, publish a hand commitment |
-| 2 | Player 2 | `join_game` — same, against player 1's `game_id` |
-| 3 | Winner (either player on draw) | `process_game` — verify the whole match, re-mint cards |
+| 1 | Player 1 | `create_game` — burn 5 card notes, prepare every payout, record only hashes |
+| 2 | Player 2 | `join_game` — the same, against player 1's record |
+| 3 | Anyone holding the records and the transcript (normally the winner) | `settle_game` — verify the whole match, release the prepared notes |
 
 The nine moves in between never touch the chain. Each move is a client-side ZK
 proof (`circuits/game_move/`) exchanged peer-to-peer over a WebSocket relay
-(`packages/backend/`). Settlement verifies all eleven proofs — 2 hand proofs +
-9 move proofs — *inside* the private `process_game` function
-(`packages/contracts/triple_triad_game/src/main.nr:578-590`), so the chain
-learns the result without ever seeing a hand or a move order's private inputs.
+(`packages/backend/`). Settlement verifies the nine move proofs *inside* the
+private `settle_game` function (`triple_triad_game/src/main.nr:494`).
+
+What the chain learns: nothing about the game. There is no public storage beyond
+the deployment's immutables, no public call and no event
+(`triple_triad_game/src/main.nr:264-275`). A game's state is a set of
+**nullifiers** derived from `game_key`, a secret only its two players share
+(§3), so create, join and settle are unlinkable to each other and to the game
+contract. What any tx still shows: its fee payer, gas, counts of nullifiers and
+note hashes, and its time.
 
 Why this shape: Aztec private functions execute client-side and can recursively
-verify UltraHonk proofs (`verify_honk_proof`,
-`triple_triad_game/src/main.nr:34`). That turns "9 on-chain moves + dispute
-games" into "1 proof-of-the-whole-game", with latency and fees paid once.
+verify UltraHonk proofs (`verify_honk_proof`). That turns "9 on-chain moves +
+dispute games" into "1 proof-of-the-whole-game", with latency and fees paid once.
 
 ## 2. System pieces
 
 ```
 packages/contracts/
-  triple_triad_nft/    Card NFTs: private notes, deterministic randomness/tagging,
-                       commit-and-burn for game entry, re-mint at settlement
-  triple_triad_game/   Game lifecycle + 11-proof recursive settlement
+  triple_triad_nft/    Card NFTs: private CardNotes (two-step hash, §7), commit a hand
+                       and prepare its payouts, release prepared notes
+  triple_triad_game/   Private game lifecycle as nullifiers + 9-proof settlement
   arena_token/         Private fungible reward token (BalanceSet)
 circuits/
-  prove_hand/          "I own these 5 committed cards" (and bind opponent randomness)
   game_move/           "This move is legal" (full capture rules in-circuit)
-  dummy_move/          Zero-constraint padding for abandoned games
-  dummy_hand/          Zero-constraint prove_hand stand-in for playtest fast mode —
-                       its VK is accepted only by --permissive-vks TEST deployments
-                       (circuits/dummy_hand/src/main.nr:1-8)
+  dummy_move/          Zero-constraint move stand-in, accepted only by
+                       --permissive-vks TEST deployments
+  prove_hand/          Not used by the Phase A protocol (see PRIVATE_GAMES.md §4)
   card_data/           Shared 256-card rank table (CARD_RANKS / get_card_ranks)
 ```
 
-The two contracts are wired at deploy time: the game contract address is stored
-in the NFT contract (`triple_triad_nft/src/main.nr:178,208-212`) and gates every
-game-flow mint (e.g. `:784-785`); the NFT and token addresses are
-`PublicImmutable` in the game contract (`triple_triad_game/src/main.nr:86,97`).
+The contracts are wired at deploy time: the game contract address is stored in
+the NFT and the token, and gates every game-flow call (`commit_hand`,
+`release_game_cards`, `release_reward_notes`); the NFT and token addresses are
+`PublicImmutable` in the game contract.
 
 ## 3. Game lifecycle
 
 ```
-P1 browser                On-chain                    P2 browser
-──────────                ────────                    ──────────
-create_game([5 ids]) ───► status 1 (created)
-  └─ NFT pops 5 notes,        │
-     derives game_id     GameCreated event
-        game_id ──────────────┼─── via relay ───────► join_game(game_id, [5 ids])
-                         status 2 (active) ◄──────────── └─ NFT pops 5 notes
-                              │
-   ◄════ exchange hand proofs + 9 alternating game_move proofs (no txs) ════►
-                              │
-winner: process_game(11 proofs, …) ───► status 3 (settled)
-  └─ all cards re-minted as fresh notes; loser's chosen card switches owners
+P1 browser                  On-chain (nullifiers only)           P2 browser
+──────────                  ──────────────────────────           ──────────
+      ◄═══════ key exchange over the relay (gameKeys.ts) ═══════►
+      both derive game_key; the relay sees only the public keys
+
+create_game(game_key, ids) ─► N_created(game_id)
+  record_1 ──────────────────── sealed PEER via relay ─────────► join_game(game_key, record_1, ids)
+                              N_seat2, N_joined(game_id, rec_2) ◄─┘
+  ◄──────────────────────────── sealed PEER: record_2 ──────────
+   ◄════ 9 alternating game_move proofs (no txs) ════►
+winner: settle_game(game_key, record_1, record_2, 9 proofs, prize_move) ─► N_done(game_id)
+  └─ releases the prepared notes; each player imports their own
 ```
 
-Status machine (values documented at `triple_triad_game/src/main.nr:82`):
-`0 none → 1 created → 2 active → 3 settled`, with two exits:
-`1 → 4 cancelled` (creator only, `:208-220`) and
-`2 → 5 abandoned_claimed → 3 settled` (see [§8](#8-abandoned-games)).
+- **Records.** Each player's commit returns a 9-field record
+  `[seat, hand_commit, ret_0..ret_4, prize_partial, reward_note_hash]`
+  (`triple_triad_game/src/main.nr:36-41`). Every field is a hiding hash.
+- **Game id.** `game_id = poseidon2_sep([game_key, record_hash(record_1)])`
+  (`game_id_of`, `:338`). It is never published; nobody without `game_key` can
+  compute any of the game's nullifiers.
+- **Seats.** A player is identified by `seat = H(H(nhk_app_game, game_key))`
+  (`player_secret`/`seat_of`, `:310-322`): proving a seat means recomputing it
+  from the player's own key, which is how cancel, claim and contest know who is
+  calling without any address being recorded. The same account recomputes the
+  same seat, so `join_game` refuses self-play.
+- **State as nullifiers** (`n_created`…`n_resolved`, `:353-399`): `N_created`
+  (create), `N_seat2` (pushed by join AND cancel, so exactly one happens),
+  `N_joined` (binds the joiner's record), `N_done` (pushed by settle, finalize
+  and cancel, so a game resolves once), and the abandonment set (§8).
+  Existence checks use `assert_nullifier_exists` (`assert_recorded`, `:402`);
+  `joined_game` (`:412`) authenticates both records in one check, because the
+  join itself verified record 1.
+- `create_game` (`:429`), `join_game` (`:444`), `cancel_game` (`:471`). Cancel
+  releases exactly the creator's five prepared return notes, so it cannot mint
+  anything else.
+- Clients read a game's state by looking up the siloed nullifiers that
+  `game_nullifiers` (`:699`) computes; the node reports the block each one
+  landed in, which the abandonment functions use as a clock.
 
-- `create_game` (`triple_triad_game/src/main.nr:126-139`) takes **only** the 5
-  card ids. It calls `commit_five_nfts_create` on the NFT contract (`:130-132`),
-  which returns `[card_commit_hash, player_state_hash, game_id]` — the game id is
-  *derived in-circuit*, never supplied by the client (see §4). The public half
-  `create_game_public` (`:141-154`) asserts the id is unused (`:145-146`) and
-  stores player, commitment, and state hash.
-- `join_game` (`:160-172`, public half `:174-189`) is symmetric, takes the
-  creator's `game_id`, and rejects self-joins (`:181`).
-- Both private halves bridge to public storage via `enqueue_self` +
-  `#[only_self]` (`:138`, `:141-142`) — the standard Aztec pattern for
-  private-to-public state updates (public functions cannot call private ones).
+## 4. Hiding a hand and preparing its payouts
 
-## 4. Hiding a hand: commitments
+When a player commits, the NFT contract (`commit_hand`,
+`triple_triad_nft/src/main.nr:616`):
 
-When a player enters a game, the NFT contract
-(`commit_five_nfts_create`, `triple_triad_nft/src/main.nr:659-717`):
+1. Checks the hand: five distinct ids in 1..256 (`validate_hand`, `:63`). This
+   used to be the hand proof's job; checking it on-chain at commit time is what
+   lets settlement drop the two hand proofs.
+2. Fetches the player's app-siloed nullifier secret `nhk_app_secret` via
+   `request_nhk_app`, pops the player's single **nonce note** and the five card
+   notes (`pop_cards_by_id`, `:323`) — the cards are *burned*, not escrowed.
+3. Derives eight per-game secrets from `nhk_app_secret` and the nonce
+   (`derive_game_secrets`, `:262`): return randomness `r_0..r_4`, the prize
+   randomness `w`, the reward randomness `u` and the hand blinding `b`. The
+   nonce note is re-inserted as `nonce + 8`.
+4. Prepares the payouts (`prepared_payouts`, `:274`):
+   `hand_commit = poseidon2([ids…, b])`; one fully formed return note per hand
+   slot, owned by the committer; a prize **partial** commitment
+   `H(owner, w)`; and the reward note `UintNote{20}` for the owner.
 
-1. Fetches the player's app-siloed nullifier secret `nhk_app_secret` from the
-   PXE via `request_nhk_app` (`:552-554`). This secret never leaves the private
-   execution context.
-2. Pops the player's single **nonce note** — a one-note counter in
-   `note_nonce: Owned<PrivateSet<FieldNote>>` (`:158`, pop/push helpers
-   `:347-379`) — and derives, deterministically:
-   - `game_id = poseidon2([nhk_app_secret, nonce_value, iv_GameId])`
-     (`derive_game_id`, `:246-251`);
-   - 6 randomness values `poseidon2([nhk_app_secret, nonce+i, iv_SecretIV])`
-     (`derive_game_randomness` → `derive_note_randomness`, `:238-262`).
-   The nonce note is re-inserted as `nonce+6` (`:594`), reserving the 6
-   randomness slots: 5 for the player's own cards, 1 spare for a captured card.
-3. Pops the 5 card notes by token id (`:579-582`) — the cards are *burned*, not
-   escrowed. They only exist again when settlement re-mints them.
-4. Publishes `card_commit_hash = poseidon2([id1..id5, blinding])` where
-   `blinding = poseidon2([nhk_app_secret, nft_address, game_id])` (`:584-590`;
-   the frontend can recover the blinding via the simulate-only helper
-   `compute_blinding_factor`, `:1010-1017`).
-5. Publishes `player_state_hash = poseidon2(randomness[0..6])` (`:592`) — this
-   pins, on-chain, exactly which randomness the settlement mints may use.
+Nothing derived here leaves the player's device. The client reads its own
+secrets with the simulate-only `compute_game_secrets` (`:840`) and its record
+with `preview_record` (`triple_triad_game/src/main.nr:684`).
 
-This is why **ground rule #10** exists (`game_id`/randomness derived in-circuit,
-never passed from the frontend): a client-supplied value would let a malicious
-player grind ids or reuse randomness across games. The derivation also makes
-everything recoverable — wipe the browser, re-derive from the account keys.
-
-The `prove_hand` circuit (`circuits/prove_hand/src/main.nr:21-59`) then proves,
-off-chain, to the *opponent*:
-
-| Public inputs | Constraint |
-|---------------|-----------|
-| `card_commit_hash` | recomputed from private `card_ids` + `blinding_factor` (`:42-49`) |
-| `opponent_player_state_hash` | recomputed from the opponent's 6 randomness values (`:51-58`) |
-
-with card ids range-checked 1–256 and pairwise distinct (`:31-40`). The second
-input is the protocol's quiet trick: before play begins, players exchange their
-randomness values over the relay, and each hand proof demonstrates *knowledge of
-the opponent's randomness preimage*. Settlement later requires those exact
-values to re-mint the opponent's notes (§6), so by move 1 either player is
-guaranteed able to settle — whoever wins, and whoever disappears.
+This is why **ground rule #10** exists: per-game values are derived in-circuit
+from the player's own keys, never supplied by the client, so they cannot be
+ground or reused, and they are recoverable from the account keys.
 
 ## 5. Playing in zero knowledge: the move circuit
 
-Every move produces one `game_move` proof
-(`circuits/game_move/src/main.nr:63-274`). Public inputs (`:63-70`):
+Every move produces one `game_move` proof (`circuits/game_move/src/main.nr:79`).
+Public inputs:
 
 ```
-[card_commit_1, card_commit_2, start_state_hash, end_state_hash, game_ended, winner_id]
+[card_commit_1, card_commit_2, start_state_hash, end_state_hash, game_ended, winner_id,
+ placed_card_id, placed_slot]
 ```
 
-State hashes are
-`pedersen([board[18], score1, score2, current_turn, original_owners[9]])`
-(`hash_board_state`, `:32-49`, 30 fields); the board is 9 cells ×
-`(card_id, owner)` (`:20,77`). `original_owners[i]` is the player who FIRST
-placed the card on cell `i` (0 if empty) — set at placement, never changed by
-capture. It is publicly agreed (both peers derive it identically from the shared
-move sequence), so it is safe as chained hash state, and it is part of the hash
-but not a separate public input. The circuit constrains, in order:
+`placed_card_id` and `placed_slot` (`:93-94`) are face-up information (the card
+lands on the board); they are public so settlement knows which of the loser's
+prepared return notes to hold back for the prize. They reach the chain only as
+private inputs of the settle tx.
 
-1. **Turn legality** — the mover matches `current_turn_before` (`:86-91`).
+State hashes are `pedersen([board[18], score1, score2, current_turn,
+original_owners[9]])` (`hash_board_state`, `:35`, 30 fields). `original_owners[i]`
+is the player who FIRST placed the card on cell `i` — set at placement, never
+changed by capture, publicly agreed by both peers. The circuit constrains:
+
+1. **Turn legality** — the mover matches `current_turn_before`.
 2. **Hand binding** — recompute the mover's commitment from private
    `player_card_ids + blinding_factor`; it must equal `card_commit_1` or `_2`
-   per the mover's seat (`:99-113`), and the placed card must be one of the 5
-   committed ids (`:115-122`). You cannot play a card you didn't commit.
-3. **Replay prevention** — a player may not place a card they already placed.
-   Reject if any cell holds `card_id` AND has `original_owner == current_player`
-   (`:141-159`). `original_owner` is fixed at placement and never changes on
-   capture, so this is sound under shared `STARTER_CARD_IDS=[1..5]`: a captured
-   opponent card whose id collides with a card still in the mover's hand has
-   `original_owner = opponent` and so does NOT false-reject (the finding-19
-   capture trap that a *current*-owner check hits). It replaced an owner-blind
-   board scan (premise "card ids are globally unique NFTs" was false) and, before
-   that, a chained per-player placed-slot mask — abandoned because the masks were
-   privately derived and could not agree across async peers, breaking proof-chain
-   assembly at the P1→P2 boundary (BUG_C2_REPLAY, BUG_C2_REPLAY_2). Unlike the
-   masks, `original_owner` is self-contained and publicly agreed.
-4. **Placement** — target cell empty before (`:131-134`), card+owner written
-   after (`:136-141`).
-5. **Capture rules** — full Triple Triad chain capture, in-circuit: rank lookup
-   for all 9 cells via the shared table (`CARD_RANKS`/`get_card_ranks`,
-   `circuits/card_data/src/lib.nr:10,269-272`; precomputed at `:149-155`),
-   then 8 fixed passes of BFS-style flipping using the adjacency table
-   `NEIGHBORS` (`:42-52`) and facing-rank table `DIR_RANKS` (`:59`), seeded
-   from the placed cell (`:157-196`).
+   per the mover's seat; and `player_card_ids[placed_slot] == placed_card_id`
+   with `placed_slot` a real slot (`:145`). You cannot play a card you didn't
+   commit, or name a slot it isn't in.
+3. **Replay prevention** — a player may not place a card they already placed:
+   reject if any cell holds the card AND `original_owner == current_player`
+   (section 4b of the circuit).
+4. **Placement** — target cell empty before, card+owner written after.
+5. **Capture rules** — full Triple Triad chain capture in-circuit (rank table
+   `circuits/card_data/src/lib.nr`, 8 BFS passes over `NEIGHBORS`/`DIR_RANKS`).
 6. **Frame rule** — every non-placed cell keeps its card id; owner changes iff
-   captured (`:198-220`).
-7. **State hashing** — `start_state_hash` matches `board_before` (`:222-224`);
-   `end_state_hash` matches `board_after` with the turn flipped (`:226-229`).
-8. **Game end** — `game_ended/winner_id` are forced by the board: 9 cells filled
-   ⇒ ended, winner by score comparison, `3` = draw (`:231-253`).
-9. **Score integrity** — scores are *recomputed* from board ownership plus
-   remaining hand counts (P1 moves on odd turns ⇒ ceil/floor split, `:255-274`),
-   not trusted.
+   captured.
+7. **State hashing** — `start_state_hash` matches `board_before`;
+   `end_state_hash` matches `board_after` with the turn flipped.
+8. **Game end** — forced by the board: 9 cells filled ⇒ ended, winner by score,
+   `3` = draw.
+9. **Score integrity** — recomputed from board ownership plus remaining hand
+   counts, not trusted.
 
 Because each proof's `end_state_hash` is the next proof's `start_state_hash`
-(checked at settlement, §6), the 9 proofs form a hash-linked chain from the
-canonical empty board to the final position — a verifiable game transcript in
-which the only public values are 21-field-hash digests.
+(checked at settlement, §6), the nine proofs form a hash-linked chain from the
+canonical empty board to the final position.
 
-## 6. Settlement: process_game
+## 6. Settlement: settle_game
 
-`process_game` (`triple_triad_game/src/main.nr:533-741`) runs entirely in
-private context on the winner's machine (either player on a draw). The supplied
-verification keys are validated against VK hashes pinned at deploy time in
-`PublicImmutable` storage (`:87-88,98`, initialized `:105-119`) — immutable
-public values are readable from private context, which is what makes the
-pattern work. Steps:
+`settle_game` (`triple_triad_game/src/main.nr:494`) takes `game_key`, both
+records, the move VK, the nine proofs with their 8 public inputs each, and
+`prize_move`:
 
-1. **Verify 11 proofs** against the pinned VK hashes (`:578-590`).
-2. **Extract** the two card commitments and the two cross-bound opponent state
-   hashes from the hand-proof public inputs (`:592-598`).
-3. **Consistency** — all 9 move proofs carry the same two commitments
-   (`:607-611`).
-4. **Chaining** — `end_state[i] == start_state[i+1]` for all 8 links
-   (`:613-619`).
-5. **Genesis** — move 1 starts from the canonical empty board: 18 zeros,
-   scores `5,5`, turn `1`, pedersen-hashed (`:621-632`) — the same formula as
-   the circuit's `hash_board_state`.
-6. **Termination** — moves 1–8 must not end the game (`:634-638`); move 9 must,
-   with `winner_id ∈ {1,2,3}` (`:640-647`).
-7. **Randomness binding** — hash the caller's and opponent's supplied
-   randomness (`:649-654`); the public halves `settle_game`/`settle_game_draw`
-   assert these equal the `player_state_hash` values stored at create/join
-   (`:772-793`, draw `:833-842`), AND that each hand proof bound the *other*
-   player's stored hash (`:795-799`, draw `:844-846`). Nobody can settle with
-   randomness the opponent can't re-derive.
-8. **Re-mint** — winner path (`:660-713`): winner gets 6 notes (their 5 + the
-   chosen `card_to_transfer`, validated to be in the loser's committed hand
-   `:662-670`) via `mint_for_game_winner` (`:679-681`); loser gets 4 notes
-   (duplicate-aware removal of the lost card, `:683-697`) via
-   `mint_for_game_loser` (`:699-701`). Draw path (`:714-740`): both players'
-   5 cards re-mint via `mint_for_game_draw_offchain`. Both paths mint 20
-   ArenaTokens to each player (`:703-706`, `:730-733`).
-9. **Replay protection** — the public half flips `game_settled` exactly once and
-   re-checks that the stored commitments match the proof's, so a proof bundle
-   cannot settle a different game or settle twice. The gate is
-   `assert_settleable`: status 2 (active), or status 5 (a claim is standing)
-   while neither player has recovered — a complete transcript outranks an
-   abandonment claim, see [§8](#8-abandoned-games). `game_settled` alone would
-   not be enough, because the abandonment path records recovery per player and
-   never sets that flag.
+1. `joined_game` authenticates both records (`N_joined` exists).
+2. Verifies the nine proofs against the stored `move_vk_hash`.
+3. `assert_transcript` (`:106`): every move bound to both records'
+   `hand_commit`s, chained, anchored to the empty board
+   (`compute_initial_state_hash`), only move 9 ending the game with winner 1, 2
+   or 3.
+4. Pushes `N_done(game_id)` — a second settlement, or one after an unwound
+   abandonment, fails on it.
+5. **Win:** `prize_of` (`:142`) reads the prize from the move `prize_move`,
+   which must have the loser's parity (player 1 moves at even indices). The NFT
+   releases the winner's five returns, the loser's four that were not the prize
+   slot (`win_returns`, `:164`), and completes the winner's prize partial with
+   the prize card. **Draw:** both hands' ten returns.
+   Either way 12 note hashes are released (10 cards + 2 rewards), so the count
+   does not reveal the result.
+6. The token releases both prepared reward notes.
+
+Settlement needs no address, randomness, blinding factor or unplayed card:
+anyone holding the two records and the transcript may call it. Nothing is
+checked against the caller.
 
 ## 7. The note lifecycle
 
-The full journey of a card, and the Aztec mechanics at each step:
+**Card notes** are `CardNote { card_id }` with a two-step hash, like aztec-nr's
+`UintNote` (`triple_triad_nft/src/card_note.nr`):
 
 ```
-mint (onboarding/pack) ──► private note ──► commit_five_nfts_* POPS it (burn)
-                                              │ play happens off-chain
-        settlement re-mint (create_and_push_note + offchain message)
-                                              │
-        owner hands the message to offchain_receive ──► private note again
-        (recovery: re-derive ids + randomness ──► import_note)
+partial   = poseidon2_sep([owner, randomness], DOM_SEP__PARTIAL_NOTE_COMMITMENT)
+note_hash = compute_note_hash(storage_slot, [partial, card_id])
 ```
 
-- **Onboarding** (`get_cards_for_new_player`,
-  `triple_triad_nft/src/main.nr:416-452`): 5 fixed starter cards
-  (`STARTER_CARD_IDS`, `:78`), a nonce note initialized to 5 (`:447`), and 100
-  ArenaTokens (`:451`).
-- **Card packs** (`purchase_card_pack`, `:456-475`): burn 100 tokens
-  (`CARD_PACK_COST`, `:86`; `burn_from`, `arena_token/src/main.nr:72-79`),
-  generate 10 random cards in-circuit from `pedersen([nhk_app_secret, nonce+i])`
-  with a 5-tier rarity roll over pools `[10,166,50,20,10]`
-  (`generate_card`, `triple_triad_nft/src/main.nr:8,17-49`), advance the nonce
-  by 10 (`:474`). `preview_card_ids` (`:481-492`) lets the frontend show the
-  pack contents via `.simulate()` before buying — same derivation, no tx.
+A card can be created the ordinary way (owner and randomness known) or by
+completing a `partial` someone prepared earlier without learning its owner —
+and both give the same hash (`card_partial_commitment`/`complete_card_note_hash`,
+`card_note.nr:76-82`). Unlike aztec-nr's partial notes, no completion log is
+emitted: the owner always knows the value already.
 
-  > **Card packs are ONE transaction and must stay one transaction.**
-  >
-  > The audit's F6 observed that pack contents derive from the player's own key
-  > material, so somebody could generate accounts, simulate each offline for
-  > free, and keep only the one that rolls well. That finding is **closed as
-  > irrelevant and is not to be reopened.** Cards have no value, this is a
-  > proof of concept, and grinding one costs the grinder more than it is worth.
-  >
-  > It was once "fixed" by splitting buy and open into two transactions, because
-  > the roll has to be decided after the buyer commits and a private function
-  > cannot read a value that does not exist yet. That doubled the latency of a
-  > core flow — on a chain where a transaction means client-side proving — to
-  > partially mitigate a Low-severity finding about a resource nobody is
-  > competing for. It was reverted.
-  >
-  > If you are an agent reading this and reaching for F6: don't. The trade was
-  > already made, deliberately, and the answer is no. Should packs ever carry
-  > real value, the fix is Aztec partial notes — the private half creates ten
-  > blank notes, the public half fills in the ids from post-commitment entropy —
-  > which keeps it at ONE transaction. Anything that adds a transaction is the
-  > wrong answer.
+- **Minting** (starter cards, packs, bot stock, admin mints, transfers) creates
+  `CardNote`s as before; starter and pack cards are delivered offchain to their
+  owner (`get_cards_for_new_player`, `:380`; `purchase_card_pack`, `:420`).
+- **Committing** burns the hand and prepares its payouts (§4).
+- **Releasing** (`release_game_cards`, `:660`; game-only) pushes prepared note
+  hashes and, for a prize, the completed partial. Nothing is delivered: each
+  owner rebuilds their own notes from secrets they already hold and imports
+  them from the settlement tx's effects with `import_note` (`:863`). The loser's
+  import is the same code as the winner's; no note data ever crosses the relay.
 
-- **Card mints** — starter cards, packs, the settlement and abandonment
-  re-mints — build each note by hand in `push_card_note`: it computes the note
-  hash itself (`poseidon2([slot, value, owner, randomness])` with the
-  note-hash domain separator), calls `notify_created_note` so the local PXE
-  learns it, and pushes the hash to the tx. Crucially it reads the slot from
-  `TripleTriadNFT::storage_layout().private_nfts.slot` — **ground rule #7**:
-  the `#[storage]` macro assigns slots including hidden fields, so a hardcoded
-  slot is a silent corruption bug. `create_and_push_note` wraps it and
-  returns the note's `NoteMessage`, which every player-facing mint delivers
-  with `MessageDelivery::offchain()`.
-- **Why build the note by hand?** For the randomness. `create_note` would
-  choose it at random; ours is derived from the owner's `nhk_app` secret
-  (`derive_note_randomness`, or the per-game randomness committed in §4), so
-  an owner can always rebuild a note and import it with nothing from the
-  sender — the settlement and abandonment recovery paths depend on that.
-  Building the `NewNote` ourselves keeps that property and still yields the
-  standard note message.
-- **Why offchain delivery?** It costs no fee and no log, the encryption runs
-  unconstrained, and it consumes no tagging index — so no 84-index window to
-  outrun. The message comes back from `send()` as one of its
-  `offchainMessages`; a settlement's carries messages for *both* players.
-- **Discovery** — **ground rule #9**: these notes carry no tag, so nothing
-  finds them by scanning. The owner hands the messages to `offchain_receive`
-  (injected into every contract by `#[aztec]`), which keeps them in a
-  persistent inbox; at the next contract sync the PXE stores each note once
-  its tx is found on-chain, re-processes it after a reorg, and drops the
-  message when its block finalizes. The frontend's door is
-  `receiveCardMessages` (`aztec/pxe.ts`; §12.6). **Recovery** is the
-  unconstrained utility `import_note`: re-derive the card ids and randomness
-  and re-encode each note as a private-note message for
-  `process_private_note_msg` + `validate_and_store_enqueued_notes_and_events`
-  (a `.simulate()` call, no transaction). It serves the boot-time restore
-  from the card store, and — until the settler forwards the messages instead
-  ([plan/OFFCHAIN_DELIVERY.md](plan/OFFCHAIN_DELIVERY.md), step 3) — the
-  settlement loser, who gets their cards' plaintext over the relay.
-- **The bot's stock is the exception**: `mint_bot_cards` sends no message.
-  The inbox re-fetches the receipt of every received message's tx on each
-  sync until its block finalizes — one to three txs for a player, a hundred
-  for a thousand-card stock — so the bot imports its stock from the
-  provisioner's manifest with `import_note`.
-- **Inspection**: `get_nfts_for_user` pages through the private set
-  (`:1097-1109`); `get_note_nonce` reads the counter (`:1114-1122`).
-
-A small public-ownership surface sits alongside the private set: the
-`public_owners` map (`:176`), `mint_to_public` (minter only, `:639-651`),
-`transfer_public` (`:868-875`), `transfer_private_to_public` (`:880-890`), and
-`reclaim_card` back into the private set (`:898-905`, checked by
-`finalize_reclaim`, `:946-951`). No game flow uses it: games play private
-cards only. The 22 November 2026 redeploy removed what an earlier design
-left behind — the escrow functions (`prepare_for_game`, `unlock_cards`,
-`game_transfer`) and their card lock, the public mints of the first
-abandonment design — and eight test-only entry points, three of which minted
-any card for anyone ([plan/AUDIT_INVARIANTS.md](plan/AUDIT_INVARIANTS.md), "A
-second gap"). `scripts/contractEntryPoints.test.ts` now lists every NFT entry
-point and who may call it. The design-era escrow spec is archived at
-`docs/history/GAME_LIFECYCLE_SPEC.md`.
+**Reward notes** are `UintNote`s prepared at commit and released by
+`release_reward_notes` (`arena_token/src/main.nr:101`); the owner imports with
+`(owner, 20, u)`.
 
 ## 8. Abandoned games
 
-If your opponent walks away mid-game their cards are committed and unreachable
-for a cooperative settle. Four functions handle it, and the shape of the whole
-thing is: **a claim freezes the game, a contest or a settlement unfreezes it,
-and recovery is the last resort that returns each side its own stake.**
+No proofs and no transcript: claims are timed from the blocks their nullifiers
+landed in, using `get_block_header_at` and `assert_nullifier_existed_by` /
+`assert_nullifier_did_not_exist_by`. `MIN_ABANDON_SECONDS` = 480 and
+`DISPUTE_SECONDS` = 600 (`triple_triad_game/src/main.nr:25-29`).
 
-1. **Claim** — `claim_abandoned_game`. You submit the 2 hand proofs plus every
-   move played so far (0–9), padded to 9 slots with **dummy proofs**: the
-   `dummy_move` circuit has the same public-input shape and zero constraints
-   (`circuits/dummy_move/src/main.nr:6-13`). Slot *i* is verified against the
-   real move VK if `i < num_valid_moves`, else against the dummy VK — three VKs,
-   all pinned at deploy, and the constructor now rejects a deployment that
-   registers the dummy VK as a real one unless `permissive_vks` says so
-   explicitly (readable afterwards via `has_permissive_vks()`).
+- **Claim** (`claim_abandoned_game`, `:582`): a player proves their seat; the
+  clock nullifier (`N_joined` for claim 1, `N_contest(c-1)` after a contest)
+  must have existed `MIN_ABANDON_SECONDS` before the anchor; `N_done` must not
+  exist. Pushes `N_claim_slot(c)` and `N_claim(c, side)`. Claims are numbered
+  1..3.
+- **Contest** (`contest_abandonment`, `:617`): the OTHER player, inside the
+  window — measured from a block in which the claim did not yet exist. Pushes
+  `N_contested_by(side)` (once per side), `N_contest(c)` (restarts the clock)
+  and `N_resolved(c)`.
+- **Finalize** (`finalize_abandoned_game`, `:650`): anyone, once the window has
+  passed since a block in which the claim already existed. Pushes `N_resolved(c)`
+  and `N_done`, and releases both players' own five cards. No rewards.
 
-   `n == 0` is legal: a player can abandon between joining and their first move,
-   and refusing that claim left BOTH hands locked forever. `n == 9` is legal
-   too — a complete game whose winner never returned is exactly the case the
-   loser needs this for.
-
-   For `n < 9` the parity of `num_valid_moves` must show it was the *opponent's*
-   turn when play stopped, so you cannot walk away from your own turn and call
-   the other player absent (`assert_claim_turn`). That check reads the stored
-   player addresses; it was once a caller-supplied `bool`, which defeated it
-   entirely. A claim also requires `MIN_ABANDON_SECONDS` — eight minutes —
-   since the game went active: SECONDS, not blocks, because measured block time
-   on this testnet ranges from 27 to 72 seconds. The relay offers the claim once
-   the opponent has idled a minute, usually sooner, so the browser's claim flow
-   waits the bar out on the chain's clock (`waitForAbandonBar`) before proving
-   anything, and stands down if the opponent moves meanwhile. Eight minutes no
-   longer outlasts a slow game plus its settlement (it was an hour, which did):
-   a loser can now claim while the winner is still settling, and the winner's
-   answer is to contest (below) and then settle. The arena bot's sweep waits
-   its own game timeout, 30 minutes, before it claims anything.
-
-2. **Contest** — `contest_abandonment`. Either player who is not the claimant
-   may object inside `DISPUTE_SECONDS`, with no proof required. The game returns
-   to active and the abandonment clock **restarts** — without the restart a
-   contested game was instantly re-claimable, which made the window decorative.
-   Once per player per game.
-
-3. **Settle anyway** — a standing claim does **not** block settlement. A
-   verified nine-move transcript outranks a claim at any `n` the claimant chose,
-   so `process_game` is accepted from status 5 as well as status 2, provided
-   neither player has recovered (`assert_settleable`).
-
-   This is load-bearing, not a convenience. Contest is once per player, so
-   without it a loser could claim, absorb the winner's single contest, wait out
-   the restarted clock, and claim again — denying the prize for the price of two
-   hours. Truncation makes a claim-time check useless: the claimant just submits
-   a shorter prefix, and no contract can tell a truncated prefix from a genuinely
-   unfinished game.
-
-   The recovery flags, not the status, are what prevent a double mint: once
-   either side has taken its stake back the game is partly unwound and settling
-   on top would issue the wagered card twice. Settlement writes status 3 and
-   recovery requires status 5, so the two are mutually exclusive in both
-   directions.
-
-4. **Recover** — `settle_abandoned_game`, after `DISPUTE_SECONDS` elapses.
-   Recovery is **per player**: each side re-mints its own five cards, whenever it
-   returns. No card changes hands, and the claimant gains nothing by claiming.
-   An earlier version let the claimant settle for everybody and marked the game
-   done, which left the absent player no route to their own cards if they ever
-   came back.
-
-   A recoverer proves their OWN side's commitments (`assert_recovery_binding`).
-   The absent player's cannot be verified — that needs their blinding factor,
-   and by definition they are not here.
+Contest and finalize of one claim both push `N_resolved(c)`, so only one lands;
+no tx expiry is needed (an expiry would be a public fingerprint). A full
+transcript outranks a standing claim: settlement needs only `N_done` to be free.
 
 ## 9. ArenaToken
 
 A minimal private fungible token (`packages/contracts/arena_token/src/main.nr`):
-`Owned<BalanceSet>` storage (`:30`), `mint_private` gated to admin/NFT/game
-contracts (`:55-67`), `burn_from` gated to the NFT contract (`:72-79`),
-unconstrained `get_balance` (`:82-85`). Economy: +100 at onboarding, +20 per
-settled game per player, −100 per card pack — sized so ~5 games buy a pack.
+`Owned<BalanceSet>` storage, `mint_private` gated to admin/NFT/game
+(`:83`), `release_reward_notes` gated to the game (`:101`), `burn_from` gated to
+the NFT, `import_note` and unconstrained `get_balance`. Economy: +100 at
+onboarding, +20 per settled game per player, −100 per card pack.
 
 ## 10. Aztec concept → code index
 
-The fastest way to use this repo as a learning resource: pick a concept, read
-its anchor.
-
 | Aztec concept | Where to read it |
 |---------------|------------------|
-| Private state via notes (`Owned<PrivateSet<N>>`) | `triple_triad_nft/src/main.nr:174,181` |
-| Note pop by token id (one oracle select per card) | `triple_triad_nft/src/main.nr:291-303` (`pop_cards_by_id`) |
-| Single-note counter ("nonce note") pattern | `triple_triad_nft/src/main.nr:377-408` |
-| Manual note creation (hash + `notify_created_note`) | `triple_triad_nft/src/main.nr:506-540` (`push_card_note`) |
-| Offchain note delivery (`.deliver(MessageDelivery::offchain())`) | `triple_triad_nft/src/main.nr` `create_and_push_note` and its callers |
-| Receiving offchain messages (macro-injected `offchain_receive`) | `packages/frontend/src/aztec/pxe.ts` `receiveCardMessages` |
-| Manual note import (recovery) / `import_note` utility | `triple_triad_nft/src/main.nr` `import_note` |
-| App-siloed key material (`request_nhk_app`) as KDF seed | `triple_triad_nft/src/main.nr:666-667` |
-| In-circuit id/randomness derivation (anti-grinding) | `triple_triad_nft/src/main.nr:248-269` |
-| `storage_layout()` instead of hardcoded slots | `triple_triad_nft/src/main.nr:516,1060` |
-| Private→public bridge (`enqueue_self` + `#[only_self]`) | `triple_triad_game/src/main.nr:138,141-154` |
-| Cross-contract private calls | `triple_triad_game/src/main.nr:130-132,679-681` |
-| Recursive UltraHonk verification in a private fn | `triple_triad_game/src/main.nr:578-590` |
-| VK pinning via `PublicImmutable` (readable from private) | `triple_triad_game/src/main.nr:87-88,105-119` |
-| Proof chaining (hash-linked state transcript) | `triple_triad_game/src/main.nr:613-632` |
-| Dummy-proof padding (variable-length proof sets) | `triple_triad_game/src/main.nr:283-316` + `circuits/dummy_move/src/main.nr` |
-| Block-number dispute window | `triple_triad_game/src/main.nr:491-494` |
-| Replay protection on settlement | `triple_triad_game/src/main.nr:761-770` |
-| `#[event]` + `self.emit` (public events) | `triple_triad_nft/src/main.nr:154-160,650` |
-| Unconstrained utility fns (`.simulate()`-only API) | `triple_triad_nft/src/main.nr:1047-1122` |
-| Private fungible balances (`BalanceSet`) | `arena_token/src/main.nr:30,55-79` |
-| Contract-to-contract authorization (msg_sender gating) | `triple_triad_nft/src/main.nr:660-663` ; `arena_token/src/main.nr:61-64` |
-| Pure-Noir game rules in a circuit | `circuits/game_move/src/main.nr:143-196` |
+| Private state via notes (`Owned<PrivateSet<N>>`) | `triple_triad_nft/src/main.nr:177,184` |
+| A custom note with a two-step (partial) hash | `triple_triad_nft/src/card_note.nr` |
+| Completing a partial note without knowing its owner | `triple_triad_nft/src/main.nr:660` (`release_game_cards`) |
+| Note pop by token id (one oracle select per card) | `triple_triad_nft/src/main.nr:323` (`pop_cards_by_id`) |
+| App-siloed key material (`request_nhk_app`) as KDF seed | `triple_triad_nft/src/main.nr:262` ; `triple_triad_game/src/main.nr:310` |
+| Manual note creation (hash + `notify_created_note`) | `triple_triad_nft/src/main.nr:469` (`push_card_note`) |
+| Offchain note delivery | `triple_triad_nft/src/main.nr` `create_and_push_note` and its callers |
+| Manual note import from a tx's effects | `triple_triad_nft/src/main.nr:863` (`import_note`) |
+| `storage_layout()` instead of hardcoded slots | `triple_triad_nft/src/main.nr` `prepared_payouts`, `push_card_note` |
+| State machine as nullifiers (no public state) | `triple_triad_game/src/main.nr:353-399` |
+| Private existence checks on nullifiers | `triple_triad_game/src/main.nr:402` (`assert_recorded`) |
+| Historical block headers as a clock | `triple_triad_game/src/main.nr:582-680` |
+| Cross-contract private calls | `triple_triad_game/src/main.nr:429-470` |
+| Recursive UltraHonk verification in a private fn | `triple_triad_game/src/main.nr:494` |
+| VK pinning via `PublicImmutable` (readable from private) | `triple_triad_game/src/main.nr:264-275` |
+| Proof chaining (hash-linked state transcript) | `triple_triad_game/src/main.nr:106` |
+| Unconstrained utility fns (`.simulate()`-only API) | `triple_triad_game/src/main.nr:699` ; `triple_triad_nft/src/main.nr:863` |
+| Private fungible balances (`BalanceSet`) | `arena_token/src/main.nr` |
+| Contract-to-contract authorization (msg_sender gating) | `triple_triad_nft/src/main.nr:616,660` ; `arena_token/src/main.nr:101` |
+| Pure-Noir game rules in a circuit | `circuits/game_move/src/main.nr:79` |
 
 ## 11. Extending it
 
 **Add or rebalance a card.** Ranks live in four places that must agree:
 `scripts/card-database-256.json` (generator source of truth),
 `circuits/card_data/src/lib.nr` (what proofs enforce),
-`packages/frontend/src/cards.ts:17` (what players see), and
+`packages/frontend/src/cards.ts` (what players see), and
 `packages/game-logic/src/cards.ts` (what the engine and backend simulate and
-validate — regenerate with `npm run generate:cards` in `packages/game-logic`;
-its tests pin the file against the JSON). The contract's pool
-constants (`CARDS_PER_POOL`, `triple_triad_nft/src/main.nr:8`) and the
-`prove_hand` range check (1–256, `circuits/prove_hand/src/main.nr:31-40`) bound
-the id space — growing past 256 touches both. If the UI database disagrees with
-the circuit table, moves *render* one way and *prove* another: the proof fails
-at the next state hash. Regenerate, don't hand-edit.
+validate — regenerate with `npm run generate:cards` in `packages/game-logic`).
+The contract's pool constants (`CARDS_PER_POOL`, `triple_triad_nft/src/main.nr:8`)
+and the hand check (1–256, `validate_hand`) bound the id space — growing past
+256 touches both. Regenerate, don't hand-edit.
 
 **Change a game rule.** The capture logic exists twice by design: TypeScript
-(`packages/game-logic/`, drives the UI optimistically) and Noir
-(`circuits/game_move/src/main.nr:143-196`, what actually counts). A rule change
-must land in both plus their tests in the same change — the TS engine's test
-suite and the circuit's `#[test]` cases (`game_move/src/main.nr:309+`) both
-encode the rules. The settlement contract only checks the proof *chain*, so
-rule changes that keep the public-input shape don't touch the contracts —
-but they DO change the move circuit's VK: redeploy with the new `move_vk_hash`
-(`triple_triad_game/src/main.nr:110,116`).
+(`packages/game-logic/`) and Noir (`circuits/game_move/src/main.nr`). A rule
+change must land in both plus their tests in the same change. The settlement
+contract only checks the proof *chain*, so rule changes that keep the
+public-input shape don't touch the contracts — but they DO change the move
+circuit's VK: redeploy with the new `move_vk_hash`.
 
 **Fork it for another hidden-information game.** The reusable skeleton is:
-commit hands in-circuit (§4) → hash-chained move proofs (§5) → recursive
-verification + commitment/randomness binding at settlement (§6) → tagged
-re-mint + import (§7) → dummy-padding for early termination (§8). Swap the
-move circuit's rule block (`game_move/src/main.nr:143-274`) and the state
-encoding (`:27-36`), keep everything else. The note-lifecycle machinery is
-game-agnostic.
+commit hands and prepare payouts in-circuit (§4) → hash-chained move proofs (§5)
+→ recursive verification and release of prepared notes (§6–7) → nullifier state
+and block-timed abandonment (§3, §8). Swap the move circuit's rule block and
+state encoding; keep everything else.
 
 ## 12. Frontend layer
 

@@ -53,7 +53,13 @@ export async function fundAndDeployAccount(
   // mean that; v6 wants the NO_FROM sentinel ("Account 0x00… does not exist").
   const { NO_FROM } = await import('@aztec-labs/aztec.js/account');
 
-  const claim = await fundAccountOnDevnet(node, account.address.toString(), (m) => console.log(`  ${label}: ${m}`));
+  const claim = await fundAccountOnDevnet(
+    node,
+    account.address.toString(),
+    (m) => console.log(`  ${label}: ${m}`),
+    process.env.L1_RPC_URL || undefined,
+    process.env.AZTEC_PXE_URL || undefined,
+  );
   const claimFee = new FeeJuicePaymentMethodWithClaim(account.address, claim as never);
 
   const deployMethod = await account.getDeployMethod();
@@ -89,10 +95,9 @@ export interface GeneratedProof {
 }
 
 export interface GameProofs {
-  handProof1: GeneratedProof;
-  handProof2: GeneratedProof;
   moveProofs: GeneratedProof[];   // 9 move proofs
-  moveInputs: string[][];         // 9 × 6 public inputs
+  /** 9 × 8 public inputs: [cc1, cc2, start, end, ended, winner, placed_card_id, placed_slot] */
+  moveInputs: string[][];
   winner: Player | 'draw' | null;
   finalState: GameState;
 }
@@ -281,9 +286,13 @@ export function packRanks(top: number, right: number, bottom: number, left: numb
  * 3. Simulates 9 moves, generating a move proof for each
  * 4. Returns all proofs in contract-ready format
  */
+/**
+ * Play a fixed nine-move game and prove every move. Hand proofs are gone from
+ * the protocol (docs/plan/PRIVATE_GAMES.md section 4): the commit checks hands
+ * on-chain and settlement verifies the nine move proofs alone.
+ */
 export async function generateFullGameProofs(
   api: Barretenberg,
-  proveHandArtifact: any,
   gameMoveArtifact: any,
   p1CardIds: number[],
   p2CardIds: number[],
@@ -291,87 +300,12 @@ export async function generateFullGameProofs(
   p2BlindingFactor: string,
   p1CardCommit: string,
   p2CardCommit: string,
-  p1Randomness?: string[],
-  p2Randomness?: string[],
 ): Promise<GameProofs> {
   const { UltraHonkBackend } = await import('@aztec-foundation/bb.js');
   const { Noir } = await import('@noir-lang/noir_js');
 
-  const handBackend = new UltraHonkBackend(proveHandArtifact.bytecode, api);
   const moveBackend = new UltraHonkBackend(gameMoveArtifact.bytecode, api);
-  const noirHand = new Noir(proveHandArtifact);
   const noirMove = new Noir(gameMoveArtifact);
-
-  // Compute opponent player_state_hashes from randomness
-  // hand_proof_1 (player1) proves knowledge of player2's randomness
-  // hand_proof_2 (player2) proves knowledge of player1's randomness
-  const p1Rand = p1Randomness || ['0x1', '0x2', '0x3', '0x4', '0x5', '0x6'];
-  const p2Rand = p2Randomness || ['0x7', '0x8', '0x9', '0xa', '0xb', '0xc'];
-
-  // Compute opponent state hashes using poseidon2 via Barretenberg
-  const numToField = (n: number | bigint): Uint8Array => {
-    const buf = new Uint8Array(32);
-    let val = BigInt(n);
-    for (let i = 31; i >= 0; i--) {
-      buf[i] = Number(val & 0xffn);
-      val >>= 8n;
-    }
-    return buf;
-  };
-  const hexToField = (hex: string): Uint8Array => {
-    const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
-    const padded = clean.padStart(64, '0');
-    const buf = new Uint8Array(32);
-    for (let i = 0; i < 32; i++) {
-      buf[i] = parseInt(padded.substring(i * 2, i * 2 + 2), 16);
-    }
-    return buf;
-  };
-  const safeToFieldBuf = (v: string): Uint8Array => {
-    if (v.startsWith('0x') || v.startsWith('0X')) return hexToField(v);
-    return numToField(BigInt(v));
-  };
-  const bufToHex = (buf: Uint8Array): string =>
-    '0x' + Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('');
-
-  const p2RandInputs = p2Rand.map(safeToFieldBuf);
-  const p2StateHash = await api.poseidon2Hash({ inputs: p2RandInputs });
-  const p2StateHashHex = bufToHex(p2StateHash.hash);
-
-  const p1RandInputs = p1Rand.map(safeToFieldBuf);
-  const p1StateHash = await api.poseidon2Hash({ inputs: p1RandInputs });
-  const p1StateHashHex = bufToHex(p1StateHash.hash);
-
-  // --- Generate hand proofs ---
-  // hand_proof_1: player1 proves their hand + knowledge of player2's randomness
-  console.log('    Generating hand proof 1...');
-  const hp1Witness = await noirHand.execute({
-    card_commit_hash: p1CardCommit,
-    opponent_player_state_hash: p2StateHashHex,
-    card_ids: p1CardIds.map(String),
-    blinding_factor: p1BlindingFactor,
-    opponent_randomness: p2Rand,
-  } as any);
-  const hp1Result = await handBackend.generateProof(hp1Witness.witness);
-  const handProof1: GeneratedProof = {
-    proofFields: bytesToFields(new Uint8Array(hp1Result.proof)),
-    publicInputs: hp1Result.publicInputs.map(String),
-  };
-
-  // hand_proof_2: player2 proves their hand + knowledge of player1's randomness
-  console.log('    Generating hand proof 2...');
-  const hp2Witness = await noirHand.execute({
-    card_commit_hash: p2CardCommit,
-    opponent_player_state_hash: p1StateHashHex,
-    card_ids: p2CardIds.map(String),
-    blinding_factor: p2BlindingFactor,
-    opponent_randomness: p1Rand,
-  } as any);
-  const hp2Result = await handBackend.generateProof(hp2Witness.witness);
-  const handProof2: GeneratedProof = {
-    proofFields: bytesToFields(new Uint8Array(hp2Result.proof)),
-    publicInputs: hp2Result.publicInputs.map(String),
-  };
 
   // --- Simulate game and generate move proofs ---
   const p1Cards = getCardsByIds(p1CardIds);
@@ -438,8 +372,11 @@ export async function generateFullGameProofs(
       end_state_hash: endHash,
       game_ended: gameEnded,
       winner_id: winnerId,
+      // The card's slot in the hand AS COMMITTED: the game-logic hand shrinks as
+      // cards are played, so look the id up in the committed order.
+      placed_card_id: String(card.id),
+      placed_slot: String(playerCardIds.indexOf(card.id)),
       current_player: player === 'player1' ? '1' : '2',
-      card_id: String(card.id),
       row: String(row),
       col: String(col),
       board_before: boardBefore,
@@ -460,18 +397,18 @@ export async function generateFullGameProofs(
       proofFields: bytesToFields(new Uint8Array(moveResult.proof)),
       publicInputs: moveResult.publicInputs.map(String),
     });
-    moveInputs.push([p1CardCommit, p2CardCommit, startHash, endHash, gameEnded, winnerId]);
+    moveInputs.push([
+      p1CardCommit, p2CardCommit, startHash, endHash, gameEnded, winnerId,
+      String(card.id), String(playerCardIds.indexOf(card.id)),
+    ]);
 
     gameState = stateAfter;
     prevStateHash = endHash;
   }
 
-  try { await handBackend.destroy(); } catch { /* may not be available */ }
   try { await moveBackend.destroy(); } catch { /* may not be available */ }
 
   return {
-    handProof1,
-    handProof2,
     moveProofs,
     moveInputs,
     winner: gameState.winner,

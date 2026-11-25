@@ -1,18 +1,21 @@
 // @ts-nocheck — Aztec SDK types require sandbox-specific resolution
 /**
- * E2E Aztec Settlement Test — Full Game with process_game
+ * E2E Aztec Settlement Test -- a private game, end to end, with REAL proofs
+ * (docs/plan/PRIVATE_GAMES.md).
  *
  * Validates that two players can:
- * 1. Deploy NFT + Game contracts
- * 2. Mint cards and commit them to a game
- * 3. Derive blinding factors that match on-chain card commits
- * 4. Generate all 11 ZK proofs (2 hand + 9 move)
- * 5. Successfully settle on-chain via process_game
+ * 1. Deploy NFT + Token + Game contracts
+ * 2. Create and join a game knowing only a shared game key and each other's
+ *    records -- no address, randomness or blinding factor is exchanged
+ * 3. Prove all nine moves against their on-chain hand commitments
+ * 4. Settle with settle_game (nine real recursive proofs)
+ * 5. Each import ONLY their own notes from the settlement tx, rebuilt from
+ *    secrets they already hold -- including the winner's prize card
  *
  * Prerequisites:
  *   - Aztec sandbox running: aztec start --local-network
  *   - Contracts compiled: aztec compile (from packages/contracts)
- *   - Circuits compiled: cd circuits/prove_hand && nargo compile && cd ../game_move && nargo compile
+ *   - Circuits compiled: cd circuits && nargo compile
  *
  * Run:
  *   cd packages/integration
@@ -142,14 +145,12 @@ describe('E2E Aztec Settlement', () => {
   let nftContract: any;
   let gameContract: any;
   let tokenContract: any;
-  /** Fields in an UltraHonkZKProof, read off process_game's ABI (no magic number). */
+  /** Fields in an UltraHonkZKProof, read off settle_game's ABI (no magic number). */
   let proofLength: number;
 
   // Barretenberg + circuit artifacts
   let api: Barretenberg;
-  let proveHandArtifact: any;
   let gameMoveArtifact: any;
-  let realHandVkFields: any[];
   let realMoveVkFields: any[];
 
   // Helper: send options for a given address. No `fee` — each account pays
@@ -217,29 +218,25 @@ describe('E2E Aztec Settlement', () => {
     // --- Init Barretenberg & compute VK hashes ---
     console.log('Initializing Barretenberg...');
     api = await Barretenberg.new({ threads: 1 });
-    proveHandArtifact = loadCircuitArtifact('prove_hand');
     gameMoveArtifact = loadCircuitArtifact('game_move');
 
     console.log('Computing VK hashes...');
-    const handVk = await computeVkHash(api, proveHandArtifact.bytecode);
     const moveVk = await computeVkHash(api, gameMoveArtifact.bytecode);
-    // The constructor also takes the dummy circuit's VK hash: the abandoned-game
-    // flow pads missing moves with dummy proofs.
+    // The constructor also takes the dummy circuit's VK hash, so it can refuse
+    // the dummy as a move VK on a sound deployment.
     const dummyVk = await computeVkHash(api, loadCircuitArtifact('dummy_move').bytecode);
-    console.log(`  hand_vk_hash: ${handVk.hash}`);
     console.log(`  move_vk_hash: ${moveVk.hash}`);
 
-    realHandVkFields = handVk.fields.map((f: string) => Fr.fromHexString(f));
     realMoveVkFields = moveVk.fields.map((f: string) => Fr.fromHexString(f));
 
     // --- Deploy contracts ---
     const nftArtifact = loadContractArtifact('triple_triad_nft-TripleTriadNFT');
     const gameArtifact = loadContractArtifact('triple_triad_game-TripleTriadGame');
     const tokenArtifact = loadContractArtifact('arena_token-ArenaToken');
-    const handProofParam = gameArtifact.functions
-      .find((f: any) => f.name === 'process_game')
-      .parameters.find((p: any) => p.name === 'hand_proof_1');
-    proofLength = handProofParam.type.length; // UltraHonkZKProof is [Field; N]
+    const moveProofParam = gameArtifact.functions
+      .find((f: any) => f.name === 'settle_game')
+      .parameters.find((p: any) => p.name === 'move_proof_1');
+    proofLength = moveProofParam.type.length; // UltraHonkZKProof is [Field; N]
 
     console.log('Deploying TripleTriadNFT...');
     function encodeCompressedString(s: string): Fr {
@@ -266,12 +263,11 @@ describe('E2E Aztec Settlement', () => {
     ]).send(sendAs(deployerAddr)));
     await wallet.registerSender(tokenContract.address, 'token-contract');
 
-    // Constructor: (admin, nft, hand_vk_hash, move_vk_hash, token, dummy_vk_hash,
-    // permissive_vks) — as scripts/deploy-contracts.ts deploys it, real VKs only.
+    // Constructor: (admin, nft, move_vk_hash, token, dummy_vk_hash,
+    // permissive_vks) -- as scripts/deploy-contracts.ts deploys it, real VKs only.
     ({ contract: gameContract } = await Contract.deploy(wallet, gameArtifact, [
       deployerAddr,
       nftContract.address,
-      Fr.fromHexString(handVk.hash),
       Fr.fromHexString(moveVk.hash),
       tokenContract.address,
       Fr.fromHexString(dummyVk.hash),
@@ -364,284 +360,166 @@ describe('E2E Aztec Settlement', () => {
     }
   });
 
-  it('two players play a full game and settle on-chain via process_game', async () => {
-    // ================================================================
-    // 1. Preview game data for Player 1 (game_id + randomness derived in-circuit)
-    // ================================================================
-    console.log('Player 1: previewing game data...');
-    const { result: p1Nonce } = await nftContract.methods
-      .get_note_nonce(p1Addr)
-      .simulate({ from: p1Addr });
-    console.log(`  P1 nonce: ${p1Nonce}`);
+  // --------------------------------------------------------------------
+  // Private-game helpers
+  // --------------------------------------------------------------------
 
-    const { result: p1Preview } = await nftContract.methods
-      .preview_game_data(toFr(p1Nonce))
+  const recordOf = (r: any[]) => r.map((v: any) => toFr(v));
+  const ZERO_RECORD = () => new Array(9).fill(0).map(() => new Fr(0n));
+
+  /** The game's siloed nullifiers (see game_nullifiers in the contract). */
+  async function nullifiers(gameKey: any, r1: any[], r2: any[]) {
+    const { result } = await gameContract.methods
+      .game_nullifiers(gameKey, r1, r2)
       .simulate({ from: p1Addr });
-    const gameIdHex = toHex(p1Preview[0]);
-    const p1Randomness = Array.from({ length: 6 }, (_, i) => toHex(p1Preview[i + 1]));
-    console.log(`  Derived game_id: ${gameIdHex}`);
-    console.log(`  P1 randomness: ${p1Randomness.map(r => r.slice(0, 18) + '...')}`);
+    return (result as any[]).map(toFr);
+  }
+
+  /** Is this siloed nullifier on-chain? */
+  async function exists(nullifier: any): Promise<boolean> {
+    const { MerkleTreeId } = await import('@aztec-labs/stdlib/trees');
+    const [found] = await node.findLeavesIndexes('latest', MerkleTreeId.NULLIFIER_TREE, [nullifier]);
+    return found !== undefined;
+  }
+
+  async function nonceOf(addr: any): Promise<any> {
+    const { result } = await nftContract.methods.get_note_nonce(addr).simulate({ from: addr });
+    return toFr(result);
+  }
+
+  /** `[blinding, r_0..r_4, prize_randomness, reward_randomness]`. */
+  async function secretsOf(addr: any, nonce: any): Promise<any[]> {
+    const { result } = await nftContract.methods.compute_game_secrets(nonce).simulate({ from: addr });
+    return (result as any[]).map(toFr);
+  }
+
+  async function cardsOf(addr: any): Promise<number[]> {
+    const { result } = await nftContract.methods.get_nfts_for_user(addr, 0).simulate({ from: addr });
+    return (result[0] as any[]).map((v: any) => Number(BigInt(v))).filter((v: number) => v !== 0).sort((a, b) => a - b);
+  }
+
+  async function tokensOf(addr: any): Promise<bigint> {
+    const { result } = await tokenContract.methods.get_balance(addr).simulate({ from: addr });
+    return BigInt(result);
+  }
+
+  /** Import one reward note, as importNotes does for cards. */
+  async function importReward(txHash: any, owner: any, randomness: any) {
+    const txResult = await node.getTxEffect(txHash);
+    const txEffect = txResult.data;
+    const hashes = (txEffect.noteHashes ?? []).map((h: any) => h.toString()).filter((h: string) => !/^0x0+$/.test(h));
+    const padded = new Array(64).fill(new Fr(0n));
+    hashes.forEach((h: string, i: number) => { padded[i] = toFr(h); });
+    await tokenContract.methods
+      .import_note(owner, 20n, randomness, toFr(txHash.toString()), padded, hashes.length, toFr(txEffect.nullifiers[0].toString()), owner)
+      .simulate({ from: owner });
+  }
+
+  it('two players play a private game and settle it with nine real proofs', async () => {
+    // The key the two players' key exchange would give them. Nothing else
+    // about either player is ever handed to the other.
+    const gameKey = Fr.random();
 
     // ================================================================
-    // 2. Create game (Player 1 commits cards 1-5)
-    //    game_id and randomness derived IN-CIRCUIT
+    // 1. Player 1 creates: preview the record, then commit
     // ================================================================
-    console.log('Player 1 creating game...');
+    const p1Nonce = await nonceOf(p1Addr);
+    const { result: preview1 } = await gameContract.methods
+      .preview_record(gameKey, p1CardIds.map((id) => new Fr(BigInt(id))), p1Nonce)
+      .simulate({ from: p1Addr });
+    const record1 = recordOf(preview1);
     await gameContract.methods
-      .create_game(p1CardIds.map((id: number) => new Fr(BigInt(id))))
+      .create_game(gameKey, p1CardIds.map((id) => new Fr(BigInt(id))))
       .send(sendAs(p1Addr));
-
-    const gameIdFr = toFr(gameIdHex);
-
-    let { result: status } = await gameContract.methods
-      .get_game_status(gameIdFr)
-      .simulate({ from: deployerAddr });
-    expect(BigInt(status)).toBe(1n);
-    console.log('  Game created (status=1)');
+    const [created] = await nullifiers(gameKey, record1, ZERO_RECORD());
+    expect(await exists(created)).toBe(true);
+    expect(await cardsOf(p1Addr)).toEqual([]);
 
     // ================================================================
-    // 3. Preview game data for Player 2 (randomness derived in-circuit)
+    // 2. Player 2 joins with the key and player 1's record
     // ================================================================
-    console.log('Player 2: previewing game data...');
-    const { result: p2Nonce } = await nftContract.methods
-      .get_note_nonce(p2Addr)
+    const p2Nonce = await nonceOf(p2Addr);
+    const { result: preview2 } = await gameContract.methods
+      .preview_record(gameKey, p2CardIds.map((id) => new Fr(BigInt(id))), p2Nonce)
       .simulate({ from: p2Addr });
-    console.log(`  P2 nonce: ${p2Nonce}`);
-
-    const { result: p2Preview } = await nftContract.methods
-      .preview_game_data(toFr(p2Nonce))
-      .simulate({ from: p2Addr });
-    const p2Randomness = Array.from({ length: 6 }, (_, i) => toHex(p2Preview[i + 1]));
-    console.log(`  P2 randomness: ${p2Randomness.map(r => r.slice(0, 18) + '...')}`);
-
-    // ================================================================
-    // 4. Join game (Player 2 commits cards [1,2,3,4,5])
-    //    randomness derived IN-CIRCUIT
-    // ================================================================
-    console.log('Player 2 joining game...');
+    const record2 = recordOf(preview2);
     await gameContract.methods
-      .join_game(gameIdFr, p2CardIds.map((id: number) => new Fr(BigInt(id))))
+      .join_game(gameKey, record1, p2CardIds.map((id) => new Fr(BigInt(id))))
       .send(sendAs(p2Addr));
-
-    ({ result: status } = await gameContract.methods
-      .get_game_status(gameIdFr)
-      .simulate({ from: deployerAddr }));
-    expect(BigInt(status)).toBe(2n);
-    console.log('  Game active (status=2)');
+    const all = await nullifiers(gameKey, record1, record2);
+    expect(await exists(all[2])).toBe(true); // joined
+    expect(await exists(all[3])).toBe(false); // not done
 
     // ================================================================
-    // 5. Read on-chain card commits
+    // 3. Each player's own secrets; the hand commitments match on-chain
     // ================================================================
-    const { result: onChainCC1 } = await gameContract.methods
-      .get_game_card_commit_1(gameIdFr)
-      .simulate({ from: deployerAddr });
-    const { result: onChainCC2 } = await gameContract.methods
-      .get_game_card_commit_2(gameIdFr)
-      .simulate({ from: deployerAddr });
-    console.log(`  On-chain card_commit_1: ${onChainCC1}`);
-    console.log(`  On-chain card_commit_2: ${onChainCC2}`);
-    expect(BigInt(onChainCC1)).not.toBe(0n);
-    expect(BigInt(onChainCC2)).not.toBe(0n);
+    const s1 = await secretsOf(p1Addr, p1Nonce);
+    const s2 = await secretsOf(p2Addr, p2Nonce);
+    const p1Commit = await computeCardCommit(api, p1CardIds, s1[0].toBigInt());
+    const p2Commit = await computeCardCommit(api, p2CardIds, s2[0].toBigInt());
+    expect(BigInt(p1Commit)).toBe(record1[1].toBigInt());
+    expect(BigInt(p2Commit)).toBe(record2[1].toBigInt());
 
     // ================================================================
-    // 6. Derive blinding factors via NFT contract simulate
+    // 4. Prove all nine moves
     // ================================================================
-    console.log('Deriving blinding factors via compute_blinding_factor...');
-    const { result: p1Blinding } = await nftContract.methods
-      .compute_blinding_factor(gameIdFr)
-      .simulate({ from: p1Addr });
-    const { result: p2Blinding } = await nftContract.methods
-      .compute_blinding_factor(gameIdFr)
-      .simulate({ from: p2Addr });
-    console.log(`  P1 blinding factor: ${p1Blinding}`);
-    console.log(`  P2 blinding factor: ${p2Blinding}`);
-
-    // ================================================================
-    // 7. Verify blinding factors match on-chain card commits
-    // ================================================================
-    console.log('Verifying card commitments match...');
-    const computedCC1 = await computeCardCommit(api, p1CardIds, BigInt(p1Blinding));
-    const computedCC2 = await computeCardCommit(api, p2CardIds, BigInt(p2Blinding));
-    console.log(`  Computed card_commit_1: ${computedCC1}`);
-    console.log(`  Computed card_commit_2: ${computedCC2}`);
-
-    expect(BigInt(computedCC1)).toBe(BigInt(onChainCC1));
-    expect(BigInt(computedCC2)).toBe(BigInt(onChainCC2));
-    console.log('  Card commitments match on-chain values!');
-
-    // ================================================================
-    // 8. Generate all 11 ZK proofs
-    // ================================================================
-    console.log('Generating ZK proofs (2 hand + 9 move)...');
-    const proofStart = Date.now();
-
-    const p1CommitStr = '0x' + BigInt(onChainCC1).toString(16).padStart(64, '0');
-    const p2CommitStr = '0x' + BigInt(onChainCC2).toString(16).padStart(64, '0');
-    const p1BlindingStr = '0x' + BigInt(p1Blinding).toString(16).padStart(64, '0');
-    const p2BlindingStr = '0x' + BigInt(p2Blinding).toString(16).padStart(64, '0');
-
+    console.log('Generating 9 move proofs...');
     const gameProofs = await generateFullGameProofs(
-      api,
-      proveHandArtifact,
-      gameMoveArtifact,
-      p1CardIds,
-      p2CardIds,
-      p1BlindingStr,
-      p2BlindingStr,
-      p1CommitStr,
-      p2CommitStr,
-      p1Randomness,
-      p2Randomness,
+      api, gameMoveArtifact, p1CardIds, p2CardIds, toHex(s1[0]), toHex(s2[0]), p1Commit, p2Commit,
     );
+    for (const p of gameProofs.moveProofs) expect(p.proofFields.length).toBe(proofLength);
+    const winnerId = Number(gameProofs.moveInputs[8][5]);
+    console.log(`  winner_id = ${winnerId}`);
 
-    const proofElapsed = ((Date.now() - proofStart) / 1000).toFixed(1);
-    console.log(`  All proofs generated in ${proofElapsed}s`);
-    console.log(`  Winner: ${gameProofs.winner}`);
-
-    expect(gameProofs.moveProofs.length).toBe(9);
-    expect(gameProofs.handProof1.proofFields.length).toBe(proofLength);
-    expect(gameProofs.handProof2.proofFields.length).toBe(proofLength);
+    // The prize is the loser's first placed card: player 2 moves at odd
+    // indices, player 1 at even ones.
+    const prizeMove = winnerId === 1 ? 1 : 0;
+    const prizeCard = Number(gameProofs.moveInputs[prizeMove][6]);
+    const prizeSlot = Number(gameProofs.moveInputs[prizeMove][7]);
 
     // ================================================================
-    // 9. Verify proof chain integrity
+    // 5. Settle: nine real recursive proofs, records, prize move
     // ================================================================
-    console.log('Verifying proof chain...');
-    for (let i = 0; i < 8; i++) {
-      expect(gameProofs.moveInputs[i][3]).toBe(gameProofs.moveInputs[i + 1][2]);
+    const settler = winnerId === 2 ? p2Addr : p1Addr;
+    const args: any[] = [gameKey, record1, record2, realMoveVkFields];
+    for (let i = 0; i < 9; i++) {
+      args.push(gameProofs.moveProofs[i].proofFields.map(toFr));
+      args.push(gameProofs.moveInputs[i].map(toFr));
     }
-    console.log('  Proof chain valid (all end_state[i] == start_state[i+1])');
+    args.push(new Fr(BigInt(prizeMove)));
+    console.log('Calling settle_game...');
+    const { receipt } = await gameContract.methods.settle_game(...args).send(sendAs(settler));
+    expect(await exists(all[3])).toBe(true); // done
 
     // ================================================================
-    // 10. Determine winner and call process_game
+    // 6. Each player imports ONLY their own notes, from their own data
     // ================================================================
-    const winner = gameProofs.winner;
-    expect(winner).not.toBeNull();
-    console.log(`  Game result: ${winner}`);
-
-    const isP1Winner = winner === 'player1';
-    const isDraw = winner === 'draw';
-    const callerAddr = isDraw ? p1Addr : (isP1Winner ? p1Addr : p2Addr);
-    const opponentAddr = isDraw ? p2Addr : (isP1Winner ? p2Addr : p1Addr);
-    const callerCardIds = isDraw ? p1CardIds : (isP1Winner ? p1CardIds : p2CardIds);
-    const opponentCardIds = isDraw ? p2CardIds : (isP1Winner ? p2CardIds : p1CardIds);
-
-    const cardToTransfer = isDraw ? 0 : opponentCardIds[2];
-
-    // Format proofs as Fr arrays
-    const hp1Proof = gameProofs.handProof1.proofFields.map(toFr);
-    const hp1Inputs = gameProofs.handProof1.publicInputs.map(toFr);
-    const hp2Proof = gameProofs.handProof2.proofFields.map(toFr);
-    const hp2Inputs = gameProofs.handProof2.publicInputs.map(toFr);
-    const mp = gameProofs.moveProofs.map((p: any) => p.proofFields.map(toFr));
-    const mi = gameProofs.moveInputs.map((inputs: string[]) => inputs.map(toFr));
-
-    // Use the in-circuit derived randomness for settlement
-    // The randomness was previewed earlier and committed on-chain via player_state_hash
-    const callerRandomnessHex = isP1Winner || isDraw ? p1Randomness : p2Randomness;
-    const opponentRandomnessHex = isP1Winner || isDraw ? p2Randomness : p1Randomness;
-    const callerRandomness = callerRandomnessHex.map(toFr);
-    const opponentRandomness = opponentRandomnessHex.map(toFr);
-
-    console.log('Calling process_game...');
-
-    const { receipt: result } = await gameContract.methods
-      .process_game(
-        gameIdFr,
-        realHandVkFields,
-        realMoveVkFields,
-        hp1Proof,
-        hp1Inputs,
-        hp2Proof,
-        hp2Inputs,
-        mp[0], mi[0],
-        mp[1], mi[1],
-        mp[2], mi[2],
-        mp[3], mi[3],
-        mp[4], mi[4],
-        mp[5], mi[5],
-        mp[6], mi[6],
-        mp[7], mi[7],
-        mp[8], mi[8],
-        opponentAddr,
-        new Fr(BigInt(cardToTransfer)),
-        callerCardIds.map((id: number) => new Fr(BigInt(id))),
-        opponentCardIds.map((id: number) => new Fr(BigInt(id))),
-        callerRandomness,
-        opponentRandomness,
-        // Blinding factors are revealed at settlement so the contract can check
-        // the ids it mints are the ones each player committed.
-        toFr(isP1Winner || isDraw ? p1Blinding : p2Blinding),
-        toFr(isP1Winner || isDraw ? p2Blinding : p1Blinding),
-      )
-      .send(sendAs(callerAddr));
-    console.log('  process_game transaction succeeded!');
-
-    // ================================================================
-    // 11. Verify on-chain settlement
-    // ================================================================
-    const { result: finalStatus } = await gameContract.methods
-      .get_game_status(gameIdFr)
-      .simulate({ from: deployerAddr });
-    expect(BigInt(finalStatus)).toBe(3n);
-    console.log(`  Game status: ${finalStatus} (settled)`);
-
-    const { result: isSettled } = await gameContract.methods
-      .is_game_settled(gameIdFr)
-      .simulate({ from: deployerAddr });
-    expect(isSettled).toBe(true);
-    console.log('  Game settled: true');
-
-    // ================================================================
-    // 12. Import settlement notes and verify card ownership
-    //     Settlement uses create_and_push_note -- must import notes
-    // ================================================================
-    console.log('Importing settlement notes...');
-
-    const winnerAddr = callerAddr;
-    const loserAddr = opponentAddr;
-
-    // Import winner notes (6 cards: 5 original + 1 transferred)
-    {
-      const winnerTokenIds = [...callerCardIds, cardToTransfer].filter(id => id !== 0);
-      const winnerRand = callerRandomness.slice(0, winnerTokenIds.length);
-      await importNotes(nftContract, node, result.txHash, winnerAddr, winnerTokenIds, winnerRand);
+    const txHash = receipt.txHash;
+    if (winnerId === 3) {
+      await importNotes(nftContract, node, txHash, p1Addr, p1CardIds, s1.slice(1, 6));
+      await importNotes(nftContract, node, txHash, p2Addr, p2CardIds, s2.slice(1, 6));
+      expect(await cardsOf(p1Addr)).toEqual([...p1CardIds].sort());
+      expect(await cardsOf(p2Addr)).toEqual([...p2CardIds].sort());
+    } else {
+      const [winner, loser] = winnerId === 1 ? [p1Addr, p2Addr] : [p2Addr, p1Addr];
+      const [wIds, lIds] = winnerId === 1 ? [p1CardIds, p2CardIds] : [p2CardIds, p1CardIds];
+      const [ws, ls] = winnerId === 1 ? [s1, s2] : [s2, s1];
+      await importNotes(nftContract, node, txHash, winner, [...wIds, prizeCard], [...ws.slice(1, 6), ws[6]]);
+      const kept = lIds.filter((_, i) => i !== prizeSlot);
+      const keptRand = ls.slice(1, 6).filter((_, i) => i !== prizeSlot);
+      await importNotes(nftContract, node, txHash, loser, kept, keptRand);
+      expect(await cardsOf(winner)).toEqual([...wIds, prizeCard].sort((a, b) => a - b));
+      expect(await cardsOf(loser)).toEqual([...kept].sort((a, b) => a - b));
     }
+    await importReward(txHash, p1Addr, s1[7]);
+    await importReward(txHash, p2Addr, s2[7]);
+    // 100 from the starter claim, +20 for the game.
+    expect(await tokensOf(p1Addr)).toBe(120n);
+    expect(await tokensOf(p2Addr)).toBe(120n);
 
-    // Import loser notes (4 cards: 5 original - 1 transferred)
-    if (!isDraw) {
-      const loserTokenIds: number[] = [];
-      const loserRand: any[] = [];
-      let removed = false;
-      for (let i = 0; i < opponentCardIds.length; i++) {
-        if (opponentCardIds[i] === cardToTransfer && !removed) {
-          removed = true;
-        } else {
-          loserTokenIds.push(opponentCardIds[i]);
-          loserRand.push(opponentRandomness[i]);
-        }
-      }
-      await importNotes(nftContract, node, result.txHash, loserAddr, loserTokenIds, loserRand);
-    }
-
-    // Verify card counts
-    const { result: winnerCardsArr } = await nftContract.methods
-      .get_nfts_for_user(winnerAddr, 0)
-      .simulate({ from: winnerAddr });
-    const winnerCards = winnerCardsArr[0];
-    const winnerCardCount = winnerCards.filter((v: any) => BigInt(v) !== 0n).length;
-
-    const { result: loserCardsArr } = await nftContract.methods
-      .get_nfts_for_user(loserAddr, 0)
-      .simulate({ from: loserAddr });
-    const loserCards = loserCardsArr[0];
-    const loserCardCount = loserCards.filter((v: any) => BigInt(v) !== 0n).length;
-
-    console.log(`  Winner has ${winnerCardCount} cards (expected 6)`);
-    console.log(`  Loser has ${loserCardCount} cards (expected 4)`);
-
-    expect(winnerCardCount).toBe(6);
-    expect(loserCardCount).toBe(4);
-
-    console.log('\n  === E2E Settlement Test PASSED ===');
-  }, 600_000);
+    // ================================================================
+    // 7. A game settles once
+    // ================================================================
+    await expect(gameContract.methods.settle_game(...args).send(sendAs(settler))).rejects.toThrow();
+  }, 1_800_000);
 });
