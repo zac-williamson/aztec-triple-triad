@@ -462,6 +462,25 @@ describe('abandonment', () => {
     expect(r!.takenCardId).toBe(P2_HAND[2]);
   });
 
+  it('finalize that loses a race to the other player\'s finalize steps aside for the winning tx', async () => {
+    h.blockTimestamp.mockResolvedValue(7000);
+    const open = chainState({ created: 3, joined: 4, claimSlots: [20], claims: [[null, 20]] });
+    const done = chainState({ created: 3, joined: 4, claimSlots: [20], claims: [[null, 20]], resolved: [41], done: 41 });
+    h.readGameChainState.mockResolvedValueOnce(open).mockResolvedValue(done);
+    h.ops.sendFinalizeAbandonedGame.mockRejectedValue(new Error('Existing nullifier'));
+    const claim = { claimNo: 1 as const, claimSide: 2 as const, claimBlock: 20 };
+
+    expect(await finalizeAbandonment(GAME_P2, ctx, claim)).toBeNull();
+    expect(h.ops.importCardNotes).not.toHaveBeenCalled();
+  });
+
+  it('finalize that fails for another reason still fails', async () => {
+    h.blockTimestamp.mockResolvedValue(7000);
+    h.readGameChainState.mockResolvedValue(chainState({ created: 3, joined: 4, claimSlots: [20], claims: [[null, 20]] }));
+    h.ops.sendFinalizeAbandonedGame.mockRejectedValue(new Error('Dispute window not elapsed'));
+    await expect(finalizeAbandonment(GAME_P2, ctx, { claimNo: 1, claimSide: 2, claimBlock: 20 })).rejects.toThrow(/not elapsed/);
+  });
+
   it('finalize refuses when none of a claim\'s possible terms is on-chain', async () => {
     h.blockTimestamp.mockResolvedValue(7000);
     h.lookupNullifiers.mockResolvedValue([null, null, null, null]);

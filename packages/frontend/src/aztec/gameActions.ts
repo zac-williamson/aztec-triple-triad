@@ -754,15 +754,28 @@ export async function finalizeAbandonment(
   if (state.done) return null;
   if (state.resolved[claim.claimNo - 1]) throw new ClaimContestedError(claim.claimNo);
 
-  const txHash = await runPxeTx({
-    type: 'finalize_abandoned_game',
-    label: 'Recovering cards from an abandoned game...',
-    gameId: game.roomId,
-    execute: (ops, setPhase) => {
-      setPhase('sending');
-      return ops.sendFinalizeAbandonedGame(ctx.owner, ref, claim, terms, sendOpts(ctx));
-    },
-  });
+  let txHash: string;
+  try {
+    txHash = await runPxeTx({
+      type: 'finalize_abandoned_game',
+      label: 'Recovering cards from an abandoned game...',
+      gameId: game.roomId,
+      execute: (ops, setPhase) => {
+        setPhase('sending');
+        return ops.sendFinalizeAbandonedGame(ctx.owner, ref, claim, terms, sendOpts(ctx));
+      },
+    });
+  } catch (err) {
+    // Anyone may finalize, and both players' clients do it by themselves (the
+    // claimant's game, the other's menu): two finalizes of one claim race,
+    // and the loser's tx fails on the winner's nullifiers. The game is then
+    // resolved — the caller imports from the winning tx.
+    if ((await readGameState(game, ctx)).state.done) {
+      console.warn(`[gameActions] finalize lost a race to another resolution of the game (${err}); importing from that instead`);
+      return null;
+    }
+    throw err;
+  }
   return importResolution(game, ctx, {
     txHash,
     resolution: resolutionOfClaim(claim.claimSide, terms),
