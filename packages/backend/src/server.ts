@@ -7,6 +7,7 @@ import {
   MOVE_INACTIVITY_MS,
   ABANDONMENT_WARN_LEAD_MS,
   MOVES_PER_GAME,
+  moverOf,
   opponentOf,
   playerNumberIn,
 } from './GameManager.js';
@@ -668,6 +669,19 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
             const room = gameId ? await gameManager.getGame(gameId) : null;
             const playerNumber = room ? playerNumberIn(room, playerId) : null;
             if (room && playerNumber !== null) {
+              // The opponent's moves again, from the room's log — all but the
+              // ones the inbox just carried. A MOVE written to this player's
+              // previous socket while it was already dying was neither
+              // delivered nor buffered (the relay still saw it open), and
+              // ROOM_STATE only lets a client resend its OWN moves. A client
+              // drops a move it already has.
+              const replayed = new Set(inbox
+                .filter((m: any) => m?.type === 'MOVE' && m.gameId === room.id)
+                .map((m: any) => m.moveNumber as number));
+              for (const m of room.moves ?? []) {
+                if (moverOf(m.moveNumber) === playerNumber || replayed.has(m.moveNumber)) continue;
+                send(ws, { type: 'MOVE', gameId: room.id, moveNumber: m.moveNumber, iv: m.iv, ciphertext: m.ciphertext }, playerId);
+              }
               const opponentId = playerNumber === 1 ? room.player2Id : room.player1Id;
               send(ws, {
                 type: 'ROOM_STATE',
@@ -805,7 +819,8 @@ export function createServer(options: ServerOptions = {}): CardGameServer {
       // move is legal is the opponent's to check, against its proof.
       case 'MOVE': {
         try {
-          const { room, opponentId, movesComplete } = await gameManager.recordMove(msg.gameId, playerId, msg.moveNumber);
+          const { room, opponentId, movesComplete } = await gameManager.recordMove(
+            msg.gameId, playerId, msg.moveNumber, { iv: msg.iv, ciphertext: msg.ciphertext });
           // Rebuilt from its validated fields, so nothing else a client
           // attaches rides along to the opponent.
           await sendToPlayer(opponentId, {

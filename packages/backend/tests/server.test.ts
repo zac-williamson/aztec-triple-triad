@@ -959,6 +959,41 @@ describe('MOVE relay', () => {
     closeAll(back.ws, s.p2.ws);
   });
 
+  it('replays on RESUME a move written to a dying socket — neither delivered nor buffered', async () => {
+    // The relay's end of each connection, in connection order: player 1's, then player 2's.
+    const serverSockets: WebSocket[] = [];
+    server.wss.on('connection', (ws: WebSocket) => serverSockets.push(ws));
+    const s = await seatTwoPlayers();
+    const first = sealed();
+    await playMove(s, 0, first);
+    await playMove(s, 1);
+
+    // Player 2's connection dies before the relay notices: it still reads
+    // OPEN, and what the relay writes to it goes nowhere.
+    const dying = serverSockets[1];
+    dying.send = (() => {}) as typeof dying.send;
+    const lost = sealed();
+    sendMessage(s.p1.ws, { type: 'MOVE', gameId: s.gameId, moveNumber: 2, ...lost });
+    await until(async () => (await server.store.getGame(s.gameId))!.movesMade === 3);
+    // Not buffered either: as far as the relay could tell, it was delivered.
+    expect(await server.store.getInbox(s.p2.playerId)).toEqual([]);
+    s.p2.ws.close();
+    await s.c1.wait((m) => m.type === 'OPPONENT_DISCONNECTED');
+
+    // Back: player 1's moves again, in order — move 0, which it had, and
+    // move 2, which it never got — then where the room stands. Never its own
+    // move 1: ROOM_STATE is how a client learns which of its own to resend.
+    const back = await resumeSession(s.p2.sessionToken);
+    await back.c.wait((m) => m.type === 'ROOM_STATE');
+    expect(back.c.log).toEqual([
+      { type: 'MOVE', gameId: s.gameId, moveNumber: 0, ...first },
+      { type: 'MOVE', gameId: s.gameId, moveNumber: 2, ...lost },
+      { type: 'ROOM_STATE', gameId: s.gameId, playerNumber: 2, movesMade: 3, opponentConnected: true },
+    ]);
+
+    closeAll(back.ws, s.p1.ws);
+  });
+
   it("keeps one sender's messages in order: a PEER sent right after a MOVE arrives after it", async () => {
     // A store whose room lock is slow to take: a MOVE waits on it, a PEER does
     // not, so handling the two concurrently would deliver the PEER first.

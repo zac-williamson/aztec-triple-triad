@@ -170,8 +170,15 @@ export class GameManager {
    * against its proof. The ninth move completes the room's moves and releases
    * both players' bindings, as the end of a game always has, so either can
    * queue again at once.
+   *
+   * `sealed` is the MOVE's body as forwarded (iv, ciphertext — unread): kept
+   * in the room's log, so a player whose copy was lost in flight is replayed
+   * it on RESUME (StoredGameRoom.moves).
    */
-  async recordMove(gameId: string, playerId: string, moveNumber: number): Promise<RecordedMove> {
+  async recordMove(
+    gameId: string, playerId: string, moveNumber: number,
+    sealed?: { iv: string; ciphertext: string },
+  ): Promise<RecordedMove> {
     const recorded = await this.withRoomLock(gameId, async () => {
       const room = await this.store.getGame(gameId);
       if (!room) throw new Error('Game not found');
@@ -185,6 +192,7 @@ export class GameManager {
 
       const now = Date.now();
       room.movesMade += 1;
+      if (sealed) room.moves = [...(room.moves ?? []), { moveNumber, iv: sealed.iv, ciphertext: sealed.ciphertext }];
       // The next turn starts now; this is what abandonment detection watches.
       room.lastMoveTimestamp = now;
       room.lastActivity = now;

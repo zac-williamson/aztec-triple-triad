@@ -33,7 +33,23 @@ export interface StoredGameRoom {
    * and at nine the room's moves are complete.
    */
   movesMade: number;
+  /**
+   * The sealed MOVEs relayed so far, in order — ciphertext the relay cannot
+   * read, as forwarded. A returning player is replayed the opponent's from
+   * here on RESUME: a MOVE written to a socket that was already dying (the
+   * relay still saw it open) is neither delivered nor buffered, so the inbox
+   * alone cannot be trusted to hold every move a player lacks.
+   * Absent on a room stored before the log existed.
+   */
+  moves?: SealedMove[];
   onChainStatus: OnChainGameStatus;
+}
+
+/** One relayed MOVE as the relay keeps it: its number and the sealed body, unread. */
+export interface SealedMove {
+  moveNumber: number;
+  iv: string;
+  ciphertext: string;
 }
 
 export interface SessionData {

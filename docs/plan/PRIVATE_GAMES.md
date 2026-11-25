@@ -383,7 +383,8 @@ moves, because it enforces the rules. Phase B makes it a pure pipe.
 The relay keeps:
 - matchmaking (`QUEUE_MATCHMAKING` with **no** card ids);
 - room membership;
-- an inbox for offline players;
+- an inbox for offline players, and each room's sealed MOVEs for replay on
+  RESUME (§6.4);
 - turn timing for abandonment warnings.
 
 It no longer has a rules engine, a `GAME_STATE`, a `GAME_OVER` or any card id.
@@ -452,8 +453,13 @@ VK.
 ### 6.4 Reconnects
 
 The client persists the transcript (moves, proofs, open cards, both records,
-its key pair). On RESUME the relay replays the inbox and sends `ROOM_STATE`;
-the client rebuilds the board from its stored moves plus the replayed ones.
+its key pair). On RESUME the relay replays the inbox, then the opponent's
+sealed MOVEs from the room's log (all but those the inbox just carried), and
+sends `ROOM_STATE`; the client rebuilds the board from its stored moves plus
+the replayed ones, dropping any it already has. The log is needed because a
+MOVE written to a socket that was already dying — the relay still saw it open
+— is neither delivered nor buffered, and `ROOM_STATE.movesMade` only lets a
+client resend its OWN moves. The log is ciphertext the relay cannot read.
 
 ### 6.5 Outcome
 
