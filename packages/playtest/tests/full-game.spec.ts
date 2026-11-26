@@ -37,7 +37,7 @@ import { ExpectedGame } from '../src/expected.js';
 import { ChainClient, canonicalField, nullifierOf } from '../src/chain.js';
 import { playMoves, expectGameOver, expectTranscriptsAgree, storedGames } from '../src/play.js';
 import { expectRelayBlind, expectRelayLogBlind, expectRoomIsPipe, relayRoom } from '../src/relay.js';
-import { BACKEND_URL, readStackInfo } from '../src/env.js';
+import { BACKEND_URL, TESTNET, readStackInfo } from '../src/env.js';
 
 const STARTER_CARDS = [1, 2, 3, 4, 5];
 const STARTER_TOKENS = 100;
@@ -87,8 +87,13 @@ test.describe.serial('ladder campaign', () => {
       // The starter mint's own offchain messages were handed to the PXE. (The
       // boot-time restore then import_notes every stored card too — the
       // recovery path, by design — so only the receive is asserted here.)
-      expect(driver.consoleSince(0).some(l => l.includes('received 5 card note message(s)')),
-        `${driver.name} received the starter cards' messages`).toBe(true);
+      // Only when this browser made that mint: on testnet the player is a pool
+      // account whose starters the provisioner minted (and checked) before the
+      // browser existed, so the browser restores them and receives nothing.
+      if (!TESTNET) {
+        expect(driver.consoleSince(0).some(l => l.includes('received 5 card note message(s)')),
+          `${driver.name} received the starter cards' messages`).toBe(true);
+      }
     }
 
     // ── Matchmaking ──────────────────────────────────────────────────────
