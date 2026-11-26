@@ -644,7 +644,12 @@ export class PlayerDriver {
         ? `screen=${snap.screen} aztec=${snap.aztecStatus} ws.connected=${snap.ws.connected} ` +
           `matchmaking=${snap.ws.matchmakingStatus} cards=${snap.ownedCardIds.length}`
         : 'phase unavailable (page unresponsive)';
-      throw new Error(`${this.name}: click '${testId}' did not land [${ctx}]: ${(err as Error).message.split('\n')[0]}`);
+      // Keep Playwright's call log: its last lines say WHY the click could not
+      // land (disabled, covered by another element, outside the viewport),
+      // which the first line ("Timeout 60000ms exceeded") does not.
+      const lines = (err as Error).message.split('\n').map(l => l.trim()).filter(Boolean);
+      const why = lines.length > 1 ? `\n  ${lines.slice(1).slice(-8).join('\n  ')}` : '';
+      throw new Error(`${this.name}: click '${testId}' did not land [${ctx}]: ${lines[0]}${why}`);
     }
   }
 
